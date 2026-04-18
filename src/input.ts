@@ -20,7 +20,10 @@ export interface KeyEvent {
     | "up"
     | "down"
     | "ctrl-c"
+    | "ctrl-j"
+    | "ctrl-k"
     | "ctrl-m"
+    | "ctrl-n"
     | "ctrl-s"
     | "escape"
     | "paste"
@@ -38,7 +41,10 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "127": "backspace",
   "27": "escape",
   "99;5": "ctrl-c",
+  "106;5": "ctrl-j",
+  "107;5": "ctrl-k",
   "109;5": "ctrl-m",
+  "110;5": "ctrl-n",
   "115;5": "ctrl-s",
 };
 
@@ -115,6 +121,21 @@ export function parseInput(data: Buffer | string): InputEvent[] {
     }
     if (code === 3) {
       events.push({ type: "ctrl-c" });
+      i++;
+      continue;
+    }
+    if (code === 10) {
+      events.push({ type: "ctrl-j" });
+      i++;
+      continue;
+    }
+    if (code === 11) {
+      events.push({ type: "ctrl-k" });
+      i++;
+      continue;
+    }
+    if (code === 14) {
+      events.push({ type: "ctrl-n" });
       i++;
       continue;
     }

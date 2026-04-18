@@ -2,7 +2,7 @@
  * Full-screen renderer for record.
  *
  * Layout follows the Exocortex TUI style:
- * topbar, separator, sidebar, body, prompt separator, prompt.
+ * topbar, separator, collapsible server tree, timeline, prompt separator, prompt.
  */
 
 import { displayCursor, getViewport } from "./editor";
@@ -11,15 +11,16 @@ import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
 import { truncate } from "./strings";
 import type { AppState } from "./state";
-import { applyLineBg, clearLine, cursorBar, cursorBlock, moveTo, showCursor } from "./terminal";
+import { applyLineBg, clearLine, cursorBar, cursorBlock, hideCursor, moveTo, showCursor } from "./terminal";
 import { theme } from "./theme";
+import { renderTimelineLines } from "./timeline";
 import { renderTopbar } from "./topbar";
 
 function renderAutocompletePopup(
   state: AppState,
   width: number,
   promptSeparatorRow: number,
-  chatCol: number,
+  mainCol: number,
 ): string {
   const autocomplete = state.autocomplete;
   if (!autocomplete || autocomplete.matches.length === 0) return "";
@@ -52,7 +53,7 @@ function renderAutocompletePopup(
     const name = truncate(matches[index].name, nameWidth).padEnd(nameWidth);
     const desc = truncate(matches[index].desc, descWidth).padEnd(descWidth);
     out.push(
-      moveTo(row, chatCol)
+      moveTo(row, mainCol)
       + `${bg}${theme.accent}${marker}${theme.text}${name}${theme.muted}${desc}${theme.reset}`,
     );
   }
@@ -73,9 +74,15 @@ export function render(state: AppState): void {
 
   const sidebarOpen = state.sidebar.open;
   const sidebarW = sidebarOpen ? SIDEBAR_WIDTH : 0;
-  const chatCol = sidebarW + 1;
-  const chatW = Math.max(1, cols - sidebarW);
-  const sidebarRows = sidebarOpen ? renderSidebar(state.sidebar, rows, false) : [];
+  const mainCol = sidebarW + 1;
+  const mainW = Math.max(1, cols - sidebarW);
+
+  const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
+  const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
+
+  const sidebarRows = sidebarOpen
+    ? renderSidebar(state.sidebar, state.channelList.channels, rows, state.panelFocus === "sidebar", state.channelList.activeChannelId)
+    : [];
 
   const emitSidebarCol = (row: number): void => {
     if (sidebarOpen && sidebarRows[row - 1]) {
@@ -83,40 +90,46 @@ export function render(state: AppState): void {
     }
   };
 
-  const writeChatRow = (row: number, line = ""): void => {
-    out.push(moveTo(row, 1) + clearedLine);
-    emitSidebarCol(row);
-    out.push(moveTo(row, chatCol) + bgLine(line));
-  };
-
   out.push(moveTo(1, 1) + clearedLine);
   emitSidebarCol(1);
-  out.push(moveTo(1, chatCol) + renderTopbar(chatW));
+  out.push(moveTo(1, mainCol) + renderTopbar(state, mainW));
 
-  writeChatRow(2, `${theme.borderUnfocused}${"─".repeat(chatW)}${theme.reset}`);
+  const bodyBorder = historyFocused ? theme.borderFocused : theme.borderUnfocused;
+  const promptColor = promptFocused ? theme.accent : theme.dim;
+
+  out.push(moveTo(2, 1) + clearedLine);
+  emitSidebarCol(2);
+  out.push(moveTo(2, mainCol) + bgLine(`${bodyBorder}${"─".repeat(mainW)}${theme.reset}`));
 
   const promptSeparatorRow = Math.max(3, rows - 1);
   const promptRow = rows;
   const bodyTop = 3;
-  const bodyBottom = Math.max(2, promptSeparatorRow - 1);
-  const bodyHeight = Math.max(0, bodyBottom - bodyTop + 1);
-  const bodyLines = renderBodyLines(state, chatW);
+  const bodyRows = Math.max(0, promptSeparatorRow - bodyTop);
 
-  for (let i = 0; i < bodyHeight; i++) {
-    writeChatRow(bodyTop + i, bodyLines[i] ?? "");
+  const timeline = renderTimelineLines(state.timeline, mainW, bodyRows, state.notice);
+  const fallbackBody = renderBodyLines(state, mainW);
+  const timelineLines = timeline.lines.length > 0 ? timeline.lines : fallbackBody;
+
+  for (let i = 0; i < bodyRows; i++) {
+    const row = bodyTop + i;
+    out.push(moveTo(row, 1) + clearedLine);
+    emitSidebarCol(row);
+    out.push(moveTo(row, mainCol) + bgLine(timelineLines[i] ?? ""));
   }
 
   if (state.autocomplete) {
-    out.push(renderAutocompletePopup(state, chatW, promptSeparatorRow, chatCol));
+    out.push(renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol));
   }
 
-  writeChatRow(promptSeparatorRow, `${theme.borderFocused}${"─".repeat(chatW)}${theme.reset}`);
+  out.push(moveTo(promptSeparatorRow, 1) + clearedLine);
+  emitSidebarCol(promptSeparatorRow);
+  out.push(moveTo(promptSeparatorRow, mainCol) + bgLine(`${promptColor}${"─".repeat(mainW)}${theme.reset}`));
 
   const modeLabel = state.editor.mode === "insert" ? "I" : "N";
   const modeColor = state.editor.mode === "insert" ? theme.vimInsert : theme.vimNormal;
   const promptPrefixPlain = `${modeLabel} > `;
-  const promptPrefix = `${modeColor}${modeLabel}${theme.reset} ${theme.prompt}>${theme.reset} `;
-  const fieldWidth = Math.max(1, chatW - promptPrefixPlain.length);
+  const promptPrefix = `${modeColor}${modeLabel}${theme.reset} ${promptColor}>${theme.reset} `;
+  const fieldWidth = Math.max(1, mainW - promptPrefixPlain.length);
 
   const cursor = displayCursor(state.editor);
   const viewport = getViewport(state.editor.buffer, cursor, fieldWidth, state.editor.scroll);
@@ -128,12 +141,18 @@ export function render(state: AppState): void {
     promptText = highlightPromptViewport(viewport.text, state.editor.buffer, viewport.scroll);
   }
 
-  writeChatRow(promptRow, `${promptPrefix}${promptText}`);
+  out.push(moveTo(promptRow, 1) + clearedLine);
+  emitSidebarCol(promptRow);
+  out.push(moveTo(promptRow, mainCol) + bgLine(`${promptPrefix}${promptText}`));
 
-  const cursorCol = Math.min(cols, chatCol + promptPrefixPlain.length + viewport.cursorCol);
+  const cursorCol = Math.min(cols, mainCol + promptPrefixPlain.length + viewport.cursorCol);
   out.push(moveTo(promptRow, cursorCol));
-  out.push(state.editor.mode === "insert" ? cursorBar : cursorBlock);
-  out.push(showCursor);
+  if (promptFocused) {
+    out.push(state.editor.mode === "insert" ? cursorBar : cursorBlock);
+    out.push(showCursor);
+  } else {
+    out.push(hideCursor);
+  }
 
   process.stdout.write(out.join(""));
 }

@@ -84,7 +84,7 @@ export function leaveInsertMode(editor: EditorState): void {
     : clampNormalCursor(editor.buffer, Math.max(0, editor.cursor - 1));
 }
 
-function enterInsertMode(editor: EditorState, cursor: number): void {
+export function enterInsertMode(editor: EditorState, cursor: number): void {
   editor.mode = "insert";
   editor.pendingKeys = "";
   editor.cursor = clampInsertCursor(editor.buffer, cursor);

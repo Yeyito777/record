@@ -7,6 +7,7 @@ const effects: AppEffects = {
   scheduleRender: () => {},
   quit: () => {},
   applyThemeCursor: () => {},
+  bootstrapSession: () => {},
 };
 
 describe("submitCurrentBuffer", () => {

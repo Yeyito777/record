@@ -19,6 +19,7 @@ export type CommandResult =
   | { type: "quit" }
   | { type: "login"; token: string }
   | { type: "logout" }
+  | { type: "refresh" }
   | { type: "theme_changed" };
 
 export interface SlashCommand {
@@ -77,6 +78,16 @@ const commands: SlashCommand[] = [
       if (parts.length !== 1) return usage(state, "Usage: /logout");
       clearPrompt(state);
       return { type: "logout" };
+    },
+  },
+  {
+    name: "/refresh",
+    description: "Reload servers, channels, and messages",
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length !== 1) return usage(state, "Usage: /refresh");
+      clearPrompt(state);
+      return { type: "refresh" };
     },
   },
   {

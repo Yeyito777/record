@@ -1,20 +1,50 @@
 /**
- * Sidebar shell.
- *
- * Visual style is copied from Exocortex TUI, but the body is intentionally
- * empty for now.
+ * Servers sidebar with collapsible guild/category/channel tree.
  */
 
+import type { DiscordChannel, DiscordGuild } from "./discord";
+import { truncate } from "./strings";
 import { theme } from "./theme";
 
 export const SIDEBAR_WIDTH = 28;
 
+export type SidebarEntryKind = "guild" | "category" | "channel";
+
+export interface SidebarEntry {
+  kind: SidebarEntryKind;
+  id: string;
+  guildId: string;
+  label: string;
+  depth: number;
+  selected: boolean;
+  active: boolean;
+  expanded: boolean;
+}
+
 export interface SidebarState {
   open: boolean;
+  guilds: DiscordGuild[];
+  selectedIndex: number;
+  activeGuildId: string | null;
+  expandedGuildId: string | null;
+  collapsedCategoryIds: string[];
+  scrollOffset: number;
+  loading: boolean;
+  requestId: number;
 }
 
 export function createSidebarState(): SidebarState {
-  return { open: false };
+  return {
+    open: false,
+    guilds: [],
+    selectedIndex: 0,
+    activeGuildId: null,
+    expandedGuildId: null,
+    collapsedCategoryIds: [],
+    scrollOffset: 0,
+    loading: false,
+    requestId: 0,
+  };
 }
 
 function pad(text: string, width: number): string {
@@ -22,7 +52,171 @@ function pad(text: string, width: number): string {
   return text + " ".repeat(width - text.length);
 }
 
-export function renderSidebar(sidebar: SidebarState, totalRows: number, focused = false): string[] {
+export function clearSidebarData(sidebar: SidebarState): void {
+  sidebar.guilds = [];
+  sidebar.selectedIndex = 0;
+  sidebar.activeGuildId = null;
+  sidebar.expandedGuildId = null;
+  sidebar.collapsedCategoryIds = [];
+  sidebar.scrollOffset = 0;
+  sidebar.loading = false;
+}
+
+export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]): void {
+  sidebar.guilds = guilds;
+  sidebar.scrollOffset = 0;
+  sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, guilds.length - 1)));
+
+  if (!sidebar.activeGuildId || !guilds.some((guild) => guild.id === sidebar.activeGuildId)) {
+    sidebar.activeGuildId = guilds[0]?.id ?? null;
+  }
+  if (!sidebar.expandedGuildId || !guilds.some((guild) => guild.id === sidebar.expandedGuildId)) {
+    sidebar.expandedGuildId = sidebar.activeGuildId;
+  }
+}
+
+export function buildSidebarEntries(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry[] {
+  const entries: SidebarEntry[] = [];
+
+  for (const guild of sidebar.guilds) {
+    const isExpanded = guild.id === sidebar.expandedGuildId;
+    entries.push({
+      kind: "guild",
+      id: guild.id,
+      guildId: guild.id,
+      label: guild.name || "(unnamed)",
+      depth: 0,
+      selected: false,
+      active: guild.id === sidebar.activeGuildId,
+      expanded: isExpanded,
+    });
+
+    if (!isExpanded) continue;
+
+    const guildCategories = channels
+      .filter((channel) => channel.guildId === guild.id && channel.type === 4)
+      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+    const uncategorized = channels
+      .filter((channel) => channel.guildId === guild.id && channel.type !== 4 && !channel.parentId)
+      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+
+    for (const channel of uncategorized) {
+      entries.push({
+        kind: "channel",
+        id: channel.id,
+        guildId: guild.id,
+        label: channel.name,
+        depth: 1,
+        selected: false,
+        active: false,
+        expanded: false,
+      });
+    }
+
+    for (const category of guildCategories) {
+      const collapsed = sidebar.collapsedCategoryIds.includes(category.id);
+      entries.push({
+        kind: "category",
+        id: category.id,
+        guildId: guild.id,
+        label: category.name,
+        depth: 1,
+        selected: false,
+        active: false,
+        expanded: !collapsed,
+      });
+
+      if (collapsed) continue;
+
+      const categoryChannels = channels
+        .filter((channel) => channel.guildId === guild.id && channel.type !== 4 && channel.parentId === category.id)
+        .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+
+      for (const channel of categoryChannels) {
+        entries.push({
+          kind: "channel",
+          id: channel.id,
+          guildId: guild.id,
+          label: channel.name,
+          depth: 2,
+          selected: false,
+          active: false,
+          expanded: false,
+        });
+      }
+    }
+  }
+
+  const clampedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, entries.length - 1)));
+  sidebar.selectedIndex = clampedIndex;
+
+  return entries.map((entry, index) => ({
+    ...entry,
+    selected: index === clampedIndex,
+    active: entry.kind === "guild"
+      ? entry.guildId === sidebar.activeGuildId
+      : entry.active,
+  }));
+}
+
+export function getSelectedSidebarEntry(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry {
+  const entries = buildSidebarEntries(sidebar, channels);
+  return entries[Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, entries.length - 1)))] ?? {
+    kind: "guild",
+    id: "",
+    guildId: "",
+    label: "",
+    depth: 0,
+    selected: true,
+    active: false,
+    expanded: false,
+  };
+}
+
+export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordChannel[], delta: number): void {
+  const entries = buildSidebarEntries(sidebar, channels);
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    return;
+  }
+  sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex + delta, entries.length - 1));
+}
+
+export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry | null {
+  const entry = getSelectedSidebarEntry(sidebar, channels);
+  if (!entry.id) return null;
+
+  if (entry.kind === "guild") {
+    if (sidebar.expandedGuildId === entry.guildId) {
+      sidebar.expandedGuildId = null;
+    } else {
+      sidebar.expandedGuildId = entry.guildId;
+    }
+    sidebar.activeGuildId = entry.guildId;
+    return entry;
+  }
+
+  if (entry.kind === "category") {
+    if (sidebar.collapsedCategoryIds.includes(entry.id)) {
+      sidebar.collapsedCategoryIds = sidebar.collapsedCategoryIds.filter((id) => id !== entry.id);
+    } else {
+      sidebar.collapsedCategoryIds = [...sidebar.collapsedCategoryIds, entry.id];
+    }
+    return entry;
+  }
+
+  return entry;
+}
+
+export function renderSidebar(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  totalRows: number,
+  focused = false,
+  activeChannelId: string | null = null,
+): string[] {
+  if (!sidebar.open) return [];
+
   const rows: string[] = [];
   const innerWidth = SIDEBAR_WIDTH - 1;
   const borderFg = focused ? theme.borderFocused : theme.borderUnfocused;
@@ -37,11 +231,66 @@ export function renderSidebar(sidebar: SidebarState, totalRows: number, focused 
     theme.sidebarBg + borderFg + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset,
   );
 
-  for (let row = 3; row <= totalRows; row++) {
+  const entries = buildSidebarEntries(sidebar, channels);
+  const listRows = Math.max(0, totalRows - 2);
+  let scrollOffset = sidebar.scrollOffset;
+  if (sidebar.selectedIndex < scrollOffset) {
+    scrollOffset = sidebar.selectedIndex;
+  } else if (sidebar.selectedIndex >= scrollOffset + listRows) {
+    scrollOffset = sidebar.selectedIndex - listRows + 1;
+  }
+  scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.length - listRows)));
+  sidebar.scrollOffset = scrollOffset;
+
+  if (sidebar.loading && sidebar.guilds.length === 0) {
+    rows.push(
+      theme.sidebarBg + theme.muted + pad(" Loading servers…", innerWidth)
+      + theme.reset + borderBg + borderFg + "│" + theme.reset,
+    );
+  } else if (entries.length === 0) {
+    rows.push(
+      theme.sidebarBg + theme.muted + pad(" No servers", innerWidth)
+      + theme.reset + borderBg + borderFg + "│" + theme.reset,
+    );
+  } else {
+    for (let i = 0; i < listRows; i++) {
+      const entry = entries[scrollOffset + i];
+      if (!entry) break;
+      rows.push(renderEntryRow(entry, innerWidth, borderBg, borderFg, activeChannelId));
+    }
+  }
+
+  while (rows.length < totalRows) {
     rows.push(
       theme.sidebarBg + " ".repeat(innerWidth) + theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }
 
-  return sidebar.open ? rows : [];
+  return rows;
+}
+
+function renderEntryRow(
+  entry: SidebarEntry,
+  innerWidth: number,
+  borderBg: string,
+  borderFg: string,
+  activeChannelId: string | null,
+): string {
+  const bg = entry.selected ? theme.sidebarSelBg : theme.sidebarBg;
+  const isActive = entry.kind === "channel" ? entry.id === activeChannelId : entry.active;
+  const fg = entry.selected || isActive ? theme.text : theme.muted;
+  const indent = "  ".repeat(entry.depth);
+  const marker = entry.kind === "guild"
+    ? entry.expanded ? "▾ " : "▸ "
+    : entry.kind === "category"
+      ? entry.expanded ? "▾ " : "▸ "
+      : "# ";
+  const prefix = `${indent}${marker}`;
+  const labelWidth = Math.max(0, innerWidth - prefix.length);
+  const title = truncate(entry.label || "unnamed", labelWidth);
+  const padding = Math.max(0, labelWidth - title.length);
+  const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
+
+  return theme.reset + bg + fg + prefix + text + " ".repeat(padding)
+    + theme.reset + borderBg + borderFg + "│" + theme.reset;
 }

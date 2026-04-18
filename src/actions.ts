@@ -7,15 +7,16 @@
 
 import { clearConfig, saveConfig } from "./config";
 import { tryCommand } from "./commands";
-import { validateToken, formatDiscordDisplayName } from "./discord";
+import { validateToken } from "./discord";
+import { clearReadOnlyClient, refreshReadOnlyClient, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setNotice } from "./state";
 import { normalizeToken } from "./token";
 
-export interface AppEffects {
-  scheduleRender: () => void;
+export interface AppEffects extends SessionEffects {
   quit: () => void;
   applyThemeCursor: () => void;
+  bootstrapSession: (token: string) => void;
 }
 
 function setAuthError(state: AppState, message: string): void {
@@ -71,13 +72,15 @@ export async function validateAndMaybeSave(
     } else {
       setNotice(state, "", "muted");
     }
+
+    effects.scheduleRender();
+    effects.bootstrapSession(token);
   } catch (error) {
     if (!isCurrentAuthRequest(state, requestId)) return;
     const message = error instanceof Error ? error.message : String(error);
     setAuthError(state, message);
+    effects.scheduleRender();
   }
-
-  effects.scheduleRender();
 }
 
 export function logout(state: AppState, effects: AppEffects): void {
@@ -93,6 +96,7 @@ export function logout(state: AppState, effects: AppEffects): void {
 
   resetAuthState(state);
   state.autocomplete = null;
+  clearReadOnlyClient(state);
   setNotice(state, "Logged out.", "success");
   effects.scheduleRender();
 }
@@ -125,6 +129,9 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
     case "theme_changed":
       effects.applyThemeCursor();
       effects.scheduleRender();
+      return true;
+    case "refresh":
+      refreshReadOnlyClient(state, effects);
       return true;
   }
 }

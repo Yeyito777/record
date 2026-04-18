@@ -1,17 +1,24 @@
 /**
  * record — Discord terminal client bootstrap.
- *
- * Current scope is intentionally tiny: token auth only.
  */
 
-import { validateAndMaybeSave, submitCurrentBuffer, type AppEffects } from "./actions";
+import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { configPath, loadConfig } from "./config";
 import { cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
 import { handleEditorKey } from "./editor";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { render } from "./render";
-import { createInitialState, setNotice } from "./state";
+import { bootstrapReadOnlyClient, loadChannelMessages, loadGuildChannels } from "./session";
+import { activateSelectedEntry, getSelectedSidebarEntry, moveSidebarSelection } from "./sidebar";
+import {
+  createInitialState,
+  cycleFocus,
+  focusHistory,
+  focusPrompt,
+  focusSidebar,
+  setNotice,
+} from "./state";
 import {
   disableBracketedPaste,
   disableKittyKeyboard,
@@ -24,8 +31,9 @@ import {
   setCursorColor,
   showCursor,
 } from "./terminal";
-import { normalizeToken } from "./token";
 import { theme } from "./theme";
+import { moveTimelineScroll } from "./timeline";
+import { normalizeToken } from "./token";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("record needs an interactive TTY.");
@@ -66,18 +74,155 @@ function applyThemeCursor(): void {
   if (theme.cursorColor) process.stdout.write(setCursorColor(theme.cursorColor));
 }
 
-function handleKey(key: KeyEvent): void {
-  const globalAction = resolveAction(key);
-  if (globalAction === "sidebar_toggle") {
-    state.sidebar.open = !state.sidebar.open;
-    scheduleRender();
-    return;
+function bootstrapSession(token: string): void {
+  void bootstrapReadOnlyClient(state, token, { scheduleRender });
+}
+
+function syncPromptAutocomplete(): void {
+  if (state.panelFocus === "chat" && state.chatFocus === "prompt") {
+    updateAutocomplete(state);
+  } else {
+    state.autocomplete = null;
   }
-  if (globalAction === "quit") {
-    cleanup();
-    return;
+}
+
+function focusPromptInsert(append = false): void {
+  focusPrompt(state, append);
+  syncPromptAutocomplete();
+  scheduleRender();
+}
+
+function tokenOrWarn(): string | null {
+  const token = state.auth.savedToken;
+  if (!token) {
+    setNotice(state, "Login first with /login <token>.", "warning");
+    scheduleRender();
+    return null;
+  }
+  return token;
+}
+
+function toggleSidebar(): void {
+  state.sidebar.open = !state.sidebar.open;
+
+  if (state.sidebar.open) {
+    focusSidebar(state);
+  } else {
+    state.panelFocus = "chat";
   }
 
+  syncPromptAutocomplete();
+  scheduleRender();
+}
+
+function toggleHistoryFocus(): void {
+  if (state.panelFocus === "chat" && state.chatFocus === "history") {
+    focusPrompt(state);
+  } else {
+    focusHistory(state);
+  }
+
+  syncPromptAutocomplete();
+  scheduleRender();
+}
+
+function cyclePanelFocus(): void {
+  cycleFocus(state);
+  syncPromptAutocomplete();
+  scheduleRender();
+}
+
+function handleGlobalAction(key: KeyEvent): boolean {
+  const context = state.panelFocus === "sidebar" || state.chatFocus === "history"
+    ? "navigation"
+    : "prompt";
+  const action = resolveAction(key, context);
+
+  switch (action) {
+    case "quit":
+      cleanup();
+      return true;
+    case "sidebar_toggle":
+      toggleSidebar();
+      return true;
+    case "focus_cycle":
+      cyclePanelFocus();
+      return true;
+    case "focus_history":
+      toggleHistoryFocus();
+      return true;
+    default:
+      return false;
+  }
+}
+
+function handleSidebarFocused(key: KeyEvent): boolean {
+  const action = resolveAction(key, "navigation");
+  if (!action) return false;
+
+  switch (action) {
+    case "focus_prompt":
+      focusPromptInsert(key.type === "char" && key.char === "a");
+      return true;
+    case "nav_up":
+      moveSidebarSelection(state.sidebar, state.channelList.channels, -1);
+      scheduleRender();
+      return true;
+    case "nav_down":
+      moveSidebarSelection(state.sidebar, state.channelList.channels, 1);
+      scheduleRender();
+      return true;
+    case "nav_select": {
+      const token = tokenOrWarn();
+      if (!token) return true;
+
+      const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels);
+      const entry = activateSelectedEntry(state.sidebar, state.channelList.channels) ?? selectedBefore;
+
+      if (entry.kind === "guild") {
+        if (state.sidebar.expandedGuildId === entry.guildId) {
+          void loadGuildChannels(state, token, entry.guildId, { scheduleRender });
+        } else {
+          scheduleRender();
+        }
+        return true;
+      }
+
+      if (entry.kind === "channel") {
+        void loadChannelMessages(state, token, entry.id, { scheduleRender });
+        return true;
+      }
+
+      scheduleRender();
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function handleHistoryFocused(key: KeyEvent): boolean {
+  const action = resolveAction(key, "navigation");
+  if (!action) return false;
+
+  switch (action) {
+    case "focus_prompt":
+      focusPromptInsert(key.type === "char" && key.char === "a");
+      return true;
+    case "nav_up":
+      moveTimelineScroll(state.timeline, -1);
+      scheduleRender();
+      return true;
+    case "nav_down":
+      moveTimelineScroll(state.timeline, 1);
+      scheduleRender();
+      return true;
+    default:
+      return false;
+  }
+}
+
+function handlePromptFocused(key: KeyEvent): void {
   if (key.type === "tab" && state.autocomplete) {
     cycleAutocomplete(state, 1);
     scheduleRender();
@@ -114,10 +259,26 @@ function handleKey(key: KeyEvent): void {
     || previousCursor !== state.editor.cursor
     || previousMode !== state.editor.mode
   ) {
-    updateAutocomplete(state);
+    syncPromptAutocomplete();
   }
 
   scheduleRender();
+}
+
+function handleKey(key: KeyEvent): void {
+  if (handleGlobalAction(key)) return;
+
+  if (state.panelFocus === "sidebar" && state.sidebar.open) {
+    handleSidebarFocused(key);
+    return;
+  }
+
+  if (state.chatFocus === "history") {
+    handleHistoryFocused(key);
+    return;
+  }
+
+  handlePromptFocused(key);
 }
 
 function setupTerminal(): void {
@@ -161,6 +322,7 @@ const effects: AppEffects = {
   scheduleRender,
   quit: cleanup,
   applyThemeCursor,
+  bootstrapSession,
 };
 
 async function main(): Promise<void> {

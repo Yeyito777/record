@@ -20,6 +20,14 @@ describe("commands", () => {
     expect(state.editor.buffer).toBe("");
   });
 
+  test("parses /refresh", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+    const result = tryCommand("/refresh", state);
+
+    expect(result).toEqual({ type: "refresh" });
+    expect(state.editor.buffer).toBe("");
+  });
+
   test("rejects /login without a token", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     const result = tryCommand("/login", state);

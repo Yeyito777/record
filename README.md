@@ -6,20 +6,26 @@ Current scope:
 - Bun + TypeScript
 - raw terminal rendering
 - modal editing with vim-style defaults
-- token auth only
+- read-only Discord browsing
 
 What it does right now:
 - validate Discord tokens through `/login <token>`
 - persist the saved token to `~/.config/record/config.json` (or `$XDG_CONFIG_HOME/record/config.json`)
 - keep the config directory/file locked down to `0700` / `0600` permissions when possible
-- run slash commands like `/login <token>`, `/logout`, and `/theme <name>`
+- load servers, categories, channels, and recent messages
+- render the server tree as a collapsible sidebar
+- run slash commands like `/login <token>`, `/logout`, `/refresh`, and `/theme <name>`
 - treat the prompt as message/command input only
 
 Controls:
 - `Ctrl+M` or `Ctrl+S`: toggle the sidebar
-- `i`, `a`, `I`, `A`: enter insert mode
+- `Ctrl+J` / `Ctrl+K`: cycle between sidebar and chat container
+- `Ctrl+N`: toggle chat focus between prompt and history
+- `j` / `k` or arrow keys: move in the focused pane
+- `Enter` in the sidebar: expand/collapse servers and categories, or open channels
+- `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
-- `Enter`: submit the current message or slash command
+- `Enter` in the prompt: submit the current message or slash command
 - `Tab` / `Shift+Tab`: cycle slash-command autocomplete
 - `Ctrl+C` or `q` in normal mode: quit
 

@@ -3,13 +3,17 @@
  */
 
 import type { AutocompleteState } from "./autocomplete";
+import { createChannelListState, type ChannelListState } from "./channels";
 import type { DiscordIdentity } from "./discord";
-import { createEditorState, type EditorState } from "./editor";
+import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createSidebarState, type SidebarState } from "./sidebar";
+import { createTimelineState, type TimelineState } from "./timeline";
 import { normalizeToken } from "./token";
 import type { NoticeTone } from "./theme";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
+export type PanelFocus = "sidebar" | "chat";
+export type ChatFocus = "prompt" | "history";
 
 export interface Notice {
   tone: NoticeTone;
@@ -28,9 +32,13 @@ export interface AuthState {
 export interface AppState {
   cols: number;
   rows: number;
+  panelFocus: PanelFocus;
+  chatFocus: ChatFocus;
   editor: EditorState;
   autocomplete: AutocompleteState | null;
   sidebar: SidebarState;
+  channelList: ChannelListState;
+  timeline: TimelineState;
   auth: AuthState;
   notice: Notice;
   configPath: string;
@@ -41,9 +49,13 @@ export function createInitialState(initialToken: string | null, path: string): A
   return {
     cols: process.stdout.columns || 80,
     rows: process.stdout.rows || 24,
+    panelFocus: "chat",
+    chatFocus: "prompt",
     editor: createEditorState("", "insert"),
     autocomplete: null,
     sidebar: createSidebarState(),
+    channelList: createChannelListState(),
+    timeline: createTimelineState(),
     auth: {
       status: "idle",
       user: null,
@@ -68,4 +80,35 @@ export function nextAuthRequestId(state: AppState): number {
 
 export function isCurrentAuthRequest(state: AppState, requestId: number): boolean {
   return state.auth.activeRequestId === requestId;
+}
+
+export function focusPrompt(state: AppState, append = false): void {
+  state.panelFocus = "chat";
+  state.chatFocus = "prompt";
+  const targetCursor = append ? state.editor.cursor + 1 : state.editor.cursor;
+  enterInsertMode(state.editor, targetCursor);
+}
+
+export function focusHistory(state: AppState): void {
+  state.panelFocus = "chat";
+  state.chatFocus = "history";
+  leaveInsertMode(state.editor);
+}
+
+export function focusSidebar(state: AppState): void {
+  state.panelFocus = "sidebar";
+  leaveInsertMode(state.editor);
+}
+
+export function cycleFocus(state: AppState): void {
+  if (!state.sidebar.open) {
+    state.panelFocus = "chat";
+    return;
+  }
+
+  if (state.panelFocus === "sidebar") {
+    state.panelFocus = "chat";
+  } else {
+    focusSidebar(state);
+  }
 }
