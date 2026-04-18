@@ -5,7 +5,13 @@
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { configPath, loadConfig } from "./config";
 import { cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
-import { handleEditorKey } from "./editor";
+import {
+  displayCursor,
+  getInputLines,
+  handleEditorKey,
+  MAX_PROMPT_ROWS,
+  PROMPT_PREFIX_WIDTH,
+} from "./editor";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { render } from "./render";
@@ -15,6 +21,7 @@ import {
   getSelectedSidebarEntry,
   moveSidebarSelection,
   SIDEBAR_LOADING_FRAMES,
+  SIDEBAR_WIDTH,
 } from "./sidebar";
 import {
   createInitialState,
@@ -122,7 +129,7 @@ function isPromptTyping(): boolean {
 }
 
 function syncPromptAutocomplete(): void {
-  if (state.panelFocus === "chat" && state.chatFocus === "prompt") {
+  if (isPromptTyping()) {
     updateAutocomplete(state);
   } else {
     state.autocomplete = null;
@@ -143,6 +150,26 @@ function tokenOrWarn(): string | null {
     return null;
   }
   return token;
+}
+
+function timelinePageSize(): number {
+  const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
+  const mainW = Math.max(1, state.cols - sidebarW);
+  const maxInputWidth = Math.max(1, mainW - PROMPT_PREFIX_WIDTH);
+  const input = getInputLines(
+    state.editor.buffer,
+    displayCursor(state.editor),
+    maxInputWidth,
+    Math.max(1, Math.min(MAX_PROMPT_ROWS, state.rows - 3)),
+    state.editor.scroll,
+  );
+  const promptSeparatorRow = Math.max(3, state.rows - Math.max(1, input.lines.length));
+  return Math.max(1, promptSeparatorRow - 3);
+}
+
+function scrollTimeline(delta: number): void {
+  moveTimelineScroll(state.timeline, delta);
+  scheduleRender();
 }
 
 function toggleSidebar(): void {
@@ -193,6 +220,24 @@ function handleGlobalAction(key: KeyEvent): boolean {
       return true;
     case "focus_history":
       toggleHistoryFocus();
+      return true;
+    case "scroll_line_up":
+      scrollTimeline(-1);
+      return true;
+    case "scroll_line_down":
+      scrollTimeline(1);
+      return true;
+    case "scroll_half_up":
+      scrollTimeline(-Math.max(1, Math.floor(timelinePageSize() / 2)));
+      return true;
+    case "scroll_half_down":
+      scrollTimeline(Math.max(1, Math.floor(timelinePageSize() / 2)));
+      return true;
+    case "scroll_page_up":
+      scrollTimeline(-timelinePageSize());
+      return true;
+    case "scroll_page_down":
+      scrollTimeline(timelinePageSize());
       return true;
     case "sidebar_next":
     case "sidebar_prev": {
@@ -304,6 +349,18 @@ function handlePromptFocused(key: KeyEvent): void {
 
   if (action === "quit") {
     cleanup();
+    return;
+  }
+
+  if (action === "scroll_top") {
+    state.timeline.scrollOffset = 0;
+    scheduleRender();
+    return;
+  }
+
+  if (action === "scroll_bottom") {
+    state.timeline.scrollOffset = state.timeline.maxScroll;
+    scheduleRender();
     return;
   }
 

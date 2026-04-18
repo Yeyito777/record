@@ -9,6 +9,7 @@ export interface KeyEvent {
   type:
     | "char"
     | "enter"
+    | "shift-enter"
     | "tab"
     | "backtab"
     | "backspace"
@@ -19,12 +20,20 @@ export interface KeyEvent {
     | "end"
     | "up"
     | "down"
+    | "ctrl-b"
     | "ctrl-c"
+    | "ctrl-d"
+    | "ctrl-e"
+    | "ctrl-f"
     | "ctrl-j"
     | "ctrl-k"
+    | "ctrl-l"
     | "ctrl-m"
     | "ctrl-n"
+    | "ctrl-r"
     | "ctrl-s"
+    | "ctrl-u"
+    | "ctrl-y"
     | "escape"
     | "paste"
     | "unknown";
@@ -34,18 +43,46 @@ export interface KeyEvent {
 
 export type InputEvent = KeyEvent;
 
+const CONTROL_BYTE_MAP: Partial<Record<number, KeyEvent["type"]>> = {
+  2: "ctrl-b",
+  3: "ctrl-c",
+  4: "ctrl-d",
+  5: "ctrl-e",
+  6: "ctrl-f",
+  9: "tab",
+  10: "ctrl-j",
+  11: "ctrl-k",
+  12: "ctrl-l",
+  13: "enter",
+  14: "ctrl-n",
+  18: "ctrl-r",
+  19: "ctrl-s",
+  21: "ctrl-u",
+  25: "ctrl-y",
+  127: "backspace",
+};
+
 const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "13": "enter",
+  "13;2": "shift-enter",
   "9": "tab",
   "9;2": "backtab",
   "127": "backspace",
   "27": "escape",
+  "98;5": "ctrl-b",
   "99;5": "ctrl-c",
+  "100;5": "ctrl-d",
+  "101;5": "ctrl-e",
+  "102;5": "ctrl-f",
   "106;5": "ctrl-j",
   "107;5": "ctrl-k",
+  "108;5": "ctrl-l",
   "109;5": "ctrl-m",
   "110;5": "ctrl-n",
+  "114;5": "ctrl-r",
   "115;5": "ctrl-s",
+  "117;5": "ctrl-u",
+  "121;5": "ctrl-y",
 };
 
 const PASTE_START = "\x1b[200~";
@@ -114,43 +151,9 @@ export function parseInput(data: Buffer | string): InputEvent[] {
     const code = str.charCodeAt(i);
     const ch = str[i];
 
-    if (code === 9) {
-      events.push({ type: "tab" });
-      i++;
-      continue;
-    }
-    if (code === 3) {
-      events.push({ type: "ctrl-c" });
-      i++;
-      continue;
-    }
-    if (code === 10) {
-      events.push({ type: "ctrl-j" });
-      i++;
-      continue;
-    }
-    if (code === 11) {
-      events.push({ type: "ctrl-k" });
-      i++;
-      continue;
-    }
-    if (code === 14) {
-      events.push({ type: "ctrl-n" });
-      i++;
-      continue;
-    }
-    if (code === 19) {
-      events.push({ type: "ctrl-s" });
-      i++;
-      continue;
-    }
-    if (code === 13) {
-      events.push({ type: "enter" });
-      i++;
-      continue;
-    }
-    if (code === 127 || code === 8) {
-      events.push({ type: "backspace" });
+    const controlType = CONTROL_BYTE_MAP[code] ?? (code === 8 ? "backspace" : undefined);
+    if (controlType) {
+      events.push({ type: controlType });
       i++;
       continue;
     }

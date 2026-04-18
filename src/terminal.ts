@@ -14,6 +14,7 @@ export const enableKittyKeyboard = `${ESC}>1u`;
 export const disableKittyKeyboard = `${ESC}<u`;
 export const clearLine = `${ESC}2K`;
 export const cursorBlock = `${ESC}2 q`;
+export const cursorUnderline = `${ESC}4 q`;
 export const cursorBar = `${ESC}6 q`;
 export const eraseToEol = `${ESC}K`;
 export const setCursorColor = (hex: string) => `\x1b]12;${hex}\x1b\\`;

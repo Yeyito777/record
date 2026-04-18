@@ -14,17 +14,29 @@ export type Action =
   | "focus_history"
   | "sidebar_next"
   | "sidebar_prev"
+  | "scroll_line_up"
+  | "scroll_line_down"
+  | "scroll_half_up"
+  | "scroll_half_down"
+  | "scroll_page_up"
+  | "scroll_page_down"
   | "nav_up"
   | "nav_down"
   | "nav_select";
 
 const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
+  "ctrl-b": "scroll_page_up",
   "ctrl-c": "quit",
+  "ctrl-d": "scroll_half_down",
+  "ctrl-e": "scroll_line_down",
+  "ctrl-f": "scroll_page_down",
   "ctrl-j": "focus_cycle",
   "ctrl-k": "focus_cycle",
   "ctrl-m": "sidebar_toggle",
   "ctrl-n": "focus_history",
   "ctrl-s": "sidebar_toggle",
+  "ctrl-u": "scroll_half_up",
+  "ctrl-y": "scroll_line_up",
 };
 
 const GLOBAL_CHAR_BINDS: Record<string, Action> = {

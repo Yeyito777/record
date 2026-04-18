@@ -19,6 +19,15 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "ctrl-n" })).toBe("focus_history");
   });
 
+  test("prompt scroll bindings match Exocortex", () => {
+    expect(resolveAction({ type: "ctrl-y" })).toBe("scroll_line_up");
+    expect(resolveAction({ type: "ctrl-e" })).toBe("scroll_line_down");
+    expect(resolveAction({ type: "ctrl-u" })).toBe("scroll_half_up");
+    expect(resolveAction({ type: "ctrl-d" })).toBe("scroll_half_down");
+    expect(resolveAction({ type: "ctrl-b" })).toBe("scroll_page_up");
+    expect(resolveAction({ type: "ctrl-f" })).toBe("scroll_page_down");
+  });
+
   test("Shift+J jumps to next sidebar item", () => {
     expect(resolveAction({ type: "char", char: "J" })).toBe("sidebar_next");
   });
