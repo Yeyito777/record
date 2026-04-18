@@ -22,7 +22,11 @@ export type Action =
   | "scroll_page_down"
   | "nav_up"
   | "nav_down"
-  | "nav_select";
+  | "nav_select"
+  | "nav_prev_server"
+  | "nav_next_server"
+  | "nav_prev_category"
+  | "nav_next_category";
 
 const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-b": "scroll_page_up",
@@ -55,6 +59,10 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
   "char:k": "nav_up",
   "char:i": "focus_prompt",
   "char:a": "focus_prompt",
+  "char:{": "nav_prev_server",
+  "char:}": "nav_next_server",
+  "char:[": "nav_prev_category",
+  "char:]": "nav_next_category",
 };
 
 export type KeyContext = "prompt" | "navigation";

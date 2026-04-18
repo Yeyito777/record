@@ -21,6 +21,10 @@ import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
   moveSidebarSelection,
+  moveSidebarSelectionToNextCategory,
+  moveSidebarSelectionToNextGuild,
+  moveSidebarSelectionToPrevCategory,
+  moveSidebarSelectionToPrevGuild,
   SIDEBAR_WIDTH,
 } from "./sidebar";
 import {
@@ -273,6 +277,22 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     case "nav_down":
       moveSidebarSelection(state.sidebar, state.channelList.channels, 1);
+      scheduleRender();
+      return true;
+    case "nav_prev_server":
+      moveSidebarSelectionToPrevGuild(state.sidebar, state.channelList.channels);
+      scheduleRender();
+      return true;
+    case "nav_next_server":
+      moveSidebarSelectionToNextGuild(state.sidebar, state.channelList.channels);
+      scheduleRender();
+      return true;
+    case "nav_prev_category":
+      moveSidebarSelectionToPrevCategory(state.sidebar, state.channelList.channels);
+      scheduleRender();
+      return true;
+    case "nav_next_category":
+      moveSidebarSelectionToNextCategory(state.sidebar, state.channelList.channels);
       scheduleRender();
       return true;
     case "nav_select": {

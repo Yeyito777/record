@@ -235,6 +235,43 @@ export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordCha
   sidebar.selectedIndex = selectableIndices[nextPos] ?? currentIndex;
 }
 
+function jumpSidebarSelectionToKind(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  kind: Extract<SidebarEntryKind, "guild" | "category">,
+  direction: -1 | 1,
+): void {
+  const entries = buildSidebarEntries(sidebar, channels);
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    return;
+  }
+
+  const currentIndex = clampSelectedIndex(sidebar, entries);
+  for (let index = currentIndex + direction; index >= 0 && index < entries.length; index += direction) {
+    if (entries[index]?.kind === kind) {
+      sidebar.selectedIndex = index;
+      return;
+    }
+  }
+}
+
+export function moveSidebarSelectionToPrevGuild(sidebar: SidebarState, channels: DiscordChannel[]): void {
+  jumpSidebarSelectionToKind(sidebar, channels, "guild", -1);
+}
+
+export function moveSidebarSelectionToNextGuild(sidebar: SidebarState, channels: DiscordChannel[]): void {
+  jumpSidebarSelectionToKind(sidebar, channels, "guild", 1);
+}
+
+export function moveSidebarSelectionToPrevCategory(sidebar: SidebarState, channels: DiscordChannel[]): void {
+  jumpSidebarSelectionToKind(sidebar, channels, "category", -1);
+}
+
+export function moveSidebarSelectionToNextCategory(sidebar: SidebarState, channels: DiscordChannel[]): void {
+  jumpSidebarSelectionToKind(sidebar, channels, "category", 1);
+}
+
 export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry | null {
   const entry = getSelectedSidebarEntry(sidebar, channels);
   if (!entry.id || entry.kind === "loading") return null;

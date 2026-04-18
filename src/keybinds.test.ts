@@ -39,4 +39,14 @@ describe("keybinds", () => {
   test("navigation j moves down", () => {
     expect(resolveAction({ type: "char", char: "j" }, "navigation")).toBe("nav_down");
   });
+
+  test("navigation { and } jump between servers", () => {
+    expect(resolveAction({ type: "char", char: "{" }, "navigation")).toBe("nav_prev_server");
+    expect(resolveAction({ type: "char", char: "}" }, "navigation")).toBe("nav_next_server");
+  });
+
+  test("navigation [ and ] jump between categories", () => {
+    expect(resolveAction({ type: "char", char: "[" }, "navigation")).toBe("nav_prev_category");
+    expect(resolveAction({ type: "char", char: "]" }, "navigation")).toBe("nav_next_category");
+  });
 });
