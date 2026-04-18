@@ -9,6 +9,7 @@ import { configPath, loadConfig } from "./config";
 import { cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
 import { handleEditorKey } from "./editor";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
+import { resolveAction } from "./keybinds";
 import { render } from "./render";
 import { createInitialState, setNotice } from "./state";
 import {
@@ -66,6 +67,17 @@ function applyThemeCursor(): void {
 }
 
 function handleKey(key: KeyEvent): void {
+  const globalAction = resolveAction(key);
+  if (globalAction === "sidebar_toggle") {
+    state.sidebar.open = !state.sidebar.open;
+    scheduleRender();
+    return;
+  }
+  if (globalAction === "quit") {
+    cleanup();
+    return;
+  }
+
   if (key.type === "tab" && state.autocomplete) {
     cycleAutocomplete(state, 1);
     scheduleRender();

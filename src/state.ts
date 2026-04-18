@@ -5,6 +5,7 @@
 import type { AutocompleteState } from "./autocomplete";
 import type { DiscordIdentity } from "./discord";
 import { createEditorState, type EditorState } from "./editor";
+import { createSidebarState, type SidebarState } from "./sidebar";
 import { normalizeToken } from "./token";
 import type { NoticeTone } from "./theme";
 
@@ -29,6 +30,7 @@ export interface AppState {
   rows: number;
   editor: EditorState;
   autocomplete: AutocompleteState | null;
+  sidebar: SidebarState;
   auth: AuthState;
   notice: Notice;
   configPath: string;
@@ -41,6 +43,7 @@ export function createInitialState(initialToken: string | null, path: string): A
     rows: process.stdout.rows || 24,
     editor: createEditorState("", "insert"),
     autocomplete: null,
+    sidebar: createSidebarState(),
     auth: {
       status: "idle",
       user: null,

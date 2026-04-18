@@ -20,6 +20,8 @@ export interface KeyEvent {
     | "up"
     | "down"
     | "ctrl-c"
+    | "ctrl-m"
+    | "ctrl-s"
     | "escape"
     | "paste"
     | "unknown";
@@ -36,6 +38,8 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "127": "backspace",
   "27": "escape",
   "99;5": "ctrl-c",
+  "109;5": "ctrl-m",
+  "115;5": "ctrl-s",
 };
 
 const PASTE_START = "\x1b[200~";
@@ -111,6 +115,11 @@ export function parseInput(data: Buffer | string): InputEvent[] {
     }
     if (code === 3) {
       events.push({ type: "ctrl-c" });
+      i++;
+      continue;
+    }
+    if (code === 19) {
+      events.push({ type: "ctrl-s" });
       i++;
       continue;
     }

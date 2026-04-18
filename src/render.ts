@@ -2,19 +2,25 @@
  * Full-screen renderer for record.
  *
  * Layout follows the Exocortex TUI style:
- * topbar, separator, body, prompt separator, prompt.
+ * topbar, separator, sidebar, body, prompt separator, prompt.
  */
 
 import { displayCursor, getViewport } from "./editor";
 import { renderBodyLines } from "./bodypanel";
 import { highlightPromptViewport } from "./prompthighlight";
+import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
 import { truncate } from "./strings";
 import type { AppState } from "./state";
 import { applyLineBg, clearLine, cursorBar, cursorBlock, moveTo, showCursor } from "./terminal";
 import { theme } from "./theme";
 import { renderTopbar } from "./topbar";
 
-function renderAutocompletePopup(state: AppState, width: number, promptSeparatorRow: number): string {
+function renderAutocompletePopup(
+  state: AppState,
+  width: number,
+  promptSeparatorRow: number,
+  chatCol: number,
+): string {
   const autocomplete = state.autocomplete;
   if (!autocomplete || autocomplete.matches.length === 0) return "";
 
@@ -46,7 +52,7 @@ function renderAutocompletePopup(state: AppState, width: number, promptSeparator
     const name = truncate(matches[index].name, nameWidth).padEnd(nameWidth);
     const desc = truncate(matches[index].desc, descWidth).padEnd(descWidth);
     out.push(
-      moveTo(row, 1)
+      moveTo(row, chatCol)
       + `${bg}${theme.accent}${marker}${theme.text}${name}${theme.muted}${desc}${theme.reset}`,
     );
   }
@@ -55,7 +61,7 @@ function renderAutocompletePopup(state: AppState, width: number, promptSeparator
 }
 
 export function render(state: AppState): void {
-  const width = Math.max(1, state.cols);
+  const cols = Math.max(1, state.cols);
   const rows = Math.max(3, state.rows);
   const out: string[] = [];
 
@@ -65,41 +71,52 @@ export function render(state: AppState): void {
     ? (line: string) => applyLineBg(line, appBg)
     : (line: string) => line;
 
-  const writeRow = (row: number, line = ""): void => {
-    out.push(moveTo(row, 1) + clearedLine + moveTo(row, 1) + bgLine(line));
+  const sidebarOpen = state.sidebar.open;
+  const sidebarW = sidebarOpen ? SIDEBAR_WIDTH : 0;
+  const chatCol = sidebarW + 1;
+  const chatW = Math.max(1, cols - sidebarW);
+  const sidebarRows = sidebarOpen ? renderSidebar(state.sidebar, rows, false) : [];
+
+  const emitSidebarCol = (row: number): void => {
+    if (sidebarOpen && sidebarRows[row - 1]) {
+      out.push(sidebarRows[row - 1]);
+    }
   };
 
-  const writeTopbarRow = (row: number, line: string): void => {
-    out.push(moveTo(row, 1) + clearedLine + moveTo(row, 1) + applyLineBg(line, theme.topbarBg));
+  const writeChatRow = (row: number, line = ""): void => {
+    out.push(moveTo(row, 1) + clearedLine);
+    emitSidebarCol(row);
+    out.push(moveTo(row, chatCol) + bgLine(line));
   };
 
-  writeTopbarRow(1, renderTopbar(width));
-  if (rows >= 2) {
-    writeRow(2, `${theme.borderUnfocused}${"─".repeat(width)}${theme.reset}`);
-  }
+  out.push(moveTo(1, 1) + clearedLine);
+  emitSidebarCol(1);
+  out.push(moveTo(1, chatCol) + renderTopbar(chatW));
+
+  writeChatRow(2, `${theme.borderUnfocused}${"─".repeat(chatW)}${theme.reset}`);
 
   const promptSeparatorRow = Math.max(3, rows - 1);
   const promptRow = rows;
   const bodyTop = 3;
   const bodyBottom = Math.max(2, promptSeparatorRow - 1);
   const bodyHeight = Math.max(0, bodyBottom - bodyTop + 1);
-  const bodyLines = renderBodyLines(state, width);
+  const bodyLines = renderBodyLines(state, chatW);
 
   for (let i = 0; i < bodyHeight; i++) {
-    writeRow(bodyTop + i, bodyLines[i] ?? "");
+    writeChatRow(bodyTop + i, bodyLines[i] ?? "");
   }
 
   if (state.autocomplete) {
-    out.push(renderAutocompletePopup(state, width, promptSeparatorRow));
+    out.push(renderAutocompletePopup(state, chatW, promptSeparatorRow, chatCol));
   }
 
-  writeRow(promptSeparatorRow, `${theme.borderFocused}${"─".repeat(width)}${theme.reset}`);
+  writeChatRow(promptSeparatorRow, `${theme.borderFocused}${"─".repeat(chatW)}${theme.reset}`);
 
   const modeLabel = state.editor.mode === "insert" ? "I" : "N";
   const modeColor = state.editor.mode === "insert" ? theme.vimInsert : theme.vimNormal;
   const promptPrefixPlain = `${modeLabel} > `;
   const promptPrefix = `${modeColor}${modeLabel}${theme.reset} ${theme.prompt}>${theme.reset} `;
-  const fieldWidth = Math.max(1, width - promptPrefixPlain.length);
+  const fieldWidth = Math.max(1, chatW - promptPrefixPlain.length);
 
   const cursor = displayCursor(state.editor);
   const viewport = getViewport(state.editor.buffer, cursor, fieldWidth, state.editor.scroll);
@@ -111,9 +128,9 @@ export function render(state: AppState): void {
     promptText = highlightPromptViewport(viewport.text, state.editor.buffer, viewport.scroll);
   }
 
-  writeRow(promptRow, `${promptPrefix}${promptText}`);
+  writeChatRow(promptRow, `${promptPrefix}${promptText}`);
 
-  const cursorCol = Math.min(width, promptPrefixPlain.length + viewport.cursorCol + 1);
+  const cursorCol = Math.min(cols, chatCol + promptPrefixPlain.length + viewport.cursorCol);
   out.push(moveTo(promptRow, cursorCol));
   out.push(state.editor.mode === "insert" ? cursorBar : cursorBlock);
   out.push(showCursor);

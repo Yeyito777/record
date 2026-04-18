@@ -16,6 +16,7 @@ What it does right now:
 - treat the prompt as message/command input only
 
 Controls:
+- `Ctrl+M` or `Ctrl+S`: toggle the sidebar
 - `i`, `a`, `I`, `A`: enter insert mode
 - `Esc`: return to normal mode
 - `Enter`: submit the current message or slash command
