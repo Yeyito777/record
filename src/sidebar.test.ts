@@ -28,6 +28,22 @@ describe("sidebar state", () => {
     expect(sidebar.collapsedCategoryIds).toEqual(["cat"]);
   });
 
+  test("shows a loading row directly under an opening guild", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+    sidebar.loadingGuildId = "guild-1";
+    sidebar.loadingFrameIndex = 0;
+
+    const entries = buildSidebarEntries(sidebar, []);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["guild", "loading"]);
+    expect(entries[1]?.label).toContain("Loading");
+
+    moveSidebarSelection(sidebar, [], 1);
+    expect(sidebar.selectedIndex).toBe(0);
+  });
+
   test("expanding another guild does not change the active chat guild", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [

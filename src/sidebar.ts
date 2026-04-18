@@ -7,8 +7,9 @@ import { truncate } from "./strings";
 import { theme } from "./theme";
 
 export const SIDEBAR_WIDTH = 28;
+export const SIDEBAR_LOADING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
-export type SidebarEntryKind = "guild" | "category" | "channel";
+export type SidebarEntryKind = "guild" | "category" | "channel" | "loading";
 
 export interface SidebarEntry {
   kind: SidebarEntryKind;
@@ -28,6 +29,8 @@ export interface SidebarState {
   activeGuildId: string | null;
   expandedGuildId: string | null;
   collapsedCategoryIds: string[];
+  loadingGuildId: string | null;
+  loadingFrameIndex: number;
   scrollOffset: number;
   loading: boolean;
   requestId: number;
@@ -41,6 +44,8 @@ export function createSidebarState(): SidebarState {
     activeGuildId: null,
     expandedGuildId: null,
     collapsedCategoryIds: [],
+    loadingGuildId: null,
+    loadingFrameIndex: 0,
     scrollOffset: 0,
     loading: false,
     requestId: 0,
@@ -52,12 +57,35 @@ function pad(text: string, width: number): string {
   return text + " ".repeat(width - text.length);
 }
 
+function isSelectableEntry(entry: SidebarEntry): boolean {
+  return entry.kind !== "loading";
+}
+
+function clampSelectedIndex(sidebar: SidebarState, entries: SidebarEntry[]): number {
+  if (entries.length === 0) return 0;
+
+  const clamped = Math.max(0, Math.min(sidebar.selectedIndex, entries.length - 1));
+  if (isSelectableEntry(entries[clamped])) return clamped;
+
+  for (let offset = 1; offset < entries.length; offset++) {
+    const down = clamped + offset;
+    if (down < entries.length && isSelectableEntry(entries[down])) return down;
+
+    const up = clamped - offset;
+    if (up >= 0 && isSelectableEntry(entries[up])) return up;
+  }
+
+  return 0;
+}
+
 export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.guilds = [];
   sidebar.selectedIndex = 0;
   sidebar.activeGuildId = null;
   sidebar.expandedGuildId = null;
   sidebar.collapsedCategoryIds = [];
+  sidebar.loadingGuildId = null;
+  sidebar.loadingFrameIndex = 0;
   sidebar.scrollOffset = 0;
   sidebar.loading = false;
 }
@@ -92,6 +120,21 @@ export function buildSidebarEntries(sidebar: SidebarState, channels: DiscordChan
     });
 
     if (!isExpanded) continue;
+
+    if (sidebar.loadingGuildId === guild.id) {
+      const frame = SIDEBAR_LOADING_FRAMES[sidebar.loadingFrameIndex % SIDEBAR_LOADING_FRAMES.length];
+      entries.push({
+        kind: "loading",
+        id: `${guild.id}::loading`,
+        guildId: guild.id,
+        label: `${frame} Loading…`,
+        depth: 1,
+        selected: false,
+        active: false,
+        expanded: false,
+      });
+      continue;
+    }
 
     const guildCategories = channels
       .filter((channel) => channel.guildId === guild.id && channel.type === 4)
@@ -147,7 +190,7 @@ export function buildSidebarEntries(sidebar: SidebarState, channels: DiscordChan
     }
   }
 
-  const clampedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, entries.length - 1)));
+  const clampedIndex = clampSelectedIndex(sidebar, entries);
   sidebar.selectedIndex = clampedIndex;
 
   return entries.map((entry, index) => ({
@@ -175,16 +218,26 @@ export function getSelectedSidebarEntry(sidebar: SidebarState, channels: Discord
 
 export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordChannel[], delta: number): void {
   const entries = buildSidebarEntries(sidebar, channels);
-  if (entries.length === 0) {
+  const selectableIndices = entries
+    .map((entry, index) => (isSelectableEntry(entry) ? index : -1))
+    .filter((index) => index >= 0);
+
+  if (selectableIndices.length === 0) {
     sidebar.selectedIndex = 0;
     return;
   }
-  sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex + delta, entries.length - 1));
+
+  const currentIndex = selectableIndices.includes(sidebar.selectedIndex)
+    ? sidebar.selectedIndex
+    : clampSelectedIndex(sidebar, entries);
+  const currentPos = Math.max(0, selectableIndices.indexOf(currentIndex));
+  const nextPos = Math.max(0, Math.min(currentPos + delta, selectableIndices.length - 1));
+  sidebar.selectedIndex = selectableIndices[nextPos] ?? currentIndex;
 }
 
 export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry | null {
   const entry = getSelectedSidebarEntry(sidebar, channels);
-  if (!entry.id) return null;
+  if (!entry.id || entry.kind === "loading") return null;
 
   if (entry.kind === "guild") {
     if (sidebar.expandedGuildId === entry.guildId) {
@@ -275,6 +328,16 @@ function renderEntryRow(
   borderFg: string,
   activeChannelId: string | null,
 ): string {
+  if (entry.kind === "loading") {
+    const prefix = "  ".repeat(entry.depth);
+    const labelWidth = Math.max(0, innerWidth - prefix.length);
+    const title = truncate(entry.label, labelWidth);
+    const padding = Math.max(0, labelWidth - title.length);
+
+    return theme.reset + theme.sidebarBg + theme.dim + theme.muted + prefix + title + " ".repeat(padding)
+      + theme.reset + borderBg + borderFg + "│" + theme.reset;
+  }
+
   const bg = entry.selected ? theme.sidebarSelBg : theme.sidebarBg;
   const isActive = entry.kind === "channel" ? entry.id === activeChannelId : entry.active;
   const fg = entry.selected || isActive ? theme.text : theme.muted;

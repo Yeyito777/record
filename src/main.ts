@@ -10,7 +10,12 @@ import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { render } from "./render";
 import { bootstrapReadOnlyClient, loadChannelMessages, loadGuildChannels } from "./session";
-import { activateSelectedEntry, getSelectedSidebarEntry, moveSidebarSelection } from "./sidebar";
+import {
+  activateSelectedEntry,
+  getSelectedSidebarEntry,
+  moveSidebarSelection,
+  SIDEBAR_LOADING_FRAMES,
+} from "./sidebar";
 import {
   createInitialState,
   cycleFocus,
@@ -58,11 +63,45 @@ if (startupWarning) {
   setNotice(state, startupWarning, "warning");
 }
 
+const SIDEBAR_LOADING_INTERVAL_MS = 80;
+
 let running = true;
 let terminalReady = false;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
+let sidebarLoadingTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopSidebarLoadingAnimation(): void {
+  if (!sidebarLoadingTimer) return;
+  clearInterval(sidebarLoadingTimer);
+  sidebarLoadingTimer = null;
+}
+
+function syncSidebarLoadingAnimation(): void {
+  const shouldAnimate = state.sidebar.open
+    && Boolean(state.sidebar.loadingGuildId)
+    && state.sidebar.expandedGuildId === state.sidebar.loadingGuildId;
+
+  if (!shouldAnimate) {
+    state.sidebar.loadingFrameIndex = 0;
+    stopSidebarLoadingAnimation();
+    return;
+  }
+
+  if (sidebarLoadingTimer) return;
+  sidebarLoadingTimer = setInterval(() => {
+    if (!state.sidebar.open || !state.sidebar.loadingGuildId) {
+      state.sidebar.loadingFrameIndex = 0;
+      stopSidebarLoadingAnimation();
+      return;
+    }
+
+    state.sidebar.loadingFrameIndex = (state.sidebar.loadingFrameIndex + 1) % SIDEBAR_LOADING_FRAMES.length;
+    scheduleRender();
+  }, SIDEBAR_LOADING_INTERVAL_MS);
+}
 
 function scheduleRender(): void {
+  syncSidebarLoadingAnimation();
   if (renderTimer) return;
   renderTimer = setTimeout(() => {
     renderTimer = null;
@@ -328,6 +367,7 @@ function cleanup(): void {
     clearTimeout(renderTimer);
     renderTimer = null;
   }
+  stopSidebarLoadingAnimation();
   restoreTerminal();
   process.exit(0);
 }

@@ -38,6 +38,8 @@ export async function bootstrapReadOnlyClient(
 ): Promise<void> {
   const requestId = ++state.sidebar.requestId;
   state.sidebar.loading = true;
+  state.sidebar.loadingGuildId = null;
+  state.sidebar.loadingFrameIndex = 0;
   clearChannelList(state.channelList);
   clearTimeline(state.timeline);
   setNotice(state, "Loading servers…", "muted");
@@ -79,6 +81,8 @@ export async function loadGuildChannels(
 ): Promise<void> {
   const requestId = ++state.channelList.requestId;
   state.sidebar.expandedGuildId = guildId;
+  state.sidebar.loadingGuildId = guildId;
+  state.sidebar.loadingFrameIndex = 0;
   state.channelList.loading = true;
 
   const guildName = state.sidebar.guilds.find((guild) => guild.id === guildId)?.name ?? "server";
@@ -93,6 +97,10 @@ export async function loadGuildChannels(
     if (requestId !== state.channelList.requestId) return;
 
     state.channelList.loading = false;
+    if (state.sidebar.loadingGuildId === guildId) {
+      state.sidebar.loadingGuildId = null;
+      state.sidebar.loadingFrameIndex = 0;
+    }
     setChannelList(state.channelList, guildId, channels);
 
     if (!options.openFirstChannel) {
@@ -116,6 +124,10 @@ export async function loadGuildChannels(
   } catch (error) {
     if (requestId !== state.channelList.requestId) return;
     state.channelList.loading = false;
+    if (state.sidebar.loadingGuildId === guildId) {
+      state.sidebar.loadingGuildId = null;
+      state.sidebar.loadingFrameIndex = 0;
+    }
 
     if (options.openFirstChannel) {
       clearChannelList(state.channelList);
