@@ -12,7 +12,7 @@ import {
 } from "./channels";
 import { fetchChannelMessages, fetchGuildChannels, fetchGuilds } from "./discord";
 import type { AppState } from "./state";
-import { focusPrompt, setNotice } from "./state";
+import { focusPrompt, setLoadingNotice, setNotice } from "./state";
 import { clearSidebarData, setSidebarGuilds } from "./sidebar";
 import { clearTimeline, setTimelineMessages } from "./timeline";
 
@@ -39,10 +39,9 @@ export async function bootstrapReadOnlyClient(
   const requestId = ++state.sidebar.requestId;
   state.sidebar.loading = true;
   state.sidebar.loadingGuildId = null;
-  state.sidebar.loadingFrameIndex = 0;
   clearChannelList(state.channelList);
   clearTimeline(state.timeline);
-  setNotice(state, "Loading servers…", "muted");
+  setLoadingNotice(state, "Loading servers…");
   effects.scheduleRender();
 
   try {
@@ -82,13 +81,12 @@ export async function loadGuildChannels(
   const requestId = ++state.channelList.requestId;
   state.sidebar.expandedGuildId = guildId;
   state.sidebar.loadingGuildId = guildId;
-  state.sidebar.loadingFrameIndex = 0;
   state.channelList.loading = true;
 
   const guildName = state.sidebar.guilds.find((guild) => guild.id === guildId)?.name ?? "server";
   if (options.openFirstChannel) {
     clearTimeline(state.timeline);
-    setNotice(state, `Loading channels for ${guildName}…`, "muted");
+    setLoadingNotice(state, `Loading channels for ${guildName}…`);
   }
   effects.scheduleRender();
 
@@ -99,7 +97,6 @@ export async function loadGuildChannels(
     state.channelList.loading = false;
     if (state.sidebar.loadingGuildId === guildId) {
       state.sidebar.loadingGuildId = null;
-      state.sidebar.loadingFrameIndex = 0;
     }
     setChannelList(state.channelList, guildId, channels);
 
@@ -126,7 +123,6 @@ export async function loadGuildChannels(
     state.channelList.loading = false;
     if (state.sidebar.loadingGuildId === guildId) {
       state.sidebar.loadingGuildId = null;
-      state.sidebar.loadingFrameIndex = 0;
     }
 
     if (options.openFirstChannel) {

@@ -10,7 +10,7 @@ import { tryCommand } from "./commands";
 import { validateToken } from "./discord";
 import { clearReadOnlyClient, refreshReadOnlyClient, type SessionEffects } from "./session";
 import type { AppState } from "./state";
-import { isCurrentAuthRequest, nextAuthRequestId, setNotice } from "./state";
+import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
 
 export interface AppEffects extends SessionEffects {
@@ -45,7 +45,7 @@ export async function validateAndMaybeSave(
   state.auth.status = "loading";
   state.auth.user = null;
   state.auth.error = null;
-  setNotice(state, loadingText, "muted");
+  setLoadingNotice(state, loadingText);
   effects.scheduleRender();
 
   try {

@@ -5,6 +5,7 @@
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { configPath, loadConfig } from "./config";
 import { cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
+import { LOADING_FRAMES } from "./loading";
 import {
   displayCursor,
   getInputLines,
@@ -20,7 +21,6 @@ import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
   moveSidebarSelection,
-  SIDEBAR_LOADING_FRAMES,
   SIDEBAR_WIDTH,
 } from "./sidebar";
 import {
@@ -70,45 +70,50 @@ if (startupWarning) {
   setNotice(state, startupWarning, "warning");
 }
 
-const SIDEBAR_LOADING_INTERVAL_MS = 80;
+const LOADING_INTERVAL_MS = 80;
 
 let running = true;
 let terminalReady = false;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
-let sidebarLoadingTimer: ReturnType<typeof setInterval> | null = null;
+let loadingTimer: ReturnType<typeof setInterval> | null = null;
 
-function stopSidebarLoadingAnimation(): void {
-  if (!sidebarLoadingTimer) return;
-  clearInterval(sidebarLoadingTimer);
-  sidebarLoadingTimer = null;
+function stopLoadingAnimation(): void {
+  if (!loadingTimer) return;
+  clearInterval(loadingTimer);
+  loadingTimer = null;
 }
 
-function syncSidebarLoadingAnimation(): void {
-  const shouldAnimate = state.sidebar.open
-    && Boolean(state.sidebar.loadingGuildId)
-    && state.sidebar.expandedGuildId === state.sidebar.loadingGuildId;
+function hasActiveLoadingIndicator(): boolean {
+  return state.notice.loading
+    || state.auth.status === "loading"
+    || state.sidebar.loading
+    || Boolean(state.sidebar.loadingGuildId)
+    || state.channelList.loading
+    || state.timeline.loading;
+}
 
-  if (!shouldAnimate) {
-    state.sidebar.loadingFrameIndex = 0;
-    stopSidebarLoadingAnimation();
+function syncLoadingAnimation(): void {
+  if (!hasActiveLoadingIndicator()) {
+    state.loadingFrameIndex = 0;
+    stopLoadingAnimation();
     return;
   }
 
-  if (sidebarLoadingTimer) return;
-  sidebarLoadingTimer = setInterval(() => {
-    if (!state.sidebar.open || !state.sidebar.loadingGuildId) {
-      state.sidebar.loadingFrameIndex = 0;
-      stopSidebarLoadingAnimation();
+  if (loadingTimer) return;
+  loadingTimer = setInterval(() => {
+    if (!hasActiveLoadingIndicator()) {
+      state.loadingFrameIndex = 0;
+      stopLoadingAnimation();
       return;
     }
 
-    state.sidebar.loadingFrameIndex = (state.sidebar.loadingFrameIndex + 1) % SIDEBAR_LOADING_FRAMES.length;
+    state.loadingFrameIndex = (state.loadingFrameIndex + 1) % LOADING_FRAMES.length;
     scheduleRender();
-  }, SIDEBAR_LOADING_INTERVAL_MS);
+  }, LOADING_INTERVAL_MS);
 }
 
 function scheduleRender(): void {
-  syncSidebarLoadingAnimation();
+  syncLoadingAnimation();
   if (renderTimer) return;
   renderTimer = setTimeout(() => {
     renderTimer = null;
@@ -424,7 +429,7 @@ function cleanup(): void {
     clearTimeout(renderTimer);
     renderTimer = null;
   }
-  stopSidebarLoadingAnimation();
+  stopLoadingAnimation();
   restoreTerminal();
   process.exit(0);
 }

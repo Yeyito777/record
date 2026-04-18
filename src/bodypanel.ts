@@ -2,6 +2,7 @@
  * Placeholder body content when no channel timeline is available.
  */
 
+import { loadingLabel } from "./loading";
 import type { AppState } from "./state";
 import { truncate } from "./strings";
 import { theme } from "./theme";
@@ -15,7 +16,7 @@ export function renderBodyLines(state: AppState, width: number): string[] {
   }
 
   if (state.channelList.loading) {
-    return [`${theme.muted}${truncate("Loading channels…", width)}${theme.reset}`];
+    return [`${theme.muted}${truncate(loadingLabel("Loading channels…", state.loadingFrameIndex), width)}${theme.reset}`];
   }
 
   if (!state.channelList.activeChannelId) {

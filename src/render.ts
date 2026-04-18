@@ -141,7 +141,14 @@ export function render(state: AppState): void {
   const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
 
   const sidebarRows = sidebarOpen
-    ? renderSidebar(state.sidebar, state.channelList.channels, rows, state.panelFocus === "sidebar", state.channelList.activeChannelId)
+    ? renderSidebar(
+      state.sidebar,
+      state.channelList.channels,
+      rows,
+      state.panelFocus === "sidebar",
+      state.channelList.activeChannelId,
+      state.loadingFrameIndex,
+    )
     : [];
 
   const emitSidebarCol = (row: number): void => {
@@ -177,7 +184,7 @@ export function render(state: AppState): void {
   const bodyTop = 3;
   const bodyRows = Math.max(0, promptSeparatorRow - bodyTop);
 
-  const timeline = renderTimelineLines(state.timeline, mainW, bodyRows, state.notice);
+  const timeline = renderTimelineLines(state.timeline, mainW, bodyRows, state.notice, state.loadingFrameIndex);
   const fallbackBody = renderBodyLines(state, mainW);
   const timelineLines = timeline.lines.length > 0 ? timeline.lines : fallbackBody;
 

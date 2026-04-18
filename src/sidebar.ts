@@ -3,11 +3,11 @@
  */
 
 import type { DiscordChannel, DiscordGuild } from "./discord";
+import { loadingLabel } from "./loading";
 import { truncate } from "./strings";
 import { theme } from "./theme";
 
 export const SIDEBAR_WIDTH = 28;
-export const SIDEBAR_LOADING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 export type SidebarEntryKind = "guild" | "category" | "channel" | "loading";
 
@@ -30,7 +30,6 @@ export interface SidebarState {
   expandedGuildId: string | null;
   collapsedCategoryIds: string[];
   loadingGuildId: string | null;
-  loadingFrameIndex: number;
   scrollOffset: number;
   loading: boolean;
   requestId: number;
@@ -45,7 +44,6 @@ export function createSidebarState(): SidebarState {
     expandedGuildId: null,
     collapsedCategoryIds: [],
     loadingGuildId: null,
-    loadingFrameIndex: 0,
     scrollOffset: 0,
     loading: false,
     requestId: 0,
@@ -85,7 +83,6 @@ export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.expandedGuildId = null;
   sidebar.collapsedCategoryIds = [];
   sidebar.loadingGuildId = null;
-  sidebar.loadingFrameIndex = 0;
   sidebar.scrollOffset = 0;
   sidebar.loading = false;
 }
@@ -103,7 +100,11 @@ export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]):
   }
 }
 
-export function buildSidebarEntries(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry[] {
+export function buildSidebarEntries(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  loadingFrameIndex = 0,
+): SidebarEntry[] {
   const entries: SidebarEntry[] = [];
 
   for (const guild of sidebar.guilds) {
@@ -122,12 +123,11 @@ export function buildSidebarEntries(sidebar: SidebarState, channels: DiscordChan
     if (!isExpanded) continue;
 
     if (sidebar.loadingGuildId === guild.id) {
-      const frame = SIDEBAR_LOADING_FRAMES[sidebar.loadingFrameIndex % SIDEBAR_LOADING_FRAMES.length];
       entries.push({
         kind: "loading",
         id: `${guild.id}::loading`,
         guildId: guild.id,
-        label: `${frame} Loading…`,
+        label: loadingLabel("Loading…", loadingFrameIndex),
         depth: 1,
         selected: false,
         active: false,
@@ -266,6 +266,7 @@ export function renderSidebar(
   totalRows: number,
   focused = false,
   activeChannelId: string | null = null,
+  loadingFrameIndex = 0,
 ): string[] {
   if (!sidebar.open) return [];
 
@@ -283,7 +284,7 @@ export function renderSidebar(
     theme.sidebarBg + borderFg + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset,
   );
 
-  const entries = buildSidebarEntries(sidebar, channels);
+  const entries = buildSidebarEntries(sidebar, channels, loadingFrameIndex);
   const listRows = Math.max(0, totalRows - 2);
   let scrollOffset = sidebar.scrollOffset;
   if (sidebar.selectedIndex < scrollOffset) {
@@ -296,7 +297,7 @@ export function renderSidebar(
 
   if (sidebar.loading && sidebar.guilds.length === 0) {
     rows.push(
-      theme.sidebarBg + theme.muted + pad(" Loading servers…", innerWidth)
+      theme.sidebarBg + theme.muted + pad(` ${loadingLabel("Loading servers…", loadingFrameIndex)}`, innerWidth)
       + theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   } else if (entries.length === 0) {

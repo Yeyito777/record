@@ -18,6 +18,7 @@ export type ChatFocus = "prompt" | "history";
 export interface Notice {
   tone: NoticeTone;
   text: string;
+  loading: boolean;
 }
 
 export interface AuthState {
@@ -41,6 +42,7 @@ export interface AppState {
   timeline: TimelineState;
   auth: AuthState;
   notice: Notice;
+  loadingFrameIndex: number;
   configPath: string;
 }
 
@@ -64,13 +66,23 @@ export function createInitialState(initialToken: string | null, path: string): A
       lastValidatedAt: null,
       activeRequestId: 0,
     },
-    notice: { tone: "muted", text: "" },
+    notice: { tone: "muted", text: "", loading: false },
+    loadingFrameIndex: 0,
     configPath: path,
   };
 }
 
-export function setNotice(state: AppState, text: string, tone: NoticeTone = "muted"): void {
-  state.notice = { text, tone };
+export function setNotice(
+  state: AppState,
+  text: string,
+  tone: NoticeTone = "muted",
+  options: { loading?: boolean } = {},
+): void {
+  state.notice = { text, tone, loading: options.loading ?? false };
+}
+
+export function setLoadingNotice(state: AppState, text: string): void {
+  setNotice(state, text, "muted", { loading: true });
 }
 
 export function nextAuthRequestId(state: AppState): number {

@@ -3,6 +3,7 @@
  */
 
 import type { DiscordMessage } from "./discord";
+import { loadingLabel } from "./loading";
 import { truncate } from "./strings";
 import { theme, toneColor } from "./theme";
 
@@ -55,19 +56,21 @@ export function renderTimelineLines(
   timeline: TimelineState,
   width: number,
   height: number,
-  notice: { text: string; tone: "muted" | "success" | "warning" | "error" },
+  notice: { text: string; tone: "muted" | "success" | "warning" | "error"; loading?: boolean },
+  loadingFrameIndex = 0,
 ): RenderedTimeline {
   const allLines: string[] = [];
 
   if (notice.text) {
     for (const line of notice.text.split("\n")) {
-      allLines.push(`${toneColor(notice.tone)}${truncate(line, width)}${theme.reset}`);
+      const renderedLine = notice.loading ? loadingLabel(line, loadingFrameIndex) : line;
+      allLines.push(`${toneColor(notice.tone)}${truncate(renderedLine, width)}${theme.reset}`);
     }
     if (allLines.length > 0) allLines.push("");
   }
 
   if (timeline.loading) {
-    allLines.push(`${theme.muted}Loading messages…${theme.reset}`);
+    allLines.push(`${theme.muted}${truncate(loadingLabel("Loading messages…", loadingFrameIndex), width)}${theme.reset}`);
   } else if (!timeline.channelId && timeline.messages.length === 0) {
     // No active channel yet.
   } else if (timeline.messages.length === 0) {

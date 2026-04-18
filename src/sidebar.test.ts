@@ -33,9 +33,8 @@ describe("sidebar state", () => {
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
     sidebar.expandedGuildId = "guild-1";
     sidebar.loadingGuildId = "guild-1";
-    sidebar.loadingFrameIndex = 0;
 
-    const entries = buildSidebarEntries(sidebar, []);
+    const entries = buildSidebarEntries(sidebar, [], 0);
 
     expect(entries.map((entry) => entry.kind)).toEqual(["guild", "loading"]);
     expect(entries[1]?.label).toContain("Loading");
