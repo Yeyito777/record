@@ -27,4 +27,20 @@ describe("sidebar state", () => {
     expect(entry?.kind).toBe("category");
     expect(sidebar.collapsedCategoryIds).toEqual(["cat"]);
   });
+
+  test("expanding another guild does not change the active chat guild", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: "guild-1", name: "Guild One", icon: null },
+      { id: "guild-2", name: "Guild Two", icon: null },
+    ]);
+    sidebar.activeGuildId = "guild-1";
+
+    moveSidebarSelection(sidebar, [], 1);
+    const entry = activateSelectedEntry(sidebar, []);
+
+    expect(entry?.kind).toBe("guild");
+    expect(sidebar.expandedGuildId).toBe("guild-2");
+    expect(sidebar.activeGuildId).toBe("guild-1");
+  });
 });

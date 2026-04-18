@@ -19,6 +19,14 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "ctrl-n" })).toBe("focus_history");
   });
 
+  test("Shift+J jumps to next sidebar item", () => {
+    expect(resolveAction({ type: "char", char: "J" })).toBe("sidebar_next");
+  });
+
+  test("Shift+K jumps to previous sidebar item", () => {
+    expect(resolveAction({ type: "char", char: "K" })).toBe("sidebar_prev");
+  });
+
   test("navigation j moves down", () => {
     expect(resolveAction({ type: "char", char: "j" }, "navigation")).toBe("nav_down");
   });

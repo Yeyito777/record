@@ -15,7 +15,7 @@ function focusLabel(state: AppState): string {
 export function renderTopbar(state: AppState, width: number): string {
   const title = "Record";
   const guild = state.sidebar.guilds.find((entry) => entry.id === state.sidebar.activeGuildId) ?? null;
-  const channel = state.channelList.channels.find((entry) => entry.id === state.channelList.activeChannelId) ?? null;
+  const channel = state.channelList.activeChannel;
 
   const descriptor = guild && channel
     ? `${guild.name} / ${formatChannelName(channel)}`

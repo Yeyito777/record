@@ -21,6 +21,7 @@ Controls:
 - `Ctrl+M` or `Ctrl+S`: toggle the sidebar
 - `Ctrl+J` / `Ctrl+K`: cycle between sidebar and chat container
 - `Ctrl+N`: toggle chat focus between prompt and history
+- `Shift+J` / `Shift+K`: jump the sidebar selection up/down from non-typing contexts
 - `j` / `k` or arrow keys: move in the focused pane
 - `Enter` in the sidebar: expand/collapse servers and categories, or open channels
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt

@@ -78,6 +78,10 @@ function bootstrapSession(token: string): void {
   void bootstrapReadOnlyClient(state, token, { scheduleRender });
 }
 
+function isPromptTyping(): boolean {
+  return state.panelFocus === "chat" && state.chatFocus === "prompt" && state.editor.mode === "insert";
+}
+
 function syncPromptAutocomplete(): void {
   if (state.panelFocus === "chat" && state.chatFocus === "prompt") {
     updateAutocomplete(state);
@@ -151,6 +155,16 @@ function handleGlobalAction(key: KeyEvent): boolean {
     case "focus_history":
       toggleHistoryFocus();
       return true;
+    case "sidebar_next":
+    case "sidebar_prev": {
+      if (isPromptTyping()) return false;
+      if (!state.sidebar.open) state.sidebar.open = true;
+      focusSidebar(state);
+      moveSidebarSelection(state.sidebar, state.channelList.channels, action === "sidebar_next" ? 1 : -1);
+      syncPromptAutocomplete();
+      scheduleRender();
+      return true;
+    }
     default:
       return false;
   }
@@ -181,7 +195,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 
       if (entry.kind === "guild") {
         if (state.sidebar.expandedGuildId === entry.guildId) {
-          void loadGuildChannels(state, token, entry.guildId, { scheduleRender });
+          void loadGuildChannels(state, token, entry.guildId, { scheduleRender }, { openFirstChannel: false });
         } else {
           scheduleRender();
         }

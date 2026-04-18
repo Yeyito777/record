@@ -2,7 +2,14 @@
  * Read-only Discord session bootstrap and data loading.
  */
 
-import { clearChannelList, getActiveChannel, setActiveChannel, setChannelList } from "./channels";
+import {
+  clearChannelList,
+  findBrowsableChannel,
+  findFirstBrowsableChannel,
+  setActiveChannel,
+  setActiveChannelEntry,
+  setChannelList,
+} from "./channels";
 import { fetchChannelMessages, fetchGuildChannels, fetchGuilds } from "./discord";
 import type { AppState } from "./state";
 import { focusPrompt, setNotice } from "./state";
@@ -11,6 +18,10 @@ import { clearTimeline, setTimelineMessages } from "./timeline";
 
 export interface SessionEffects {
   scheduleRender: () => void;
+}
+
+interface LoadGuildChannelsOptions {
+  openFirstChannel?: boolean;
 }
 
 export function clearReadOnlyClient(state: AppState): void {
@@ -49,7 +60,7 @@ export async function bootstrapReadOnlyClient(
     }
 
     effects.scheduleRender();
-    await loadGuildChannels(state, token, guildId, effects);
+    await loadGuildChannels(state, token, guildId, effects, { openFirstChannel: true });
   } catch (error) {
     if (requestId !== state.sidebar.requestId) return;
     state.sidebar.loading = false;
@@ -64,15 +75,17 @@ export async function loadGuildChannels(
   token: string,
   guildId: string,
   effects: SessionEffects,
+  options: LoadGuildChannelsOptions = {},
 ): Promise<void> {
   const requestId = ++state.channelList.requestId;
-  state.sidebar.activeGuildId = guildId;
   state.sidebar.expandedGuildId = guildId;
   state.channelList.loading = true;
-  clearTimeline(state.timeline);
 
   const guildName = state.sidebar.guilds.find((guild) => guild.id === guildId)?.name ?? "server";
-  setNotice(state, `Loading channels for ${guildName}…`, "muted");
+  if (options.openFirstChannel) {
+    clearTimeline(state.timeline);
+    setNotice(state, `Loading channels for ${guildName}…`, "muted");
+  }
   effects.scheduleRender();
 
   try {
@@ -82,7 +95,13 @@ export async function loadGuildChannels(
     state.channelList.loading = false;
     setChannelList(state.channelList, guildId, channels);
 
-    const channel = getActiveChannel(state.channelList);
+    if (!options.openFirstChannel) {
+      effects.scheduleRender();
+      return;
+    }
+
+    const channel = findBrowsableChannel(channels, state.channelList.activeChannelId)
+      ?? findFirstBrowsableChannel(channels);
     if (!channel) {
       clearTimeline(state.timeline);
       setNotice(state, `No readable channels in ${guildName}.`, "warning");
@@ -90,14 +109,20 @@ export async function loadGuildChannels(
       return;
     }
 
+    setActiveChannelEntry(state.channelList, channel);
+    state.sidebar.activeGuildId = channel.guildId;
     effects.scheduleRender();
     await loadChannelMessages(state, token, channel.id, effects);
   } catch (error) {
     if (requestId !== state.channelList.requestId) return;
     state.channelList.loading = false;
-    clearChannelList(state.channelList);
-    clearTimeline(state.timeline);
-    setNotice(state, error instanceof Error ? error.message : String(error), "error");
+
+    if (options.openFirstChannel) {
+      clearChannelList(state.channelList);
+      clearTimeline(state.timeline);
+      setNotice(state, error instanceof Error ? error.message : String(error), "error");
+    }
+
     effects.scheduleRender();
   }
 }
@@ -108,8 +133,16 @@ export async function loadChannelMessages(
   channelId: string,
   effects: SessionEffects,
 ): Promise<void> {
+  const channel = findBrowsableChannel(state.channelList.channels, channelId);
+  if (!channel) {
+    setNotice(state, "That channel is not loaded yet.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
   const requestId = ++state.timeline.requestId;
   setActiveChannel(state.channelList, channelId);
+  state.sidebar.activeGuildId = channel.guildId;
   state.timeline.loading = true;
   setNotice(state, "", "muted");
   effects.scheduleRender();

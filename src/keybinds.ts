@@ -12,6 +12,8 @@ export type Action =
   | "focus_cycle"
   | "focus_prompt"
   | "focus_history"
+  | "sidebar_next"
+  | "sidebar_prev"
   | "nav_up"
   | "nav_down"
   | "nav_select";
@@ -23,6 +25,11 @@ const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-m": "sidebar_toggle",
   "ctrl-n": "focus_history",
   "ctrl-s": "sidebar_toggle",
+};
+
+const GLOBAL_CHAR_BINDS: Record<string, Action> = {
+  "char:J": "sidebar_next",
+  "char:K": "sidebar_prev",
 };
 
 const NAV_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
@@ -41,15 +48,18 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
 export type KeyContext = "prompt" | "navigation";
 
 export function resolveAction(key: KeyEvent, context: KeyContext = "prompt"): Action | null {
+  if (key.type === "char" && key.char) {
+    if (context === "navigation") {
+      const navCharAction = NAV_CHAR_BINDS[`char:${key.char}`];
+      if (navCharAction) return navCharAction;
+    }
+
+    const globalCharAction = GLOBAL_CHAR_BINDS[`char:${key.char}`];
+    if (globalCharAction) return globalCharAction;
+  }
+
   const globalAction = GLOBAL_BINDS[key.type];
   if (globalAction) return globalAction;
 
-  if (context !== "navigation") return null;
-
-  if (key.type === "char" && key.char) {
-    const charAction = NAV_CHAR_BINDS[`char:${key.char}`];
-    if (charAction) return charAction;
-  }
-
-  return NAV_BINDS[key.type] ?? null;
+  return context === "navigation" ? NAV_BINDS[key.type] ?? null : null;
 }

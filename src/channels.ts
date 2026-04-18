@@ -1,5 +1,5 @@
 /**
- * Active guild channel data.
+ * Guild channel data and active chat tracking.
  */
 
 import type { DiscordChannel } from "./discord";
@@ -8,6 +8,7 @@ export interface ChannelListState {
   guildId: string | null;
   channels: DiscordChannel[];
   activeChannelId: string | null;
+  activeChannel: DiscordChannel | null;
   loading: boolean;
   requestId: number;
 }
@@ -17,6 +18,7 @@ export function createChannelListState(): ChannelListState {
     guildId: null,
     channels: [],
     activeChannelId: null,
+    activeChannel: null,
     loading: false,
     requestId: 0,
   };
@@ -30,6 +32,7 @@ export function clearChannelList(channelList: ChannelListState): void {
   channelList.guildId = null;
   channelList.channels = [];
   channelList.activeChannelId = null;
+  channelList.activeChannel = null;
   channelList.loading = false;
 }
 
@@ -37,26 +40,35 @@ export function setChannelList(channelList: ChannelListState, guildId: string, c
   channelList.guildId = guildId;
   channelList.channels = channels;
 
-  const activeStillPresent = channelList.activeChannelId
-    && channels.some((channel) => channel.id === channelList.activeChannelId && isBrowsableChannel(channel));
-
-  if (!activeStillPresent) {
-    channelList.activeChannelId = channels.find(isBrowsableChannel)?.id ?? null;
+  if (channelList.activeChannelId) {
+    const activeChannel = channels.find((channel) => channel.id === channelList.activeChannelId && isBrowsableChannel(channel)) ?? null;
+    if (activeChannel) {
+      channelList.activeChannel = activeChannel;
+    }
   }
+}
+
+export function findBrowsableChannel(channels: DiscordChannel[], channelId: string | null): DiscordChannel | null {
+  if (!channelId) return null;
+  return channels.find((channel) => channel.id === channelId && isBrowsableChannel(channel)) ?? null;
+}
+
+export function findFirstBrowsableChannel(channels: DiscordChannel[]): DiscordChannel | null {
+  return channels.find(isBrowsableChannel) ?? null;
 }
 
 export function getActiveChannel(channelList: ChannelListState): DiscordChannel | null {
-  return channelList.channels.find((channel) => channel.id === channelList.activeChannelId) ?? null;
+  return channelList.activeChannel;
 }
 
 export function setActiveChannel(channelList: ChannelListState, channelId: string | null): void {
-  if (!channelId) {
-    channelList.activeChannelId = null;
-    return;
-  }
+  const channel = findBrowsableChannel(channelList.channels, channelId);
+  if (!channel) return;
+  channelList.activeChannelId = channel.id;
+  channelList.activeChannel = channel;
+}
 
-  const exists = channelList.channels.some((channel) => channel.id === channelId && isBrowsableChannel(channel));
-  if (exists) {
-    channelList.activeChannelId = channelId;
-  }
+export function setActiveChannelEntry(channelList: ChannelListState, channel: DiscordChannel | null): void {
+  channelList.activeChannelId = channel?.id ?? null;
+  channelList.activeChannel = channel;
 }

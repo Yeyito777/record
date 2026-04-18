@@ -192,7 +192,6 @@ export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordCh
     } else {
       sidebar.expandedGuildId = entry.guildId;
     }
-    sidebar.activeGuildId = entry.guildId;
     return entry;
   }
 
