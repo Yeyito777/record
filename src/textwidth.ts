@@ -208,6 +208,21 @@ export function visibleLength(text: string): number {
   return termWidth(text.replace(ANSI_ESCAPE_RE, ""));
 }
 
+export function hardBreak(word: string, width: number, result: string[]): string {
+  let remaining = word;
+  for (;;) {
+    const [taken, rest] = sliceByWidth(remaining, width);
+    if (!rest) return taken;
+    if (taken === "") {
+      result.push(remaining.slice(0, 1));
+      remaining = remaining.slice(1);
+    } else {
+      result.push(taken);
+      remaining = rest;
+    }
+  }
+}
+
 export function truncateToWidth(text: string, width: number): string {
   if (width <= 0) return "";
   if (termWidth(text) <= width) return text;

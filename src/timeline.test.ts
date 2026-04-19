@@ -23,6 +23,10 @@ function message(id: string, content: string): DiscordMessage {
   };
 }
 
+function stripAnsi(line: string): string {
+  return line.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 describe("timeline rendering", () => {
   test("loading notices use the shared spinner label", () => {
     const timeline = createTimelineState();
@@ -95,9 +99,77 @@ describe("timeline rendering", () => {
       0,
     );
 
-    const plainLines = rendered.lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    const plainLines = rendered.lines.map(stripAnsi);
     for (const line of plainLines.slice(1)) {
       expect(termWidth(line)).toBeLessThanOrEqual(12);
     }
+  });
+
+  test("renders inline markdown formatting in chat history", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "before **bold** *italic* `code` after")]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[1] ?? "")).toBe("before bold italic code after");
+    expect(rendered.lines[1]).not.toContain("**bold**");
+    expect(rendered.lines[1]).not.toContain("*italic*");
+    expect(rendered.lines[1]).not.toContain("`code`");
+  });
+
+  test("renders fenced code blocks with gutter and language label", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "```ts\nconst x = 1\n```")]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines).toContain("▎ ts");
+    expect(plainLines).toContain("▎ const x = 1");
+  });
+
+  test("renders markdown tables with box drawing", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "| Name | Value |\n| --- | --- |\n| foo | bar |")]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      40,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines.some((line) => line.startsWith("┌"))).toBe(true);
+    expect(plainLines.some((line) => line.includes("│ Name") && line.includes("│ Value "))).toBe(true);
+    expect(plainLines.some((line) => line.startsWith("└"))).toBe(true);
+  });
+
+  test("renders markdown horizontal rules", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "---")]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      20,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[1] ?? "")).toBe("────────────────────");
   });
 });

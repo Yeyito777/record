@@ -4,7 +4,8 @@
 
 import type { DiscordMessage } from "./discord";
 import { loadingLabel } from "./loading";
-import { sliceByWidth, termWidth, truncate } from "./textwidth";
+import { markdownWordWrap } from "./markdown";
+import { truncate } from "./textwidth";
 import { theme, toneColor } from "./theme";
 
 export interface TimelineState {
@@ -37,8 +38,7 @@ export interface RenderedTimeline {
 interface WrappedLine {
   text: string;
   wrapContinuation: boolean;
-  logicalLineIndex: number;
-  subIndex: number;
+  visualIndex: number;
 }
 
 interface RenderedMessage {
@@ -229,8 +229,7 @@ function renderMessage(message: DiscordMessage, width: number): RenderedMessage 
   const header = `${theme.bold}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${theme.reset}`;
 
   const content = summarizeMessage(message);
-  const wrappedContent = wrapPlainText(content, width);
-  if (wrappedContent.length === 0) {
+  if (content === "") {
     return {
       lines: [header, `${theme.dim}(empty message)${theme.reset}`],
       lineAnchors: [`msg:${message.id}:header`, `msg:${message.id}:empty`],
@@ -238,11 +237,12 @@ function renderMessage(message: DiscordMessage, width: number): RenderedMessage 
     };
   }
 
+  const wrappedContent = wrapMarkdownText(content, width);
   return {
     lines: [header, ...wrappedContent.map((line) => `${theme.text}${line.text}${theme.reset}`)],
     lineAnchors: [
       `msg:${message.id}:header`,
-      ...wrappedContent.map((line) => `msg:${message.id}:content:${line.logicalLineIndex}:${line.subIndex}`),
+      ...wrappedContent.map((line) => `msg:${message.id}:content:${line.visualIndex}`),
     ],
     wrapContinuation: [false, ...wrappedContent.map((line) => line.wrapContinuation)],
   };
@@ -250,8 +250,8 @@ function renderMessage(message: DiscordMessage, width: number): RenderedMessage 
 
 function summarizeMessage(message: DiscordMessage): string {
   const parts: string[] = [];
-  const trimmed = message.content.trim();
-  if (trimmed) parts.push(trimmed);
+  const content = message.content.replace(/\r\n?/g, "\n");
+  if (/\S/.test(content)) parts.push(content);
   if (message.attachments.length > 0) {
     const files = message.attachments.map((attachment) => attachment.filename).join(", ");
     parts.push(`[attachments] ${files}`);
@@ -262,49 +262,13 @@ function summarizeMessage(message: DiscordMessage): string {
   return parts.join("\n");
 }
 
-function wrapPlainText(text: string, width: number): WrappedLine[] {
+function wrapMarkdownText(text: string, width: number): WrappedLine[] {
   if (width <= 0) return [];
-  const lines: WrappedLine[] = [];
 
-  for (const [logicalLineIndex, rawLine] of text.split(/\r?\n/).entries()) {
-    if (!rawLine) {
-      lines.push({ text: "", wrapContinuation: false, logicalLineIndex, subIndex: 0 });
-      continue;
-    }
-
-    let current = rawLine;
-    let firstSegment = true;
-    let subIndex = 0;
-    while (termWidth(current) > width) {
-      const [taken, rest] = sliceByWidth(current, width);
-      if (!taken) {
-        lines.push({
-          text: Array.from(current)[0] ?? "",
-          wrapContinuation: !firstSegment,
-          logicalLineIndex,
-          subIndex,
-        });
-        current = Array.from(current).slice(1).join("");
-        firstSegment = false;
-        subIndex += 1;
-        continue;
-      }
-
-      let line = taken;
-      let remainder = rest;
-      const cut = taken.lastIndexOf(" ");
-      if (cut > 0) {
-        line = taken.slice(0, cut);
-        remainder = current.slice(cut).trimStart();
-      }
-
-      lines.push({ text: line, wrapContinuation: !firstSegment, logicalLineIndex, subIndex });
-      current = remainder;
-      firstSegment = false;
-      subIndex += 1;
-    }
-    lines.push({ text: current, wrapContinuation: !firstSegment, logicalLineIndex, subIndex });
-  }
-
-  return lines;
+  const wrapped = markdownWordWrap(text, width, theme.text);
+  return wrapped.lines.map((line, visualIndex) => ({
+    text: line,
+    wrapContinuation: wrapped.cont[visualIndex] ?? false,
+    visualIndex,
+  }));
 }
