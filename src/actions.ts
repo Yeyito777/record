@@ -8,6 +8,7 @@
 import { clearConfig, saveConfig } from "./config";
 import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
+import { clearPrompt } from "./promptstate";
 import { clearReadOnlyClient, refreshReadOnlyClient, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
@@ -147,6 +148,7 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   if (!text) return;
   if (handleCommandSubmit(state, text, effects)) return;
 
-  setNotice(state, "Message sending is not implemented yet.", "warning");
+  clearPrompt(state);
+  setNotice(state, "", "muted");
   effects.scheduleRender();
 }

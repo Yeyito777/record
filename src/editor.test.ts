@@ -49,6 +49,12 @@ describe("editor", () => {
     expect(editor.buffer).toBe(" world");
   });
 
+  test("enter submits from insert mode", () => {
+    const editor = createEditorState("/theme whale", "insert");
+
+    expect(handleEditorKey(editor, { type: "enter" })).toBe("submit");
+  });
+
   test("ctrl+l inserts a newline in insert mode", () => {
     const editor = createEditorState("hello", "insert");
 

@@ -109,7 +109,12 @@ export function toneColor(tone: NoticeTone): string {
   }
 }
 
-export function setTheme(name: ThemeName): void {
+export function setTheme(name: ThemeName): string | null {
   Object.assign(theme, themes[name]);
-  persistThemeName(name);
+  try {
+    persistThemeName(name);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }

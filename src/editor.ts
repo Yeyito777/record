@@ -415,6 +415,8 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
     case "down":
       editor.cursor = lineDown(editor.buffer, editor.cursor);
       return "handled";
+    case "enter":
+      return "submit";
     case "ctrl-l":
     case "shift-enter":
       insertNewline(editor);

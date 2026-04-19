@@ -11,7 +11,7 @@ const effects: AppEffects = {
 };
 
 describe("submitCurrentBuffer", () => {
-  test("does not treat bare prompt text as a login token", () => {
+  test("non-command prompt text is cleared without warning", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editor.buffer = "hello world";
     state.editor.cursor = state.editor.buffer.length;
@@ -19,8 +19,8 @@ describe("submitCurrentBuffer", () => {
     submitCurrentBuffer(state, effects);
 
     expect(state.auth.status).toBe("idle");
-    expect(state.notice.text).toBe("Message sending is not implemented yet.");
-    expect(state.editor.buffer).toBe("hello world");
+    expect(state.notice.text).toBe("");
+    expect(state.editor.buffer).toBe("");
   });
 
   test("empty prompt does nothing", () => {

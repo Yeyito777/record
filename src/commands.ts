@@ -101,9 +101,13 @@ const commands: SlashCommand[] = [
       if (!THEME_NAMES.includes(name)) {
         return usage(state, `Unknown theme: ${parts[1]}. Available: ${THEME_NAMES.join(", ")}`);
       }
-      setTheme(name);
+      const persistError = setTheme(name);
       clearPrompt(state);
-      setNotice(state, `Theme set to ${name}.`, "success");
+      if (persistError) {
+        setNotice(state, `Theme set to ${name}, but saving failed: ${persistError}`, "warning");
+      } else {
+        setNotice(state, `Theme set to ${name}.`, "success");
+      }
       return { type: "theme_changed" };
     },
   },
