@@ -10,9 +10,16 @@ import {
   setActiveChannelEntry,
   setChannelList,
 } from "./channels";
-import { fetchChannelMessages, fetchGuildChannels, fetchGuilds } from "./discord";
+import {
+  DIRECT_MESSAGES_GUILD_ID,
+  DIRECT_MESSAGES_GUILD_NAME,
+  fetchChannelMessages,
+  fetchDirectMessages,
+  fetchGuildChannels,
+  fetchGuilds,
+} from "./discord";
 import type { AppState } from "./state";
-import { focusPrompt, setLoadingNotice, setNotice } from "./state";
+import { focusPrompt, setNotice } from "./state";
 import { clearSidebarData, setSidebarGuilds } from "./sidebar";
 import { clearTimeline, setTimelineMessages } from "./timeline";
 
@@ -41,27 +48,37 @@ export async function bootstrapReadOnlyClient(
   state.sidebar.loadingGuildId = null;
   clearChannelList(state.channelList);
   clearTimeline(state.timeline);
-  setLoadingNotice(state, "Loading servers…");
+  setNotice(state, "", "muted");
   effects.scheduleRender();
 
   try {
-    const guilds = await fetchGuilds(token);
+    const [directMessages, guilds] = await Promise.all([
+      fetchDirectMessages(token),
+      fetchGuilds(token),
+    ]);
     if (requestId !== state.sidebar.requestId) return;
 
     state.sidebar.loading = false;
-    setSidebarGuilds(state.sidebar, guilds);
+    setSidebarGuilds(
+      state.sidebar,
+      directMessages.length > 0
+        ? [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, ...guilds]
+        : guilds,
+    );
 
-    const guildId = state.sidebar.activeGuildId;
-    if (!guildId) {
+    if (state.sidebar.guilds.length === 0) {
       clearChannelList(state.channelList);
       clearTimeline(state.timeline);
-      setNotice(state, "No servers available for this account.", "warning");
+      setNotice(state, "No servers or direct messages available for this account.", "warning");
       effects.scheduleRender();
       return;
     }
 
+    clearChannelList(state.channelList);
+    clearTimeline(state.timeline);
+    setNotice(state, "", "muted");
     effects.scheduleRender();
-    await loadGuildChannels(state, token, guildId, effects, { openFirstChannel: true });
+    return;
   } catch (error) {
     if (requestId !== state.sidebar.requestId) return;
     state.sidebar.loading = false;
@@ -83,15 +100,20 @@ export async function loadGuildChannels(
   state.sidebar.loadingGuildId = guildId;
   state.channelList.loading = true;
 
-  const guildName = state.sidebar.guilds.find((guild) => guild.id === guildId)?.name ?? "server";
+  const isDirectMessages = guildId === DIRECT_MESSAGES_GUILD_ID;
+  const guildName = isDirectMessages
+    ? DIRECT_MESSAGES_GUILD_NAME
+    : state.sidebar.guilds.find((guild) => guild.id === guildId)?.name ?? "server";
   if (options.openFirstChannel) {
     clearTimeline(state.timeline);
-    setLoadingNotice(state, `Loading channels for ${guildName}…`);
+    setNotice(state, "", "muted");
   }
   effects.scheduleRender();
 
   try {
-    const channels = await fetchGuildChannels(token, guildId);
+    const channels = isDirectMessages
+      ? await fetchDirectMessages(token)
+      : await fetchGuildChannels(token, guildId);
     if (requestId !== state.channelList.requestId) return;
 
     state.channelList.loading = false;
@@ -109,7 +131,7 @@ export async function loadGuildChannels(
       ?? findFirstBrowsableChannel(channels);
     if (!channel) {
       clearTimeline(state.timeline);
-      setNotice(state, `No readable channels in ${guildName}.`, "warning");
+      setNotice(state, isDirectMessages ? "No direct messages available." : `No readable channels in ${guildName}.`, "warning");
       effects.scheduleRender();
       return;
     }

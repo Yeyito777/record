@@ -31,7 +31,7 @@ describe("statusline", () => {
     expect(status.lines[0]).toContain(theme.success);
   });
 
-  test("colors idle/dnd/offline like Discord", () => {
+  test("colors idle/dnd/offline like Discord and spells out dnd", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.status = "authenticated";
     state.auth.user = {
@@ -50,27 +50,32 @@ describe("statusline", () => {
 
     state.auth.presenceStatus = "dnd";
     expect(renderStatusLine(state, 80).lines[0]).toContain(theme.error);
+    expect(renderStatusLine(state, 80).lines[0]).toContain("Do Not Disturb");
 
     state.auth.presenceStatus = "offline";
     expect(renderStatusLine(state, 80).lines[0]).toContain(theme.dim);
   });
 
-  test("renders nothing while logged out", () => {
+  test("shows N/A in red while logged out", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
 
     const status = renderStatusLine(state, 80);
 
-    expect(status.height).toBe(0);
-    expect(status.lines).toEqual([]);
+    expect(status.height).toBe(1);
+    expect(status.lines[0]).toContain("Logged In As:");
+    expect(status.lines[0]).toContain("Status:");
+    expect(status.lines[0]).toContain("N/A");
+    expect(status.lines[0]).toContain(theme.error);
   });
 
-  test("renders nothing while auth is loading", () => {
+  test("shows N/A in red while auth is loading", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.status = "loading";
 
     const status = renderStatusLine(state, 80);
 
-    expect(status.height).toBe(0);
-    expect(status.lines).toEqual([]);
+    expect(status.height).toBe(1);
+    expect(status.lines[0]).toContain("N/A");
+    expect(status.lines[0]).toContain(theme.error);
   });
 });

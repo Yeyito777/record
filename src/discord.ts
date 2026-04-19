@@ -7,6 +7,10 @@ const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, l
 const REQUEST_TIMEOUT_MS = 15_000;
 const GUILD_PAGE_LIMIT = 200;
 const SIDEBAR_GUILD_CHANNEL_TYPES = new Set([0, 4, 5, 11, 12]);
+const DIRECT_MESSAGE_CHANNEL_TYPES = new Set([1, 3]);
+
+export const DIRECT_MESSAGES_GUILD_ID = "@me::dms";
+export const DIRECT_MESSAGES_GUILD_NAME = "Direct Messages";
 
 export type DiscordPresenceStatus = "online" | "idle" | "dnd" | "offline";
 
@@ -36,15 +40,22 @@ interface DiscordUserSettingsResponse {
   status?: string | null;
 }
 
+interface DiscordDMRecipientResponse {
+  id: string;
+  username: string;
+  global_name?: string | null;
+}
+
 interface DiscordChannelResponse {
   id: string;
   guild_id?: string;
   parent_id: string | null;
-  name: string;
+  name?: string | null;
   topic?: string | null;
   position?: number;
   type: number;
   nsfw?: boolean;
+  recipients?: DiscordDMRecipientResponse[];
 }
 
 interface DiscordMessageAuthorResponse {
@@ -139,9 +150,13 @@ export function formatDiscordDisplayName(user: DiscordIdentity): string {
   return `@${user.username}`;
 }
 
+export function isDirectMessageChannel(channel: DiscordChannel | null): boolean {
+  return channel ? DIRECT_MESSAGE_CHANNEL_TYPES.has(channel.type) : false;
+}
+
 export function formatChannelName(channel: DiscordChannel | null): string {
   if (!channel) return "#unknown";
-  return `#${channel.name}`;
+  return isDirectMessageChannel(channel) ? channel.name : `#${channel.name}`;
 }
 
 export async function validateToken(token: string): Promise<DiscordIdentity> {
@@ -171,6 +186,36 @@ export async function fetchCurrentUserPresenceStatus(token: string): Promise<Dis
     default:
       return null;
   }
+}
+
+function displayNameFromRecipient(recipient: DiscordDMRecipientResponse): string {
+  return recipient.global_name ?? recipient.username;
+}
+
+function directMessageName(channel: DiscordChannelResponse): string {
+  const recipients = channel.recipients ?? [];
+  if (channel.name) return channel.name;
+  if (channel.type === 3 && recipients.length > 0) {
+    return recipients.map(displayNameFromRecipient).join(", ");
+  }
+  if (recipients[0]) return displayNameFromRecipient(recipients[0]);
+  return "Unknown DM";
+}
+
+export async function fetchDirectMessages(token: string): Promise<DiscordChannel[]> {
+  const channels = await apiGetJson<DiscordChannelResponse[]>(token, "/users/@me/channels");
+  return channels
+    .filter((channel) => DIRECT_MESSAGE_CHANNEL_TYPES.has(channel.type))
+    .map((channel, index) => ({
+      id: channel.id,
+      guildId: DIRECT_MESSAGES_GUILD_ID,
+      parentId: null,
+      name: directMessageName(channel),
+      topic: null,
+      position: index,
+      type: channel.type,
+      nsfw: false,
+    }));
 }
 
 export async function fetchGuilds(token: string): Promise<DiscordGuild[]> {
@@ -204,7 +249,7 @@ export async function fetchGuildChannels(token: string, guildId: string): Promis
       id: channel.id,
       guildId: channel.guild_id ?? guildId,
       parentId: channel.parent_id ?? null,
-      name: channel.name,
+      name: channel.name ?? "",
       topic: channel.topic ?? null,
       position: channel.position ?? 0,
       type: channel.type,

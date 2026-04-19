@@ -2,7 +2,7 @@
  * Servers sidebar with collapsible guild/category/channel tree.
  */
 
-import type { DiscordChannel, DiscordGuild } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild } from "./discord";
 import { loadingLabel } from "./loading";
 import { padRight, termWidth } from "./textwidth";
 import { theme } from "./theme";
@@ -17,6 +17,7 @@ export interface SidebarEntry {
   guildId: string;
   label: string;
   depth: number;
+  channelType?: number;
   selected: boolean;
   active: boolean;
   expanded: boolean;
@@ -87,11 +88,11 @@ export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]):
   sidebar.scrollOffset = 0;
   sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, guilds.length - 1)));
 
-  if (!sidebar.activeGuildId || !guilds.some((guild) => guild.id === sidebar.activeGuildId)) {
-    sidebar.activeGuildId = guilds[0]?.id ?? null;
+  if (sidebar.activeGuildId && !guilds.some((guild) => guild.id === sidebar.activeGuildId)) {
+    sidebar.activeGuildId = null;
   }
-  if (!sidebar.expandedGuildId || !guilds.some((guild) => guild.id === sidebar.expandedGuildId)) {
-    sidebar.expandedGuildId = sidebar.activeGuildId;
+  if (sidebar.expandedGuildId && !guilds.some((guild) => guild.id === sidebar.expandedGuildId)) {
+    sidebar.expandedGuildId = null;
   }
 }
 

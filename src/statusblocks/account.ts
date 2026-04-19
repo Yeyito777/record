@@ -9,13 +9,12 @@ import { termWidth, truncate } from "../textwidth";
 
 const MAX_VALUE_WIDTH = 40;
 
-export function accountBlock(state: AppState): StatusBlock | null {
-  if (state.auth.status !== "authenticated" || !state.auth.user) {
-    return null;
-  }
-
+export function accountBlock(state: AppState): StatusBlock {
   const label = "  Logged In As: ";
-  const nickname = state.auth.user.globalName || state.auth.user.username;
+  const nickname = state.auth.status === "authenticated" && state.auth.user
+    ? (state.auth.user.globalName || state.auth.user.username)
+    : "N/A";
+  const color = state.auth.status === "authenticated" && state.auth.user ? theme.accent : theme.error;
   const displayValue = truncate(nickname, MAX_VALUE_WIDTH);
   const width = termWidth(label) + termWidth(displayValue);
 
@@ -25,7 +24,7 @@ export function accountBlock(state: AppState): StatusBlock | null {
     width,
     height: 1,
     rows: [
-      `${theme.muted}${label}${theme.accent}${displayValue}${theme.reset}`,
+      `${theme.muted}${label}${color}${displayValue}${theme.reset}`,
     ],
   };
 }

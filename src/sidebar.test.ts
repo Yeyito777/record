@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME } from "./discord";
 import {
   activateSelectedEntry,
   buildSidebarEntries,
@@ -70,6 +71,17 @@ describe("sidebar state", () => {
     expect(entry?.kind).toBe("guild");
     expect(sidebar.expandedGuildId).toBe("guild-2");
     expect(sidebar.activeGuildId).toBe("guild-1");
+  });
+
+  test("starts with no active or expanded guild by default", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "Guild One", icon: null },
+    ]);
+
+    expect(sidebar.activeGuildId).toBeNull();
+    expect(sidebar.expandedGuildId).toBeNull();
   });
 
   test("jumps between guilds with brace motions", () => {

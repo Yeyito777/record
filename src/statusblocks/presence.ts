@@ -7,7 +7,7 @@ import type { StatusBlock } from "../statusline";
 import { theme } from "../theme";
 import { termWidth } from "../textwidth";
 
-function presenceColor(status: PresenceStatus): string {
+function presenceColor(status: PresenceStatus | null): string {
   switch (status) {
     case "online":
       return theme.success;
@@ -16,18 +16,29 @@ function presenceColor(status: PresenceStatus): string {
     case "dnd":
       return theme.error;
     case "offline":
-    default:
       return `${theme.dim}${theme.muted}`;
+    default:
+      return theme.error;
   }
 }
 
-export function presenceBlock(state: AppState): StatusBlock | null {
-  if (state.auth.status !== "authenticated" || !state.auth.user || !state.auth.presenceStatus) {
-    return null;
+function presenceLabel(status: PresenceStatus | null): string {
+  switch (status) {
+    case "dnd":
+      return "Do Not Disturb";
+    case "online":
+    case "idle":
+    case "offline":
+      return status;
+    default:
+      return "N/A";
   }
+}
 
+export function presenceBlock(state: AppState): StatusBlock {
   const label = "  Status: ";
-  const value = state.auth.presenceStatus;
+  const status = state.auth.status === "authenticated" && state.auth.user ? state.auth.presenceStatus : null;
+  const value = presenceLabel(status);
   const width = termWidth(label) + termWidth(value);
 
   return {
@@ -36,7 +47,7 @@ export function presenceBlock(state: AppState): StatusBlock | null {
     width,
     height: 1,
     rows: [
-      `${theme.muted}${label}${presenceColor(value)}${value}${theme.reset}`,
+      `${theme.muted}${label}${presenceColor(status)}${value}${theme.reset}`,
     ],
   };
 }
