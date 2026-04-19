@@ -6,8 +6,9 @@ import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
 import type { DiscordIdentity } from "./discord";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
+import { createHistoryCursor, type HistoryCursor } from "./historycursor";
 import { createSidebarState, type SidebarState } from "./sidebar";
-import { createTimelineState, type TimelineState } from "./timeline";
+import { createTimelineState, type TimelineMessageBound, type TimelineState } from "./timeline";
 import { normalizeToken } from "./token";
 import type { NoticeTone } from "./theme";
 
@@ -38,6 +39,13 @@ export interface AppState {
   panelFocus: PanelFocus;
   chatFocus: ChatFocus;
   editor: EditorState;
+  historyCursor: HistoryCursor;
+  historyVisualAnchor: HistoryCursor;
+  historyCursorPendingVisibleBottom: boolean;
+  historyLineAnchors: string[];
+  historyLines: string[];
+  historyWrapContinuation: boolean[];
+  historyMessageBounds: TimelineMessageBound[];
   autocomplete: AutocompleteState | null;
   sidebar: SidebarState;
   channelList: ChannelListState;
@@ -56,6 +64,13 @@ export function createInitialState(initialToken: string | null, path: string): A
     panelFocus: "chat",
     chatFocus: "prompt",
     editor: createEditorState("", "insert"),
+    historyCursor: createHistoryCursor(),
+    historyVisualAnchor: createHistoryCursor(),
+    historyCursorPendingVisibleBottom: false,
+    historyLineAnchors: [],
+    historyLines: [],
+    historyWrapContinuation: [],
+    historyMessageBounds: [],
     autocomplete: null,
     sidebar: createSidebarState(),
     channelList: createChannelListState(),

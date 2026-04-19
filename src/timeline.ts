@@ -7,8 +7,6 @@ import { loadingLabel } from "./loading";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { theme, toneColor } from "./theme";
 
-const TOP_LOADING_ROWS = 1;
-
 export interface TimelineState {
   channelId: string | null;
   messages: DiscordMessage[];
@@ -20,9 +18,33 @@ export interface TimelineState {
   requestId: number;
 }
 
+export interface TimelineMessageBound {
+  start: number;
+  end: number;
+  contentStart: number;
+  contentEnd: number;
+}
+
 export interface RenderedTimeline {
   lines: string[];
+  allLines: string[];
+  lineAnchors: string[];
+  wrapContinuation: boolean[];
+  messageBounds: TimelineMessageBound[];
   maxScroll: number;
+}
+
+interface WrappedLine {
+  text: string;
+  wrapContinuation: boolean;
+  logicalLineIndex: number;
+  subIndex: number;
+}
+
+interface RenderedMessage {
+  lines: string[];
+  lineAnchors: string[];
+  wrapContinuation: boolean[];
 }
 
 export function createTimelineState(): TimelineState {
@@ -66,13 +88,9 @@ export function setTimelineMessages(
 export function startLoadingOlderMessages(timeline: TimelineState): void {
   if (timeline.loading || timeline.loadingOlder || !timeline.hasOlder || !timeline.channelId) return;
   timeline.loadingOlder = true;
-  timeline.scrollOffset += TOP_LOADING_ROWS;
 }
 
 export function finishLoadingOlderMessages(timeline: TimelineState, hasOlder = timeline.hasOlder): void {
-  if (timeline.loadingOlder) {
-    timeline.scrollOffset = Math.max(0, timeline.scrollOffset - TOP_LOADING_ROWS);
-  }
   timeline.loadingOlder = false;
   timeline.hasOlder = hasOlder;
 }
@@ -82,18 +100,18 @@ export function prependTimelineMessages(
   messages: DiscordMessage[],
   width: number,
   options: { hasOlder: boolean },
-): void {
+): number {
   if (messages.length === 0) {
     finishLoadingOlderMessages(timeline, options.hasOlder);
-    return;
+    return 0;
   }
 
   const insertedRows = countRenderedMessageRows(messages, width);
   timeline.messages = [...messages, ...timeline.messages];
-  timeline.scrollOffset = Math.max(0, timeline.scrollOffset + insertedRows - (timeline.loadingOlder ? TOP_LOADING_ROWS : 0));
   timeline.loading = false;
   timeline.loadingOlder = false;
   timeline.hasOlder = options.hasOlder;
+  return insertedRows;
 }
 
 export function shouldLoadOlderMessages(timeline: TimelineState): boolean {
@@ -120,33 +138,62 @@ export function renderTimelineLines(
   loadingFrameIndex = 0,
 ): RenderedTimeline {
   const allLines: string[] = [];
+  const lineAnchors: string[] = [];
+  const wrapContinuation: boolean[] = [];
+  const messageBounds: TimelineMessageBound[] = [];
 
   if (notice.text) {
-    for (const line of notice.text.split("\n")) {
+    for (const [index, line] of notice.text.split("\n").entries()) {
       const renderedLine = notice.loading ? loadingLabel(line, loadingFrameIndex) : line;
       allLines.push(`${toneColor(notice.tone)}${truncate(renderedLine, width)}${theme.reset}`);
+      lineAnchors.push(`notice:${index}:${notice.loading ? "loading" : "static"}:${line}`);
+      wrapContinuation.push(false);
     }
-    if (allLines.length > 0) allLines.push("");
+    if (allLines.length > 0) {
+      allLines.push("");
+      lineAnchors.push("notice:gap");
+      wrapContinuation.push(false);
+    }
   }
 
   if (timeline.loading) {
     allLines.push(`${theme.muted}${truncate(loadingLabel("Loading messages…", loadingFrameIndex), width)}${theme.reset}`);
+    lineAnchors.push("timeline:loading");
+    wrapContinuation.push(false);
   } else if (!timeline.channelId && timeline.messages.length === 0) {
     // No active channel yet.
   } else {
     if (timeline.loadingOlder) {
       allLines.push(`${theme.muted}${truncate(loadingLabel("Loading older messages…", loadingFrameIndex), width)}${theme.reset}`);
+      lineAnchors.push("timeline:loading-older");
+      wrapContinuation.push(false);
     }
 
     if (timeline.messages.length === 0) {
       allLines.push(`${theme.muted}No messages yet.${theme.reset}`);
+      lineAnchors.push("timeline:empty");
+      wrapContinuation.push(false);
     } else {
       for (const message of timeline.messages) {
-        allLines.push(...renderMessage(message, width));
+        const renderedMessage = renderMessage(message, width);
+        const start = allLines.length;
+        allLines.push(...renderedMessage.lines);
+        lineAnchors.push(...renderedMessage.lineAnchors);
+        wrapContinuation.push(...renderedMessage.wrapContinuation);
+        messageBounds.push({
+          start,
+          end: start + renderedMessage.lines.length,
+          contentStart: start,
+          contentEnd: start + renderedMessage.lines.length,
+        });
         allLines.push("");
+        lineAnchors.push(`msg:${message.id}:gap`);
+        wrapContinuation.push(false);
       }
       while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
         allLines.pop();
+        lineAnchors.pop();
+        wrapContinuation.pop();
       }
     }
   }
@@ -158,6 +205,10 @@ export function renderTimelineLines(
 
   return {
     lines: allLines.slice(scrollOffset, scrollOffset + Math.max(0, height)),
+    allLines,
+    lineAnchors,
+    wrapContinuation,
+    messageBounds,
     maxScroll,
   };
 }
@@ -165,12 +216,12 @@ export function renderTimelineLines(
 function countRenderedMessageRows(messages: DiscordMessage[], width: number): number {
   let total = 0;
   for (const message of messages) {
-    total += renderMessage(message, width).length + 1;
+    total += renderMessage(message, width).lines.length + 1;
   }
   return total;
 }
 
-function renderMessage(message: DiscordMessage, width: number): string[] {
+function renderMessage(message: DiscordMessage, width: number): RenderedMessage {
   const time = new Date(message.timestamp).toISOString().slice(11, 16);
   const author = message.author.bot
     ? `${message.author.displayName} [bot]`
@@ -180,10 +231,21 @@ function renderMessage(message: DiscordMessage, width: number): string[] {
   const content = summarizeMessage(message);
   const wrappedContent = wrapPlainText(content, width);
   if (wrappedContent.length === 0) {
-    return [header, `${theme.dim}(empty message)${theme.reset}`];
+    return {
+      lines: [header, `${theme.dim}(empty message)${theme.reset}`],
+      lineAnchors: [`msg:${message.id}:header`, `msg:${message.id}:empty`],
+      wrapContinuation: [false, false],
+    };
   }
 
-  return [header, ...wrappedContent.map((line) => `${theme.text}${line}${theme.reset}`)];
+  return {
+    lines: [header, ...wrappedContent.map((line) => `${theme.text}${line.text}${theme.reset}`)],
+    lineAnchors: [
+      `msg:${message.id}:header`,
+      ...wrappedContent.map((line) => `msg:${message.id}:content:${line.logicalLineIndex}:${line.subIndex}`),
+    ],
+    wrapContinuation: [false, ...wrappedContent.map((line) => line.wrapContinuation)],
+  };
 }
 
 function summarizeMessage(message: DiscordMessage): string {
@@ -200,22 +262,31 @@ function summarizeMessage(message: DiscordMessage): string {
   return parts.join("\n");
 }
 
-function wrapPlainText(text: string, width: number): string[] {
+function wrapPlainText(text: string, width: number): WrappedLine[] {
   if (width <= 0) return [];
-  const lines: string[] = [];
+  const lines: WrappedLine[] = [];
 
-  for (const rawLine of text.split(/\r?\n/)) {
+  for (const [logicalLineIndex, rawLine] of text.split(/\r?\n/).entries()) {
     if (!rawLine) {
-      lines.push("");
+      lines.push({ text: "", wrapContinuation: false, logicalLineIndex, subIndex: 0 });
       continue;
     }
 
     let current = rawLine;
+    let firstSegment = true;
+    let subIndex = 0;
     while (termWidth(current) > width) {
       const [taken, rest] = sliceByWidth(current, width);
       if (!taken) {
-        lines.push(Array.from(current)[0] ?? "");
+        lines.push({
+          text: Array.from(current)[0] ?? "",
+          wrapContinuation: !firstSegment,
+          logicalLineIndex,
+          subIndex,
+        });
         current = Array.from(current).slice(1).join("");
+        firstSegment = false;
+        subIndex += 1;
         continue;
       }
 
@@ -227,10 +298,12 @@ function wrapPlainText(text: string, width: number): string[] {
         remainder = current.slice(cut).trimStart();
       }
 
-      lines.push(line);
+      lines.push({ text: line, wrapContinuation: !firstSegment, logicalLineIndex, subIndex });
       current = remainder;
+      firstSegment = false;
+      subIndex += 1;
     }
-    lines.push(current);
+    lines.push({ text: current, wrapContinuation: !firstSegment, logicalLineIndex, subIndex });
   }
 
   return lines;

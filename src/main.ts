@@ -13,10 +13,18 @@ import {
   MAX_PROMPT_ROWS,
   PROMPT_PREFIX_WIDTH,
 } from "./editor";
+import {
+  ensureHistoryCursorVisible,
+  handleHistoryVimKey,
+  placeHistoryCursorAtVisibleBottom,
+  scrollHistoryViewportSticky,
+  scrollHistoryWithCursor,
+} from "./historycursor";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { render } from "./render";
 import { bootstrapReadOnlyClient, loadChannelMessages, loadGuildChannels, loadOlderChannelMessages } from "./session";
+import { renderStatusLine } from "./statusline";
 import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
@@ -171,15 +179,17 @@ function timelineContentWidth(): number {
 function timelinePageSize(): number {
   const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
   const mainW = Math.max(1, state.cols - sidebarW);
+  const statusHeight = renderStatusLine(state, mainW).height;
+  const bottomStatusRows = statusHeight > 0 ? statusHeight + 1 : 0;
   const maxInputWidth = Math.max(1, mainW - PROMPT_PREFIX_WIDTH);
   const input = getInputLines(
     state.editor.buffer,
     displayCursor(state.editor),
     maxInputWidth,
-    Math.max(1, Math.min(MAX_PROMPT_ROWS, state.rows - 3)),
+    Math.max(1, Math.min(MAX_PROMPT_ROWS, state.rows - 3 - bottomStatusRows)),
     state.editor.scroll,
   );
-  const promptSeparatorRow = Math.max(3, state.rows - Math.max(1, input.lines.length));
+  const promptSeparatorRow = Math.max(3, state.rows - Math.max(1, input.lines.length) - bottomStatusRows);
   return Math.max(1, promptSeparatorRow - 3);
 }
 
@@ -217,8 +227,12 @@ function toggleSidebar(): void {
 function toggleHistoryFocus(): void {
   if (state.panelFocus === "chat" && state.chatFocus === "history") {
     focusPrompt(state);
+    state.historyCursorPendingVisibleBottom = false;
   } else {
     focusHistory(state);
+    placeHistoryCursorAtVisibleBottom(state, timelinePageSize());
+    ensureHistoryCursorVisible(state, timelinePageSize());
+    state.historyCursorPendingVisibleBottom = true;
   }
 
   syncPromptAutocomplete();
@@ -251,22 +265,59 @@ function handleGlobalAction(key: KeyEvent): boolean {
       toggleHistoryFocus();
       return true;
     case "scroll_line_up":
-      scrollTimeline(-1);
+      if (state.chatFocus === "history") {
+        scrollHistoryViewportSticky(state, -1, timelinePageSize());
+        maybeLoadOlderHistory();
+        scheduleRender();
+      } else {
+        scrollTimeline(-1);
+      }
       return true;
     case "scroll_line_down":
-      scrollTimeline(1);
+      if (state.chatFocus === "history") {
+        scrollHistoryViewportSticky(state, 1, timelinePageSize());
+        scheduleRender();
+      } else {
+        scrollTimeline(1);
+      }
       return true;
-    case "scroll_half_up":
-      scrollTimeline(-Math.max(1, Math.floor(timelinePageSize() / 2)));
+    case "scroll_half_up": {
+      const amount = Math.max(1, Math.floor(timelinePageSize() / 2));
+      if (state.chatFocus === "history") {
+        scrollHistoryWithCursor(state, -amount, timelinePageSize());
+        maybeLoadOlderHistory();
+        scheduleRender();
+      } else {
+        scrollTimeline(-amount);
+      }
       return true;
-    case "scroll_half_down":
-      scrollTimeline(Math.max(1, Math.floor(timelinePageSize() / 2)));
+    }
+    case "scroll_half_down": {
+      const amount = Math.max(1, Math.floor(timelinePageSize() / 2));
+      if (state.chatFocus === "history") {
+        scrollHistoryWithCursor(state, amount, timelinePageSize());
+        scheduleRender();
+      } else {
+        scrollTimeline(amount);
+      }
       return true;
+    }
     case "scroll_page_up":
-      scrollTimeline(-timelinePageSize());
+      if (state.chatFocus === "history") {
+        scrollHistoryWithCursor(state, -timelinePageSize(), timelinePageSize());
+        maybeLoadOlderHistory();
+        scheduleRender();
+      } else {
+        scrollTimeline(-timelinePageSize());
+      }
       return true;
     case "scroll_page_down":
-      scrollTimeline(timelinePageSize());
+      if (state.chatFocus === "history") {
+        scrollHistoryWithCursor(state, timelinePageSize(), timelinePageSize());
+        scheduleRender();
+      } else {
+        scrollTimeline(timelinePageSize());
+      }
       return true;
     case "sidebar_next":
     case "sidebar_prev": {
@@ -345,6 +396,12 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
+  if (handleHistoryVimKey(state, key, timelinePageSize())) {
+    if (state.chatFocus === "history") maybeLoadOlderHistory();
+    scheduleRender();
+    return true;
+  }
+
   const action = resolveAction(key, "navigation");
   if (!action) return false;
 
@@ -353,10 +410,13 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       focusPromptInsert(key.type === "char" && key.char === "a");
       return true;
     case "nav_up":
-      scrollTimeline(-1);
+      scrollHistoryWithCursor(state, -1, timelinePageSize());
+      maybeLoadOlderHistory();
+      scheduleRender();
       return true;
     case "nav_down":
-      scrollTimeline(1);
+      scrollHistoryWithCursor(state, 1, timelinePageSize());
+      scheduleRender();
       return true;
     default:
       return false;

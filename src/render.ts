@@ -14,6 +14,15 @@ import {
   wrappedLineOffsets,
 } from "./editor";
 import { renderBodyLines } from "./bodypanel";
+import {
+  buildLineAnchorIndex,
+  clampHistoryCursor,
+  contentBounds,
+  logicalLineRange,
+  remapRenderedRow,
+  stripAnsi,
+} from "./historycursor";
+import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
 import { renderStatusLine } from "./statusline";
@@ -122,6 +131,69 @@ function highlightPromptSelection(
     + `${line.slice(relEnd)}${theme.reset}`;
 }
 
+function isHistoryLineHighlighted(state: AppState, lineIndex: number, historyFocused: boolean): boolean {
+  if (!historyFocused || state.editor.mode === "visual" || state.editor.mode === "visual-line") {
+    return false;
+  }
+  const { first, last } = logicalLineRange(state.historyCursor.row, state.historyWrapContinuation);
+  return lineIndex >= first && lineIndex <= last;
+}
+
+function renderHistoryViewportLine(
+  state: AppState,
+  rawLine: string,
+  lineIndex: number,
+  historyFocused: boolean,
+): string {
+  const inVisual = historyFocused && (state.editor.mode === "visual" || state.editor.mode === "visual-line");
+  let rendered = rawLine;
+  const plain = stripAnsi(rawLine);
+
+  if (inVisual) {
+    const anchor = state.historyVisualAnchor;
+    const cursor = state.historyCursor;
+    let startRow = Math.min(anchor.row, cursor.row);
+    let endRow = Math.max(anchor.row, cursor.row);
+    if (state.editor.mode === "visual-line") {
+      startRow = logicalLineRange(startRow, state.historyWrapContinuation).first;
+      endRow = logicalLineRange(endRow, state.historyWrapContinuation).last;
+    }
+
+    if (lineIndex >= startRow && lineIndex <= endRow) {
+      const bounds = contentBounds(plain);
+      let startCol: number;
+      let endCol: number;
+
+      if (state.editor.mode === "visual-line") {
+        startCol = bounds.start;
+        endCol = bounds.end;
+      } else if (startRow === endRow) {
+        startCol = Math.min(anchor.col, cursor.col);
+        endCol = Math.max(anchor.col, cursor.col);
+      } else if (lineIndex === startRow) {
+        const anchorIsStart = anchor.row <= cursor.row;
+        startCol = anchorIsStart ? anchor.col : cursor.col;
+        endCol = bounds.end;
+      } else if (lineIndex === endRow) {
+        const anchorIsStart = anchor.row <= cursor.row;
+        startCol = bounds.start;
+        endCol = anchorIsStart ? cursor.col : anchor.col;
+      } else {
+        startCol = bounds.start;
+        endCol = bounds.end;
+      }
+
+      rendered = renderLineWithSelection(rendered, startCol, endCol);
+    }
+
+    if (lineIndex === cursor.row) {
+      rendered = renderLineWithCursor(rendered, cursor.col);
+    }
+  }
+
+  return rendered;
+}
+
 export function render(state: AppState): void {
   const cols = Math.max(1, state.cols);
   const rows = Math.max(3, state.rows);
@@ -192,15 +264,55 @@ export function render(state: AppState): void {
   const bodyRows = Math.max(0, promptSeparatorRow - bodyTop);
   const bodyInnerWidth = Math.max(0, mainW - 2);
 
+  const oldAnchors = state.historyLineAnchors;
+  const oldViewStart = state.timeline.scrollOffset;
+  const oldCursorRow = state.historyCursor.row;
+  const oldVisualAnchorRow = state.historyVisualAnchor.row;
+  const pinHistoryToBottom = oldViewStart === Number.MAX_SAFE_INTEGER;
+
   const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, state.notice, state.loadingFrameIndex);
+
+  if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom) {
+    const anchorIndex = buildLineAnchorIndex(timeline.lineAnchors);
+    state.timeline.scrollOffset = Math.max(0, Math.min(remapRenderedRow(oldViewStart, oldAnchors, anchorIndex), timeline.maxScroll));
+    state.historyCursor = { ...state.historyCursor, row: remapRenderedRow(oldCursorRow, oldAnchors, anchorIndex) };
+    state.historyVisualAnchor = {
+      ...state.historyVisualAnchor,
+      row: remapRenderedRow(oldVisualAnchorRow, oldAnchors, anchorIndex),
+    };
+  }
+
+  state.historyLineAnchors = timeline.lineAnchors;
+  state.historyLines = timeline.allLines;
+  state.historyWrapContinuation = timeline.wrapContinuation;
+  state.historyMessageBounds = timeline.messageBounds;
+  if (state.chatFocus === "history" && state.historyCursorPendingVisibleBottom && state.historyLines.length > 0) {
+    const visibleBottom = state.timeline.scrollOffset + Math.max(0, Math.min(bodyRows, timeline.lines.length) - 1);
+    state.historyCursor = { row: Math.min(visibleBottom, state.historyLines.length - 1), col: 0 };
+    state.historyVisualAnchor = { ...state.historyCursor };
+    state.historyCursorPendingVisibleBottom = false;
+  }
+  state.historyCursor = clampHistoryCursor(state.historyCursor, state.historyLines);
+
   const fallbackBody = renderBodyLines(state, bodyInnerWidth);
-  const timelineLines = timeline.lines.length > 0 ? timeline.lines : fallbackBody;
+  const useTimeline = timeline.allLines.length > 0;
+  const timelineLines = useTimeline ? timeline.lines : fallbackBody;
 
   for (let i = 0; i < bodyRows; i++) {
     const row = bodyTop + i;
     out.push(moveTo(row, 1) + clearedLine);
     emitSidebarCol(row);
-    out.push(moveTo(row, mainCol) + bgLine(` ${timelineLines[i] ?? ""}`));
+
+    const lineIndex = state.timeline.scrollOffset + i;
+    const line = useTimeline && lineIndex < state.historyLines.length
+      ? renderHistoryViewportLine(state, state.historyLines[lineIndex] ?? "", lineIndex, historyFocused)
+      : (timelineLines[i] ?? "");
+
+    const renderedLine = useTimeline && isHistoryLineHighlighted(state, lineIndex, historyFocused)
+      ? applyLineBg(` ${line}`, theme.historyLineBg)
+      : bgLine(` ${line}`);
+
+    out.push(moveTo(row, mainCol) + renderedLine);
   }
 
   if (state.autocomplete) {
@@ -259,20 +371,37 @@ export function render(state: AppState): void {
     }
   }
 
-  const cursorRow = firstInputRow + input.cursorLine;
-  const cursorCol = Math.min(cols, mainCol + PROMPT_PREFIX_WIDTH + input.cursorCol);
-  out.push(moveTo(cursorRow, cursorCol));
-  if (promptFocused) {
-    out.push(
-      state.editor.mode === "insert"
-        ? cursorBar
-        : (state.editor.pendingOperator || state.editor.pendingReplace)
+  if (historyFocused && state.historyLines.length > 0) {
+    const visibleRow = state.historyCursor.row - state.timeline.scrollOffset;
+    if (visibleRow >= 0 && visibleRow < bodyRows) {
+      const cursorRow = bodyTop + visibleRow;
+      const cursorCol = Math.min(cols, mainCol + 1 + state.historyCursor.col);
+      out.push(moveTo(cursorRow, cursorCol));
+      out.push(
+        state.editor.mode === "visual" || state.editor.mode === "visual-line"
           ? cursorUnderline
           : cursorBlock,
-    );
-    out.push(showCursor);
+      );
+      out.push(showCursor);
+    } else {
+      out.push(hideCursor);
+    }
   } else {
-    out.push(hideCursor);
+    const cursorRow = firstInputRow + input.cursorLine;
+    const cursorCol = Math.min(cols, mainCol + PROMPT_PREFIX_WIDTH + input.cursorCol);
+    out.push(moveTo(cursorRow, cursorCol));
+    if (promptFocused) {
+      out.push(
+        state.editor.mode === "insert"
+          ? cursorBar
+          : (state.editor.pendingOperator || state.editor.pendingReplace)
+            ? cursorUnderline
+            : cursorBlock,
+      );
+      out.push(showCursor);
+    } else {
+      out.push(hideCursor);
+    }
   }
 
   process.stdout.write(out.join(""));

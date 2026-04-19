@@ -80,7 +80,7 @@ describe("timeline rendering", () => {
     expect(timeline.loadingOlder).toBe(false);
     expect(timeline.hasOlder).toBe(false);
     expect(timeline.messages.map((entry) => entry.id)).toEqual(["1", "2"]);
-    expect(timeline.scrollOffset).toBe(3);
+    expect(timeline.scrollOffset).toBe(0);
   });
 
   test("wraps wide unicode message content by terminal columns", () => {
