@@ -4,7 +4,7 @@
 
 import type { DiscordMessage } from "./discord";
 import { loadingLabel } from "./loading";
-import { truncate } from "./strings";
+import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { theme, toneColor } from "./theme";
 
 export interface TimelineState {
@@ -137,11 +137,24 @@ function wrapPlainText(text: string, width: number): string[] {
     }
 
     let current = rawLine;
-    while (current.length > width) {
-      let cut = current.lastIndexOf(" ", width);
-      if (cut <= 0) cut = width;
-      lines.push(current.slice(0, cut));
-      current = current.slice(cut).trimStart();
+    while (termWidth(current) > width) {
+      const [taken, rest] = sliceByWidth(current, width);
+      if (!taken) {
+        lines.push(Array.from(current)[0] ?? "");
+        current = Array.from(current).slice(1).join("");
+        continue;
+      }
+
+      let line = taken;
+      let remainder = rest;
+      const cut = taken.lastIndexOf(" ");
+      if (cut > 0) {
+        line = taken.slice(0, cut);
+        remainder = current.slice(cut).trimStart();
+      }
+
+      lines.push(line);
+      current = remainder;
     }
     lines.push(current);
   }

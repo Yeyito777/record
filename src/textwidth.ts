@@ -1,8 +1,9 @@
 /**
- * Small render-time string helpers.
+ * Terminal-width-aware text helpers.
  *
- * These are terminal-column aware, not UTF-16-length aware, so wide CJK,
- * emoji, combining marks, and flags do not break layout.
+ * These helpers count terminal columns rather than UTF-16 code units, so UI
+ * layout can safely truncate and pad strings containing emoji, CJK, combining
+ * marks, and other wide / zero-width glyphs.
  */
 
 const WIDE_RANGES: readonly [number, number][] = [
@@ -99,6 +100,8 @@ const WIDE_RANGES: readonly [number, number][] = [
   [0x1FAF0, 0x1FAF6],
   [0x20000, 0x3FFFF],
 ];
+
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
 
 function inRanges(cp: number, ranges: readonly [number, number][]): boolean {
   let lo = 0;
@@ -201,7 +204,11 @@ export function sliceByWidth(text: string, maxWidth: number): [taken: string, re
   return [text.slice(0, index), text.slice(index)];
 }
 
-export function truncate(text: string, width: number): string {
+export function visibleLength(text: string): number {
+  return termWidth(text.replace(ANSI_ESCAPE_RE, ""));
+}
+
+export function truncateToWidth(text: string, width: number): string {
   if (width <= 0) return "";
   if (termWidth(text) <= width) return text;
   if (width === 1) return "…";
@@ -209,13 +216,38 @@ export function truncate(text: string, width: number): string {
   return `${taken}…`;
 }
 
-export function padRight(text: string, width: number): string {
-  const clipped = truncate(text, width);
+export function padRightToWidth(text: string, width: number): string {
+  const clipped = truncateToWidth(text, width);
   const padding = Math.max(0, width - termWidth(clipped));
   return clipped + " ".repeat(padding);
 }
 
-export function formatTimestamp(value: number | null): string {
-  if (!value) return "—";
-  return `${new Date(value).toISOString().slice(0, 19).replace("T", " ")}Z`;
+export function padVisibleRightToWidth(text: string, width: number): string {
+  const padding = Math.max(0, width - visibleLength(text));
+  return text + " ".repeat(padding);
 }
+
+export function getViewportByWidth(
+  text: string,
+  cursorIndex: number,
+  maxWidth: number,
+): { visibleText: string; cursorCol: number; startIndex: number } {
+  const safeMaxWidth = Math.max(0, maxWidth);
+  const safeCursorIndex = Math.max(0, Math.min(cursorIndex, text.length));
+  if (safeMaxWidth === 0) {
+    return { visibleText: "", cursorCol: 0, startIndex: safeCursorIndex };
+  }
+
+  let startIndex = 0;
+  while (startIndex < safeCursorIndex && termWidth(text.slice(startIndex, safeCursorIndex)) > safeMaxWidth) {
+    startIndex = nextCluster(text, startIndex)[1];
+  }
+
+  const [visibleText] = sliceByWidth(text.slice(startIndex), safeMaxWidth);
+  const cursorCol = Math.min(safeMaxWidth, termWidth(text.slice(startIndex, safeCursorIndex)));
+
+  return { visibleText, cursorCol, startIndex };
+}
+
+export const truncate = truncateToWidth;
+export const padRight = padRightToWidth;

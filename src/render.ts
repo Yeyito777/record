@@ -16,7 +16,7 @@ import {
 import { renderBodyLines } from "./bodypanel";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
-import { padRight, termWidth } from "./strings";
+import { padRight, termWidth } from "./textwidth";
 import type { AppState } from "./state";
 import {
   applyLineBg,

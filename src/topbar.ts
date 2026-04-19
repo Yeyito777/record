@@ -4,7 +4,7 @@
 
 import { formatChannelName } from "./discord";
 import type { AppState } from "./state";
-import { padRight } from "./strings";
+import { padRight } from "./textwidth";
 import { theme } from "./theme";
 
 function focusLabel(state: AppState): string {

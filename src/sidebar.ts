@@ -4,7 +4,7 @@
 
 import type { DiscordChannel, DiscordGuild } from "./discord";
 import { loadingLabel } from "./loading";
-import { padRight, termWidth } from "./strings";
+import { padRight, termWidth } from "./textwidth";
 import { theme } from "./theme";
 
 export const SIDEBAR_WIDTH = 28;

@@ -13,7 +13,7 @@ import {
   setSidebarGuilds,
   SIDEBAR_WIDTH,
 } from "./sidebar";
-import { termWidth } from "./strings";
+import { termWidth } from "./textwidth";
 
 describe("sidebar state", () => {
   test("builds a collapsible guild/category/channel tree", () => {

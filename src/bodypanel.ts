@@ -4,7 +4,7 @@
 
 import { loadingLabel } from "./loading";
 import type { AppState } from "./state";
-import { truncate } from "./strings";
+import { truncate } from "./textwidth";
 import { theme } from "./theme";
 
 export function renderBodyLines(state: AppState, width: number): string[] {
