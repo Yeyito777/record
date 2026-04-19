@@ -16,7 +16,7 @@ import {
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { render } from "./render";
-import { bootstrapReadOnlyClient, loadChannelMessages, loadGuildChannels } from "./session";
+import { bootstrapReadOnlyClient, loadChannelMessages, loadGuildChannels, loadOlderChannelMessages } from "./session";
 import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
@@ -48,7 +48,7 @@ import {
   showCursor,
 } from "./terminal";
 import { theme } from "./theme";
-import { moveTimelineScroll } from "./timeline";
+import { moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
 import { normalizeToken } from "./token";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -93,7 +93,8 @@ function hasActiveLoadingIndicator(): boolean {
     || state.sidebar.loading
     || Boolean(state.sidebar.loadingGuildId)
     || state.channelList.loading
-    || state.timeline.loading;
+    || state.timeline.loading
+    || state.timeline.loadingOlder;
 }
 
 function syncLoadingAnimation(): void {
@@ -161,6 +162,12 @@ function tokenOrWarn(): string | null {
   return token;
 }
 
+function timelineContentWidth(): number {
+  const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
+  const mainW = Math.max(1, state.cols - sidebarW);
+  return Math.max(1, mainW - 2);
+}
+
 function timelinePageSize(): number {
   const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
   const mainW = Math.max(1, state.cols - sidebarW);
@@ -176,8 +183,21 @@ function timelinePageSize(): number {
   return Math.max(1, promptSeparatorRow - 3);
 }
 
+function maybeLoadOlderHistory(): void {
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+  if (!token || !channelId || !shouldLoadOlderMessages(state.timeline)) return;
+
+  startLoadingOlderMessages(state.timeline);
+  scheduleRender();
+  void loadOlderChannelMessages(state, token, channelId, timelineContentWidth(), { scheduleRender });
+}
+
 function scrollTimeline(delta: number): void {
   moveTimelineScroll(state.timeline, delta);
+  if (delta <= 0) {
+    maybeLoadOlderHistory();
+  }
   scheduleRender();
 }
 
@@ -333,12 +353,10 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       focusPromptInsert(key.type === "char" && key.char === "a");
       return true;
     case "nav_up":
-      moveTimelineScroll(state.timeline, -1);
-      scheduleRender();
+      scrollTimeline(-1);
       return true;
     case "nav_down":
-      moveTimelineScroll(state.timeline, 1);
-      scheduleRender();
+      scrollTimeline(1);
       return true;
     default:
       return false;
@@ -379,6 +397,7 @@ function handlePromptFocused(key: KeyEvent): void {
 
   if (action === "scroll_top") {
     state.timeline.scrollOffset = 0;
+    maybeLoadOlderHistory();
     scheduleRender();
     return;
   }

@@ -7,12 +7,16 @@ import { loadingLabel } from "./loading";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { theme, toneColor } from "./theme";
 
+const TOP_LOADING_ROWS = 1;
+
 export interface TimelineState {
   channelId: string | null;
   messages: DiscordMessage[];
   scrollOffset: number;
   maxScroll: number;
   loading: boolean;
+  loadingOlder: boolean;
+  hasOlder: boolean;
   requestId: number;
 }
 
@@ -28,6 +32,8 @@ export function createTimelineState(): TimelineState {
     scrollOffset: 0,
     maxScroll: 0,
     loading: false,
+    loadingOlder: false,
+    hasOlder: false,
     requestId: 0,
   };
 }
@@ -38,14 +44,68 @@ export function clearTimeline(timeline: TimelineState): void {
   timeline.scrollOffset = 0;
   timeline.maxScroll = 0;
   timeline.loading = false;
+  timeline.loadingOlder = false;
+  timeline.hasOlder = false;
 }
 
-export function setTimelineMessages(timeline: TimelineState, channelId: string, messages: DiscordMessage[]): void {
+export function setTimelineMessages(
+  timeline: TimelineState,
+  channelId: string,
+  messages: DiscordMessage[],
+  options: { hasOlder?: boolean } = {},
+): void {
   timeline.channelId = channelId;
   timeline.messages = messages;
   timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
   timeline.maxScroll = 0;
   timeline.loading = false;
+  timeline.loadingOlder = false;
+  timeline.hasOlder = options.hasOlder ?? messages.length > 0;
+}
+
+export function startLoadingOlderMessages(timeline: TimelineState): void {
+  if (timeline.loading || timeline.loadingOlder || !timeline.hasOlder || !timeline.channelId) return;
+  timeline.loadingOlder = true;
+  timeline.scrollOffset += TOP_LOADING_ROWS;
+}
+
+export function finishLoadingOlderMessages(timeline: TimelineState, hasOlder = timeline.hasOlder): void {
+  if (timeline.loadingOlder) {
+    timeline.scrollOffset = Math.max(0, timeline.scrollOffset - TOP_LOADING_ROWS);
+  }
+  timeline.loadingOlder = false;
+  timeline.hasOlder = hasOlder;
+}
+
+export function prependTimelineMessages(
+  timeline: TimelineState,
+  messages: DiscordMessage[],
+  width: number,
+  options: { hasOlder: boolean },
+): void {
+  if (messages.length === 0) {
+    finishLoadingOlderMessages(timeline, options.hasOlder);
+    return;
+  }
+
+  const insertedRows = countRenderedMessageRows(messages, width);
+  timeline.messages = [...messages, ...timeline.messages];
+  timeline.scrollOffset = Math.max(0, timeline.scrollOffset + insertedRows - (timeline.loadingOlder ? TOP_LOADING_ROWS : 0));
+  timeline.loading = false;
+  timeline.loadingOlder = false;
+  timeline.hasOlder = options.hasOlder;
+}
+
+export function shouldLoadOlderMessages(timeline: TimelineState): boolean {
+  if (timeline.loading || timeline.loadingOlder || !timeline.hasOlder || !timeline.channelId || timeline.messages.length === 0) {
+    return false;
+  }
+
+  if (timeline.maxScroll === 0) {
+    return timeline.scrollOffset === 0;
+  }
+
+  return timeline.scrollOffset <= Math.floor(timeline.maxScroll / 2);
 }
 
 export function moveTimelineScroll(timeline: TimelineState, delta: number): void {
@@ -73,15 +133,21 @@ export function renderTimelineLines(
     allLines.push(`${theme.muted}${truncate(loadingLabel("Loading messages…", loadingFrameIndex), width)}${theme.reset}`);
   } else if (!timeline.channelId && timeline.messages.length === 0) {
     // No active channel yet.
-  } else if (timeline.messages.length === 0) {
-    allLines.push(`${theme.muted}No messages yet.${theme.reset}`);
   } else {
-    for (const message of timeline.messages) {
-      allLines.push(...renderMessage(message, width));
-      allLines.push("");
+    if (timeline.loadingOlder) {
+      allLines.push(`${theme.muted}${truncate(loadingLabel("Loading older messages…", loadingFrameIndex), width)}${theme.reset}`);
     }
-    while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
-      allLines.pop();
+
+    if (timeline.messages.length === 0) {
+      allLines.push(`${theme.muted}No messages yet.${theme.reset}`);
+    } else {
+      for (const message of timeline.messages) {
+        allLines.push(...renderMessage(message, width));
+        allLines.push("");
+      }
+      while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
+        allLines.pop();
+      }
     }
   }
 
@@ -94,6 +160,14 @@ export function renderTimelineLines(
     lines: allLines.slice(scrollOffset, scrollOffset + Math.max(0, height)),
     maxScroll,
   };
+}
+
+function countRenderedMessageRows(messages: DiscordMessage[], width: number): number {
+  let total = 0;
+  for (const message of messages) {
+    total += renderMessage(message, width).length + 1;
+  }
+  return total;
 }
 
 function renderMessage(message: DiscordMessage, width: number): string[] {

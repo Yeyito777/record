@@ -258,8 +258,14 @@ export async function fetchGuildChannels(token: string, guildId: string): Promis
     .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 }
 
-export async function fetchChannelMessages(token: string, channelId: string, limit = 50): Promise<DiscordMessage[]> {
+export async function fetchChannelMessages(
+  token: string,
+  channelId: string,
+  limit = 50,
+  before?: string,
+): Promise<DiscordMessage[]> {
   const query = new URLSearchParams({ limit: String(limit) });
+  if (before) query.set("before", before);
   const messages = await apiGetJson<DiscordMessageResponse[]>(token, `/channels/${channelId}/messages?${query.toString()}`);
   return messages
     .map((message) => ({

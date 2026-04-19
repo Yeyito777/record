@@ -21,7 +21,12 @@ import {
 import type { AppState } from "./state";
 import { focusPrompt, setNotice } from "./state";
 import { clearSidebarData, setSidebarGuilds } from "./sidebar";
-import { clearTimeline, setTimelineMessages } from "./timeline";
+import {
+  clearTimeline,
+  finishLoadingOlderMessages,
+  prependTimelineMessages,
+  setTimelineMessages,
+} from "./timeline";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -30,6 +35,8 @@ export interface SessionEffects {
 interface LoadGuildChannelsOptions {
   openFirstChannel?: boolean;
 }
+
+const MESSAGE_PAGE_LIMIT = 50;
 
 export function clearReadOnlyClient(state: AppState): void {
   clearSidebarData(state.sidebar);
@@ -174,19 +181,52 @@ export async function loadChannelMessages(
   setActiveChannel(state.channelList, channelId);
   state.sidebar.activeGuildId = channel.guildId;
   state.timeline.loading = true;
+  state.timeline.loadingOlder = false;
   setNotice(state, "", "muted");
   effects.scheduleRender();
 
   try {
-    const messages = await fetchChannelMessages(token, channelId);
+    const messages = await fetchChannelMessages(token, channelId, MESSAGE_PAGE_LIMIT);
     if (requestId !== state.timeline.requestId) return;
 
-    setTimelineMessages(state.timeline, channelId, messages);
+    setTimelineMessages(state.timeline, channelId, messages, { hasOlder: messages.length >= MESSAGE_PAGE_LIMIT });
     effects.scheduleRender();
   } catch (error) {
     if (requestId !== state.timeline.requestId) return;
     state.timeline.loading = false;
     clearTimeline(state.timeline);
+    setNotice(state, error instanceof Error ? error.message : String(error), "error");
+    effects.scheduleRender();
+  }
+}
+
+export async function loadOlderChannelMessages(
+  state: AppState,
+  token: string,
+  channelId: string,
+  width: number,
+  effects: SessionEffects,
+): Promise<void> {
+  const oldestMessageId = state.timeline.messages[0]?.id;
+  if (!oldestMessageId || state.timeline.channelId !== channelId) {
+    finishLoadingOlderMessages(state.timeline, false);
+    effects.scheduleRender();
+    return;
+  }
+
+  const existingIds = new Set(state.timeline.messages.map((message) => message.id));
+  const requestId = ++state.timeline.requestId;
+
+  try {
+    const olderMessages = await fetchChannelMessages(token, channelId, MESSAGE_PAGE_LIMIT, oldestMessageId);
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
+
+    const deduped = olderMessages.filter((message) => !existingIds.has(message.id));
+    prependTimelineMessages(state.timeline, deduped, width, { hasOlder: olderMessages.length >= MESSAGE_PAGE_LIMIT });
+    effects.scheduleRender();
+  } catch (error) {
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
+    finishLoadingOlderMessages(state.timeline, state.timeline.hasOlder);
     setNotice(state, error instanceof Error ? error.message : String(error), "error");
     effects.scheduleRender();
   }
