@@ -16,7 +16,7 @@ import {
 import { renderBodyLines } from "./bodypanel";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
-import { truncate } from "./strings";
+import { padRight, termWidth } from "./strings";
 import type { AppState } from "./state";
 import {
   applyLineBg,
@@ -43,8 +43,8 @@ function renderAutocompletePopup(
 
   const out: string[] = [];
   const { matches, selection } = autocomplete;
-  const maxName = matches.reduce((max, item) => Math.max(max, item.name.length), 0);
-  const maxDesc = matches.reduce((max, item) => Math.max(max, item.desc.length), 0);
+  const maxName = matches.reduce((max, item) => Math.max(max, termWidth(item.name)), 0);
+  const maxDesc = matches.reduce((max, item) => Math.max(max, termWidth(item.desc)), 0);
   const popupWidth = Math.max(1, Math.min(maxName + maxDesc + 6, Math.max(1, width - 2)));
   const nameWidth = Math.min(maxName + 1, popupWidth - 4);
   const descWidth = Math.max(0, popupWidth - nameWidth - 4);
@@ -66,8 +66,8 @@ function renderAutocompletePopup(
     const selected = selection === index;
     const bg = selected ? theme.sidebarSelBg : theme.sidebarBg;
     const marker = selected ? "▸ " : "  ";
-    const name = truncate(matches[index].name, nameWidth).padEnd(nameWidth);
-    const desc = truncate(matches[index].desc, descWidth).padEnd(descWidth);
+    const name = padRight(matches[index].name, nameWidth);
+    const desc = padRight(matches[index].desc, descWidth);
     out.push(
       moveTo(row, mainCol)
       + `${bg}${theme.accent}${marker}${theme.text}${name}${theme.muted}${desc}${theme.reset}`,

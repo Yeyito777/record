@@ -9,8 +9,11 @@ import {
   moveSidebarSelectionToNextGuild,
   moveSidebarSelectionToPrevCategory,
   moveSidebarSelectionToPrevGuild,
+  renderSidebar,
   setSidebarGuilds,
+  SIDEBAR_WIDTH,
 } from "./sidebar";
+import { termWidth } from "./strings";
 
 describe("sidebar state", () => {
   test("builds a collapsible guild/category/channel tree", () => {
@@ -110,5 +113,25 @@ describe("sidebar state", () => {
 
     moveSidebarSelectionToPrevCategory(sidebar, channels);
     expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("cat-1");
+  });
+
+  test("renders wide channel names without overflowing the sidebar border", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+
+    const rows = renderSidebar(sidebar, [
+      { id: "cat-1", guildId: "guild-1", parentId: null, name: "TOPICS▐", topic: null, position: 0, type: 4, nsfw: false },
+      { id: "chan-1", guildId: "guild-1", parentId: "cat-1", name: "memes＆media", topic: null, position: 1, type: 0, nsfw: false },
+      { id: "chan-2", guildId: "guild-1", parentId: "cat-1", name: "【the🦋chat】", topic: null, position: 2, type: 0, nsfw: false },
+      { id: "chan-3", guildId: "guild-1", parentId: "cat-1", name: "catpostinge𓃠", topic: null, position: 3, type: 0, nsfw: false },
+    ], 8);
+
+    const visibleRows = rows.slice(2).map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""));
+    for (const row of visibleRows) {
+      expect(termWidth(row)).toBe(SIDEBAR_WIDTH);
+      expect(row.endsWith("│")).toBe(true);
+    }
   });
 });

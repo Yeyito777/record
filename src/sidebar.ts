@@ -4,7 +4,7 @@
 
 import type { DiscordChannel, DiscordGuild } from "./discord";
 import { loadingLabel } from "./loading";
-import { truncate } from "./strings";
+import { padRight, termWidth } from "./strings";
 import { theme } from "./theme";
 
 export const SIDEBAR_WIDTH = 28;
@@ -48,11 +48,6 @@ export function createSidebarState(): SidebarState {
     loading: false,
     requestId: 0,
   };
-}
-
-function pad(text: string, width: number): string {
-  if (text.length >= width) return text.slice(0, width);
-  return text + " ".repeat(width - text.length);
 }
 
 function isSelectableEntry(entry: SidebarEntry): boolean {
@@ -313,7 +308,7 @@ export function renderSidebar(
   const borderBg = theme.appBg ?? "";
 
   rows.push(
-    theme.sidebarBg + theme.text + theme.bold + pad(" Servers", innerWidth)
+    theme.sidebarBg + theme.text + theme.bold + padRight(" Servers", innerWidth)
     + theme.reset + borderBg + borderFg + "│" + theme.reset,
   );
 
@@ -334,12 +329,12 @@ export function renderSidebar(
 
   if (sidebar.loading && sidebar.guilds.length === 0) {
     rows.push(
-      theme.sidebarBg + theme.muted + pad(` ${loadingLabel("Loading servers…", loadingFrameIndex)}`, innerWidth)
+      theme.sidebarBg + theme.muted + padRight(` ${loadingLabel("Loading servers…", loadingFrameIndex)}`, innerWidth)
       + theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   } else if (entries.length === 0) {
     rows.push(
-      theme.sidebarBg + theme.muted + pad(" No servers", innerWidth)
+      theme.sidebarBg + theme.muted + padRight(" No servers", innerWidth)
       + theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   } else {
@@ -368,11 +363,10 @@ function renderEntryRow(
 ): string {
   if (entry.kind === "loading") {
     const prefix = "  ".repeat(entry.depth);
-    const labelWidth = Math.max(0, innerWidth - prefix.length);
-    const title = truncate(entry.label, labelWidth);
-    const padding = Math.max(0, labelWidth - title.length);
+    const labelWidth = Math.max(0, innerWidth - termWidth(prefix));
+    const title = padRight(entry.label, labelWidth);
 
-    return theme.reset + theme.sidebarBg + theme.dim + theme.muted + prefix + title + " ".repeat(padding)
+    return theme.reset + theme.sidebarBg + theme.dim + theme.muted + prefix + title
       + theme.reset + borderBg + borderFg + "│" + theme.reset;
   }
 
@@ -386,11 +380,10 @@ function renderEntryRow(
       ? entry.expanded ? "▾ " : "▸ "
       : "# ";
   const prefix = `${indent}${marker}`;
-  const labelWidth = Math.max(0, innerWidth - prefix.length);
-  const title = truncate(entry.label || "unnamed", labelWidth);
-  const padding = Math.max(0, labelWidth - title.length);
+  const labelWidth = Math.max(0, innerWidth - termWidth(prefix));
+  const title = padRight(entry.label || "unnamed", labelWidth);
   const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
 
-  return theme.reset + bg + fg + prefix + text + " ".repeat(padding)
+  return theme.reset + bg + fg + prefix + text
     + theme.reset + borderBg + borderFg + "│" + theme.reset;
 }

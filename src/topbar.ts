@@ -4,7 +4,7 @@
 
 import { formatChannelName } from "./discord";
 import type { AppState } from "./state";
-import { truncate } from "./strings";
+import { padRight } from "./strings";
 import { theme } from "./theme";
 
 function focusLabel(state: AppState): string {
@@ -26,6 +26,6 @@ export function renderTopbar(state: AppState, width: number): string {
         : "Discord terminal client";
 
   const text = ` ${title} ${focusLabel(state)} — ${descriptor}`;
-  const padded = truncate(text, width).padEnd(width, " ");
+  const padded = padRight(text, width);
   return `${theme.topbarBg}${theme.text}${theme.bold}${padded}${theme.boldOff}${theme.reset}`;
 }
