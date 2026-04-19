@@ -1,0 +1,31 @@
+/**
+ * Account status block — who the user is logged in as.
+ */
+
+import type { AppState } from "../state";
+import type { StatusBlock } from "../statusline";
+import { theme } from "../theme";
+import { termWidth, truncate } from "../textwidth";
+
+const MAX_VALUE_WIDTH = 40;
+
+export function accountBlock(state: AppState): StatusBlock | null {
+  if (state.auth.status !== "authenticated" || !state.auth.user) {
+    return null;
+  }
+
+  const label = "  Logged In As: ";
+  const nickname = state.auth.user.globalName || state.auth.user.username;
+  const displayValue = truncate(nickname, MAX_VALUE_WIDTH);
+  const width = termWidth(label) + termWidth(displayValue);
+
+  return {
+    id: "account",
+    priority: 1,
+    width,
+    height: 1,
+    rows: [
+      `${theme.muted}${label}${theme.accent}${displayValue}${theme.reset}`,
+    ],
+  };
+}

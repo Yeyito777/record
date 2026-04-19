@@ -7,7 +7,7 @@
 
 import { clearConfig, saveConfig } from "./config";
 import { tryCommand } from "./commands";
-import { validateToken } from "./discord";
+import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
 import { clearReadOnlyClient, refreshReadOnlyClient, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
@@ -49,7 +49,10 @@ export async function validateAndMaybeSave(
   effects.scheduleRender();
 
   try {
-    const user = await validateToken(token);
+    const [user, presenceStatus] = await Promise.all([
+      validateToken(token),
+      fetchCurrentUserPresenceStatus(token).catch(() => null),
+    ]);
     if (!isCurrentAuthRequest(state, requestId)) return;
 
     let saveError: string | null = null;
@@ -64,6 +67,7 @@ export async function validateAndMaybeSave(
 
     state.auth.status = "authenticated";
     state.auth.user = user;
+    state.auth.presenceStatus = presenceStatus;
     state.auth.error = null;
     state.auth.lastValidatedAt = Date.now();
 

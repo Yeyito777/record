@@ -12,6 +12,7 @@ import { normalizeToken } from "./token";
 import type { NoticeTone } from "./theme";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
+export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
 export type PanelFocus = "sidebar" | "chat";
 export type ChatFocus = "prompt" | "history";
 
@@ -24,6 +25,7 @@ export interface Notice {
 export interface AuthState {
   status: AuthStatus;
   user: DiscordIdentity | null;
+  presenceStatus: PresenceStatus | null;
   error: string | null;
   savedToken: string | null;
   lastValidatedAt: number | null;
@@ -61,6 +63,7 @@ export function createInitialState(initialToken: string | null, path: string): A
     auth: {
       status: "idle",
       user: null,
+      presenceStatus: null,
       error: null,
       savedToken,
       lastValidatedAt: null,

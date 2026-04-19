@@ -8,6 +8,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const GUILD_PAGE_LIMIT = 200;
 const SIDEBAR_GUILD_CHANNEL_TYPES = new Set([0, 4, 5, 11, 12]);
 
+export type DiscordPresenceStatus = "online" | "idle" | "dnd" | "offline";
+
 interface DiscordErrorResponse {
   message?: string;
   code?: number;
@@ -28,6 +30,10 @@ interface DiscordGuildResponse {
   id: string;
   name: string;
   icon: string | null;
+}
+
+interface DiscordUserSettingsResponse {
+  status?: string | null;
 }
 
 interface DiscordChannelResponse {
@@ -150,6 +156,21 @@ export async function validateToken(token: string): Promise<DiscordIdentity> {
     email: me.email ?? null,
     verified: typeof me.verified === "boolean" ? me.verified : null,
   };
+}
+
+export async function fetchCurrentUserPresenceStatus(token: string): Promise<DiscordPresenceStatus | null> {
+  const settings = await apiGetJson<DiscordUserSettingsResponse>(token, "/users/@me/settings");
+  switch (settings.status) {
+    case "online":
+    case "idle":
+    case "dnd":
+    case "offline":
+      return settings.status;
+    case "invisible":
+      return "offline";
+    default:
+      return null;
+  }
 }
 
 export async function fetchGuilds(token: string): Promise<DiscordGuild[]> {

@@ -16,6 +16,7 @@ import {
 import { renderBodyLines } from "./bodypanel";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
+import { renderStatusLine } from "./statusline";
 import { padRight, termWidth } from "./textwidth";
 import type { AppState } from "./state";
 import {
@@ -168,19 +169,25 @@ export function render(state: AppState): void {
   emitSidebarCol(2);
   out.push(moveTo(2, mainCol) + bgLine(`${bodyBorder}${"─".repeat(mainW)}${theme.reset}`));
 
+  const status = renderStatusLine(state, mainW);
+  const statusHeight = status.height;
+  const bottomStatusRows = statusHeight > 0 ? statusHeight + 1 : 0;
+
   const maxInputWidth = Math.max(1, mainW - PROMPT_PREFIX_WIDTH);
   const input = getInputLines(
     state.editor.buffer,
     displayCursor(state.editor),
     maxInputWidth,
-    Math.max(1, Math.min(MAX_PROMPT_ROWS, rows - 3)),
+    Math.max(1, Math.min(MAX_PROMPT_ROWS, rows - 3 - bottomStatusRows)),
     state.editor.scroll,
   );
   state.editor.scroll = input.scrollOffset;
 
   const inputRowCount = Math.max(1, input.lines.length);
-  const promptSeparatorRow = Math.max(3, rows - inputRowCount);
+  const promptSeparatorRow = Math.max(3, rows - inputRowCount - bottomStatusRows);
   const firstInputRow = promptSeparatorRow + 1;
+  const promptBottomSeparatorRow = firstInputRow + inputRowCount;
+  const statusStartRow = promptBottomSeparatorRow + 1;
   const bodyTop = 3;
   const bodyRows = Math.max(0, promptSeparatorRow - bodyTop);
 
@@ -236,6 +243,19 @@ export function render(state: AppState): void {
     out.push(moveTo(row, 1) + clearedLine);
     emitSidebarCol(row);
     out.push(moveTo(row, mainCol) + bgLine(`${prefix}${lineContent}`));
+  }
+
+  if (statusHeight > 0) {
+    out.push(moveTo(promptBottomSeparatorRow, 1) + clearedLine);
+    emitSidebarCol(promptBottomSeparatorRow);
+    out.push(moveTo(promptBottomSeparatorRow, mainCol) + bgLine(`${promptColor}${"─".repeat(mainW)}${theme.reset}`));
+
+    for (let i = 0; i < statusHeight; i++) {
+      const row = statusStartRow + i;
+      out.push(moveTo(row, 1) + clearedLine);
+      emitSidebarCol(row);
+      out.push(moveTo(row, mainCol) + bgLine(status.lines[i] ?? ""));
+    }
   }
 
   const cursorRow = firstInputRow + input.cursorLine;
