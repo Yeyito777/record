@@ -190,16 +190,17 @@ export function render(state: AppState): void {
   const statusStartRow = promptBottomSeparatorRow + 1;
   const bodyTop = 3;
   const bodyRows = Math.max(0, promptSeparatorRow - bodyTop);
+  const bodyInnerWidth = Math.max(0, mainW - 2);
 
-  const timeline = renderTimelineLines(state.timeline, mainW, bodyRows, state.notice, state.loadingFrameIndex);
-  const fallbackBody = renderBodyLines(state, mainW);
+  const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, state.notice, state.loadingFrameIndex);
+  const fallbackBody = renderBodyLines(state, bodyInnerWidth);
   const timelineLines = timeline.lines.length > 0 ? timeline.lines : fallbackBody;
 
   for (let i = 0; i < bodyRows; i++) {
     const row = bodyTop + i;
     out.push(moveTo(row, 1) + clearedLine);
     emitSidebarCol(row);
-    out.push(moveTo(row, mainCol) + bgLine(timelineLines[i] ?? ""));
+    out.push(moveTo(row, mainCol) + bgLine(` ${timelineLines[i] ?? ""}`));
   }
 
   if (state.autocomplete) {
