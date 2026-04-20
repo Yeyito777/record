@@ -87,6 +87,57 @@ describe("timeline rendering", () => {
     expect(timeline.scrollOffset).toBe(0);
   });
 
+  test("reuses cached timeline content across identical redraws", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "before **bold** *italic* `code` after")]);
+
+    const first = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+    const second = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(second.allLines).toBe(first.allLines);
+    expect(second.lineAnchors).toBe(first.lineAnchors);
+    expect(second.wrapContinuation).toBe(first.wrapContinuation);
+    expect(second.messageBounds).toBe(first.messageBounds);
+  });
+
+  test("invalidates cached timeline content after prepending older messages", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("2", "newer")], { hasOlder: true });
+
+    const first = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    prependTimelineMessages(timeline, [message("1", "older **message**")], 80, { hasOlder: false });
+
+    const second = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(second.allLines).not.toBe(first.allLines);
+    expect(second.lines.map(stripAnsi).some((line) => line.includes("older message"))).toBe(true);
+  });
+
   test("wraps wide unicode message content by terminal columns", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("message-1", "memes＆media 【the🦋chat】 café")]);

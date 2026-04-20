@@ -47,6 +47,29 @@ interface RenderedMessage {
   wrapContinuation: boolean[];
 }
 
+interface CachedRenderedMessage {
+  width: number;
+  fingerprint: string;
+  rendered: RenderedMessage;
+}
+
+interface CachedTimelineContent {
+  width: number;
+  version: number;
+  lines: string[];
+  lineAnchors: string[];
+  wrapContinuation: boolean[];
+  messageBounds: TimelineMessageBound[];
+}
+
+interface TimelineCacheState {
+  version: number;
+  messageRenderCache: Map<string, CachedRenderedMessage>;
+  contentCache: CachedTimelineContent | null;
+}
+
+const timelineCaches = new WeakMap<TimelineState, TimelineCacheState>();
+
 export function createTimelineState(): TimelineState {
   return {
     channelId: null,
@@ -68,6 +91,7 @@ export function clearTimeline(timeline: TimelineState): void {
   timeline.loading = false;
   timeline.loadingOlder = false;
   timeline.hasOlder = false;
+  resetTimelineRenderCaches(timeline);
 }
 
 export function setTimelineMessages(
@@ -83,6 +107,7 @@ export function setTimelineMessages(
   timeline.loading = false;
   timeline.loadingOlder = false;
   timeline.hasOlder = options.hasOlder ?? messages.length > 0;
+  resetTimelineRenderCaches(timeline);
 }
 
 export function startLoadingOlderMessages(timeline: TimelineState): void {
@@ -106,11 +131,12 @@ export function prependTimelineMessages(
     return 0;
   }
 
-  const insertedRows = countRenderedMessageRows(messages, width);
+  const insertedRows = countRenderedMessageRows(timeline, messages, width);
   timeline.messages = [...messages, ...timeline.messages];
   timeline.loading = false;
   timeline.loadingOlder = false;
   timeline.hasOlder = options.hasOlder;
+  invalidateTimelineContentCache(timeline);
   return insertedRows;
 }
 
@@ -137,10 +163,10 @@ export function renderTimelineLines(
   notice: { text: string; tone: "muted" | "success" | "warning" | "error"; loading?: boolean },
   loadingFrameIndex = 0,
 ): RenderedTimeline {
-  const allLines: string[] = [];
-  const lineAnchors: string[] = [];
-  const wrapContinuation: boolean[] = [];
-  const messageBounds: TimelineMessageBound[] = [];
+  let allLines: string[] = [];
+  let lineAnchors: string[] = [];
+  let wrapContinuation: boolean[] = [];
+  let messageBounds: TimelineMessageBound[] = [];
 
   if (notice.text) {
     for (const [index, line] of notice.text.split("\n").entries()) {
@@ -160,41 +186,20 @@ export function renderTimelineLines(
     allLines.push(`${theme.muted}${truncate(loadingLabel("Loading messages…", loadingFrameIndex), width)}${theme.reset}`);
     lineAnchors.push("timeline:loading");
     wrapContinuation.push(false);
-  } else if (!timeline.channelId && timeline.messages.length === 0) {
-    // No active channel yet.
   } else {
-    if (timeline.loadingOlder) {
-      allLines.push(`${theme.muted}${truncate(loadingLabel("Loading older messages…", loadingFrameIndex), width)}${theme.reset}`);
-      lineAnchors.push("timeline:loading-older");
-      wrapContinuation.push(false);
-    }
-
-    if (timeline.messages.length === 0) {
-      allLines.push(`${theme.muted}No messages yet.${theme.reset}`);
-      lineAnchors.push("timeline:empty");
-      wrapContinuation.push(false);
-    } else {
-      for (const message of timeline.messages) {
-        const renderedMessage = renderMessage(message, width);
-        const start = allLines.length;
-        allLines.push(...renderedMessage.lines);
-        lineAnchors.push(...renderedMessage.lineAnchors);
-        wrapContinuation.push(...renderedMessage.wrapContinuation);
-        messageBounds.push({
-          start,
-          end: start + renderedMessage.lines.length,
-          contentStart: start,
-          contentEnd: start + renderedMessage.lines.length,
-        });
-        allLines.push("");
-        lineAnchors.push(`msg:${message.id}:gap`);
+    const content = getRenderedTimelineContent(timeline, width);
+    if (notice.text || timeline.loadingOlder) {
+      if (timeline.loadingOlder) {
+        allLines.push(`${theme.muted}${truncate(loadingLabel("Loading older messages…", loadingFrameIndex), width)}${theme.reset}`);
+        lineAnchors.push("timeline:loading-older");
         wrapContinuation.push(false);
       }
-      while (allLines.length > 0 && allLines[allLines.length - 1] === "") {
-        allLines.pop();
-        lineAnchors.pop();
-        wrapContinuation.pop();
-      }
+      appendRenderedTimelineContent(allLines, lineAnchors, wrapContinuation, messageBounds, content);
+    } else {
+      allLines = content.lines;
+      lineAnchors = content.lineAnchors;
+      wrapContinuation = content.wrapContinuation;
+      messageBounds = content.messageBounds;
     }
   }
 
@@ -213,12 +218,101 @@ export function renderTimelineLines(
   };
 }
 
-function countRenderedMessageRows(messages: DiscordMessage[], width: number): number {
+function countRenderedMessageRows(timeline: TimelineState, messages: DiscordMessage[], width: number): number {
   let total = 0;
   for (const message of messages) {
-    total += renderMessage(message, width).lines.length + 1;
+    total += renderMessageCached(timeline, message, width).lines.length + 1;
   }
   return total;
+}
+
+function appendRenderedTimelineContent(
+  allLines: string[],
+  lineAnchors: string[],
+  wrapContinuation: boolean[],
+  messageBounds: TimelineMessageBound[],
+  content: CachedTimelineContent,
+): void {
+  const offset = allLines.length;
+  allLines.push(...content.lines);
+  lineAnchors.push(...content.lineAnchors);
+  wrapContinuation.push(...content.wrapContinuation);
+  if (offset === 0) {
+    messageBounds.push(...content.messageBounds);
+    return;
+  }
+  messageBounds.push(...content.messageBounds.map((bound) => ({
+    start: bound.start + offset,
+    end: bound.end + offset,
+    contentStart: bound.contentStart + offset,
+    contentEnd: bound.contentEnd + offset,
+  })));
+}
+
+function getRenderedTimelineContent(timeline: TimelineState, width: number): CachedTimelineContent {
+  const cacheState = getTimelineCacheState(timeline);
+  if (cacheState.contentCache && cacheState.contentCache.width === width && cacheState.contentCache.version === cacheState.version) {
+    return cacheState.contentCache;
+  }
+
+  const lines: string[] = [];
+  const lineAnchors: string[] = [];
+  const wrapContinuation: boolean[] = [];
+  const messageBounds: TimelineMessageBound[] = [];
+
+  if (!timeline.channelId && timeline.messages.length === 0) {
+    // No active channel yet.
+  } else if (timeline.messages.length === 0) {
+    lines.push(`${theme.muted}No messages yet.${theme.reset}`);
+    lineAnchors.push("timeline:empty");
+    wrapContinuation.push(false);
+  } else {
+    for (const message of timeline.messages) {
+      const renderedMessage = renderMessageCached(timeline, message, width);
+      const start = lines.length;
+      lines.push(...renderedMessage.lines);
+      lineAnchors.push(...renderedMessage.lineAnchors);
+      wrapContinuation.push(...renderedMessage.wrapContinuation);
+      messageBounds.push({
+        start,
+        end: start + renderedMessage.lines.length,
+        contentStart: start,
+        contentEnd: start + renderedMessage.lines.length,
+      });
+      lines.push("");
+      lineAnchors.push(`msg:${message.id}:gap`);
+      wrapContinuation.push(false);
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === "") {
+      lines.pop();
+      lineAnchors.pop();
+      wrapContinuation.pop();
+    }
+  }
+
+  const content = {
+    width,
+    version: cacheState.version,
+    lines,
+    lineAnchors,
+    wrapContinuation,
+    messageBounds,
+  };
+  cacheState.contentCache = content;
+  return content;
+}
+
+function renderMessageCached(timeline: TimelineState, message: DiscordMessage, width: number): RenderedMessage {
+  const cacheState = getTimelineCacheState(timeline);
+  const fingerprint = messageRenderFingerprint(message);
+  const cached = cacheState.messageRenderCache.get(message.id);
+  if (cached && cached.width === width && cached.fingerprint === fingerprint) {
+    return cached.rendered;
+  }
+
+  const rendered = renderMessage(message, width);
+  cacheState.messageRenderCache.set(message.id, { width, fingerprint, rendered });
+  return rendered;
 }
 
 function renderMessage(message: DiscordMessage, width: number): RenderedMessage {
@@ -271,4 +365,42 @@ function wrapMarkdownText(text: string, width: number): WrappedLine[] {
     wrapContinuation: wrapped.cont[visualIndex] ?? false,
     visualIndex,
   }));
+}
+
+function getTimelineCacheState(timeline: TimelineState): TimelineCacheState {
+  let cacheState = timelineCaches.get(timeline);
+  if (cacheState) return cacheState;
+
+  cacheState = {
+    version: 0,
+    messageRenderCache: new Map(),
+    contentCache: null,
+  };
+  timelineCaches.set(timeline, cacheState);
+  return cacheState;
+}
+
+function invalidateTimelineContentCache(timeline: TimelineState): void {
+  const cacheState = getTimelineCacheState(timeline);
+  cacheState.version += 1;
+  cacheState.contentCache = null;
+}
+
+function resetTimelineRenderCaches(timeline: TimelineState): void {
+  const cacheState = getTimelineCacheState(timeline);
+  cacheState.version += 1;
+  cacheState.messageRenderCache.clear();
+  cacheState.contentCache = null;
+}
+
+function messageRenderFingerprint(message: DiscordMessage): string {
+  const attachmentKey = message.attachments.map((attachment) => attachment.filename).join("\u0000");
+  return [
+    String(message.timestamp),
+    message.author.displayName,
+    message.author.bot ? "1" : "0",
+    message.content,
+    attachmentKey,
+    String(message.embedsCount),
+  ].join("\u0001");
 }
