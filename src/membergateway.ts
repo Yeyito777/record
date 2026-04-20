@@ -1,0 +1,469 @@
+/**
+ * Minimal Discord gateway client for guild member list subscriptions.
+ *
+ * Modeled after Endcord's gateway-driven member list flow:
+ * - GET /gateway
+ * - open websocket with ?v=9&encoding=json
+ * - IDENTIFY with user token + client properties
+ * - subscribe with op 37 for the active guild/channel
+ * - consume GUILD_MEMBER_LIST_UPDATE payloads
+ */
+
+import { release } from "os";
+
+import type { DiscordGuildMember } from "./discord";
+
+const API_BASE = "https://discord.com/api/v9";
+const GATEWAY_VERSION = 9;
+const GATEWAY_CAPABILITIES = 30717;
+const GATEWAY_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
+
+interface GatewayPayload {
+  op: number;
+  t?: string | null;
+  s?: number | null;
+  d?: unknown;
+}
+
+interface MemberListCallbacks {
+  onMembers: (members: DiscordGuildMember[]) => void;
+  onError: (error: Error) => void;
+}
+
+interface ActiveSubscription extends MemberListCallbacks {
+  guildId: string;
+  channelId: string;
+  listId: string | null;
+  waitingForSync: boolean;
+  rows: GatewayMemberListRow[];
+}
+
+export type GatewayMemberListRow =
+  | { type: "group"; id: string }
+  | { type: "member"; member: DiscordGuildMember };
+
+export class MemberListGatewayClient {
+  private gatewayUrl: string | null = null;
+  private ws: WebSocket | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private ready = false;
+  private readyResolve: (() => void) | null = null;
+  private readyReject: ((error: Error) => void) | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatIntervalMs = 0;
+  private seq: number | null = null;
+  private manualDisconnect = false;
+  private subscription: ActiveSubscription | null = null;
+
+  constructor(private readonly token: string) {}
+
+  async subscribe(guildId: string, channelId: string, callbacks: MemberListCallbacks): Promise<void> {
+    const current = this.subscription;
+    if (current && current.guildId === guildId && current.channelId === channelId) {
+      current.onMembers = callbacks.onMembers;
+      current.onError = callbacks.onError;
+      if (current.listId) {
+        callbacks.onMembers(extractGatewayMembers(current.rows));
+        return;
+      }
+    } else {
+      this.subscription = {
+        guildId,
+        channelId,
+        listId: null,
+        waitingForSync: true,
+        rows: [],
+        ...callbacks,
+      };
+    }
+
+    await this.ensureConnected();
+    this.sendSubscription(guildId, channelId);
+  }
+
+  disconnect(): void {
+    this.subscription = null;
+    this.closeSocket(true);
+  }
+
+  private async ensureConnected(): Promise<void> {
+    if (this.ready && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
+
+    this.connectPromise = this.connect().finally(() => {
+      this.connectPromise = null;
+    });
+    return this.connectPromise;
+  }
+
+  private async connect(): Promise<void> {
+    if (!this.gatewayUrl) {
+      this.gatewayUrl = await fetchGatewayUrl();
+    }
+
+    const gatewayUrl = `${this.gatewayUrl}/?v=${GATEWAY_VERSION}&encoding=json`;
+
+    await new Promise<void>((resolve, reject) => {
+      this.ready = false;
+      this.seq = null;
+      this.manualDisconnect = false;
+      this.readyResolve = resolve;
+      this.readyReject = reject;
+      this.ws = new WebSocket(gatewayUrl);
+      this.ws.addEventListener("message", this.handleMessage);
+      this.ws.addEventListener("close", this.handleClose);
+      this.ws.addEventListener("error", this.handleError);
+    });
+  }
+
+  private handleMessage = (event: MessageEvent<unknown>): void => {
+    let payload: GatewayPayload;
+    try {
+      payload = JSON.parse(messageDataToString(event.data)) as GatewayPayload;
+    } catch (error) {
+      this.failConnection(asError(error, "Failed to parse Discord gateway payload."));
+      return;
+    }
+
+    if (typeof payload.s === "number") {
+      this.seq = payload.s;
+    }
+
+    if (payload.op === 10) {
+      const interval = parseHeartbeatInterval(payload.d);
+      if (!interval) {
+        this.failConnection(new Error("Discord gateway did not provide a heartbeat interval."));
+        return;
+      }
+      this.startHeartbeat(interval);
+      this.send({
+        op: 2,
+        d: {
+          token: this.token,
+          capabilities: GATEWAY_CAPABILITIES,
+          properties: createGatewayProperties(),
+          presence: {
+            activities: [],
+            status: "online",
+            since: null,
+            afk: false,
+          },
+        },
+      });
+      return;
+    }
+
+    if (payload.op === 11) {
+      return;
+    }
+
+    if (payload.op === 7 || payload.op === 9) {
+      this.failConnection(new Error(`Discord gateway requested reconnect (op ${payload.op}).`));
+      return;
+    }
+
+    if (payload.t === "READY") {
+      this.ready = true;
+      this.readyResolve?.();
+      this.readyResolve = null;
+      this.readyReject = null;
+      return;
+    }
+
+    if (payload.t === "GUILD_MEMBER_LIST_UPDATE") {
+      this.handleMemberListUpdate(payload.d);
+    }
+  };
+
+  private handleClose = (event: CloseEvent): void => {
+    const error = new Error(
+      event.reason
+        ? `Discord member list gateway closed: ${event.reason}`
+        : `Discord member list gateway closed (code ${event.code}).`,
+    );
+    const manualDisconnect = this.manualDisconnect;
+    this.cleanupSocketState();
+
+    if (!manualDisconnect) {
+      this.readyReject?.(error);
+      this.readyResolve = null;
+      this.readyReject = null;
+      this.subscription?.onError(error);
+    }
+  };
+
+  private handleError = (): void => {
+    if (!this.ready) {
+      this.readyReject?.(new Error("Could not connect to the Discord member list gateway."));
+      this.readyResolve = null;
+      this.readyReject = null;
+    }
+  };
+
+  private handleMemberListUpdate(data: unknown): void {
+    const subscription = this.subscription;
+    if (!subscription || !isObject(data)) return;
+
+    const guildId = typeof data.guild_id === "string" ? data.guild_id : null;
+    if (!guildId || guildId !== subscription.guildId) return;
+
+    const listId = typeof data.id === "string" ? data.id : null;
+    const ops = Array.isArray(data.ops) ? data.ops : [];
+    const hasInitialSync = ops.some(isInitialSyncOp);
+
+    if (subscription.waitingForSync) {
+      if (!hasInitialSync || !listId) return;
+      subscription.listId = listId;
+      subscription.waitingForSync = false;
+      subscription.rows = applyGatewayMemberListOps([], ops);
+      subscription.onMembers(extractGatewayMembers(subscription.rows));
+      return;
+    }
+
+    if (!listId || subscription.listId !== listId) return;
+
+    subscription.rows = applyGatewayMemberListOps(subscription.rows, ops);
+    subscription.onMembers(extractGatewayMembers(subscription.rows));
+  }
+
+  private startHeartbeat(intervalMs: number): void {
+    this.heartbeatIntervalMs = intervalMs;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+    }
+    this.heartbeatTimer = setInterval(() => {
+      this.send({ op: 1, d: this.seq });
+    }, Math.max(1_000, this.heartbeatIntervalMs));
+  }
+
+  private sendSubscription(guildId: string, channelId: string): void {
+    if (!this.ready) return;
+    this.send({
+      op: 37,
+      d: {
+        subscriptions: {
+          [guildId]: {
+            typing: true,
+            activities: true,
+            threads: true,
+            channels: {
+              [channelId]: [[0, 99]],
+            },
+          },
+        },
+      },
+    });
+  }
+
+  private send(payload: unknown): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify(payload));
+  }
+
+  private failConnection(error: Error): void {
+    this.readyReject?.(error);
+    this.readyResolve = null;
+    this.readyReject = null;
+    this.subscription?.onError(error);
+    this.closeSocket(true);
+  }
+
+  private closeSocket(manualDisconnect: boolean): void {
+    this.manualDisconnect = manualDisconnect;
+    if (manualDisconnect && !this.ready) {
+      this.readyReject?.(new Error("Discord member list gateway disconnected."));
+      this.readyResolve = null;
+      this.readyReject = null;
+    }
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      this.ws.close();
+      return;
+    }
+    this.cleanupSocketState();
+  }
+
+  private cleanupSocketState(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.ws) {
+      this.ws.removeEventListener("message", this.handleMessage);
+      this.ws.removeEventListener("close", this.handleClose);
+      this.ws.removeEventListener("error", this.handleError);
+    }
+    this.ws = null;
+    this.ready = false;
+    this.seq = null;
+    this.heartbeatIntervalMs = 0;
+  }
+}
+
+export function applyGatewayMemberListOps(existingRows: GatewayMemberListRow[], ops: unknown[]): GatewayMemberListRow[] {
+  let rows = [...existingRows];
+
+  for (const rawOp of ops) {
+    if (!isObject(rawOp) || typeof rawOp.op !== "string") continue;
+
+    switch (rawOp.op) {
+      case "SYNC": {
+        const range = Array.isArray(rawOp.range) ? rawOp.range : [];
+        if (range[0] !== 0) break;
+        rows = Array.isArray(rawOp.items)
+          ? rawOp.items.map(gatewayRowFromItem).filter((row): row is GatewayMemberListRow => row !== null)
+          : [];
+        break;
+      }
+      case "DELETE": {
+        const index = typeof rawOp.index === "number" ? rawOp.index : -1;
+        if (index >= 0 && index < rows.length) {
+          rows.splice(index, 1);
+        }
+        break;
+      }
+      case "UPDATE": {
+        const index = typeof rawOp.index === "number" ? rawOp.index : -1;
+        const row = gatewayRowFromItem(rawOp.item);
+        if (!row) break;
+        updateGatewayRow(rows, index, row);
+        break;
+      }
+      case "INSERT": {
+        const index = typeof rawOp.index === "number" ? rawOp.index : -1;
+        const row = gatewayRowFromItem(rawOp.item);
+        if (!row || index < 0) break;
+        rows.splice(Math.min(index, rows.length), 0, row);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return rows;
+}
+
+export function extractGatewayMembers(rows: GatewayMemberListRow[]): DiscordGuildMember[] {
+  return rows.flatMap((row) => row.type === "member" ? [row.member] : []);
+}
+
+function updateGatewayRow(rows: GatewayMemberListRow[], index: number, nextRow: GatewayMemberListRow): void {
+  const nextIdentity = gatewayRowIdentity(nextRow);
+  if (nextIdentity === null) return;
+
+  if (index >= 0 && index < rows.length && gatewayRowIdentity(rows[index]!) === nextIdentity) {
+    rows[index] = nextRow;
+    return;
+  }
+
+  const existingIndex = rows.findIndex((row) => gatewayRowIdentity(row) === nextIdentity);
+  if (existingIndex >= 0) {
+    rows[existingIndex] = nextRow;
+  }
+}
+
+function gatewayRowIdentity(row: GatewayMemberListRow): string | null {
+  return row.type === "group" ? `group:${row.id}` : `member:${row.member.id}`;
+}
+
+function gatewayRowFromItem(item: unknown): GatewayMemberListRow | null {
+  if (!isObject(item)) return null;
+
+  if (isObject(item.group) && typeof item.group.id === "string") {
+    return { type: "group", id: item.group.id };
+  }
+
+  const member = gatewayMemberFromPayload(item.member);
+  return member ? { type: "member", member } : null;
+}
+
+function gatewayMemberFromPayload(payload: unknown): DiscordGuildMember | null {
+  if (!isObject(payload) || !isObject(payload.user) || typeof payload.user.id !== "string" || typeof payload.user.username !== "string") {
+    return null;
+  }
+
+  const nick = typeof payload.nick === "string" && payload.nick.trim() ? payload.nick : null;
+  const globalName = typeof payload.user.global_name === "string" && payload.user.global_name.trim()
+    ? payload.user.global_name
+    : null;
+  const displayName = typeof payload.user.display_name === "string" && payload.user.display_name.trim()
+    ? payload.user.display_name
+    : null;
+
+  return {
+    id: payload.user.id,
+    username: payload.user.username,
+    displayName: nick ?? globalName ?? displayName ?? payload.user.username,
+    bot: Boolean(payload.user.bot),
+  };
+}
+
+function isInitialSyncOp(op: unknown): boolean {
+  return isObject(op)
+    && op.op === "SYNC"
+    && Array.isArray(op.range)
+    && op.range[0] === 0;
+}
+
+function parseHeartbeatInterval(data: unknown): number | null {
+  if (!isObject(data) || typeof data.heartbeat_interval !== "number") return null;
+  return data.heartbeat_interval;
+}
+
+function createGatewayProperties(): Record<string, unknown> {
+  const locale = (process.env.LC_ALL ?? process.env.LANG ?? "en_US").split(".")[0] || "en_US";
+  const arch = process.arch === "x64" || process.arch === "arm64" ? process.arch : "x64";
+
+  return {
+    os: "Linux",
+    browser: "Discord Client",
+    release_channel: "stable",
+    os_version: release(),
+    os_arch: arch,
+    app_arch: arch,
+    system_locale: locale,
+    has_client_mods: false,
+    browser_user_agent: GATEWAY_USER_AGENT,
+    browser_version: "138.0.7204.251",
+    runtime_environment: "native",
+    client_build_number: null,
+    native_build_number: null,
+    client_event_source: null,
+    client_app_state: "unfocused",
+    is_fast_connect: false,
+  };
+}
+
+async function fetchGatewayUrl(): Promise<string> {
+  const response = await fetch(`${API_BASE}/gateway`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Discord gateway URL (${response.status}).`);
+  }
+
+  const body = await response.json() as { url?: string };
+  if (!body.url) {
+    throw new Error("Discord gateway response did not include a websocket URL.");
+  }
+
+  return body.url;
+}
+
+function messageDataToString(data: unknown): string {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(data));
+  if (ArrayBuffer.isView(data)) return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+  return String(data);
+}
+
+function isObject(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null;
+}
+
+function asError(error: unknown, fallback: string): Error {
+  return error instanceof Error ? error : new Error(fallback);
+}

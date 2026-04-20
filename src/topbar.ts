@@ -9,6 +9,7 @@ import { theme } from "./theme";
 
 function focusLabel(state: AppState): string {
   if (state.panelFocus === "sidebar") return "[servers]";
+  if (state.panelFocus === "memberlist") return "[members]";
   return state.chatFocus === "history" ? "[history]" : "[prompt]";
 }
 

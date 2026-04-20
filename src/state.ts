@@ -7,6 +7,7 @@ import { createChannelListState, type ChannelListState } from "./channels";
 import type { DiscordIdentity } from "./discord";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
+import { createMemberListState, type MemberListState } from "./memberlist";
 import { createSidebarState, type SidebarState } from "./sidebar";
 import { createTimelineState, type TimelineMessageBound, type TimelineState } from "./timeline";
 import { normalizeToken } from "./token";
@@ -14,7 +15,7 @@ import type { NoticeTone } from "./theme";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
-export type PanelFocus = "sidebar" | "chat";
+export type PanelFocus = "sidebar" | "memberlist" | "chat";
 export type ChatFocus = "prompt" | "history";
 
 export interface Notice {
@@ -48,6 +49,7 @@ export interface AppState {
   historyMessageBounds: TimelineMessageBound[];
   autocomplete: AutocompleteState | null;
   sidebar: SidebarState;
+  memberList: MemberListState;
   channelList: ChannelListState;
   timeline: TimelineState;
   auth: AuthState;
@@ -73,6 +75,7 @@ export function createInitialState(initialToken: string | null, path: string): A
     historyMessageBounds: [],
     autocomplete: null,
     sidebar: createSidebarState(),
+    memberList: createMemberListState(),
     channelList: createChannelListState(),
     timeline: createTimelineState(),
     auth: {
@@ -130,15 +133,29 @@ export function focusSidebar(state: AppState): void {
   leaveInsertMode(state.editor);
 }
 
-export function cycleFocus(state: AppState): void {
-  if (!state.sidebar.open) {
-    state.panelFocus = "chat";
-    return;
-  }
+export function focusMemberList(state: AppState): void {
+  state.panelFocus = "memberlist";
+  leaveInsertMode(state.editor);
+}
 
-  if (state.panelFocus === "sidebar") {
-    state.panelFocus = "chat";
-  } else {
+function focusPanel(state: AppState, panel: PanelFocus): void {
+  if (panel === "sidebar") {
     focusSidebar(state);
+  } else if (panel === "memberlist") {
+    focusMemberList(state);
+  } else {
+    state.panelFocus = "chat";
   }
+}
+
+export function cycleFocus(state: AppState, direction: 1 | -1 = 1): void {
+  const order: PanelFocus[] = ["chat"];
+  if (state.memberList.open) order.push("memberlist");
+  if (state.sidebar.open) order.push("sidebar");
+
+  const currentIndex = order.indexOf(state.panelFocus);
+  const startIndex = currentIndex >= 0 ? currentIndex : 0;
+  const nextIndex = (startIndex + direction + order.length) % order.length;
+  const next = order[nextIndex] ?? "chat";
+  focusPanel(state, next);
 }

@@ -22,8 +22,16 @@ import {
 } from "./historycursor";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
+import { MEMBER_LIST_WIDTH } from "./memberlist";
 import { render } from "./render";
-import { bootstrapReadOnlyClient, loadChannelMessages, loadGuildChannels, loadOlderChannelMessages } from "./session";
+import {
+  bootstrapReadOnlyClient,
+  disconnectMemberListGateway,
+  loadChannelMessages,
+  loadGuildChannels,
+  loadOlderChannelMessages,
+  syncMemberListForCurrentChannel,
+} from "./session";
 import { renderStatusLine } from "./statusline";
 import {
   activateSelectedEntry,
@@ -100,6 +108,7 @@ function hasActiveLoadingIndicator(): boolean {
     || state.auth.status === "loading"
     || state.sidebar.loading
     || Boolean(state.sidebar.loadingGuildId)
+    || state.memberList.loading
     || state.channelList.loading
     || state.timeline.loading
     || state.timeline.loadingOlder;
@@ -172,13 +181,15 @@ function tokenOrWarn(): string | null {
 
 function timelineContentWidth(): number {
   const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
-  const mainW = Math.max(1, state.cols - sidebarW);
+  const memberListW = state.memberList.open ? MEMBER_LIST_WIDTH : 0;
+  const mainW = Math.max(1, state.cols - sidebarW - memberListW);
   return Math.max(1, mainW - 2);
 }
 
 function timelinePageSize(): number {
   const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
-  const mainW = Math.max(1, state.cols - sidebarW);
+  const memberListW = state.memberList.open ? MEMBER_LIST_WIDTH : 0;
+  const mainW = Math.max(1, state.cols - sidebarW - memberListW);
   const statusHeight = renderStatusLine(state, mainW).height;
   const bottomStatusRows = statusHeight > 0 ? statusHeight + 1 : 0;
   const maxInputWidth = Math.max(1, mainW - PROMPT_PREFIX_WIDTH);
@@ -224,6 +235,20 @@ function toggleSidebar(): void {
   scheduleRender();
 }
 
+function toggleMemberList(): void {
+  state.memberList.open = !state.memberList.open;
+  if (state.memberList.open) {
+    syncMemberListForCurrentChannel(state, { scheduleRender });
+  } else {
+    state.memberList.requestId += 1;
+    disconnectMemberListGateway();
+    if (state.panelFocus === "memberlist") {
+      state.panelFocus = state.sidebar.open ? "sidebar" : "chat";
+    }
+  }
+  scheduleRender();
+}
+
 function toggleHistoryFocus(): void {
   if (state.panelFocus === "chat" && state.chatFocus === "history") {
     focusPrompt(state);
@@ -239,14 +264,14 @@ function toggleHistoryFocus(): void {
   scheduleRender();
 }
 
-function cyclePanelFocus(): void {
-  cycleFocus(state);
+function cyclePanelFocus(direction: 1 | -1): void {
+  cycleFocus(state, direction);
   syncPromptAutocomplete();
   scheduleRender();
 }
 
 function handleGlobalAction(key: KeyEvent): boolean {
-  const context = state.panelFocus === "sidebar" || state.chatFocus === "history"
+  const context = state.panelFocus === "sidebar" || state.panelFocus === "memberlist" || state.chatFocus === "history"
     ? "navigation"
     : "prompt";
   const action = resolveAction(key, context);
@@ -258,11 +283,17 @@ function handleGlobalAction(key: KeyEvent): boolean {
     case "sidebar_toggle":
       toggleSidebar();
       return true;
-    case "focus_cycle":
-      cyclePanelFocus();
+    case "focus_cycle_next":
+      cyclePanelFocus(1);
+      return true;
+    case "focus_cycle_prev":
+      cyclePanelFocus(-1);
       return true;
     case "focus_history":
       toggleHistoryFocus();
+      return true;
+    case "member_list_toggle":
+      toggleMemberList();
       return true;
     case "scroll_line_up":
       if (state.chatFocus === "history") {
@@ -423,6 +454,30 @@ function handleHistoryFocused(key: KeyEvent): boolean {
   }
 }
 
+function handleMemberListFocused(key: KeyEvent): boolean {
+  const action = resolveAction(key, "navigation");
+  if (!action) return false;
+
+  switch (action) {
+    case "focus_prompt":
+      focusPromptInsert(key.type === "char" && key.char === "a");
+      return true;
+    case "nav_up":
+      state.memberList.selectedIndex = Math.max(0, state.memberList.selectedIndex - 1);
+      scheduleRender();
+      return true;
+    case "nav_down":
+      state.memberList.selectedIndex = Math.min(
+        Math.max(0, state.memberList.members.length - 1),
+        state.memberList.selectedIndex + 1,
+      );
+      scheduleRender();
+      return true;
+    default:
+      return false;
+  }
+}
+
 function handlePromptFocused(key: KeyEvent): void {
   if (key.type === "tab" && state.autocomplete) {
     cycleAutocomplete(state, 1);
@@ -487,6 +542,11 @@ function handleKey(key: KeyEvent): void {
     return;
   }
 
+  if (state.panelFocus === "memberlist" && state.memberList.open) {
+    handleMemberListFocused(key);
+    return;
+  }
+
   if (state.chatFocus === "history") {
     handleHistoryFocused(key);
     return;
@@ -529,6 +589,7 @@ function cleanup(): void {
     renderTimer = null;
   }
   stopLoadingAnimation();
+  disconnectMemberListGateway();
   restoreTerminal();
   process.exit(0);
 }

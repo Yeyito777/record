@@ -35,6 +35,7 @@ describe("input parser", () => {
   test("parses kitty CSI-u control sequences", () => {
     expect(parseInput("\x1b[98;5u")).toEqual([{ type: "ctrl-b" }]);
     expect(parseInput("\x1b[109;5u")).toEqual([{ type: "ctrl-m" }]);
+    expect(parseInput("\x1b[59;5u")).toEqual([{ type: "ctrl-semicolon" }]);
     expect(parseInput("\x1b[121;5u")).toEqual([{ type: "ctrl-y" }]);
   });
 

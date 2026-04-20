@@ -116,6 +116,7 @@ export interface DiscordChannel {
   position: number;
   type: number;
   nsfw: boolean;
+  recipients?: DiscordGuildMember[];
 }
 
 export interface DiscordMessageAttachment {
@@ -124,6 +125,13 @@ export interface DiscordMessageAttachment {
   contentType: string | null;
   size: number;
   url: string;
+}
+
+export interface DiscordGuildMember {
+  id: string;
+  username: string;
+  displayName: string;
+  bot: boolean;
 }
 
 export interface DiscordMessage {
@@ -215,6 +223,12 @@ export async function fetchDirectMessages(token: string): Promise<DiscordChannel
       position: index,
       type: channel.type,
       nsfw: false,
+      recipients: (channel.recipients ?? []).map((recipient) => ({
+        id: recipient.id,
+        username: recipient.username,
+        displayName: displayNameFromRecipient(recipient),
+        bot: false,
+      })),
     }));
 }
 

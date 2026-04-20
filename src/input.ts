@@ -32,6 +32,7 @@ export interface KeyEvent {
     | "ctrl-n"
     | "ctrl-r"
     | "ctrl-s"
+    | "ctrl-semicolon"
     | "ctrl-u"
     | "ctrl-y"
     | "escape"
@@ -81,6 +82,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "110;5": "ctrl-n",
   "114;5": "ctrl-r",
   "115;5": "ctrl-s",
+  "59;5": "ctrl-semicolon",
   "117;5": "ctrl-u",
   "121;5": "ctrl-y",
 };

@@ -9,9 +9,11 @@ import type { KeyEvent } from "./input";
 export type Action =
   | "quit"
   | "sidebar_toggle"
-  | "focus_cycle"
+  | "focus_cycle_next"
+  | "focus_cycle_prev"
   | "focus_prompt"
   | "focus_history"
+  | "member_list_toggle"
   | "sidebar_next"
   | "sidebar_prev"
   | "scroll_line_up"
@@ -34,11 +36,12 @@ const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-d": "scroll_half_down",
   "ctrl-e": "scroll_line_down",
   "ctrl-f": "scroll_page_down",
-  "ctrl-j": "focus_cycle",
-  "ctrl-k": "focus_cycle",
+  "ctrl-j": "focus_cycle_next",
+  "ctrl-k": "focus_cycle_prev",
   "ctrl-m": "sidebar_toggle",
   "ctrl-n": "focus_history",
   "ctrl-s": "sidebar_toggle",
+  "ctrl-semicolon": "member_list_toggle",
   "ctrl-u": "scroll_half_up",
   "ctrl-y": "scroll_line_up",
 };

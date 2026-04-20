@@ -11,12 +11,20 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "ctrl-m" })).toBe("sidebar_toggle");
   });
 
-  test("Ctrl+J cycles panel focus", () => {
-    expect(resolveAction({ type: "ctrl-j" })).toBe("focus_cycle");
+  test("Ctrl+J cycles panel focus forward", () => {
+    expect(resolveAction({ type: "ctrl-j" })).toBe("focus_cycle_next");
+  });
+
+  test("Ctrl+K cycles panel focus backward", () => {
+    expect(resolveAction({ type: "ctrl-k" })).toBe("focus_cycle_prev");
   });
 
   test("Ctrl+N toggles prompt/history focus", () => {
     expect(resolveAction({ type: "ctrl-n" })).toBe("focus_history");
+  });
+
+  test("Ctrl+; toggles the member list", () => {
+    expect(resolveAction({ type: "ctrl-semicolon" })).toBe("member_list_toggle");
   });
 
   test("prompt scroll bindings match Exocortex", () => {

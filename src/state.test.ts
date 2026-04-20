@@ -32,4 +32,34 @@ describe("state", () => {
     expect(state.panelFocus).toBe("chat");
     expect(state.chatFocus).toBe("history");
   });
+
+  test("panel focus cycling includes the member list when it is open", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.sidebar.open = true;
+    state.memberList.open = true;
+
+    cycleFocus(state, 1);
+    expect(state.panelFocus).toBe("memberlist");
+
+    cycleFocus(state, 1);
+    expect(state.panelFocus).toBe("sidebar");
+
+    cycleFocus(state, 1);
+    expect(state.panelFocus).toBe("chat");
+  });
+
+  test("panel focus cycling can move backward", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.sidebar.open = true;
+    state.memberList.open = true;
+
+    cycleFocus(state, -1);
+    expect(state.panelFocus).toBe("sidebar");
+
+    cycleFocus(state, -1);
+    expect(state.panelFocus).toBe("memberlist");
+
+    cycleFocus(state, -1);
+    expect(state.panelFocus).toBe("chat");
+  });
 });

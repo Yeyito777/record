@@ -23,6 +23,7 @@ import {
   stripAnsi,
 } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
+import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
 import { renderStatusLine } from "./statusline";
@@ -206,9 +207,12 @@ export function render(state: AppState): void {
     : (line: string) => line;
 
   const sidebarOpen = state.sidebar.open;
+  const memberListOpen = state.memberList.open;
   const sidebarW = sidebarOpen ? SIDEBAR_WIDTH : 0;
+  const memberListW = memberListOpen ? MEMBER_LIST_WIDTH : 0;
   const mainCol = sidebarW + 1;
-  const mainW = Math.max(1, cols - sidebarW);
+  const mainW = Math.max(1, cols - sidebarW - memberListW);
+  const memberListCol = cols - memberListW + 1;
 
   const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
   const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
@@ -223,6 +227,14 @@ export function render(state: AppState): void {
       state.loadingFrameIndex,
     )
     : [];
+  const memberListRows = memberListOpen
+    ? renderMemberList(
+      state.memberList,
+      rows,
+      state.loadingFrameIndex,
+      state.panelFocus === "memberlist",
+    )
+    : [];
 
   const emitSidebarCol = (row: number): void => {
     if (sidebarOpen && sidebarRows[row - 1]) {
@@ -230,9 +242,16 @@ export function render(state: AppState): void {
     }
   };
 
+  const emitMemberListCol = (row: number): void => {
+    if (memberListOpen && memberListRows[row - 1]) {
+      out.push(moveTo(row, memberListCol) + memberListRows[row - 1]);
+    }
+  };
+
   out.push(moveTo(1, 1) + clearedLine);
   emitSidebarCol(1);
   out.push(moveTo(1, mainCol) + renderTopbar(state, mainW));
+  emitMemberListCol(1);
 
   const bodyBorder = historyFocused ? theme.borderFocused : theme.borderUnfocused;
   const promptColor = promptFocused ? theme.accent : theme.dim;
@@ -240,6 +259,7 @@ export function render(state: AppState): void {
   out.push(moveTo(2, 1) + clearedLine);
   emitSidebarCol(2);
   out.push(moveTo(2, mainCol) + bgLine(`${bodyBorder}${"─".repeat(mainW)}${theme.reset}`));
+  emitMemberListCol(2);
 
   const status = renderStatusLine(state, mainW);
   const statusHeight = status.height;
@@ -313,6 +333,7 @@ export function render(state: AppState): void {
       : bgLine(` ${line}`);
 
     out.push(moveTo(row, mainCol) + renderedLine);
+    emitMemberListCol(row);
   }
 
   if (state.autocomplete) {
@@ -322,6 +343,7 @@ export function render(state: AppState): void {
   out.push(moveTo(promptSeparatorRow, 1) + clearedLine);
   emitSidebarCol(promptSeparatorRow);
   out.push(moveTo(promptSeparatorRow, mainCol) + bgLine(`${promptColor}${"─".repeat(mainW)}${theme.reset}`));
+  emitMemberListCol(promptSeparatorRow);
 
   const offsets = wrappedLineOffsets(state.editor.buffer, maxInputWidth);
   const promptInVisual = promptFocused && (state.editor.mode === "visual" || state.editor.mode === "visual-line");
@@ -356,18 +378,21 @@ export function render(state: AppState): void {
     out.push(moveTo(row, 1) + clearedLine);
     emitSidebarCol(row);
     out.push(moveTo(row, mainCol) + bgLine(`${prefix}${lineContent}`));
+    emitMemberListCol(row);
   }
 
   if (statusHeight > 0) {
     out.push(moveTo(promptBottomSeparatorRow, 1) + clearedLine);
     emitSidebarCol(promptBottomSeparatorRow);
     out.push(moveTo(promptBottomSeparatorRow, mainCol) + bgLine(`${promptColor}${"─".repeat(mainW)}${theme.reset}`));
+    emitMemberListCol(promptBottomSeparatorRow);
 
     for (let i = 0; i < statusHeight; i++) {
       const row = statusStartRow + i;
       out.push(moveTo(row, 1) + clearedLine);
       emitSidebarCol(row);
       out.push(moveTo(row, mainCol) + bgLine(status.lines[i] ?? ""));
+      emitMemberListCol(row);
     }
   }
 

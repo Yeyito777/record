@@ -17,7 +17,17 @@ import {
   fetchDirectMessages,
   fetchGuildChannels,
   fetchGuilds,
+  type DiscordGuildMember,
 } from "./discord";
+import { MemberListGatewayClient } from "./membergateway";
+import {
+  cacheMemberList,
+  clearMemberListData,
+  getCachedMemberList,
+  setMemberListLoading,
+  setMemberListMembers,
+  setMemberListMessage,
+} from "./memberlist";
 import type { AppState } from "./state";
 import { focusPrompt, setNotice } from "./state";
 import { clearSidebarData, setSidebarGuilds } from "./sidebar";
@@ -37,12 +47,163 @@ interface LoadGuildChannelsOptions {
 }
 
 const MESSAGE_PAGE_LIMIT = 50;
+const MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS = 7_000;
+
+let memberListGateway: MemberListGatewayClient | null = null;
+let memberListGatewayToken: string | null = null;
+
+function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
+  const members: DiscordGuildMember[] = [];
+  const viewer = state.auth.user;
+  const channel = state.channelList.activeChannel;
+
+  if (viewer) {
+    members.push({
+      id: viewer.id,
+      username: viewer.username,
+      displayName: viewer.globalName ?? viewer.username,
+      bot: viewer.bot,
+    });
+  }
+
+  for (const recipient of channel?.recipients ?? []) {
+    if (viewer && recipient.id === viewer.id) continue;
+    if (members.some((member) => member.id === recipient.id)) continue;
+    members.push(recipient);
+  }
+
+  return members;
+}
+
+export function disconnectMemberListGateway(): void {
+  memberListGateway?.disconnect();
+  memberListGateway = null;
+  memberListGatewayToken = null;
+}
+
+function getMemberListGateway(token: string): MemberListGatewayClient {
+  if (!memberListGateway || memberListGatewayToken !== token) {
+    disconnectMemberListGateway();
+    memberListGateway = new MemberListGatewayClient(token);
+    memberListGatewayToken = token;
+  }
+
+  return memberListGateway;
+}
 
 export function clearReadOnlyClient(state: AppState): void {
+  disconnectMemberListGateway();
   clearSidebarData(state.sidebar);
+  clearMemberListData(state.memberList);
   clearChannelList(state.channelList);
   clearTimeline(state.timeline);
   focusPrompt(state);
+}
+
+function loadMemberListPlaceholder(state: AppState, guildId: string | null, channelId: string | null): void {
+  if (!state.memberList.open) return;
+
+  if (!guildId) {
+    setMemberListMessage(state.memberList, null, null, "No members.");
+    return;
+  }
+
+  if (guildId === DIRECT_MESSAGES_GUILD_ID) {
+    const members = buildDirectMessageMemberList(state);
+    if (channelId && members.length > 0) {
+      setMemberListMembers(state.memberList, guildId, channelId, members, state.auth.user?.id ?? null);
+    } else {
+      setMemberListMessage(state.memberList, guildId, channelId, "No members.");
+    }
+    return;
+  }
+
+  if (!channelId) {
+    setMemberListMessage(state.memberList, guildId, null, "No members.");
+    return;
+  }
+
+  const cached = getCachedMemberList(state.memberList, guildId, channelId);
+  if (cached) {
+    setMemberListMembers(state.memberList, guildId, channelId, cached, state.auth.user?.id ?? null);
+    return;
+  }
+
+  setMemberListLoading(state.memberList, guildId, channelId);
+}
+
+export function syncMemberListForGuild(state: AppState, effects: SessionEffects, _guildId?: string | null): void {
+  syncMemberListForCurrentChannel(state, effects);
+}
+
+export function syncMemberListForCurrentChannel(state: AppState, effects: SessionEffects): void {
+  if (!state.memberList.open) return;
+
+  const previousGuildId = state.memberList.guildId;
+  const previousChannelId = state.memberList.channelId;
+  const token = state.auth.savedToken;
+  const activeChannel = state.channelList.activeChannel;
+  const guildId = activeChannel?.guildId ?? state.channelList.guildId;
+  const channelId = activeChannel?.id ?? null;
+  const requestId = ++state.memberList.requestId;
+
+  loadMemberListPlaceholder(state, guildId, channelId);
+  effects.scheduleRender();
+
+  if (!token || !guildId || !channelId || guildId === DIRECT_MESSAGES_GUILD_ID) {
+    disconnectMemberListGateway();
+    return;
+  }
+
+  const targetChanged = previousGuildId !== guildId || previousChannelId !== channelId;
+  if (targetChanged) {
+    disconnectMemberListGateway();
+  }
+
+  let settled = false;
+  const clearPending = (): void => {
+    settled = true;
+    clearTimeout(timeoutId);
+  };
+  const timeoutId = setTimeout(() => {
+    if (settled) return;
+    if (requestId !== state.memberList.requestId) return;
+    if (!state.memberList.open) return;
+    if (state.channelList.activeChannelId !== channelId) return;
+    if (!state.memberList.loading) return;
+    settled = true;
+    disconnectMemberListGateway();
+    setMemberListMessage(state.memberList, guildId, channelId, "Timed out waiting for member list updates.");
+    effects.scheduleRender();
+  }, MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS);
+
+  const gateway = getMemberListGateway(token);
+  void gateway.subscribe(guildId, channelId, {
+    onMembers: (members) => {
+      clearPending();
+      if (requestId !== state.memberList.requestId) return;
+      if (!state.memberList.open) return;
+      if (state.channelList.activeChannelId !== channelId) return;
+      cacheMemberList(state.memberList, guildId, channelId, members);
+      setMemberListMembers(state.memberList, guildId, channelId, members, state.auth.user?.id ?? null);
+      effects.scheduleRender();
+    },
+    onError: (error) => {
+      clearPending();
+      if (requestId !== state.memberList.requestId) return;
+      if (!state.memberList.open) return;
+      if (state.channelList.activeChannelId !== channelId) return;
+      setMemberListMessage(state.memberList, guildId, channelId, error.message);
+      effects.scheduleRender();
+    },
+  }).catch((error) => {
+    clearPending();
+    if (requestId !== state.memberList.requestId) return;
+    if (!state.memberList.open) return;
+    if (state.channelList.activeChannelId !== channelId) return;
+    setMemberListMessage(state.memberList, guildId, channelId, error instanceof Error ? error.message : String(error));
+    effects.scheduleRender();
+  });
 }
 
 export async function bootstrapReadOnlyClient(
@@ -53,6 +214,8 @@ export async function bootstrapReadOnlyClient(
   const requestId = ++state.sidebar.requestId;
   state.sidebar.loading = true;
   state.sidebar.loadingGuildId = null;
+  disconnectMemberListGateway();
+  clearMemberListData(state.memberList);
   clearChannelList(state.channelList);
   clearTimeline(state.timeline);
   setNotice(state, "", "muted");
@@ -130,6 +293,7 @@ export async function loadGuildChannels(
     setChannelList(state.channelList, guildId, channels);
 
     if (!options.openFirstChannel) {
+      syncMemberListForCurrentChannel(state, effects);
       effects.scheduleRender();
       return;
     }
@@ -138,6 +302,7 @@ export async function loadGuildChannels(
       ?? findFirstBrowsableChannel(channels);
     if (!channel) {
       clearTimeline(state.timeline);
+      syncMemberListForCurrentChannel(state, effects);
       setNotice(state, isDirectMessages ? "No direct messages available." : `No readable channels in ${guildName}.`, "warning");
       effects.scheduleRender();
       return;
@@ -183,6 +348,7 @@ export async function loadChannelMessages(
   state.timeline.loading = true;
   state.timeline.loadingOlder = false;
   setNotice(state, "", "muted");
+  syncMemberListForCurrentChannel(state, effects);
   effects.scheduleRender();
 
   try {
