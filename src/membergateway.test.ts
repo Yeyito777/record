@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { applyGatewayMemberListOps, extractGatewayMembers } from "./membergateway";
+import { applyGatewayMemberListOps, extractGatewayMembers, MemberListGatewayClient } from "./membergateway";
 
 describe("member gateway member-list ops", () => {
   test("builds a member list from an initial sync and preserves group rows for later updates", () => {
@@ -72,5 +72,59 @@ describe("member gateway member-list ops", () => {
     ]);
 
     expect(rows).toEqual([]);
+  });
+
+  test("treats gateway reconnect requests as a silent reconnect instead of a surfaced error", () => {
+    const client = new MemberListGatewayClient("token") as any;
+    let reconnected = 0;
+    let errors = 0;
+
+    client.subscription = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      listId: "everyone",
+      waitingForSync: false,
+      rows: [],
+      onMembers: () => {},
+      onError: () => { errors += 1; },
+    };
+    client.reconnect = async () => { reconnected += 1; };
+
+    client.handleMessage({ data: JSON.stringify({ op: 7, d: null }) });
+
+    expect(reconnected).toBe(1);
+    expect(errors).toBe(0);
+  });
+
+  test("reconnect resets sync state and resubscribes the active target", async () => {
+    const client = new MemberListGatewayClient("token") as any;
+    const subscription = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      listId: "everyone",
+      waitingForSync: false,
+      rows: [{ type: "member", member: { id: "1", username: "alpha", displayName: "Alpha", bot: false } }],
+      onMembers: () => {},
+      onError: () => {},
+    };
+    const sent: Array<[string, string]> = [];
+
+    client.subscription = subscription;
+    client.ensureConnected = async () => {
+      client.ready = true;
+    };
+    client.resetSocket = () => {
+      client.ready = false;
+    };
+    client.sendSubscription = (guildId: string, channelId: string) => {
+      sent.push([guildId, channelId]);
+    };
+
+    await client.reconnect();
+
+    expect(subscription.listId).toBeNull();
+    expect(subscription.waitingForSync).toBe(true);
+    expect(subscription.rows).toEqual([]);
+    expect(sent).toEqual([["guild-1", "channel-1"]]);
   });
 });

@@ -53,6 +53,7 @@ export class MemberListGatewayClient {
   private heartbeatIntervalMs = 0;
   private seq: number | null = null;
   private manualDisconnect = false;
+  private reconnectPromise: Promise<void> | null = null;
   private subscription: ActiveSubscription | null = null;
 
   constructor(private readonly token: string) {}
@@ -163,7 +164,7 @@ export class MemberListGatewayClient {
     }
 
     if (payload.op === 7 || payload.op === 9) {
-      this.failConnection(new Error(`Discord gateway requested reconnect (op ${payload.op}).`));
+      void this.reconnect();
       return;
     }
 
@@ -265,6 +266,35 @@ export class MemberListGatewayClient {
     this.ws.send(JSON.stringify(payload));
   }
 
+  private async reconnect(): Promise<void> {
+    const subscription = this.subscription;
+    if (!subscription) return;
+    if (this.reconnectPromise) return this.reconnectPromise;
+
+    this.reconnectPromise = (async () => {
+      subscription.listId = null;
+      subscription.waitingForSync = true;
+      subscription.rows = [];
+
+      this.resetSocket();
+      await this.ensureConnected();
+
+      if (!this.subscription) return;
+      if (this.subscription.guildId !== subscription.guildId || this.subscription.channelId !== subscription.channelId) {
+        return;
+      }
+
+      this.sendSubscription(subscription.guildId, subscription.channelId);
+    })().catch((error) => {
+      if (this.subscription !== subscription) return;
+      subscription.onError(asError(error, "Failed to reconnect Discord member list gateway."));
+    }).finally(() => {
+      this.reconnectPromise = null;
+    });
+
+    return this.reconnectPromise;
+  }
+
   private failConnection(error: Error): void {
     this.readyReject?.(error);
     this.readyResolve = null;
@@ -284,6 +314,23 @@ export class MemberListGatewayClient {
       this.ws.close();
       return;
     }
+    this.cleanupSocketState();
+  }
+
+  private resetSocket(): void {
+    const socket = this.ws;
+    if (socket) {
+      socket.removeEventListener("message", this.handleMessage);
+      socket.removeEventListener("close", this.handleClose);
+      socket.removeEventListener("error", this.handleError);
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
+    }
+
+    this.connectPromise = null;
+    this.readyResolve = null;
+    this.readyReject = null;
     this.cleanupSocketState();
   }
 
