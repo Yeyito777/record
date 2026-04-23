@@ -8,7 +8,7 @@ import {
   setTimelineRenderContext,
   startLoadingOlderMessages,
 } from "./timeline";
-import { theme } from "./theme";
+import { dmAuthorColor, theme } from "./theme";
 import { termWidth } from "./textwidth";
 import type { DiscordMessage } from "./discord";
 
@@ -291,6 +291,24 @@ describe("timeline rendering", () => {
 
     expect(rendered.lines[0]).toContain(theme.accent);
     expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00");
+  });
+
+  test("renders other DM authors with deterministic colors", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hello", { authorId: "other-user", authorName: "Alice" })]);
+    setTimelineRenderContext(timeline, "viewer", true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      40,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lines[0]).toContain(dmAuthorColor("other-user"));
+    expect(rendered.lines[0]).not.toContain(theme.accent);
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Alice 12:00");
   });
 
   test("renders markdown horizontal rules", () => {

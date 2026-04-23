@@ -109,6 +109,26 @@ export function toneColor(tone: NoticeTone): string {
   }
 }
 
+const DM_AUTHOR_COLORS = [
+  "\x1b[38;2;255;184;108m",
+  "\x1b[38;2;189;147;249m",
+  "\x1b[38;2;80;250;123m",
+  "\x1b[38;2;255;121;198m",
+  "\x1b[38;2;139;233;253m",
+  "\x1b[38;2;241;250;140m",
+  "\x1b[38;2;166;227;161m",
+  "\x1b[38;2;250;179;135m",
+] as const;
+
+export function dmAuthorColor(userId: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < userId.length; index++) {
+    hash ^= userId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return DM_AUTHOR_COLORS[hash % DM_AUTHOR_COLORS.length];
+}
+
 export function setTheme(name: ThemeName): string | null {
   Object.assign(theme, themes[name]);
   try {

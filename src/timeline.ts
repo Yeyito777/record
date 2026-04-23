@@ -6,7 +6,7 @@ import type { DiscordMessage } from "./discord";
 import { loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
-import { theme, toneColor } from "./theme";
+import { dmAuthorColor, theme, toneColor } from "./theme";
 
 export interface TimelineState {
   channelId: string | null;
@@ -343,7 +343,11 @@ function renderMessage(
   const author = message.author.bot
     ? `${message.author.displayName} [bot]`
     : message.author.displayName;
-  const authorColor = accentViewerInDirectMessages && viewerId === message.author.id ? theme.accent : "";
+  const authorColor = accentViewerInDirectMessages
+    ? viewerId === message.author.id
+      ? theme.accent
+      : dmAuthorColor(message.author.id)
+    : "";
   const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${theme.reset}`;
   const replyPreview = wrapReplyPreview(message, width);
 
