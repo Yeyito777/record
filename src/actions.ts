@@ -5,7 +5,7 @@
  * stay focused on terminal lifecycle + event wiring.
  */
 
-import { clearConfig, saveConfig } from "./config";
+import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
 import { clearPrompt } from "./promptstate";
@@ -35,6 +35,15 @@ function resetAuthState(state: AppState): void {
   state.auth.lastValidatedAt = null;
 }
 
+function nextSavedLogins(state: AppState, username: string, token: string): Record<string, string> {
+  const entries = Object.entries(state.auth.savedLogins).filter(([, savedToken]) => savedToken !== token);
+  return { ...Object.fromEntries(entries), [username]: token };
+}
+
+export function resolveLoginCredential(state: AppState, credential: string): string {
+  return state.auth.savedLogins[credential] ?? credential;
+}
+
 export async function validateAndMaybeSave(
   state: AppState,
   token: string,
@@ -43,6 +52,11 @@ export async function validateAndMaybeSave(
   effects: AppEffects,
 ): Promise<void> {
   const requestId = nextAuthRequestId(state);
+  const changingLogin = state.auth.savedToken !== null && state.auth.savedToken !== token;
+  if (changingLogin) {
+    clearReadOnlyClient(state);
+  }
+
   state.auth.status = "loading";
   state.auth.user = null;
   state.auth.error = null;
@@ -56,14 +70,25 @@ export async function validateAndMaybeSave(
     ]);
     if (!isCurrentAuthRequest(state, requestId)) return;
 
+    state.auth.savedToken = token;
+
     let saveError: string | null = null;
     if (persist) {
+      const savedLogins = nextSavedLogins(state, user.username, token);
+      state.auth.savedLogins = savedLogins;
+
+      const saveFailures: string[] = [];
       try {
         saveConfig({ token });
-        state.auth.savedToken = token;
       } catch (error) {
-        saveError = (error as Error).message;
+        saveFailures.push(`config: ${(error as Error).message}`);
       }
+      try {
+        saveSavedLogins(savedLogins);
+      } catch (error) {
+        saveFailures.push(`saved logins: ${(error as Error).message}`);
+      }
+      saveError = saveFailures.length > 0 ? saveFailures.join("; ") : null;
     }
 
     state.auth.status = "authenticated";
@@ -126,7 +151,13 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       effects.quit();
       return true;
     case "login":
-      void validateAndMaybeSave(state, normalizeToken(result.token), true, "Validating token with Discord…", effects);
+      void validateAndMaybeSave(
+        state,
+        normalizeToken(resolveLoginCredential(state, result.credential)),
+        true,
+        "Validating token with Discord…",
+        effects,
+      );
       return true;
     case "logout":
       logout(state, effects);

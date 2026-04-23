@@ -5,6 +5,7 @@
  */
 
 import { COMMAND_LIST, getCommandArgs } from "./commands";
+import type { AppState } from "./state";
 import { theme } from "./theme";
 
 interface Span {
@@ -19,9 +20,9 @@ const VALID_NAMES = new Set([
 
 const COMMAND_SPAN_RE = /(^|[ \t\n])(\/\S+(?:[ \t]+\S+)*)/gm;
 
-function findCommandSpans(buffer: string): Span[] {
+function findCommandSpans(buffer: string, state: AppState): Span[] {
   const spans: Span[] = [];
-  const validArgs = getCommandArgs();
+  const validArgs = getCommandArgs(state);
   COMMAND_SPAN_RE.lastIndex = 0;
 
   let match: RegExpExecArray | null;
@@ -63,8 +64,9 @@ export function highlightPromptViewport(
   visibleText: string,
   buffer: string,
   viewportStart: number,
+  state: AppState,
 ): string {
-  const spans = findCommandSpans(buffer);
+  const spans = findCommandSpans(buffer, state);
   if (spans.length === 0 || visibleText.length === 0) return visibleText;
 
   const viewportEnd = viewportStart + visibleText.length;

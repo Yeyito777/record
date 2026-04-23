@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { describe, expect, test } from "bun:test";
 
-import { tryCommand } from "./commands";
+import { getCommandArgs, tryCommand } from "./commands";
 import { createInitialState } from "./state";
 
 function withTempConfigHome(run: () => void): void {
@@ -20,11 +20,11 @@ function withTempConfigHome(run: () => void): void {
 }
 
 describe("commands", () => {
-  test("parses /login <token>", () => {
+  test("parses /login <token or username>", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     const result = tryCommand("/login abc123", state);
 
-    expect(result).toEqual({ type: "login", token: "abc123" });
+    expect(result).toEqual({ type: "login", credential: "abc123" });
     expect(state.editor.buffer).toBe("");
   });
 
@@ -49,7 +49,16 @@ describe("commands", () => {
     const result = tryCommand("/login", state);
 
     expect(result).toEqual({ type: "handled" });
-    expect(state.notice.text).toContain("Usage: /login <token>");
+    expect(state.notice.text).toContain("Usage: /login <token|username>");
+  });
+
+  test("suggests saved usernames as /login args", () => {
+    const state = createInitialState(null, "/tmp/record-config.json", { zed: "tok-2", alice: "tok-1" });
+
+    expect(getCommandArgs(state)["/login"]).toEqual([
+      { name: "alice", desc: "saved login" },
+      { name: "zed", desc: "saved login" },
+    ]);
   });
 
   test("parses /theme whale", () => {

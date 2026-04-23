@@ -4,6 +4,7 @@
 
 import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
+import type { SavedLogins } from "./config";
 import type { DiscordIdentity } from "./discord";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
@@ -30,6 +31,7 @@ export interface AuthState {
   presenceStatus: PresenceStatus | null;
   error: string | null;
   savedToken: string | null;
+  savedLogins: SavedLogins;
   lastValidatedAt: number | null;
   activeRequestId: number;
 }
@@ -58,7 +60,7 @@ export interface AppState {
   configPath: string;
 }
 
-export function createInitialState(initialToken: string | null, path: string): AppState {
+export function createInitialState(initialToken: string | null, path: string, initialSavedLogins: SavedLogins = {}): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
     cols: process.stdout.columns || 80,
@@ -84,6 +86,7 @@ export function createInitialState(initialToken: string | null, path: string): A
       presenceStatus: null,
       error: null,
       savedToken,
+      savedLogins: { ...initialSavedLogins },
       lastValidatedAt: null,
       activeRequestId: 0,
     },

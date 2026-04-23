@@ -17,7 +17,7 @@ export interface CompletionItem {
 export type CommandResult =
   | { type: "handled" }
   | { type: "quit" }
-  | { type: "login"; token: string }
+  | { type: "login"; credential: string }
   | { type: "logout" }
   | { type: "refresh" }
   | { type: "theme_changed" };
@@ -60,14 +60,14 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/login",
-    description: "Validate and save a Discord token",
+    description: "Validate and save a Discord token, or reuse a saved login",
     handler: (text, state) => {
       const match = text.match(/^\/login\s+(.+)$/);
-      if (!match) return usage(state, "Usage: /login <token>");
-      const token = match[1].trim();
-      if (!token) return usage(state, "Usage: /login <token>");
+      if (!match) return usage(state, "Usage: /login <token|username>");
+      const credential = match[1].trim();
+      if (!credential) return usage(state, "Usage: /login <token|username>");
       clearPrompt(state);
-      return { type: "login", token };
+      return { type: "login", credential };
     },
   },
   {
@@ -133,6 +133,13 @@ const STATIC_COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries
     .map((command) => [command.name, command.args!]),
 );
 
-export function getCommandArgs(): Record<string, CompletionItem[]> {
-  return { ...STATIC_COMMAND_ARGS };
+export function getCommandArgs(state: AppState): Record<string, CompletionItem[]> {
+  const loginArgs = Object.keys(state.auth.savedLogins)
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({ name, desc: "saved login" }));
+
+  return {
+    ...STATIC_COMMAND_ARGS,
+    ...(loginArgs.length > 0 ? { "/login": loginArgs } : {}),
+  };
 }

@@ -4,11 +4,12 @@ import { createInitialState, cycleFocus, focusHistory } from "./state";
 
 describe("state", () => {
   test("saved token does not populate the prompt buffer", () => {
-    const state = createInitialState("Bot abc123", "/tmp/record-config.json");
+    const state = createInitialState("Bot abc123", "/tmp/record-config.json", { alice: "token-1" });
 
     expect(state.editor.buffer).toBe("");
     expect(state.editor.mode).toBe("insert");
     expect(state.auth.savedToken).toBe("Bot abc123");
+    expect(state.auth.savedLogins).toEqual({ alice: "token-1" });
   });
 
   test("starts focused on the prompt inside chat", () => {

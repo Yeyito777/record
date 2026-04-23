@@ -9,7 +9,7 @@ import { theme } from "./theme";
 export function renderBodyLines(state: AppState, width: number): string[] {
   if (state.auth.status !== "authenticated") {
     return [
-      `${theme.text}${truncate("Login with /login <token> to load your Discord servers.", width)}${theme.reset}`,
+      `${theme.text}${truncate("Login with /login <token|username> to load your Discord servers.", width)}${theme.reset}`,
       `${theme.muted}${truncate("Use Ctrl+S or Ctrl+M to toggle the servers sidebar.", width)}${theme.reset}`,
     ];
   }

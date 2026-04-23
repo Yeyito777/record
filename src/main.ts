@@ -3,7 +3,7 @@
  */
 
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
-import { configPath, loadConfig } from "./config";
+import { configPath, loadConfig, loadSavedLogins } from "./config";
 import { cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
 import {
@@ -73,7 +73,8 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 }
 
 let initialToken: string | null = null;
-let startupWarning: string | null = null;
+let initialSavedLogins: Record<string, string> = {};
+const startupWarnings: string[] = [];
 
 try {
   const config = loadConfig();
@@ -81,13 +82,22 @@ try {
 } catch (error) {
   const err = error as NodeJS.ErrnoException;
   if (err.code !== "ENOENT") {
-    startupWarning = `Could not load config: ${err.message}`;
+    startupWarnings.push(`Could not load config: ${err.message}`);
   }
 }
 
-const state = createInitialState(initialToken, configPath());
-if (startupWarning) {
-  setNotice(state, startupWarning, "warning");
+try {
+  initialSavedLogins = loadSavedLogins();
+} catch (error) {
+  const err = error as NodeJS.ErrnoException;
+  if (err.code !== "ENOENT") {
+    startupWarnings.push(`Could not load saved logins: ${err.message}`);
+  }
+}
+
+const state = createInitialState(initialToken, configPath(), initialSavedLogins);
+if (startupWarnings.length > 0) {
+  setNotice(state, startupWarnings.join("\n"), "warning");
 }
 
 const LOADING_INTERVAL_MS = 80;
@@ -172,7 +182,7 @@ function focusPromptInsert(append = false): void {
 function tokenOrWarn(): string | null {
   const token = state.auth.savedToken;
   if (!token) {
-    setNotice(state, "Login first with /login <token>.", "warning");
+    setNotice(state, "Login first with /login <token|username>.", "warning");
     scheduleRender();
     return null;
   }

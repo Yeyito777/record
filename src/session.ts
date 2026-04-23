@@ -93,6 +93,9 @@ function getMemberListGateway(token: string): MemberListGatewayClient {
 
 export function clearReadOnlyClient(state: AppState): void {
   disconnectMemberListGateway();
+  state.sidebar.requestId += 1;
+  state.channelList.requestId += 1;
+  state.timeline.requestId += 1;
   clearSidebarData(state.sidebar);
   clearMemberListData(state.memberList);
   clearChannelList(state.channelList);
@@ -401,7 +404,7 @@ export async function loadOlderChannelMessages(
 export function refreshReadOnlyClient(state: AppState, effects: SessionEffects): void {
   const token = state.auth.savedToken;
   if (!token) {
-    setNotice(state, "Login first with /login <token>.", "warning");
+    setNotice(state, "Login first with /login <token|username>.", "warning");
     effects.scheduleRender();
     return;
   }

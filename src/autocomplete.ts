@@ -28,11 +28,11 @@ function matchArgCompletion(raw: string, registry: Record<string, CompletionItem
   return null;
 }
 
-function getCommandMatches(input: string): CompletionItem[] {
+function getCommandMatches(state: AppState, input: string): CompletionItem[] {
   const raw = input.trimStart();
   if (!raw.startsWith("/")) return [];
 
-  const argMatch = matchArgCompletion(raw, getCommandArgs());
+  const argMatch = matchArgCompletion(raw, getCommandArgs(state));
   if (argMatch) return argMatch;
 
   const prefix = raw.toLowerCase();
@@ -42,7 +42,7 @@ function getCommandMatches(input: string): CompletionItem[] {
 export function updateAutocomplete(state: AppState): void {
   const trimmed = state.editor.buffer.trimStart();
   if (trimmed.startsWith("/") && !trimmed.includes("\n")) {
-    const matches = getCommandMatches(state.editor.buffer);
+    const matches = getCommandMatches(state, state.editor.buffer);
     if (matches.length > 0) {
       state.autocomplete = {
         selection: -1,
