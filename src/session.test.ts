@@ -30,6 +30,7 @@ describe("session", () => {
       timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
       editedTimestamp: null,
       author: { id: "user-1", username: "user", displayName: "User", bot: false },
+      reply: null,
       attachments: [],
       embedsCount: 0,
     }];

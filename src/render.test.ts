@@ -13,6 +13,7 @@ function message(id: string, content: string): DiscordMessage {
     editedTimestamp: null,
     content,
     author: { id: "user-1", username: "tester", displayName: "Tester", bot: false },
+    reply: null,
     attachments: [],
     embedsCount: 0,
   };

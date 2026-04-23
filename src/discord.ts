@@ -79,6 +79,22 @@ interface DiscordAttachmentResponse {
   url: string;
 }
 
+interface DiscordMessageReferenceResponse {
+  message_id?: string;
+  channel_id?: string;
+  guild_id?: string;
+}
+
+interface DiscordReferencedMessageResponse {
+  id: string;
+  content: string;
+  timestamp: string;
+  author: DiscordMessageAuthorResponse;
+  member?: DiscordMessageMemberResponse;
+  attachments?: DiscordAttachmentResponse[];
+  embeds?: unknown[];
+}
+
 interface DiscordMessageResponse {
   id: string;
   channel_id: string;
@@ -87,6 +103,8 @@ interface DiscordMessageResponse {
   edited_timestamp: string | null;
   author: DiscordMessageAuthorResponse;
   member?: DiscordMessageMemberResponse;
+  message_reference?: DiscordMessageReferenceResponse | null;
+  referenced_message?: DiscordReferencedMessageResponse | null;
   attachments?: DiscordAttachmentResponse[];
   embeds?: unknown[];
 }
@@ -135,6 +153,14 @@ export interface DiscordGuildMember {
   bot: boolean;
 }
 
+export interface DiscordMessageReply {
+  messageId: string | null;
+  authorId: string | null;
+  authorDisplayName: string | null;
+  timestamp: number | null;
+  summary: string;
+}
+
 export interface DiscordMessage {
   id: string;
   channelId: string;
@@ -147,6 +173,7 @@ export interface DiscordMessage {
     displayName: string;
     bot: boolean;
   };
+  reply: DiscordMessageReply | null;
   attachments: DiscordMessageAttachment[];
   embedsCount: number;
 }
@@ -216,6 +243,64 @@ function directMessageName(channel: DiscordChannelResponse): string {
   }
   if (recipients[0]) return displayNameFromRecipient(recipients[0]);
   return "Unknown DM";
+}
+
+function summarizeMessageParts(
+  content: string,
+  attachments: Array<{ filename: string }> = [],
+  embedsCount = 0,
+): string[] {
+  const parts: string[] = [];
+  const normalizedContent = content.replace(/\r\n?/g, "\n");
+  if (/\S/.test(normalizedContent)) {
+    parts.push(normalizedContent);
+  }
+  if (attachments.length > 0) {
+    parts.push(`[attachments] ${attachments.map((attachment) => attachment.filename).join(", ")}`);
+  }
+  if (embedsCount > 0) {
+    parts.push(`[embeds] ${embedsCount}`);
+  }
+  return parts;
+}
+
+function summarizeReplyPreview(
+  content: string,
+  attachments: DiscordAttachmentResponse[] = [],
+  embedsCount = 0,
+): string {
+  const parts = summarizeMessageParts(content, attachments, embedsCount).map((part) => part.replace(/\s+/g, " ").trim()).filter(Boolean);
+  return parts.join(" · ") || "(empty message)";
+}
+
+function mapReplyPreview(message: DiscordMessageResponse): DiscordMessageReply | null {
+  if (message.referenced_message) {
+    return {
+      messageId: message.referenced_message.id,
+      authorId: message.referenced_message.author.id,
+      authorDisplayName: message.referenced_message.member?.nick
+        ?? message.referenced_message.author.global_name
+        ?? message.referenced_message.author.username,
+      timestamp: Date.parse(message.referenced_message.timestamp),
+      summary: summarizeReplyPreview(
+        message.referenced_message.content,
+        message.referenced_message.attachments ?? [],
+        message.referenced_message.embeds?.length ?? 0,
+      ),
+    };
+  }
+
+  if (message.message_reference) {
+    return {
+      messageId: message.message_reference.message_id ?? null,
+      authorId: null,
+      authorDisplayName: null,
+      timestamp: null,
+      summary: "Deleted message",
+    };
+  }
+
+  return null;
 }
 
 export async function fetchDirectMessages(token: string): Promise<DiscordChannel[]> {
@@ -303,6 +388,7 @@ export async function fetchChannelMessages(
         displayName: message.member?.nick ?? message.author.global_name ?? message.author.username,
         bot: Boolean(message.author.bot),
       },
+      reply: mapReplyPreview(message),
       attachments: (message.attachments ?? []).map((attachment) => ({
         id: attachment.id,
         filename: attachment.filename,

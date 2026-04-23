@@ -15,7 +15,12 @@ import type { DiscordMessage } from "./discord";
 function message(
   id: string,
   content: string,
-  options: { authorId?: string; authorName?: string; bot?: boolean } = {},
+  options: {
+    authorId?: string;
+    authorName?: string;
+    bot?: boolean;
+    reply?: DiscordMessage["reply"];
+  } = {},
 ): DiscordMessage {
   return {
     id,
@@ -29,6 +34,7 @@ function message(
       displayName: options.authorName ?? "Tester",
       bot: options.bot ?? false,
     },
+    reply: options.reply ?? null,
     attachments: [],
     embedsCount: 0,
   };
@@ -218,6 +224,56 @@ describe("timeline rendering", () => {
     expect(plainLines.some((line) => line.startsWith("┌"))).toBe(true);
     expect(plainLines.some((line) => line.includes("│ Name") && line.includes("│ Value "))).toBe(true);
     expect(plainLines.some((line) => line.startsWith("└"))).toBe(true);
+  });
+
+  test("renders reply previews above the message header", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "reply body", {
+      reply: {
+        messageId: "message-0",
+        authorId: "author-0",
+        authorDisplayName: "Alice",
+        timestamp: Date.UTC(2026, 0, 1, 11, 59, 0),
+        summary: "hello there [attachments] cat.png",
+      },
+    })]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      28,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines[0]).toContain("↪ Alice · hello there");
+    expect(plainLines[1]).toContain("[attachments] cat.png");
+    expect(plainLines.some((line) => line.includes("Tester 12:00"))).toBe(true);
+    expect(plainLines.some((line) => line.includes("reply body"))).toBe(true);
+  });
+
+  test("renders deleted reply previews", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "reply body", {
+      reply: {
+        messageId: "message-0",
+        authorId: null,
+        authorDisplayName: null,
+        timestamp: null,
+        summary: "Deleted message",
+      },
+    })]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      28,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[0] ?? "")).toBe("↪ Deleted message");
   });
 
   test("renders the viewer display name in accent inside direct messages", () => {

@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { DIRECT_MESSAGES_GUILD_ID, fetchDirectMessages, formatChannelName, isDirectMessageChannel } from "./discord";
+import {
+  DIRECT_MESSAGES_GUILD_ID,
+  fetchChannelMessages,
+  fetchDirectMessages,
+  formatChannelName,
+  isDirectMessageChannel,
+} from "./discord";
 
 const originalFetch = globalThis.fetch;
 
@@ -68,5 +74,71 @@ describe("discord helpers", () => {
 
     expect(directMessages.map((channel) => channel.name)).toEqual(["zosa", "littlebabel", "old group"]);
     expect(directMessages.map((channel) => channel.position)).toEqual([0, 1, 2]);
+  });
+
+  test("maps referenced messages into compact reply previews", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "reply body",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          message_reference: { message_id: "message-0", channel_id: "channel-1" },
+          referenced_message: {
+            id: "message-0",
+            content: "hello\nthere",
+            timestamp: "2026-01-01T11:59:00.000Z",
+            author: { id: "user-2", username: "alice", global_name: "Alice" },
+            member: { nick: "Alicia" },
+            attachments: [{ id: "a-1", filename: "cat.png", content_type: "image/png", size: 123, url: "https://example.com/cat.png" }],
+            embeds: [{}],
+          },
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.reply).toEqual({
+      messageId: "message-0",
+      authorId: "user-2",
+      authorDisplayName: "Alicia",
+      timestamp: Date.parse("2026-01-01T11:59:00.000Z"),
+      summary: "hello there · [attachments] cat.png · [embeds] 1",
+    });
+  });
+
+  test("marks missing referenced messages as deleted replies", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "reply body",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          message_reference: { message_id: "message-0", channel_id: "channel-1" },
+          referenced_message: null,
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.reply).toEqual({
+      messageId: "message-0",
+      authorId: null,
+      authorDisplayName: null,
+      timestamp: null,
+      summary: "Deleted message",
+    });
   });
 });

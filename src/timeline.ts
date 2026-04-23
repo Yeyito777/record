@@ -5,7 +5,7 @@
 import type { DiscordMessage } from "./discord";
 import { loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
-import { truncate } from "./textwidth";
+import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { theme, toneColor } from "./theme";
 
 export interface TimelineState {
@@ -345,39 +345,150 @@ function renderMessage(
     : message.author.displayName;
   const authorColor = accentViewerInDirectMessages && viewerId === message.author.id ? theme.accent : "";
   const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${theme.reset}`;
+  const replyPreview = wrapReplyPreview(message, width);
 
   const content = summarizeMessage(message);
   if (content === "") {
     return {
-      lines: [header, `${theme.dim}(empty message)${theme.reset}`],
-      lineAnchors: [`msg:${message.id}:header`, `msg:${message.id}:empty`],
-      wrapContinuation: [false, false],
+      lines: [
+        ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
+        header,
+        `${theme.dim}(empty message)${theme.reset}`,
+      ],
+      lineAnchors: [
+        ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
+        `msg:${message.id}:header`,
+        `msg:${message.id}:empty`,
+      ],
+      wrapContinuation: [...replyPreview.map((line) => line.wrapContinuation), false, false],
     };
   }
 
   const wrappedContent = wrapMarkdownText(content, width);
   return {
-    lines: [header, ...wrappedContent.map((line) => `${theme.text}${line.text}${theme.reset}`)],
+    lines: [
+      ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
+      header,
+      ...wrappedContent.map((line) => `${theme.text}${line.text}${theme.reset}`),
+    ],
     lineAnchors: [
+      ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
       `msg:${message.id}:header`,
       ...wrappedContent.map((line) => `msg:${message.id}:content:${line.visualIndex}`),
     ],
-    wrapContinuation: [false, ...wrappedContent.map((line) => line.wrapContinuation)],
+    wrapContinuation: [
+      ...replyPreview.map((line) => line.wrapContinuation),
+      false,
+      ...wrappedContent.map((line) => line.wrapContinuation),
+    ],
   };
 }
 
 function summarizeMessage(message: DiscordMessage): string {
+  return summarizeMessageParts(message.content, message.attachments, message.embedsCount).join("\n");
+}
+
+function summarizeMessageParts(
+  content: string,
+  attachments: Array<{ filename: string }>,
+  embedsCount: number,
+): string[] {
   const parts: string[] = [];
-  const content = message.content.replace(/\r\n?/g, "\n");
-  if (/\S/.test(content)) parts.push(content);
-  if (message.attachments.length > 0) {
-    const files = message.attachments.map((attachment) => attachment.filename).join(", ");
-    parts.push(`[attachments] ${files}`);
+  const normalizedContent = content.replace(/\r\n?/g, "\n");
+  if (/\S/.test(normalizedContent)) {
+    parts.push(normalizedContent);
   }
-  if (message.embedsCount > 0) {
-    parts.push(`[embeds] ${message.embedsCount}`);
+  if (attachments.length > 0) {
+    parts.push(`[attachments] ${attachments.map((attachment) => attachment.filename).join(", ")}`);
   }
-  return parts.join("\n");
+  if (embedsCount > 0) {
+    parts.push(`[embeds] ${embedsCount}`);
+  }
+  return parts;
+}
+
+function wrapReplyPreview(message: DiscordMessage, width: number): WrappedLine[] {
+  if (!message.reply || width <= 0) return [];
+
+  const prefix = "↪ ";
+  const preview = formatReplyPreview(message.reply);
+  if (width <= termWidth(prefix)) {
+    return wrapPlainText(`↪ ${preview}`, width).map((line, visualIndex) => ({
+      text: line,
+      wrapContinuation: visualIndex > 0,
+      visualIndex,
+    }));
+  }
+
+  const continuationPrefix = "  ";
+  const bodyWidth = width - termWidth(prefix);
+  const lines = wrapPlainText(preview, bodyWidth);
+
+  return lines.map((line, visualIndex) => ({
+    text: `${visualIndex === 0 ? prefix : continuationPrefix}${line}`,
+    wrapContinuation: visualIndex > 0,
+    visualIndex,
+  }));
+}
+
+function formatReplyPreview(reply: NonNullable<DiscordMessage["reply"]>): string {
+  const parts: string[] = [];
+  if (reply.authorDisplayName) {
+    parts.push(reply.authorDisplayName);
+  }
+  parts.push(reply.summary);
+  return parts.join(" · ");
+}
+
+function wrapPlainText(text: string, width: number): string[] {
+  if (width <= 0) return [];
+
+  const lines: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    const words = paragraph.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      lines.push("");
+      continue;
+    }
+
+    let current = "";
+    for (const word of words) {
+      if (!current) {
+        current = wrapFirstWord(word, width, lines);
+        continue;
+      }
+
+      const candidate = `${current} ${word}`;
+      if (termWidth(candidate) <= width) {
+        current = candidate;
+        continue;
+      }
+
+      lines.push(current);
+      current = wrapFirstWord(word, width, lines);
+    }
+
+    if (current) {
+      lines.push(current);
+    }
+  }
+
+  return lines.length > 0 ? lines : [""];
+}
+
+function wrapFirstWord(word: string, width: number, lines: string[]): string {
+  let remaining = word;
+  while (termWidth(remaining) > width) {
+    const [taken, rest] = sliceByWidth(remaining, width);
+    if (!taken) {
+      lines.push(remaining[0] ?? "");
+      remaining = remaining.slice(1);
+      continue;
+    }
+    lines.push(taken);
+    remaining = rest;
+  }
+  return remaining;
 }
 
 function wrapMarkdownText(text: string, width: number): WrappedLine[] {
@@ -419,12 +530,22 @@ function resetTimelineRenderCaches(timeline: TimelineState): void {
 
 function messageRenderFingerprint(message: DiscordMessage): string {
   const attachmentKey = message.attachments.map((attachment) => attachment.filename).join("\u0000");
+  const replyKey = message.reply
+    ? [
+      message.reply.messageId ?? "",
+      message.reply.authorId ?? "",
+      message.reply.authorDisplayName ?? "",
+      String(message.reply.timestamp ?? ""),
+      message.reply.summary,
+    ].join("\u0000")
+    : "";
   return [
     String(message.timestamp),
     message.author.id,
     message.author.displayName,
     message.author.bot ? "1" : "0",
     message.content,
+    replyKey,
     attachmentKey,
     String(message.embedsCount),
   ].join("\u0001");
