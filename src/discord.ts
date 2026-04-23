@@ -55,6 +55,7 @@ interface DiscordChannelResponse {
   position?: number;
   type: number;
   nsfw?: boolean;
+  last_message_id?: string | null;
   recipients?: DiscordDMRecipientResponse[];
 }
 
@@ -196,6 +197,13 @@ export async function fetchCurrentUserPresenceStatus(token: string): Promise<Dis
   }
 }
 
+function compareSnowflakesDesc(left: string | null | undefined, right: string | null | undefined): number {
+  const leftValue = left ? BigInt(left) : 0n;
+  const rightValue = right ? BigInt(right) : 0n;
+  if (leftValue === rightValue) return 0;
+  return leftValue > rightValue ? -1 : 1;
+}
+
 function displayNameFromRecipient(recipient: DiscordDMRecipientResponse): string {
   return recipient.global_name ?? recipient.username;
 }
@@ -214,6 +222,7 @@ export async function fetchDirectMessages(token: string): Promise<DiscordChannel
   const channels = await apiGetJson<DiscordChannelResponse[]>(token, "/users/@me/channels");
   return channels
     .filter((channel) => DIRECT_MESSAGE_CHANNEL_TYPES.has(channel.type))
+    .sort((a, b) => compareSnowflakesDesc(a.last_message_id, b.last_message_id))
     .map((channel, index) => ({
       id: channel.id,
       guildId: DIRECT_MESSAGES_GUILD_ID,
