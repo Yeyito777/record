@@ -109,16 +109,37 @@ export function toneColor(tone: NoticeTone): string {
   }
 }
 
-const DM_AUTHOR_COLORS = [
-  "\x1b[38;2;255;184;108m",
-  "\x1b[38;2;189;147;249m",
-  "\x1b[38;2;80;250;123m",
-  "\x1b[38;2;255;121;198m",
-  "\x1b[38;2;139;233;253m",
-  "\x1b[38;2;241;250;140m",
-  "\x1b[38;2;166;227;161m",
-  "\x1b[38;2;250;179;135m",
+const DM_AUTHOR_BASE_COLORS = [
+  [255, 184, 108],
+  [189, 147, 249],
+  [80, 250, 123],
+  [255, 121, 198],
+  [139, 233, 253],
+  [241, 250, 140],
+  [166, 227, 161],
+  [250, 179, 135],
 ] as const;
+
+const DM_AUTHOR_TINTS = [
+  -0.18,
+  -0.15,
+  -0.12,
+  -0.09,
+  -0.06,
+  -0.03,
+  0,
+  0.03,
+  0.06,
+  0.09,
+  0.12,
+  0.15,
+  0.18,
+  0.21,
+  0.24,
+  0.27,
+] as const;
+
+export const DM_AUTHOR_COLOR_COUNT = DM_AUTHOR_BASE_COLORS.length * DM_AUTHOR_TINTS.length;
 
 export function dmAuthorColor(userId: string): string {
   let hash = 2166136261;
@@ -126,7 +147,18 @@ export function dmAuthorColor(userId: string): string {
     hash ^= userId.charCodeAt(index);
     hash = Math.imul(hash, 16777619) >>> 0;
   }
-  return DM_AUTHOR_COLORS[hash % DM_AUTHOR_COLORS.length];
+
+  const baseColor = DM_AUTHOR_BASE_COLORS[hash % DM_AUTHOR_BASE_COLORS.length];
+  const tint = DM_AUTHOR_TINTS[Math.floor(hash / DM_AUTHOR_BASE_COLORS.length) % DM_AUTHOR_TINTS.length];
+  const [red, green, blue] = baseColor.map((channel) => tintChannel(channel, tint));
+  return `\x1b[38;2;${red};${green};${blue}m`;
+}
+
+function tintChannel(channel: number, tint: number): number {
+  if (tint < 0) {
+    return Math.round(channel * (1 + tint));
+  }
+  return Math.round(channel + (255 - channel) * tint);
 }
 
 export function setTheme(name: ThemeName): string | null {
