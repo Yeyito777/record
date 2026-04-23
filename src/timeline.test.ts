@@ -5,19 +5,30 @@ import {
   prependTimelineMessages,
   renderTimelineLines,
   setTimelineMessages,
+  setTimelineRenderContext,
   startLoadingOlderMessages,
 } from "./timeline";
+import { theme } from "./theme";
 import { termWidth } from "./textwidth";
 import type { DiscordMessage } from "./discord";
 
-function message(id: string, content: string): DiscordMessage {
+function message(
+  id: string,
+  content: string,
+  options: { authorId?: string; authorName?: string; bot?: boolean } = {},
+): DiscordMessage {
   return {
     id,
     channelId: "channel-1",
     timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
     editedTimestamp: null,
     content,
-    author: { id: "user-1", username: "tester", displayName: "Tester", bot: false },
+    author: {
+      id: options.authorId ?? "user-1",
+      username: "tester",
+      displayName: options.authorName ?? "Tester",
+      bot: options.bot ?? false,
+    },
     attachments: [],
     embedsCount: 0,
   };
@@ -207,6 +218,23 @@ describe("timeline rendering", () => {
     expect(plainLines.some((line) => line.startsWith("┌"))).toBe(true);
     expect(plainLines.some((line) => line.includes("│ Name") && line.includes("│ Value "))).toBe(true);
     expect(plainLines.some((line) => line.startsWith("└"))).toBe(true);
+  });
+
+  test("renders the viewer display name in accent inside direct messages", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hello", { authorId: "viewer", authorName: "Paramount" })]);
+    setTimelineRenderContext(timeline, "viewer", true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      40,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lines[0]).toContain(theme.accent);
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00");
   });
 
   test("renders markdown horizontal rules", () => {

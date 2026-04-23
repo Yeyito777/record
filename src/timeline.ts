@@ -17,6 +17,8 @@ export interface TimelineState {
   loadingOlder: boolean;
   hasOlder: boolean;
   requestId: number;
+  viewerId: string | null;
+  accentViewerInDirectMessages: boolean;
 }
 
 export interface TimelineMessageBound {
@@ -80,6 +82,8 @@ export function createTimelineState(): TimelineState {
     loadingOlder: false,
     hasOlder: false,
     requestId: 0,
+    viewerId: null,
+    accentViewerInDirectMessages: false,
   };
 }
 
@@ -154,6 +158,20 @@ export function shouldLoadOlderMessages(timeline: TimelineState): boolean {
 
 export function moveTimelineScroll(timeline: TimelineState, delta: number): void {
   timeline.scrollOffset = Math.max(0, Math.min(timeline.scrollOffset + delta, timeline.maxScroll));
+}
+
+export function setTimelineRenderContext(
+  timeline: TimelineState,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+): void {
+  if (timeline.viewerId === viewerId && timeline.accentViewerInDirectMessages === accentViewerInDirectMessages) {
+    return;
+  }
+
+  timeline.viewerId = viewerId;
+  timeline.accentViewerInDirectMessages = accentViewerInDirectMessages;
+  resetTimelineRenderCaches(timeline);
 }
 
 export function renderTimelineLines(
@@ -310,17 +328,23 @@ function renderMessageCached(timeline: TimelineState, message: DiscordMessage, w
     return cached.rendered;
   }
 
-  const rendered = renderMessage(message, width);
+  const rendered = renderMessage(message, width, timeline.viewerId, timeline.accentViewerInDirectMessages);
   cacheState.messageRenderCache.set(message.id, { width, fingerprint, rendered });
   return rendered;
 }
 
-function renderMessage(message: DiscordMessage, width: number): RenderedMessage {
+function renderMessage(
+  message: DiscordMessage,
+  width: number,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+): RenderedMessage {
   const time = new Date(message.timestamp).toISOString().slice(11, 16);
   const author = message.author.bot
     ? `${message.author.displayName} [bot]`
     : message.author.displayName;
-  const header = `${theme.bold}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${theme.reset}`;
+  const authorColor = accentViewerInDirectMessages && viewerId === message.author.id ? theme.accent : "";
+  const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${theme.reset}`;
 
   const content = summarizeMessage(message);
   if (content === "") {
@@ -397,6 +421,7 @@ function messageRenderFingerprint(message: DiscordMessage): string {
   const attachmentKey = message.attachments.map((attachment) => attachment.filename).join("\u0000");
   return [
     String(message.timestamp),
+    message.author.id,
     message.author.displayName,
     message.author.bot ? "1" : "0",
     message.content,

@@ -13,6 +13,7 @@ import {
   PROMPT_PREFIX_WIDTH,
   wrappedLineOffsets,
 } from "./editor";
+import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { renderBodyLines } from "./bodypanel";
 import {
   buildLineAnchorIndex,
@@ -40,7 +41,7 @@ import {
   showCursor,
 } from "./terminal";
 import { theme } from "./theme";
-import { renderTimelineLines } from "./timeline";
+import { renderTimelineLines, setTimelineRenderContext } from "./timeline";
 import { renderTopbar } from "./topbar";
 
 function renderAutocompletePopup(
@@ -290,6 +291,11 @@ export function render(state: AppState): void {
   const oldVisualAnchorRow = state.historyVisualAnchor.row;
   const pinHistoryToBottom = oldViewStart === Number.MAX_SAFE_INTEGER;
 
+  setTimelineRenderContext(
+    state.timeline,
+    state.auth.user?.id ?? null,
+    state.channelList.activeChannel?.guildId === DIRECT_MESSAGES_GUILD_ID,
+  );
   const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, state.notice, state.loadingFrameIndex);
 
   if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom) {
