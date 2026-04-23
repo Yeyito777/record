@@ -20,12 +20,16 @@ function message(
     authorName?: string;
     bot?: boolean;
     reply?: DiscordMessage["reply"];
+    call?: DiscordMessage["call"];
+    timestamp?: number;
+    type?: number;
   } = {},
 ): DiscordMessage {
   return {
     id,
     channelId: "channel-1",
-    timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+    type: options.type ?? 0,
+    timestamp: options.timestamp ?? Date.UTC(2026, 0, 1, 12, 0, 0),
     editedTimestamp: null,
     content,
     author: {
@@ -35,6 +39,7 @@ function message(
       bot: options.bot ?? false,
     },
     reply: options.reply ?? null,
+    call: options.call ?? null,
     attachments: [],
     embedsCount: 0,
   };
@@ -309,6 +314,99 @@ describe("timeline rendering", () => {
     expect(rendered.lines[0]).toContain(dmAuthorColor("other-user"));
     expect(rendered.lines[0]).not.toContain(theme.accent);
     expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Alice 12:00");
+  });
+
+  test("renders call message types even when the call payload is missing", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("call-1", "", { type: 3 })]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines).not.toContain("(empty message)");
+    expect(plainLines[1]).toContain("☎ Call");
+  });
+
+  test("renders ended call messages with duration", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("call-1", "", {
+      type: 3,
+      timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+      call: {
+        endedTimestamp: Date.UTC(2026, 0, 1, 13, 2, 3),
+        participantIds: ["viewer", "other-user"],
+      },
+    })]);
+    setTimelineRenderContext(timeline, "viewer", true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines).not.toContain("(empty message)");
+    expect(plainLines[1]).toContain("✓ ☎ Call ended · 1:02:03 · 2 participants");
+  });
+
+  test("renders active calls with an animated frame and live duration", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("call-1", "", {
+      type: 3,
+      authorId: "other-user",
+      authorName: "Alice",
+      timestamp: Date.now() - 65_000,
+      call: {
+        endedTimestamp: null,
+        participantIds: ["viewer", "other-user"],
+      },
+    })]);
+    setTimelineRenderContext(timeline, "viewer", true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      1,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines[1]).toMatch(/^⠙ ☎ Call in progress · 1:0[45] · 2 participants$/);
+  });
+
+  test("renders incoming calls before the viewer joins", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("call-1", "", {
+      type: 3,
+      authorId: "other-user",
+      authorName: "Alice",
+      timestamp: Date.now() - 5_000,
+      call: {
+        endedTimestamp: null,
+        participantIds: ["other-user"],
+      },
+    })]);
+    setTimelineRenderContext(timeline, "viewer", true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      2,
+    );
+
+    expect(stripAnsi(rendered.lines[1] ?? "")).toMatch(/^⠹ ☎ Incoming call · 0:0[45]$/);
   });
 
   test("renders markdown horizontal rules", () => {

@@ -9,11 +9,13 @@ function message(id: string, content: string): DiscordMessage {
   return {
     id,
     channelId: "channel-1",
+    type: 0,
     timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
     editedTimestamp: null,
     content,
     author: { id: "user-1", username: "tester", displayName: "Tester", bot: false },
     reply: null,
+    call: null,
     attachments: [],
     embedsCount: 0,
   };

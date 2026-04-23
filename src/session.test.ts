@@ -26,11 +26,13 @@ describe("session", () => {
     state.timeline.messages = [{
       id: "message-1",
       channelId: "channel-1",
+      type: 0,
       content: "hello",
       timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
       editedTimestamp: null,
       author: { id: "user-1", username: "user", displayName: "User", bot: false },
       reply: null,
+      call: null,
       attachments: [],
       embedsCount: 0,
     }];

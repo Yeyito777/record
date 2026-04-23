@@ -3,7 +3,7 @@
  */
 
 import type { DiscordMessage } from "./discord";
-import { loadingLabel } from "./loading";
+import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { dmAuthorColor, theme, toneColor } from "./theme";
@@ -58,6 +58,7 @@ interface CachedRenderedMessage {
 interface CachedTimelineContent {
   width: number;
   version: number;
+  liveKey: string;
   lines: string[];
   lineAnchors: string[];
   wrapContinuation: boolean[];
@@ -160,6 +161,10 @@ export function moveTimelineScroll(timeline: TimelineState, delta: number): void
   timeline.scrollOffset = Math.max(0, Math.min(timeline.scrollOffset + delta, timeline.maxScroll));
 }
 
+export function hasActiveTimelineCall(timeline: TimelineState): boolean {
+  return timeline.messages.some((message) => message.call && message.call.endedTimestamp === null);
+}
+
 export function setTimelineRenderContext(
   timeline: TimelineState,
   viewerId: string | null,
@@ -205,7 +210,7 @@ export function renderTimelineLines(
     lineAnchors.push("timeline:loading");
     wrapContinuation.push(false);
   } else {
-    const content = getRenderedTimelineContent(timeline, width);
+    const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
     if (notice.text || timeline.loadingOlder) {
       if (timeline.loadingOlder) {
         allLines.push(`${theme.muted}${truncate(loadingLabel("Loading older messages…", loadingFrameIndex), width)}${theme.reset}`);
@@ -238,8 +243,9 @@ export function renderTimelineLines(
 
 function countRenderedMessageRows(timeline: TimelineState, messages: DiscordMessage[], width: number): number {
   let total = 0;
+  const nowMs = Date.now();
   for (const message of messages) {
-    total += renderMessageCached(timeline, message, width).lines.length + 1;
+    total += renderMessageCached(timeline, message, width, 0, nowMs).lines.length + 1;
   }
   return total;
 }
@@ -267,9 +273,20 @@ function appendRenderedTimelineContent(
   })));
 }
 
-function getRenderedTimelineContent(timeline: TimelineState, width: number): CachedTimelineContent {
+function getRenderedTimelineContent(
+  timeline: TimelineState,
+  width: number,
+  loadingFrameIndex: number,
+  nowMs: number,
+): CachedTimelineContent {
   const cacheState = getTimelineCacheState(timeline);
-  if (cacheState.contentCache && cacheState.contentCache.width === width && cacheState.contentCache.version === cacheState.version) {
+  const liveKey = timelineLiveRenderKey(timeline, loadingFrameIndex, nowMs);
+  if (
+    cacheState.contentCache
+    && cacheState.contentCache.width === width
+    && cacheState.contentCache.version === cacheState.version
+    && cacheState.contentCache.liveKey === liveKey
+  ) {
     return cacheState.contentCache;
   }
 
@@ -286,7 +303,7 @@ function getRenderedTimelineContent(timeline: TimelineState, width: number): Cac
     wrapContinuation.push(false);
   } else {
     for (const message of timeline.messages) {
-      const renderedMessage = renderMessageCached(timeline, message, width);
+      const renderedMessage = renderMessageCached(timeline, message, width, loadingFrameIndex, nowMs);
       const start = lines.length;
       lines.push(...renderedMessage.lines);
       lineAnchors.push(...renderedMessage.lineAnchors);
@@ -311,6 +328,7 @@ function getRenderedTimelineContent(timeline: TimelineState, width: number): Cac
   const content = {
     width,
     version: cacheState.version,
+    liveKey,
     lines,
     lineAnchors,
     wrapContinuation,
@@ -320,15 +338,21 @@ function getRenderedTimelineContent(timeline: TimelineState, width: number): Cac
   return content;
 }
 
-function renderMessageCached(timeline: TimelineState, message: DiscordMessage, width: number): RenderedMessage {
+function renderMessageCached(
+  timeline: TimelineState,
+  message: DiscordMessage,
+  width: number,
+  loadingFrameIndex: number,
+  nowMs: number,
+): RenderedMessage {
   const cacheState = getTimelineCacheState(timeline);
-  const fingerprint = messageRenderFingerprint(message);
+  const fingerprint = messageRenderFingerprint(message, loadingFrameIndex, nowMs);
   const cached = cacheState.messageRenderCache.get(message.id);
   if (cached && cached.width === width && cached.fingerprint === fingerprint) {
     return cached.rendered;
   }
 
-  const rendered = renderMessage(message, width, timeline.viewerId, timeline.accentViewerInDirectMessages);
+  const rendered = renderMessage(message, width, timeline.viewerId, timeline.accentViewerInDirectMessages, loadingFrameIndex, nowMs);
   cacheState.messageRenderCache.set(message.id, { width, fingerprint, rendered });
   return rendered;
 }
@@ -338,6 +362,8 @@ function renderMessage(
   width: number,
   viewerId: string | null,
   accentViewerInDirectMessages: boolean,
+  loadingFrameIndex: number,
+  nowMs: number,
 ): RenderedMessage {
   const time = new Date(message.timestamp).toISOString().slice(11, 16);
   const author = message.author.bot
@@ -351,7 +377,7 @@ function renderMessage(
   const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${theme.reset}`;
   const replyPreview = wrapReplyPreview(message, width);
 
-  const content = summarizeMessage(message);
+  const content = summarizeMessage(message, viewerId, loadingFrameIndex, nowMs);
   if (content === "") {
     return {
       lines: [
@@ -388,8 +414,70 @@ function renderMessage(
   };
 }
 
-function summarizeMessage(message: DiscordMessage): string {
+function summarizeMessage(
+  message: DiscordMessage,
+  viewerId: string | null,
+  loadingFrameIndex: number,
+  nowMs: number,
+): string {
+  if (message.call || message.type === 3) {
+    return summarizeCallMessage(message, viewerId, loadingFrameIndex, nowMs);
+  }
+
   return summarizeMessageParts(message.content, message.attachments, message.embedsCount).join("\n");
+}
+
+function summarizeCallMessage(
+  message: DiscordMessage,
+  viewerId: string | null,
+  loadingFrameIndex: number,
+  nowMs: number,
+): string {
+  const call = message.call;
+  if (!call) return "☎ Call";
+
+  const viewerJoined = viewerId ? call.participantIds.includes(viewerId) : false;
+  const otherParticipantCount = viewerId
+    ? call.participantIds.filter((participantId) => participantId !== viewerId).length
+    : call.participantIds.length;
+  const participants = formatParticipantCount(call.participantIds.length);
+
+  if (call.endedTimestamp !== null) {
+    const duration = formatCallDuration(call.endedTimestamp - message.timestamp);
+    if (viewerId && !viewerJoined && message.author.id !== viewerId) {
+      return `✕ ☎ Missed call · ${duration}`;
+    }
+    return `✓ ☎ Call ended · ${duration} · ${participants}`;
+  }
+
+  const duration = formatCallDuration(nowMs - message.timestamp);
+  const frame = loadingFrame(loadingFrameIndex);
+  if (viewerId && !viewerJoined && message.author.id !== viewerId) {
+    return `${frame} ☎ Incoming call · ${duration}`;
+  }
+
+  if (viewerId && message.author.id === viewerId && otherParticipantCount === 0) {
+    return `${frame} ☎ Calling… · ${duration}`;
+  }
+
+  return `${frame} ☎ Call in progress · ${duration} · ${participants}`;
+}
+
+function formatParticipantCount(count: number): string {
+  if (count === 1) return "1 participant";
+  return `${count} participants`;
+}
+
+function formatCallDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const two = (value: number) => value.toString().padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${two(minutes)}:${two(seconds)}`;
+  }
+  return `${minutes}:${two(seconds)}`;
 }
 
 function summarizeMessageParts(
@@ -532,7 +620,17 @@ function resetTimelineRenderCaches(timeline: TimelineState): void {
   cacheState.contentCache = null;
 }
 
-function messageRenderFingerprint(message: DiscordMessage): string {
+function timelineLiveRenderKey(timeline: TimelineState, loadingFrameIndex: number, nowMs: number): string {
+  if (!hasActiveTimelineCall(timeline)) return "";
+  return `${loadingFrameIndex}:${Math.floor(nowMs / 1000)}`;
+}
+
+function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, nowMs: number): string {
+  if (!message.call || message.call.endedTimestamp !== null) return "";
+  return `${loadingFrameIndex}:${Math.floor(nowMs / 1000)}`;
+}
+
+function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: number, nowMs: number): string {
   const attachmentKey = message.attachments.map((attachment) => attachment.filename).join("\u0000");
   const replyKey = message.reply
     ? [
@@ -543,13 +641,22 @@ function messageRenderFingerprint(message: DiscordMessage): string {
       message.reply.summary,
     ].join("\u0000")
     : "";
+  const callKey = message.call
+    ? [
+      String(message.call.endedTimestamp ?? ""),
+      message.call.participantIds.join("\u0000"),
+      callLiveRenderKey(message, loadingFrameIndex, nowMs),
+    ].join("\u0000")
+    : "";
   return [
     String(message.timestamp),
     message.author.id,
     message.author.displayName,
     message.author.bot ? "1" : "0",
+    String(message.type),
     message.content,
     replyKey,
+    callKey,
     attachmentKey,
     String(message.embedsCount),
   ].join("\u0001");

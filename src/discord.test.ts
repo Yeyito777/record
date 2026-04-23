@@ -113,6 +113,36 @@ describe("discord helpers", () => {
     });
   });
 
+  test("maps Discord call payloads", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "call-1",
+          channel_id: "channel-1",
+          type: 3,
+          content: "",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          call: {
+            ended_timestamp: "2026-01-01T12:03:04.000Z",
+            participants: ["user-1", "user-2"],
+          },
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.type).toBe(3);
+    expect(messages[0]?.call).toEqual({
+      endedTimestamp: Date.parse("2026-01-01T12:03:04.000Z"),
+      participantIds: ["user-1", "user-2"],
+    });
+  });
+
   test("marks missing referenced messages as deleted replies", async () => {
     globalThis.fetch = (async () => {
       return new Response(JSON.stringify([

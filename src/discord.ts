@@ -95,16 +95,23 @@ interface DiscordReferencedMessageResponse {
   embeds?: unknown[];
 }
 
+interface DiscordCallResponse {
+  ended_timestamp: string | null;
+  participants?: string[];
+}
+
 interface DiscordMessageResponse {
   id: string;
   channel_id: string;
   content: string;
   timestamp: string;
   edited_timestamp: string | null;
+  type?: number;
   author: DiscordMessageAuthorResponse;
   member?: DiscordMessageMemberResponse;
   message_reference?: DiscordMessageReferenceResponse | null;
   referenced_message?: DiscordReferencedMessageResponse | null;
+  call?: DiscordCallResponse | null;
   attachments?: DiscordAttachmentResponse[];
   embeds?: unknown[];
 }
@@ -161,9 +168,15 @@ export interface DiscordMessageReply {
   summary: string;
 }
 
+export interface DiscordMessageCall {
+  endedTimestamp: number | null;
+  participantIds: string[];
+}
+
 export interface DiscordMessage {
   id: string;
   channelId: string;
+  type: number;
   content: string;
   timestamp: number;
   editedTimestamp: number | null;
@@ -174,6 +187,7 @@ export interface DiscordMessage {
     bot: boolean;
   };
   reply: DiscordMessageReply | null;
+  call: DiscordMessageCall | null;
   attachments: DiscordMessageAttachment[];
   embedsCount: number;
 }
@@ -379,6 +393,7 @@ export async function fetchChannelMessages(
     .map((message) => ({
       id: message.id,
       channelId: message.channel_id,
+      type: message.type ?? 0,
       content: message.content,
       timestamp: Date.parse(message.timestamp),
       editedTimestamp: message.edited_timestamp ? Date.parse(message.edited_timestamp) : null,
@@ -389,6 +404,10 @@ export async function fetchChannelMessages(
         bot: Boolean(message.author.bot),
       },
       reply: mapReplyPreview(message),
+      call: message.call ? {
+        endedTimestamp: message.call.ended_timestamp ? Date.parse(message.call.ended_timestamp) : null,
+        participantIds: message.call.participants ?? [],
+      } : null,
       attachments: (message.attachments ?? []).map((attachment) => ({
         id: attachment.id,
         filename: attachment.filename,

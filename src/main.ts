@@ -64,7 +64,7 @@ import {
   showCursor,
 } from "./terminal";
 import { theme } from "./theme";
-import { moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
+import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
 import { normalizeToken } from "./token";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -121,7 +121,8 @@ function hasActiveLoadingIndicator(): boolean {
     || state.memberList.loading
     || state.channelList.loading
     || state.timeline.loading
-    || state.timeline.loadingOlder;
+    || state.timeline.loadingOlder
+    || hasActiveTimelineCall(state.timeline);
 }
 
 function syncLoadingAnimation(): void {
