@@ -18,7 +18,7 @@ describe("submitCurrentBuffer", () => {
     expect(resolveLoginCredential(state, "raw-token")).toBe("raw-token");
   });
 
-  test("non-command prompt text is cleared without warning", () => {
+  test("non-command prompt text requires a login before sending", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editor.buffer = "hello world";
     state.editor.cursor = state.editor.buffer.length;
@@ -26,8 +26,8 @@ describe("submitCurrentBuffer", () => {
     submitCurrentBuffer(state, effects);
 
     expect(state.auth.status).toBe("idle");
-    expect(state.notice.text).toBe("");
-    expect(state.editor.buffer).toBe("");
+    expect(state.notice.text).toBe("Login first with /login <token|username>.");
+    expect(state.editor.buffer).toBe("hello world");
   });
 
   test("empty prompt does nothing", () => {

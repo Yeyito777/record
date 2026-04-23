@@ -26,6 +26,7 @@ import { MEMBER_LIST_WIDTH } from "./memberlist";
 import { render } from "./render";
 import {
   bootstrapReadOnlyClient,
+  disconnectAppGateway,
   disconnectMemberListGateway,
   loadChannelMessages,
   loadGuildChannels,
@@ -601,6 +602,7 @@ function cleanup(): void {
   }
   stopLoadingAnimation();
   disconnectMemberListGateway();
+  disconnectAppGateway();
   restoreTerminal();
   process.exit(0);
 }

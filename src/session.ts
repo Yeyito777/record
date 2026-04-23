@@ -3,12 +3,15 @@
  */
 
 import {
+  bumpDirectMessageChannel,
   clearChannelList,
   findBrowsableChannel,
   findFirstBrowsableChannel,
+  removeChannel,
   setActiveChannel,
   setActiveChannelEntry,
   setChannelList,
+  upsertChannel,
 } from "./channels";
 import {
   DIRECT_MESSAGES_GUILD_ID,
@@ -17,8 +20,22 @@ import {
   fetchDirectMessages,
   fetchGuildChannels,
   fetchGuilds,
+  sendChannelMessage,
+  type DiscordChannel,
+  type DiscordGuild,
   type DiscordGuildMember,
+  type DiscordMessage,
+  type DiscordMessagePatch,
 } from "./discord";
+import {
+  loadCachedDirectMessages,
+  loadCachedGuildChannels,
+  loadCachedGuilds,
+  saveCachedDirectMessages,
+  saveCachedGuildChannels,
+  saveCachedGuilds,
+} from "./datacache";
+import { AppGatewayClient } from "./appgateway";
 import { MemberListGatewayClient } from "./membergateway";
 import {
   cacheMemberList,
@@ -29,12 +46,19 @@ import {
   setMemberListMessage,
 } from "./memberlist";
 import type { AppState } from "./state";
+import { clearPrompt } from "./promptstate";
 import { focusPrompt, setNotice } from "./state";
 import { clearSidebarData, setSidebarGuilds } from "./sidebar";
 import {
+  appendTimelineMessage,
   clearTimeline,
   finishLoadingOlderMessages,
+  markTimelineMessageFailed,
   prependTimelineMessages,
+  patchTimelineMessage,
+  removeTimelineMessage,
+  removeTimelineMessages,
+  replaceTimelineMessage,
   setTimelineMessages,
 } from "./timeline";
 
@@ -51,6 +75,8 @@ const MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS = 7_000;
 
 let memberListGateway: MemberListGatewayClient | null = null;
 let memberListGatewayToken: string | null = null;
+let appGateway: AppGatewayClient | null = null;
+let appGatewayToken: string | null = null;
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
   const members: DiscordGuildMember[] = [];
@@ -81,6 +107,12 @@ export function disconnectMemberListGateway(): void {
   memberListGatewayToken = null;
 }
 
+export function disconnectAppGateway(): void {
+  appGateway?.disconnect();
+  appGateway = null;
+  appGatewayToken = null;
+}
+
 function getMemberListGateway(token: string): MemberListGatewayClient {
   if (!memberListGateway || memberListGatewayToken !== token) {
     disconnectMemberListGateway();
@@ -91,8 +123,103 @@ function getMemberListGateway(token: string): MemberListGatewayClient {
   return memberListGateway;
 }
 
+function ensureDirectMessagesGuild(state: AppState): void {
+  if (state.sidebar.guilds.some((guild) => guild.id === DIRECT_MESSAGES_GUILD_ID)) return;
+  state.sidebar.guilds = [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, ...state.sidebar.guilds];
+}
+
+function activeTimelineWasPinned(state: AppState): boolean {
+  return state.timeline.scrollOffset >= state.timeline.maxScroll;
+}
+
+function maybeResortDirectMessages(state: AppState, channelId: string): void {
+  if (state.channelList.guildId !== DIRECT_MESSAGES_GUILD_ID) return;
+  bumpDirectMessageChannel(state.channelList, channelId);
+}
+
+function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
+  maybeResortDirectMessages(state, message.channelId);
+  if (state.timeline.channelId === message.channelId) {
+    const pinned = activeTimelineWasPinned(state);
+    appendTimelineMessage(state.timeline, message);
+    if (pinned) state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+  }
+  effects.scheduleRender();
+}
+
+function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, patch: DiscordMessagePatch): void {
+  maybeResortDirectMessages(state, patch.channelId);
+  if (state.timeline.channelId === patch.channelId) {
+    patchTimelineMessage(state.timeline, patch);
+  }
+  effects.scheduleRender();
+}
+
+function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEffects, channel: DiscordChannel): void {
+  if (channel.guildId === DIRECT_MESSAGES_GUILD_ID) {
+    ensureDirectMessagesGuild(state);
+  }
+
+  if (state.channelList.guildId === channel.guildId) {
+    upsertChannel(state.channelList, channel);
+    if (state.memberList.open && state.channelList.activeChannelId === channel.id) {
+      syncMemberListForCurrentChannel(state, effects);
+    }
+  }
+
+  effects.scheduleRender();
+}
+
+function handleGatewayChannelDelete(state: AppState, effects: SessionEffects, channelId: string): void {
+  const wasActive = state.channelList.activeChannelId === channelId;
+  const removed = removeChannel(state.channelList, channelId);
+  if (wasActive || state.timeline.channelId === channelId) {
+    clearTimeline(state.timeline);
+    setNotice(state, "Channel was deleted.", "warning");
+    syncMemberListForCurrentChannel(state, effects);
+  }
+  if (removed || wasActive) effects.scheduleRender();
+}
+
+function cachedSidebarGuilds(directMessages: DiscordChannel[], guilds: DiscordGuild[]): DiscordGuild[] {
+  return directMessages.length > 0
+    ? [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, ...guilds]
+    : guilds;
+}
+
+function currentAccountId(state: AppState): string | null {
+  return state.auth.user?.id ?? null;
+}
+
+function startAppGateway(state: AppState, token: string, effects: SessionEffects): void {
+  if (appGateway && appGatewayToken === token) return;
+  disconnectAppGateway();
+  appGatewayToken = token;
+  appGateway = new AppGatewayClient(token, {
+    onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
+    onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
+    onMessageDelete: (channelId, messageId) => {
+      removeTimelineMessage(state.timeline, messageId, channelId);
+      effects.scheduleRender();
+    },
+    onMessageDeleteBulk: (channelId, messageIds) => {
+      removeTimelineMessages(state.timeline, messageIds, channelId);
+      effects.scheduleRender();
+    },
+    onChannelCreate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
+    onChannelUpdate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
+    onChannelDelete: (channelId) => handleGatewayChannelDelete(state, effects, channelId),
+    onError: (error) => {
+      setNotice(state, error.message, "warning");
+      effects.scheduleRender();
+    },
+  });
+  appGateway.start();
+}
+
 export function clearReadOnlyClient(state: AppState): void {
   disconnectMemberListGateway();
+  disconnectAppGateway();
   state.sidebar.requestId += 1;
   state.channelList.requestId += 1;
   state.timeline.requestId += 1;
@@ -215,13 +342,33 @@ export async function bootstrapReadOnlyClient(
   effects: SessionEffects,
 ): Promise<void> {
   const requestId = ++state.sidebar.requestId;
+  const accountId = currentAccountId(state);
+  const previousExpandedGuildId = state.sidebar.expandedGuildId;
+  const previousActiveGuildId = state.sidebar.activeGuildId;
+  const previousChannelListGuildId = state.channelList.guildId;
+  const previousChannels = state.channelList.channels;
+  const previousActiveChannel = state.channelList.activeChannel;
+  const previousActiveChannelId = state.channelList.activeChannelId;
   state.sidebar.loading = true;
   state.sidebar.loadingGuildId = null;
   disconnectMemberListGateway();
   clearMemberListData(state.memberList);
-  clearChannelList(state.channelList);
   clearTimeline(state.timeline);
   setNotice(state, "", "muted");
+
+  if (accountId) {
+    const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
+    const cachedGuilds = loadCachedGuilds(accountId) ?? [];
+    if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
+      setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
+      state.sidebar.expandedGuildId = previousExpandedGuildId;
+      state.sidebar.activeGuildId = previousActiveGuildId;
+      if (previousChannelListGuildId && previousChannels.length > 0) {
+        setChannelList(state.channelList, previousChannelListGuildId, previousChannels);
+        setActiveChannelEntry(state.channelList, previousActiveChannel ?? findBrowsableChannel(previousChannels, previousActiveChannelId));
+      }
+    }
+  }
   effects.scheduleRender();
 
   try {
@@ -231,13 +378,26 @@ export async function bootstrapReadOnlyClient(
     ]);
     if (requestId !== state.sidebar.requestId) return;
 
+    const liveExpandedGuildId = state.sidebar.expandedGuildId;
+    const liveActiveGuildId = state.sidebar.activeGuildId;
+    const liveChannelListGuildId = state.channelList.guildId;
+    const liveChannels = state.channelList.channels;
+    const liveActiveChannel = state.channelList.activeChannel;
+    const liveActiveChannelId = state.channelList.activeChannelId;
+
     state.sidebar.loading = false;
-    setSidebarGuilds(
-      state.sidebar,
-      directMessages.length > 0
-        ? [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, ...guilds]
-        : guilds,
-    );
+    setSidebarGuilds(state.sidebar, cachedSidebarGuilds(directMessages, guilds));
+    state.sidebar.expandedGuildId = liveExpandedGuildId;
+    state.sidebar.activeGuildId = liveActiveGuildId;
+    if (liveChannelListGuildId && liveChannels.length > 0) {
+      setChannelList(state.channelList, liveChannelListGuildId, liveChannels);
+      setActiveChannelEntry(state.channelList, liveActiveChannel ?? findBrowsableChannel(liveChannels, liveActiveChannelId));
+    }
+    if (accountId) {
+      saveCachedDirectMessages(accountId, directMessages);
+      saveCachedGuilds(accountId, guilds);
+    }
+    startAppGateway(state, token, effects);
 
     if (state.sidebar.guilds.length === 0) {
       clearChannelList(state.channelList);
@@ -247,15 +407,15 @@ export async function bootstrapReadOnlyClient(
       return;
     }
 
-    clearChannelList(state.channelList);
-    clearTimeline(state.timeline);
+    if (!liveChannelListGuildId || liveChannels.length === 0) {
+      clearChannelList(state.channelList);
+    }
     setNotice(state, "", "muted");
     effects.scheduleRender();
     return;
   } catch (error) {
     if (requestId !== state.sidebar.requestId) return;
     state.sidebar.loading = false;
-    clearReadOnlyClient(state);
     setNotice(state, error instanceof Error ? error.message : String(error), "error");
     effects.scheduleRender();
   }
@@ -269,17 +429,38 @@ export async function loadGuildChannels(
   options: LoadGuildChannelsOptions = {},
 ): Promise<void> {
   const requestId = ++state.channelList.requestId;
+  const accountId = currentAccountId(state);
   state.sidebar.expandedGuildId = guildId;
   state.sidebar.loadingGuildId = guildId;
   state.channelList.loading = true;
 
   const isDirectMessages = guildId === DIRECT_MESSAGES_GUILD_ID;
+  let showedCachedChannels = false;
   const guildName = isDirectMessages
     ? DIRECT_MESSAGES_GUILD_NAME
     : state.sidebar.guilds.find((guild) => guild.id === guildId)?.name ?? "server";
   if (options.openFirstChannel) {
     clearTimeline(state.timeline);
     setNotice(state, "", "muted");
+  }
+  if (accountId) {
+    const cachedChannels = isDirectMessages
+      ? loadCachedDirectMessages(accountId)
+      : loadCachedGuildChannels(accountId, guildId);
+    if (cachedChannels && cachedChannels.length > 0) {
+      showedCachedChannels = true;
+      setChannelList(state.channelList, guildId, cachedChannels);
+      state.channelList.loading = false;
+      if (state.sidebar.loadingGuildId === guildId) {
+        state.sidebar.loadingGuildId = null;
+      }
+      if (options.openFirstChannel) {
+        const cachedChannel = findBrowsableChannel(cachedChannels, state.channelList.activeChannelId)
+          ?? findFirstBrowsableChannel(cachedChannels);
+        setActiveChannelEntry(state.channelList, cachedChannel);
+        if (cachedChannel) state.sidebar.activeGuildId = cachedChannel.guildId;
+      }
+    }
   }
   effects.scheduleRender();
 
@@ -294,6 +475,13 @@ export async function loadGuildChannels(
       state.sidebar.loadingGuildId = null;
     }
     setChannelList(state.channelList, guildId, channels);
+    if (accountId) {
+      if (isDirectMessages) {
+        saveCachedDirectMessages(accountId, channels);
+      } else {
+        saveCachedGuildChannels(accountId, guildId, channels);
+      }
+    }
 
     if (!options.openFirstChannel) {
       syncMemberListForCurrentChannel(state, effects);
@@ -322,11 +510,11 @@ export async function loadGuildChannels(
       state.sidebar.loadingGuildId = null;
     }
 
-    if (options.openFirstChannel) {
+    if (options.openFirstChannel && !showedCachedChannels) {
       clearChannelList(state.channelList);
       clearTimeline(state.timeline);
-      setNotice(state, error instanceof Error ? error.message : String(error), "error");
     }
+    setNotice(state, error instanceof Error ? error.message : String(error), "error");
 
     effects.scheduleRender();
   }
@@ -399,6 +587,76 @@ export async function loadOlderChannelMessages(
     setNotice(state, error instanceof Error ? error.message : String(error), "error");
     effects.scheduleRender();
   }
+}
+
+export function sendCurrentChannelMessage(state: AppState, token: string | null, content: string, effects: SessionEffects): void {
+  const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
+  if (!token) {
+    setNotice(state, "Login first with /login <token|username>.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+  if (!channelId) {
+    setNotice(state, "Open a channel before sending a message.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+  if (content.length > 2_000) {
+    setNotice(state, "Discord messages cannot exceed 2000 characters.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  const viewer = state.auth.user;
+  const localMessageId = `local:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  clearPrompt(state);
+  setNotice(state, "", "muted");
+
+  if (state.timeline.channelId === channelId) {
+    appendTimelineMessage(state.timeline, {
+      id: localMessageId,
+      channelId,
+      type: 0,
+      content,
+      timestamp: Date.now(),
+      editedTimestamp: null,
+      author: {
+        id: viewer?.id ?? "me",
+        username: viewer?.username ?? "me",
+        displayName: viewer?.globalName ?? viewer?.username ?? "Me",
+        bot: viewer?.bot ?? false,
+      },
+      reply: null,
+      call: null,
+      attachments: [],
+      embedsCount: 0,
+      localStatus: "pending",
+    });
+    state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+  }
+  effects.scheduleRender();
+
+  void (async () => {
+    try {
+      const message = await sendChannelMessage(token, channelId, content);
+      if (state.timeline.channelId === channelId) {
+        replaceTimelineMessage(state.timeline, localMessageId, message);
+        state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+      }
+      maybeResortDirectMessages(state, channelId);
+      effects.scheduleRender();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = markTimelineMessageFailed(state.timeline, localMessageId, message);
+      state.editor.buffer = failed?.content ?? content;
+      state.editor.cursor = state.editor.buffer.length;
+      if (state.timeline.channelId === channelId) {
+        state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+      }
+      setNotice(state, "", "muted");
+      effects.scheduleRender();
+    }
+  })();
 }
 
 export function refreshReadOnlyClient(state: AppState, effects: SessionEffects): void {

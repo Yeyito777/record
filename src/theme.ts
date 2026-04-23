@@ -23,6 +23,7 @@ export interface Theme {
   text: string;
   muted: string;
   error: string;
+  failure: string;
   warning: string;
   success: string;
   prompt: string;

@@ -40,13 +40,13 @@ interface DiscordUserSettingsResponse {
   status?: string | null;
 }
 
-interface DiscordDMRecipientResponse {
+export interface DiscordDMRecipientResponse {
   id: string;
   username: string;
   global_name?: string | null;
 }
 
-interface DiscordChannelResponse {
+export interface DiscordChannelResponse {
   id: string;
   guild_id?: string;
   parent_id: string | null;
@@ -59,7 +59,7 @@ interface DiscordChannelResponse {
   recipients?: DiscordDMRecipientResponse[];
 }
 
-interface DiscordMessageAuthorResponse {
+export interface DiscordMessageAuthorResponse {
   id: string;
   username: string;
   global_name?: string | null;
@@ -67,11 +67,11 @@ interface DiscordMessageAuthorResponse {
   bot?: boolean;
 }
 
-interface DiscordMessageMemberResponse {
+export interface DiscordMessageMemberResponse {
   nick?: string | null;
 }
 
-interface DiscordAttachmentResponse {
+export interface DiscordAttachmentResponse {
   id: string;
   filename: string;
   content_type?: string | null;
@@ -79,13 +79,13 @@ interface DiscordAttachmentResponse {
   url: string;
 }
 
-interface DiscordMessageReferenceResponse {
+export interface DiscordMessageReferenceResponse {
   message_id?: string;
   channel_id?: string;
   guild_id?: string;
 }
 
-interface DiscordReferencedMessageResponse {
+export interface DiscordReferencedMessageResponse {
   id: string;
   content: string;
   timestamp: string;
@@ -95,12 +95,12 @@ interface DiscordReferencedMessageResponse {
   embeds?: unknown[];
 }
 
-interface DiscordCallResponse {
+export interface DiscordCallResponse {
   ended_timestamp: string | null;
   participants?: string[];
 }
 
-interface DiscordMessageResponse {
+export interface DiscordMessageResponse {
   id: string;
   channel_id: string;
   content: string;
@@ -173,6 +173,8 @@ export interface DiscordMessageCall {
   participantIds: string[];
 }
 
+export type DiscordMessageLocalStatus = "pending" | "failed";
+
 export interface DiscordMessage {
   id: string;
   channelId: string;
@@ -190,6 +192,22 @@ export interface DiscordMessage {
   call: DiscordMessageCall | null;
   attachments: DiscordMessageAttachment[];
   embedsCount: number;
+  localStatus?: DiscordMessageLocalStatus;
+  localError?: string;
+}
+
+export interface DiscordMessagePatch {
+  id: string;
+  channelId: string;
+  type?: number;
+  content?: string;
+  timestamp?: number;
+  editedTimestamp?: number | null;
+  author?: DiscordMessage["author"];
+  reply?: DiscordMessageReply | null;
+  call?: DiscordMessageCall | null;
+  attachments?: DiscordMessageAttachment[];
+  embedsCount?: number;
 }
 
 export function formatDiscordDisplayName(user: DiscordIdentity): string {
@@ -238,18 +256,18 @@ export async function fetchCurrentUserPresenceStatus(token: string): Promise<Dis
   }
 }
 
-function compareSnowflakesDesc(left: string | null | undefined, right: string | null | undefined): number {
+export function compareSnowflakesDesc(left: string | null | undefined, right: string | null | undefined): number {
   const leftValue = left ? BigInt(left) : 0n;
   const rightValue = right ? BigInt(right) : 0n;
   if (leftValue === rightValue) return 0;
   return leftValue > rightValue ? -1 : 1;
 }
 
-function displayNameFromRecipient(recipient: DiscordDMRecipientResponse): string {
+export function displayNameFromRecipient(recipient: DiscordDMRecipientResponse): string {
   return recipient.global_name ?? recipient.username;
 }
 
-function directMessageName(channel: DiscordChannelResponse): string {
+export function directMessageName(channel: DiscordChannelResponse): string {
   const recipients = channel.recipients ?? [];
   if (channel.name) return channel.name;
   if (channel.type === 3 && recipients.length > 0) {
@@ -287,7 +305,7 @@ function summarizeReplyPreview(
   return parts.join(" · ") || "(empty message)";
 }
 
-function mapReplyPreview(message: DiscordMessageResponse): DiscordMessageReply | null {
+export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessageReply | null {
   if (message.referenced_message) {
     return {
       messageId: message.referenced_message.id,
@@ -317,27 +335,56 @@ function mapReplyPreview(message: DiscordMessageResponse): DiscordMessageReply |
   return null;
 }
 
+export function mapDirectMessageChannel(channel: DiscordChannelResponse, position = 0): DiscordChannel {
+  return {
+    id: channel.id,
+    guildId: DIRECT_MESSAGES_GUILD_ID,
+    parentId: null,
+    name: directMessageName(channel),
+    topic: null,
+    position,
+    type: channel.type,
+    nsfw: false,
+    recipients: (channel.recipients ?? []).map((recipient) => ({
+      id: recipient.id,
+      username: recipient.username,
+      displayName: displayNameFromRecipient(recipient),
+      bot: false,
+    })),
+  };
+}
+
+export function mapGuildChannel(channel: DiscordChannelResponse, fallbackGuildId: string): DiscordChannel | null {
+  if (!SIDEBAR_GUILD_CHANNEL_TYPES.has(channel.type) || !channel.name) return null;
+  return {
+    id: channel.id,
+    guildId: channel.guild_id ?? fallbackGuildId,
+    parentId: channel.parent_id ?? null,
+    name: channel.name ?? "",
+    topic: channel.topic ?? null,
+    position: channel.position ?? 0,
+    type: channel.type,
+    nsfw: Boolean(channel.nsfw),
+  };
+}
+
+export function sortDirectMessageChannels(channels: DiscordChannel[]): DiscordChannel[] {
+  return channels
+    .slice()
+    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))
+    .map((channel, index) => ({ ...channel, position: index }));
+}
+
+export function sortGuildChannels(channels: DiscordChannel[]): DiscordChannel[] {
+  return channels.slice().sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+}
+
 export async function fetchDirectMessages(token: string): Promise<DiscordChannel[]> {
   const channels = await apiGetJson<DiscordChannelResponse[]>(token, "/users/@me/channels");
   return channels
     .filter((channel) => DIRECT_MESSAGE_CHANNEL_TYPES.has(channel.type))
     .sort((a, b) => compareSnowflakesDesc(a.last_message_id, b.last_message_id))
-    .map((channel, index) => ({
-      id: channel.id,
-      guildId: DIRECT_MESSAGES_GUILD_ID,
-      parentId: null,
-      name: directMessageName(channel),
-      topic: null,
-      position: index,
-      type: channel.type,
-      nsfw: false,
-      recipients: (channel.recipients ?? []).map((recipient) => ({
-        id: recipient.id,
-        username: recipient.username,
-        displayName: displayNameFromRecipient(recipient),
-        bot: false,
-      })),
-    }));
+    .map((channel, index) => mapDirectMessageChannel(channel, index));
 }
 
 export async function fetchGuilds(token: string): Promise<DiscordGuild[]> {
@@ -365,19 +412,102 @@ export async function fetchGuilds(token: string): Promise<DiscordGuild[]> {
 
 export async function fetchGuildChannels(token: string, guildId: string): Promise<DiscordChannel[]> {
   const channels = await apiGetJson<DiscordChannelResponse[]>(token, `/guilds/${guildId}/channels`);
-  return channels
-    .filter((channel) => SIDEBAR_GUILD_CHANNEL_TYPES.has(channel.type) && Boolean(channel.name))
-    .map((channel) => ({
-      id: channel.id,
-      guildId: channel.guild_id ?? guildId,
-      parentId: channel.parent_id ?? null,
-      name: channel.name ?? "",
-      topic: channel.topic ?? null,
-      position: channel.position ?? 0,
-      type: channel.type,
-      nsfw: Boolean(channel.nsfw),
-    }))
-    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  return sortGuildChannels(
+    channels
+      .map((channel) => mapGuildChannel(channel, guildId))
+      .filter((channel): channel is DiscordChannel => channel !== null),
+  );
+}
+
+export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> & { id: string; channel_id: string }): DiscordMessagePatch {
+  const hasReplyFields = message.referenced_message !== undefined || message.message_reference !== undefined;
+  return {
+    id: message.id,
+    channelId: message.channel_id,
+    type: message.type,
+    content: typeof message.content === "string" ? message.content : undefined,
+    timestamp: message.timestamp ? Date.parse(message.timestamp) : undefined,
+    editedTimestamp: message.edited_timestamp === undefined
+      ? undefined
+      : message.edited_timestamp
+        ? Date.parse(message.edited_timestamp)
+        : null,
+    author: message.author ? {
+      id: message.author.id,
+      username: message.author.username,
+      displayName: message.member?.nick ?? message.author.global_name ?? message.author.username,
+      bot: Boolean(message.author.bot),
+    } : undefined,
+    reply: hasReplyFields
+      ? mapReplyPreview({
+        id: message.id,
+        channel_id: message.channel_id,
+        content: message.content ?? "",
+        timestamp: message.timestamp ?? new Date(0).toISOString(),
+        edited_timestamp: message.edited_timestamp ?? null,
+        author: message.author ?? { id: "unknown", username: "unknown" },
+        member: message.member,
+        message_reference: message.message_reference,
+        referenced_message: message.referenced_message,
+        call: message.call,
+        attachments: message.attachments,
+        embeds: message.embeds,
+      })
+      : undefined,
+    call: message.call === undefined
+      ? undefined
+      : message.call
+        ? {
+          endedTimestamp: message.call.ended_timestamp ? Date.parse(message.call.ended_timestamp) : null,
+          participantIds: message.call.participants ?? [],
+        }
+        : null,
+    attachments: message.attachments?.map((attachment) => ({
+      id: attachment.id,
+      filename: attachment.filename,
+      contentType: attachment.content_type ?? null,
+      size: attachment.size,
+      url: attachment.url,
+    })),
+    embedsCount: message.embeds?.length,
+  };
+}
+
+export function applyDiscordMessagePatch(message: DiscordMessage, patch: DiscordMessagePatch): DiscordMessage {
+  return {
+    ...message,
+    type: patch.type ?? message.type,
+    content: patch.content ?? message.content,
+    timestamp: patch.timestamp ?? message.timestamp,
+    editedTimestamp: patch.editedTimestamp !== undefined ? patch.editedTimestamp : message.editedTimestamp,
+    author: patch.author ?? message.author,
+    reply: patch.reply !== undefined ? patch.reply : message.reply,
+    call: patch.call !== undefined ? patch.call : message.call,
+    attachments: patch.attachments ?? message.attachments,
+    embedsCount: patch.embedsCount ?? message.embedsCount,
+  };
+}
+
+export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessage {
+  const patch = mapDiscordMessagePatch(message);
+  return {
+    id: patch.id,
+    channelId: patch.channelId,
+    type: patch.type ?? 0,
+    content: patch.content ?? "",
+    timestamp: patch.timestamp ?? 0,
+    editedTimestamp: patch.editedTimestamp ?? null,
+    author: patch.author ?? {
+      id: "unknown",
+      username: "unknown",
+      displayName: "Unknown",
+      bot: false,
+    },
+    reply: patch.reply ?? null,
+    call: patch.call ?? null,
+    attachments: patch.attachments ?? [],
+    embedsCount: patch.embedsCount ?? 0,
+  };
 }
 
 export async function fetchChannelMessages(
@@ -389,35 +519,15 @@ export async function fetchChannelMessages(
   const query = new URLSearchParams({ limit: String(limit) });
   if (before) query.set("before", before);
   const messages = await apiGetJson<DiscordMessageResponse[]>(token, `/channels/${channelId}/messages?${query.toString()}`);
-  return messages
-    .map((message) => ({
-      id: message.id,
-      channelId: message.channel_id,
-      type: message.type ?? 0,
-      content: message.content,
-      timestamp: Date.parse(message.timestamp),
-      editedTimestamp: message.edited_timestamp ? Date.parse(message.edited_timestamp) : null,
-      author: {
-        id: message.author.id,
-        username: message.author.username,
-        displayName: message.member?.nick ?? message.author.global_name ?? message.author.username,
-        bot: Boolean(message.author.bot),
-      },
-      reply: mapReplyPreview(message),
-      call: message.call ? {
-        endedTimestamp: message.call.ended_timestamp ? Date.parse(message.call.ended_timestamp) : null,
-        participantIds: message.call.participants ?? [],
-      } : null,
-      attachments: (message.attachments ?? []).map((attachment) => ({
-        id: attachment.id,
-        filename: attachment.filename,
-        contentType: attachment.content_type ?? null,
-        size: attachment.size,
-        url: attachment.url,
-      })),
-      embedsCount: message.embeds?.length ?? 0,
-    }))
-    .reverse();
+  return messages.map(mapDiscordMessage).reverse();
+}
+
+export async function sendChannelMessage(token: string, channelId: string, content: string): Promise<DiscordMessage> {
+  const message = await requestJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content, tts: false }),
+  });
+  return mapDiscordMessage(message);
 }
 
 async function apiGetJson<T>(token: string, path: string): Promise<T> {

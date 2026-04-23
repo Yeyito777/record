@@ -3,9 +3,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   DIRECT_MESSAGES_GUILD_ID,
   fetchChannelMessages,
+  applyDiscordMessagePatch,
   fetchDirectMessages,
   formatChannelName,
   isDirectMessageChannel,
+  mapDiscordMessagePatch,
+  sendChannelMessage,
 } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -141,6 +144,61 @@ describe("discord helpers", () => {
       endedTimestamp: Date.parse("2026-01-01T12:03:04.000Z"),
       participantIds: ["user-1", "user-2"],
     });
+  });
+
+  test("maps partial message updates without clobbering existing fields", () => {
+    const existing = {
+      id: "message-1",
+      channelId: "channel-1",
+      type: 0,
+      content: "old",
+      timestamp: Date.parse("2026-01-01T12:00:00.000Z"),
+      editedTimestamp: null,
+      author: { id: "user-1", username: "tester", displayName: "Tester", bot: false },
+      reply: null,
+      call: null,
+      attachments: [],
+      embedsCount: 0,
+    };
+
+    const patch = mapDiscordMessagePatch({
+      id: "message-1",
+      channel_id: "channel-1",
+      content: "new",
+      edited_timestamp: "2026-01-01T12:01:00.000Z",
+    });
+
+    expect(applyDiscordMessagePatch(existing, patch)).toEqual({
+      ...existing,
+      content: "new",
+      editedTimestamp: Date.parse("2026-01-01T12:01:00.000Z"),
+    });
+  });
+
+  test("posts message content to the active channel", async () => {
+    let requestedUrl = "";
+    let requestedBody = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrl = String(input);
+      requestedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({
+        id: "message-1",
+        channel_id: "channel-1",
+        type: 0,
+        content: "hello world",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        attachments: [],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const message = await sendChannelMessage("token", "channel-1", "hello world");
+
+    expect(requestedUrl).toBe("https://discord.com/api/v9/channels/channel-1/messages");
+    expect(JSON.parse(requestedBody)).toEqual({ content: "hello world", tts: false });
+    expect(message.content).toBe("hello world");
   });
 
   test("marks missing referenced messages as deleted replies", async () => {

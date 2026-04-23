@@ -8,8 +8,7 @@
 import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
-import { clearPrompt } from "./promptstate";
-import { clearReadOnlyClient, refreshReadOnlyClient, type SessionEffects } from "./session";
+import { clearReadOnlyClient, refreshReadOnlyClient, sendCurrentChannelMessage, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
@@ -179,7 +178,5 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   if (!text) return;
   if (handleCommandSubmit(state, text, effects)) return;
 
-  clearPrompt(state);
-  setNotice(state, "", "muted");
-  effects.scheduleRender();
+  sendCurrentChannelMessage(state, state.auth.savedToken, text, effects);
 }

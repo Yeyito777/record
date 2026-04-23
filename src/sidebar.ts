@@ -118,7 +118,8 @@ export function buildSidebarEntries(
 
     if (!isExpanded) continue;
 
-    if (sidebar.loadingGuildId === guild.id) {
+    const visibleGuildChannels = channels.filter((channel) => channel.guildId === guild.id);
+    if (sidebar.loadingGuildId === guild.id && visibleGuildChannels.length === 0) {
       entries.push({
         kind: "loading",
         id: `${guild.id}::loading`,
@@ -132,11 +133,11 @@ export function buildSidebarEntries(
       continue;
     }
 
-    const guildCategories = channels
-      .filter((channel) => channel.guildId === guild.id && channel.type === 4)
+    const guildCategories = visibleGuildChannels
+      .filter((channel) => channel.type === 4)
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-    const uncategorized = channels
-      .filter((channel) => channel.guildId === guild.id && channel.type !== 4 && !channel.parentId)
+    const uncategorized = visibleGuildChannels
+      .filter((channel) => channel.type !== 4 && !channel.parentId)
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
     for (const channel of uncategorized) {
@@ -167,8 +168,8 @@ export function buildSidebarEntries(
 
       if (collapsed) continue;
 
-      const categoryChannels = channels
-        .filter((channel) => channel.guildId === guild.id && channel.type !== 4 && channel.parentId === category.id)
+      const categoryChannels = visibleGuildChannels
+        .filter((channel) => channel.type !== 4 && channel.parentId === category.id)
         .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
       for (const channel of categoryChannels) {

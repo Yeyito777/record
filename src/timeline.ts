@@ -2,7 +2,7 @@
  * Message timeline state and rendering helpers.
  */
 
-import type { DiscordMessage } from "./discord";
+import { applyDiscordMessagePatch, type DiscordMessage, type DiscordMessagePatch } from "./discord";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
@@ -123,6 +123,99 @@ export function startLoadingOlderMessages(timeline: TimelineState): void {
 export function finishLoadingOlderMessages(timeline: TimelineState, hasOlder = timeline.hasOlder): void {
   timeline.loadingOlder = false;
   timeline.hasOlder = hasOlder;
+}
+
+export function appendTimelineMessage(timeline: TimelineState, message: DiscordMessage): void {
+  if (timeline.channelId !== message.channelId) return;
+  const existingIndex = timeline.messages.findIndex((existing) => existing.id === message.id);
+  if (existingIndex >= 0) {
+    timeline.messages[existingIndex] = message;
+    invalidateTimelineContentCache(timeline);
+    return;
+  }
+
+  const pendingIndex = findMatchingPendingLocalMessageIndex(timeline, message);
+  if (pendingIndex >= 0) {
+    timeline.messages[pendingIndex] = message;
+  } else {
+    timeline.messages.push(message);
+  }
+  invalidateTimelineContentCache(timeline);
+}
+
+function findMatchingPendingLocalMessageIndex(timeline: TimelineState, message: DiscordMessage): number {
+  if (message.localStatus) return -1;
+  return timeline.messages.findIndex((existing) => existing.localStatus === "pending"
+    && existing.channelId === message.channelId
+    && existing.author.id === message.author.id
+    && existing.content === message.content
+    && existing.attachments.length === 0
+    && message.attachments.length === 0);
+}
+
+export function replaceTimelineMessage(timeline: TimelineState, localMessageId: string, message: DiscordMessage): void {
+  if (timeline.channelId !== message.channelId) return;
+  const localIndex = timeline.messages.findIndex((existing) => existing.id === localMessageId);
+  const canonicalIndex = timeline.messages.findIndex((existing) => existing.id === message.id);
+  if (localIndex >= 0) {
+    timeline.messages[localIndex] = message;
+    if (canonicalIndex >= 0 && canonicalIndex !== localIndex) {
+      timeline.messages.splice(canonicalIndex, 1);
+    }
+  } else if (canonicalIndex >= 0) {
+    timeline.messages[canonicalIndex] = message;
+  } else {
+    timeline.messages.push(message);
+  }
+  invalidateTimelineContentCache(timeline);
+}
+
+export function markTimelineMessageFailed(timeline: TimelineState, localMessageId: string, error: string): DiscordMessage | null {
+  const localIndex = timeline.messages.findIndex((existing) => existing.id === localMessageId);
+  if (localIndex < 0) return null;
+  const message = timeline.messages[localIndex];
+  if (!message) return null;
+  const failed = { ...message, localStatus: "failed" as const, localError: error };
+  timeline.messages[localIndex] = failed;
+  invalidateTimelineContentCache(timeline);
+  return failed;
+}
+
+export function updateTimelineMessage(timeline: TimelineState, message: DiscordMessage): void {
+  if (timeline.channelId !== message.channelId) return;
+  const existingIndex = timeline.messages.findIndex((existing) => existing.id === message.id);
+  if (existingIndex < 0) return;
+  timeline.messages[existingIndex] = message;
+  invalidateTimelineContentCache(timeline);
+}
+
+export function patchTimelineMessage(timeline: TimelineState, patch: DiscordMessagePatch): void {
+  if (timeline.channelId !== patch.channelId) return;
+  const existingIndex = timeline.messages.findIndex((existing) => existing.id === patch.id);
+  if (existingIndex < 0) return;
+  const existing = timeline.messages[existingIndex];
+  if (!existing) return;
+  timeline.messages[existingIndex] = applyDiscordMessagePatch(existing, patch);
+  invalidateTimelineContentCache(timeline);
+}
+
+export function removeTimelineMessage(timeline: TimelineState, messageId: string, channelId?: string): void {
+  if (channelId && timeline.channelId !== channelId) return;
+  const before = timeline.messages.length;
+  timeline.messages = timeline.messages.filter((message) => message.id !== messageId);
+  if (timeline.messages.length !== before) {
+    invalidateTimelineContentCache(timeline);
+  }
+}
+
+export function removeTimelineMessages(timeline: TimelineState, messageIds: string[], channelId?: string): void {
+  if (channelId && timeline.channelId !== channelId) return;
+  const ids = new Set(messageIds);
+  const before = timeline.messages.length;
+  timeline.messages = timeline.messages.filter((message) => !ids.has(message.id));
+  if (timeline.messages.length !== before) {
+    invalidateTimelineContentCache(timeline);
+  }
 }
 
 export function prependTimelineMessages(
@@ -374,7 +467,8 @@ function renderMessage(
       ? theme.accent
       : dmAuthorColor(message.author.id)
     : "";
-  const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${theme.reset}`;
+  const statusSuffix = message.localStatus === "failed" ? " failed" : "";
+  const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${statusSuffix}${theme.reset}`;
   const replyPreview = wrapReplyPreview(message, width);
 
   const content = summarizeMessage(message, viewerId, loadingFrameIndex, nowMs);
@@ -395,23 +489,37 @@ function renderMessage(
   }
 
   const wrappedContent = wrapMarkdownText(content, width);
+  const failureLines = wrapFailureMessage(message, width);
   return {
     lines: [
       ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
       header,
-      ...wrappedContent.map((line) => `${theme.text}${line.text}${theme.reset}`),
+      ...wrappedContent.map((line) => `${message.localStatus === "pending" ? theme.dim : theme.text}${line.text}${theme.reset}`),
+      ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
     ],
     lineAnchors: [
       ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
       `msg:${message.id}:header`,
       ...wrappedContent.map((line) => `msg:${message.id}:content:${line.visualIndex}`),
+      ...failureLines.map((line) => `msg:${message.id}:failure:${line.visualIndex}`),
     ],
     wrapContinuation: [
       ...replyPreview.map((line) => line.wrapContinuation),
       false,
       ...wrappedContent.map((line) => line.wrapContinuation),
+      ...failureLines.map((line) => line.wrapContinuation),
     ],
   };
+}
+
+function wrapFailureMessage(message: DiscordMessage, width: number): WrappedLine[] {
+  if (message.localStatus !== "failed") return [];
+  const error = message.localError?.trim() || "Message failed to send.";
+  return wrapPlainText(`✗ ${error}`, width).map((line, visualIndex) => ({
+    text: line,
+    wrapContinuation: visualIndex > 0,
+    visualIndex,
+  }));
 }
 
 function summarizeMessage(
@@ -659,5 +767,7 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
     callKey,
     attachmentKey,
     String(message.embedsCount),
+    message.localStatus ?? "",
+    message.localError ?? "",
   ].join("\u0001");
 }

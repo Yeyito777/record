@@ -19,6 +19,7 @@ export const whale: Theme = {
   text: `${ESC}38;2;255;255;255m`,
   muted: `${ESC}38;2;100;100;100m`,
   error: `${ESC}31m`,
+  failure: `${ESC}31m`,
   warning: `${ESC}33m`,
   success: `${ESC}38;2;80;200;120m`,
   prompt: `${ESC}34m`,

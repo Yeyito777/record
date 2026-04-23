@@ -19,6 +19,7 @@ export const cerberus: Theme = {
   text: `${ESC}38;2;224;224;224m`,
   muted: `${ESC}38;2;102;102;102m`,
   error: `${ESC}38;2;244;67;54m`,
+  failure: `${ESC}38;2;244;67;54m`,
   warning: `${ESC}38;2;255;167;38m`,
   success: `${ESC}38;2;102;187;106m`,
   prompt: `${ESC}38;2;211;47;47m`,

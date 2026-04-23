@@ -1,7 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
-import { clearReadOnlyClient } from "./session";
+import { clearReadOnlyClient, sendCurrentChannelMessage } from "./session";
 import { createInitialState, focusSidebar } from "./state";
+
+const originalFetch = globalThis.fetch;
+
+function flushTimers(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 describe("session", () => {
   test("clearing the read-only client drops loaded UI state and invalidates pending requests", () => {
@@ -55,5 +65,119 @@ describe("session", () => {
     expect(state.channelList.requestId).toBe(8);
     expect(state.timeline.requestId).toBe(12);
     expect(state.memberList.requestId).toBe(14);
+  });
+
+  test("bootstrap revalidation preserves a channel list opened while REST is in flight", async () => {
+    let resolveDms: (response: Response) => void = () => {};
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/channels")) {
+        return await new Promise<Response>((resolve) => {
+          resolveDms = resolve;
+        });
+      }
+      if (url.includes("/users/@me/guilds")) {
+        return new Response(JSON.stringify([{ id: "guild-1", name: "Guild", icon: null }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/gateway")) {
+        return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    const { bootstrapReadOnlyClient } = await import("./session");
+    const bootstrap = bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+    await flushTimers();
+
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.expandedGuildId = "guild-1";
+    state.sidebar.activeGuildId = "guild-1";
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.activeChannel = state.channelList.channels[0]!;
+
+    resolveDms(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await bootstrap;
+
+    expect(state.sidebar.expandedGuildId).toBe("guild-1");
+    expect(state.channelList.guildId).toBe("guild-1");
+    expect(state.channelList.channels.map((channel) => channel.id)).toEqual(["channel-1"]);
+    expect(state.channelList.activeChannelId).toBe("channel-1");
+  });
+
+  test("bootstrap revalidation preserves the currently expanded channel list", async () => {
+    let calls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calls += 1;
+      const url = String(input);
+      if (url.endsWith("/users/@me/channels")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/users/@me/guilds")) {
+        return new Response(JSON.stringify([{ id: "guild-1", name: "Guild", icon: null }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/gateway")) {
+        return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.expandedGuildId = "guild-1";
+    state.sidebar.activeGuildId = "guild-1";
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.activeChannel = state.channelList.channels[0]!;
+
+    const { bootstrapReadOnlyClient } = await import("./session");
+    await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(state.sidebar.expandedGuildId).toBe("guild-1");
+    expect(state.channelList.guildId).toBe("guild-1");
+    expect(state.channelList.channels.map((channel) => channel.id)).toEqual(["channel-1"]);
+    expect(state.channelList.activeChannelId).toBe("channel-1");
+  });
+
+  test("sending a message immediately appends a pending local message", () => {
+    globalThis.fetch = (async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+    state.timeline.scrollOffset = 0;
+    state.timeline.maxScroll = 10;
+
+    sendCurrentChannelMessage(state, "token-1", "hello", { scheduleRender: () => {} });
+
+    expect(state.editor.buffer).toBe("");
+    expect(state.timeline.scrollOffset).toBe(Number.MAX_SAFE_INTEGER);
+    expect(state.timeline.messages).toHaveLength(1);
+    expect(state.timeline.messages[0]).toMatchObject({ content: "hello", localStatus: "pending" });
+  });
+
+  test("failed sends restore the prompt and leave a failure in history", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ message: "Missing Access" }), { status: 403 })) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+
+    sendCurrentChannelMessage(state, "token-1", "hello", { scheduleRender: () => {} });
+    await flushTimers();
+
+    expect(state.editor.buffer).toBe("hello");
+    expect(state.timeline.messages[0]).toMatchObject({ content: "hello", localStatus: "failed" });
+    expect(state.timeline.messages[0]?.localError).toBe("Discord denied access to that resource.");
   });
 });

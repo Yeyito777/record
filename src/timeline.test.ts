@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  appendTimelineMessage,
   createTimelineState,
   prependTimelineMessages,
   renderTimelineLines,
@@ -296,6 +297,61 @@ describe("timeline rendering", () => {
 
     expect(rendered.lines[0]).toContain(theme.accent);
     expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00");
+  });
+
+  test("renders pending local messages dimmed", () => {
+    const timeline = createTimelineState();
+    const pending = message("local-1", "sending now", { authorId: "viewer", authorName: "Paramount" });
+    pending.localStatus = "pending";
+    setTimelineMessages(timeline, "channel-1", [pending]);
+    setTimelineRenderContext(timeline, "viewer", true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      40,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00");
+    expect(stripAnsi(rendered.lines[0] ?? "")).not.toContain("sending");
+    expect(rendered.lines[1]).toContain(theme.dim);
+    expect(stripAnsi(rendered.lines[1] ?? "")).toBe("sending now");
+  });
+
+  test("replaces matching pending local messages when gateway echoes the sent message", () => {
+    const timeline = createTimelineState();
+    const pending = message("local-1", "hello", { authorId: "viewer", authorName: "Paramount" });
+    pending.localStatus = "pending";
+    setTimelineMessages(timeline, "channel-1", [pending]);
+
+    appendTimelineMessage(timeline, message("real-1", "hello", { authorId: "viewer", authorName: "Paramount" }));
+
+    expect(timeline.messages).toHaveLength(1);
+    expect(timeline.messages[0]).toMatchObject({ id: "real-1", content: "hello" });
+    expect(timeline.messages[0]?.localStatus).toBeUndefined();
+  });
+
+  test("renders failed local messages with a visible failure line", () => {
+    const timeline = createTimelineState();
+    const failed = message("local-1", "try again", { authorId: "viewer", authorName: "Paramount" });
+    failed.localStatus = "failed";
+    failed.localError = "Discord denied access.";
+    setTimelineMessages(timeline, "channel-1", [failed]);
+    setTimelineRenderContext(timeline, "viewer", true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00 failed");
+    expect(rendered.lines[2]).toContain(theme.failure);
+    expect(stripAnsi(rendered.lines[2] ?? "")).toBe("✗ Discord denied access.");
   });
 
   test("renders other DM authors with deterministic colors", () => {

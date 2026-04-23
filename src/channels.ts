@@ -2,7 +2,7 @@
  * Guild channel data and active chat tracking.
  */
 
-import type { DiscordChannel } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, sortDirectMessageChannels, sortGuildChannels, type DiscordChannel } from "./discord";
 
 export interface ChannelListState {
   guildId: string | null;
@@ -71,4 +71,43 @@ export function setActiveChannel(channelList: ChannelListState, channelId: strin
 export function setActiveChannelEntry(channelList: ChannelListState, channel: DiscordChannel | null): void {
   channelList.activeChannelId = channel?.id ?? null;
   channelList.activeChannel = channel;
+}
+
+export function upsertChannel(channelList: ChannelListState, channel: DiscordChannel): void {
+  const index = channelList.channels.findIndex((existing) => existing.id === channel.id);
+  if (index >= 0) {
+    channelList.channels[index] = { ...channelList.channels[index], ...channel };
+  } else {
+    channelList.channels.push(channel);
+  }
+
+  channelList.channels = channel.guildId === DIRECT_MESSAGES_GUILD_ID
+    ? sortDirectMessageChannels(channelList.channels)
+    : sortGuildChannels(channelList.channels);
+
+  if (channelList.activeChannelId === channel.id) {
+    channelList.activeChannel = findBrowsableChannel(channelList.channels, channel.id);
+  }
+}
+
+export function removeChannel(channelList: ChannelListState, channelId: string): boolean {
+  const before = channelList.channels.length;
+  channelList.channels = channelList.channels.filter((channel) => channel.id !== channelId);
+  const removed = channelList.channels.length !== before;
+  if (channelList.activeChannelId === channelId) {
+    channelList.activeChannelId = null;
+    channelList.activeChannel = null;
+  }
+  return removed;
+}
+
+export function bumpDirectMessageChannel(channelList: ChannelListState, channelId: string): void {
+  if (channelList.guildId !== DIRECT_MESSAGES_GUILD_ID) return;
+  const channel = channelList.channels.find((entry) => entry.id === channelId);
+  if (!channel) return;
+  channel.position = -1;
+  channelList.channels = sortDirectMessageChannels(channelList.channels);
+  if (channelList.activeChannelId === channelId) {
+    channelList.activeChannel = findBrowsableChannel(channelList.channels, channelId);
+  }
 }
