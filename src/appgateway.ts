@@ -45,6 +45,8 @@ export interface InitialNotification {
 
 export interface AppGatewayCallbacks {
   onInitialNotifications: (notifications: InitialNotification[]) => void;
+  onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
+  onCurrentUserGuildRoles?: (guildId: string, roleIds: string[]) => void;
   onMessageCreate: (message: DiscordMessage) => void;
   onMessageUpdate: (patch: DiscordMessagePatch) => void;
   onMessageDelete: (channelId: string, messageId: string) => void;
@@ -69,6 +71,7 @@ export class AppGatewayClient {
   private connecting = false;
   private reconnectAttempt = 0;
   private ready = false;
+  private currentUserId: string | null = null;
   private guildChannelSubscription: GuildChannelSubscription | null = null;
 
   constructor(
@@ -161,7 +164,9 @@ export class AppGatewayClient {
     if (payload.t === "READY") {
       this.reconnectAttempt = 0;
       this.ready = true;
+      this.currentUserId = extractCurrentUserId(payload.d);
       this.sessionId = isObject(payload.d) && typeof payload.d.session_id === "string" ? payload.d.session_id : null;
+      this.callbacks.onCurrentUserRoleIds?.(extractCurrentUserRoleIdsByGuildId(payload.d));
       this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
       this.sendGuildChannelSubscription();
       return;
@@ -253,6 +258,13 @@ export class AppGatewayClient {
         case "TYPING_START": {
           if (!isObject(data) || typeof data.channel_id !== "string" || typeof data.user_id !== "string") break;
           this.callbacks.onTypingStart(data.channel_id, data.user_id, typingDisplayName(data));
+          break;
+        }
+        case "GUILD_MEMBER_UPDATE": {
+          if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.roles)) break;
+          const user = isObject(data.user) ? data.user : null;
+          if (!this.currentUserId || !user || user.id !== this.currentUserId) break;
+          this.callbacks.onCurrentUserGuildRoles?.(data.guild_id, data.roles.filter((roleId): roleId is string => typeof roleId === "string"));
           break;
         }
         default:
@@ -362,6 +374,30 @@ export class AppGatewayClient {
   }
 }
 
+export function extractCurrentUserId(data: unknown): string | null {
+  if (!isObject(data)) return null;
+  const user = isObject(data.user) ? data.user : null;
+  return user && typeof user.id === "string" ? user.id : null;
+}
+
+export function extractCurrentUserRoleIdsByGuildId(data: unknown): Record<string, string[]> {
+  if (!isObject(data)) return {};
+  const guilds = Array.isArray(data.guilds) ? data.guilds : [];
+  const mergedMembers = Array.isArray(data.merged_members) ? data.merged_members : [];
+  const rolesByGuildId: Record<string, string[]> = {};
+
+  guilds.forEach((guild, index) => {
+    if (!isObject(guild) || typeof guild.id !== "string") return;
+    const guildMembers = mergedMembers[index];
+    if (!Array.isArray(guildMembers)) return;
+    const currentMember = guildMembers.find((member) => isObject(member) && Array.isArray(member.roles));
+    if (!isObject(currentMember) || !Array.isArray(currentMember.roles)) return;
+    rolesByGuildId[guild.id] = currentMember.roles.filter((roleId): roleId is string => typeof roleId === "string");
+  });
+
+  return rolesByGuildId;
+}
+
 export function extractInitialNotifications(data: unknown): InitialNotification[] {
   if (!isObject(data)) return [];
 
@@ -388,7 +424,7 @@ export function extractInitialNotifications(data: unknown): InitialNotification[
   for (const readState of readStateEntries) {
     if (!isObject(readState) || typeof readState.id !== "string") continue;
     const channel = channels.get(readState.id);
-    const count = initialNotificationCount(readState, channel?.lastMessageId ?? null);
+    const count = initialNotificationCount(readState, channel ?? null);
     if (count <= 0) continue;
     notifications.push({
       channelId: readState.id,
@@ -411,14 +447,20 @@ function collectReadyChannel(
   });
 }
 
-function initialNotificationCount(readState: Record<string, any>, latestMessageId: string | null): number {
-  if (typeof readState.mention_count === "number" && readState.mention_count > 0) {
-    return readState.mention_count;
+function initialNotificationCount(
+  readState: Record<string, any>,
+  channel: { guildId: string | null; lastMessageId: string | null } | null,
+): number {
+  if (!channel) return 0;
+  if (channel.guildId !== DIRECT_MESSAGES_GUILD_ID) {
+    return typeof readState.mention_count === "number" && readState.mention_count > 0
+      ? readState.mention_count
+      : 0;
   }
   if (
-    latestMessageId
+    channel.lastMessageId
     && typeof readState.last_message_id === "string"
-    && compareSnowflakesDesc(latestMessageId, readState.last_message_id) < 0
+    && compareSnowflakesDesc(channel.lastMessageId, readState.last_message_id) < 0
   ) {
     return 1;
   }

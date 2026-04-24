@@ -33,6 +33,9 @@ function message(
     timestamp: options.timestamp ?? Date.UTC(2026, 0, 1, 12, 0, 0),
     editedTimestamp: null,
     content,
+    mentionEveryone: false,
+    mentionRoleIds: [],
+    mentionUserIds: [],
     author: {
       id: options.authorId ?? "user-1",
       username: "tester",

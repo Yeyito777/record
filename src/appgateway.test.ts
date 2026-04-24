@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { extractInitialNotifications } from "./appgateway";
+import { extractCurrentUserRoleIdsByGuildId, extractInitialNotifications } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -21,7 +21,7 @@ describe("app gateway helpers", () => {
     expect(notifications).toEqual([{ channelId: "dm-1", guildId: DIRECT_MESSAGES_GUILD_ID, count: 1 }]);
   });
 
-  test("uses mention count when READY includes mentions", () => {
+  test("uses mention count when READY includes guild mentions", () => {
     const notifications = extractInitialNotifications({
       guilds: [{ id: "guild-1", channels: [{ id: "channel-1", last_message_id: "200" }] }],
       read_state: {
@@ -30,5 +30,26 @@ describe("app gateway helpers", () => {
     });
 
     expect(notifications).toEqual([{ channelId: "channel-1", guildId: "guild-1", count: 3 }]);
+  });
+
+  test("does not create initial guild notifications for regular unread messages", () => {
+    const notifications = extractInitialNotifications({
+      guilds: [{ id: "guild-1", channels: [{ id: "channel-1", last_message_id: "200" }] }],
+      read_state: {
+        entries: [{ id: "channel-1", mention_count: 0, last_message_id: "100" }],
+      },
+    });
+
+    expect(notifications).toEqual([]);
+  });
+
+  test("extracts current user role ids from READY merged members", () => {
+    expect(extractCurrentUserRoleIdsByGuildId({
+      guilds: [{ id: "guild-1" }, { id: "guild-2" }],
+      merged_members: [
+        [{ user_id: "me", roles: ["role-1", "role-2"] }],
+        [{ user_id: "me", roles: [] }],
+      ],
+    })).toEqual({ "guild-1": ["role-1", "role-2"], "guild-2": [] });
   });
 });

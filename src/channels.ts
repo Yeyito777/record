@@ -101,13 +101,15 @@ export function removeChannel(channelList: ChannelListState, channelId: string):
   return removed;
 }
 
-export function bumpDirectMessageChannel(channelList: ChannelListState, channelId: string): void {
-  if (channelList.guildId !== DIRECT_MESSAGES_GUILD_ID) return;
+export function bumpDirectMessageChannel(channelList: ChannelListState, channelId: string, messageId?: string): boolean {
+  if (channelList.guildId !== DIRECT_MESSAGES_GUILD_ID) return false;
   const channel = channelList.channels.find((entry) => entry.id === channelId);
-  if (!channel) return;
+  if (!channel) return false;
+  channel.lastMessageId = messageId ?? channel.lastMessageId ?? null;
   channel.position = -1;
   channelList.channels = sortDirectMessageChannels(channelList.channels);
   if (channelList.activeChannelId === channelId) {
     channelList.activeChannel = findBrowsableChannel(channelList.channels, channelId);
   }
+  return true;
 }

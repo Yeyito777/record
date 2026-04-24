@@ -58,6 +58,7 @@ export interface AppState {
   timeline: TimelineState;
   typing: TypingState;
   notifications: NotificationState;
+  roleIdsByGuildId: Record<string, string[]>;
   auth: AuthState;
   notice: Notice;
   loadingFrameIndex: number;
@@ -86,6 +87,7 @@ export function createInitialState(initialToken: string | null, path: string, in
     timeline: createTimelineState(),
     typing: createTypingState(),
     notifications: createNotificationState(),
+    roleIdsByGuildId: {},
     auth: {
       status: "idle",
       user: null,

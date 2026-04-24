@@ -42,13 +42,14 @@ describe("channel list state", () => {
   test("bumps direct message channels to the top when new messages arrive", () => {
     const channels = createChannelListState();
     setChannelList(channels, DIRECT_MESSAGES_GUILD_ID, [
-      { id: "old", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Old", topic: null, position: 0, type: 1, nsfw: false },
-      { id: "new", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "New", topic: null, position: 1, type: 1, nsfw: false },
+      { id: "old", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Old", topic: null, position: 0, type: 1, nsfw: false, lastMessageId: "100" },
+      { id: "new", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "New", topic: null, position: 1, type: 1, nsfw: false, lastMessageId: "200" },
     ]);
 
-    bumpDirectMessageChannel(channels, "new");
+    expect(bumpDirectMessageChannel(channels, "old", "300")).toBe(true);
 
-    expect(channels.channels.map((channel) => channel.id)).toEqual(["new", "old"]);
+    expect(channels.channels.map((channel) => channel.id)).toEqual(["old", "new"]);
+    expect(channels.channels[0]?.lastMessageId).toBe("300");
   });
 
   test("keeps the active channel when browsing another guild", () => {

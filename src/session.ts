@@ -22,6 +22,7 @@ import {
   fetchGuildChannels,
   fetchGuilds,
   sendChannelMessage,
+  sortDirectMessageChannels,
   type DiscordChannel,
   type DiscordGuild,
   type DiscordGuildMember,
@@ -49,7 +50,12 @@ import {
   setMemberListMessage,
 } from "./memberlist";
 import type { AppState } from "./state";
-import { clearChannelNotifications, recordChannelNotification, replaceNotifications } from "./notifications";
+import {
+  clearChannelNotifications,
+  recordChannelNotification,
+  replaceNotifications,
+  shouldNotifyForMessage as messageMatchesNotificationRules,
+} from "./notifications";
 import { clearPrompt } from "./promptstate";
 import { focusPrompt, setNotice } from "./state";
 import { clearSidebarData, setSidebarGuilds } from "./sidebar";
@@ -156,9 +162,20 @@ function displayNameForUser(state: AppState, channelId: string, userId: string, 
   return fallback;
 }
 
-function maybeResortDirectMessages(state: AppState, channelId: string): void {
-  if (state.channelList.guildId !== DIRECT_MESSAGES_GUILD_ID) return;
-  bumpDirectMessageChannel(state.channelList, channelId);
+function maybeResortDirectMessages(state: AppState, channelId: string, messageId?: string): void {
+  const accountId = currentAccountId(state);
+  if (bumpDirectMessageChannel(state.channelList, channelId, messageId)) {
+    if (accountId) saveCachedDirectMessages(accountId, state.channelList.channels);
+    return;
+  }
+
+  if (!accountId || !messageId) return;
+  const cachedDirectMessages = loadCachedDirectMessages(accountId);
+  const channel = cachedDirectMessages?.find((entry) => entry.id === channelId);
+  if (!cachedDirectMessages || !channel) return;
+  channel.lastMessageId = messageId;
+  channel.position = -1;
+  saveCachedDirectMessages(accountId, sortDirectMessageChannels(cachedDirectMessages));
 }
 
 function guildIdForChannel(state: AppState, message: DiscordMessage): string | null {
@@ -167,20 +184,26 @@ function guildIdForChannel(state: AppState, message: DiscordMessage): string | n
     ?? null;
 }
 
-function shouldNotifyForMessage(state: AppState, message: DiscordMessage): boolean {
-  if (message.author.id === state.auth.user?.id) return false;
-  if (state.timeline.channelId !== message.channelId) return true;
-  return !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll);
+function shouldNotifyForIncomingMessage(state: AppState, message: DiscordMessage): boolean {
+  if (state.timeline.channelId === message.channelId && isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) {
+    return false;
+  }
+
+  return messageMatchesNotificationRules(message, {
+    viewerId: state.auth.user?.id ?? null,
+    roleIdsByGuildId: state.roleIdsByGuildId,
+    channels: state.channelList.channels,
+  });
 }
 
 function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
   clearTypingUser(state.typing, message.channelId, message.author.id);
-  const shouldNotify = shouldNotifyForMessage(state, message);
+  const shouldNotify = shouldNotifyForIncomingMessage(state, message);
   if (shouldNotify) {
     recordChannelNotification(state.notifications, message.channelId, guildIdForChannel(state, message));
     persistNotifications(state);
   }
-  maybeResortDirectMessages(state, message.channelId);
+  maybeResortDirectMessages(state, message.channelId, message.id);
   if (state.timeline.channelId === message.channelId) {
     const pinned = activeTimelineWasPinned(state);
     appendTimelineMessage(state.timeline, message);
@@ -195,7 +218,7 @@ function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, me
 }
 
 function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, patch: DiscordMessagePatch): void {
-  maybeResortDirectMessages(state, patch.channelId);
+  maybeResortDirectMessages(state, patch.channelId, patch.id);
   if (state.timeline.channelId === patch.channelId) {
     patchTimelineMessage(state.timeline, patch);
   }
@@ -245,6 +268,24 @@ function persistNotifications(state: AppState): void {
   }
 }
 
+function applyCachedNotifications(state: AppState): void {
+  const accountId = currentAccountId(state);
+  if (!accountId) return;
+  const cachedNotifications = loadCachedNotifications(accountId);
+  if (!cachedNotifications) return;
+
+  replaceNotifications(
+    state.notifications,
+    Object.entries(cachedNotifications.byChannelId)
+      .filter(([, count]) => count > 0)
+      .map(([channelId, count]) => ({
+        channelId,
+        guildId: cachedNotifications.channelGuildIds[channelId] ?? null,
+        count,
+      })),
+  );
+}
+
 function clearNotificationsForChannel(state: AppState, channelId: string): void {
   clearChannelNotifications(state.notifications, channelId);
   persistNotifications(state);
@@ -276,6 +317,12 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
   disconnectAppGateway();
   appGatewayToken = token;
   appGateway = new AppGatewayClient(token, {
+    onCurrentUserRoleIds: (roleIdsByGuildId) => {
+      state.roleIdsByGuildId = roleIdsByGuildId;
+    },
+    onCurrentUserGuildRoles: (guildId, roleIds) => {
+      state.roleIdsByGuildId[guildId] = roleIds;
+    },
     onInitialNotifications: (notifications) => {
       replaceNotifications(
         state.notifications,
@@ -329,6 +376,7 @@ export function clearReadOnlyClient(state: AppState): void {
   clearChannelList(state.channelList);
   clearTimeline(state.timeline);
   replaceNotifications(state.notifications, []);
+  state.roleIdsByGuildId = {};
   focusPrompt(state);
 }
 
@@ -459,11 +507,7 @@ export async function bootstrapReadOnlyClient(
   setNotice(state, "", "muted");
 
   if (accountId) {
-    const cachedNotifications = loadCachedNotifications(accountId);
-    if (cachedNotifications) {
-      state.notifications.byChannelId = { ...cachedNotifications.byChannelId };
-      state.notifications.channelGuildIds = { ...cachedNotifications.channelGuildIds };
-    }
+    applyCachedNotifications(state);
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
     const cachedGuilds = loadCachedGuilds(accountId) ?? [];
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
@@ -733,6 +777,9 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
       channelId,
       type: 0,
       content,
+      mentionEveryone: false,
+      mentionRoleIds: [],
+      mentionUserIds: [],
       timestamp: Date.now(),
       editedTimestamp: null,
       author: {
@@ -758,7 +805,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
         replaceTimelineMessage(state.timeline, localMessageId, message);
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
       }
-      maybeResortDirectMessages(state, channelId);
+      maybeResortDirectMessages(state, channelId, message.id);
       effects.scheduleRender();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -2,11 +2,17 @@
  * Ephemeral unread notification counts for gateway messages.
  */
 
-import type { DiscordChannel } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, isDirectMessageChannel, type DiscordChannel, type DiscordMessage } from "./discord";
 
 export interface NotificationState {
   byChannelId: Record<string, number>;
   channelGuildIds: Record<string, string>;
+}
+
+export interface NotificationContext {
+  viewerId: string | null;
+  roleIdsByGuildId?: Readonly<Record<string, readonly string[]>>;
+  channels?: readonly DiscordChannel[];
 }
 
 export function createNotificationState(): NotificationState {
@@ -22,6 +28,29 @@ export function recordChannelNotification(
   if (guildId) {
     notifications.channelGuildIds[channelId] = guildId;
   }
+}
+
+export function shouldNotifyForMessage(message: DiscordMessage, context: NotificationContext): boolean {
+  if (message.author.id === context.viewerId) return false;
+  if (message.mentionEveryone) return false;
+  if (message.call) return true;
+
+  const channel = context.channels?.find((entry) => entry.id === message.channelId) ?? null;
+  if (channel && isDirectMessageChannel(channel)) return true;
+  if (!channel && (!message.guildId || message.guildId === DIRECT_MESSAGES_GUILD_ID)) return true;
+
+  if (context.viewerId && message.mentionUserIds.includes(context.viewerId)) return true;
+  if (context.viewerId && message.content.includes(`<@${context.viewerId}>`)) return true;
+  if (context.viewerId && message.content.includes(`<@!${context.viewerId}>`)) return true;
+  if (message.reply?.authorId === context.viewerId) return true;
+
+  const guildId = message.guildId ?? channel?.guildId ?? null;
+  if (guildId && message.mentionRoleIds.length > 0) {
+    const viewerRoles = new Set(context.roleIdsByGuildId?.[guildId] ?? []);
+    if (message.mentionRoleIds.some((roleId) => viewerRoles.has(roleId))) return true;
+  }
+
+  return false;
 }
 
 export interface InitialNotificationEntry {

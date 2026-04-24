@@ -108,6 +108,9 @@ export interface DiscordMessageResponse {
   timestamp: string;
   edited_timestamp: string | null;
   type?: number;
+  mention_everyone?: boolean;
+  mention_roles?: string[];
+  mentions?: DiscordMessageAuthorResponse[];
   author: DiscordMessageAuthorResponse;
   member?: DiscordMessageMemberResponse;
   message_reference?: DiscordMessageReferenceResponse | null;
@@ -143,6 +146,7 @@ export interface DiscordChannel {
   position: number;
   type: number;
   nsfw: boolean;
+  lastMessageId?: string | null;
   recipients?: DiscordGuildMember[];
 }
 
@@ -182,6 +186,9 @@ export interface DiscordMessage {
   guildId?: string | null;
   type: number;
   content: string;
+  mentionEveryone: boolean;
+  mentionRoleIds: string[];
+  mentionUserIds: string[];
   timestamp: number;
   editedTimestamp: number | null;
   author: {
@@ -204,6 +211,9 @@ export interface DiscordMessagePatch {
   guildId?: string | null;
   type?: number;
   content?: string;
+  mentionEveryone?: boolean;
+  mentionRoleIds?: string[];
+  mentionUserIds?: string[];
   timestamp?: number;
   editedTimestamp?: number | null;
   author?: DiscordMessage["author"];
@@ -348,6 +358,7 @@ export function mapDirectMessageChannel(channel: DiscordChannelResponse, positio
     position,
     type: channel.type,
     nsfw: false,
+    lastMessageId: channel.last_message_id ?? null,
     recipients: (channel.recipients ?? []).map((recipient) => ({
       id: recipient.id,
       username: recipient.username,
@@ -374,7 +385,10 @@ export function mapGuildChannel(channel: DiscordChannelResponse, fallbackGuildId
 export function sortDirectMessageChannels(channels: DiscordChannel[]): DiscordChannel[] {
   return channels
     .slice()
-    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))
+    .sort((a, b) => {
+      const recency = compareSnowflakesDesc(a.lastMessageId, b.lastMessageId);
+      return recency || a.position - b.position || a.name.localeCompare(b.name);
+    })
     .map((channel, index) => ({ ...channel, position: index }));
 }
 
@@ -430,6 +444,9 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     guildId: message.guild_id,
     type: message.type,
     content: typeof message.content === "string" ? message.content : undefined,
+    mentionEveryone: message.mention_everyone,
+    mentionRoleIds: message.mention_roles,
+    mentionUserIds: message.mentions?.map((mention) => mention.id),
     timestamp: message.timestamp ? Date.parse(message.timestamp) : undefined,
     editedTimestamp: message.edited_timestamp === undefined
       ? undefined
@@ -483,6 +500,9 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
     guildId: patch.guildId !== undefined ? patch.guildId : message.guildId,
     type: patch.type ?? message.type,
     content: patch.content ?? message.content,
+    mentionEveryone: patch.mentionEveryone ?? message.mentionEveryone,
+    mentionRoleIds: patch.mentionRoleIds ?? message.mentionRoleIds,
+    mentionUserIds: patch.mentionUserIds ?? message.mentionUserIds,
     timestamp: patch.timestamp ?? message.timestamp,
     editedTimestamp: patch.editedTimestamp !== undefined ? patch.editedTimestamp : message.editedTimestamp,
     author: patch.author ?? message.author,
@@ -501,6 +521,9 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     guildId: patch.guildId ?? null,
     type: patch.type ?? 0,
     content: patch.content ?? "",
+    mentionEveryone: patch.mentionEveryone ?? false,
+    mentionRoleIds: patch.mentionRoleIds ?? [],
+    mentionUserIds: patch.mentionUserIds ?? [],
     timestamp: patch.timestamp ?? 0,
     editedTimestamp: patch.editedTimestamp ?? null,
     author: patch.author ?? {
