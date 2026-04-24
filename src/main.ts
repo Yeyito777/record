@@ -22,7 +22,7 @@ import {
 } from "./historycursor";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
-import { MEMBER_LIST_WIDTH } from "./memberlist";
+import { MEMBER_LIST_WIDTH, moveMemberListSelection } from "./memberlist";
 import { channelNotificationCounts } from "./notifications";
 import { render } from "./render";
 import {
@@ -243,6 +243,52 @@ function scrollTimeline(delta: number): void {
   scheduleRender();
 }
 
+function scrollFocusedPanel(delta: number, visibleRows: number): void {
+  if (state.panelFocus === "sidebar" && state.sidebar.open) {
+    moveSidebarSelection(state.sidebar, state.channelList.channels, delta);
+    scheduleRender();
+    return;
+  }
+
+  if (state.panelFocus === "memberlist" && state.memberList.open) {
+    moveMemberListSelection(state.memberList, delta);
+    scheduleRender();
+    return;
+  }
+
+  if (state.chatFocus === "history") {
+    scrollHistoryWithCursor(state, delta, visibleRows);
+    if (delta <= 0) maybeLoadOlderHistory();
+    scheduleRender();
+    return;
+  }
+
+  scrollTimeline(delta);
+}
+
+function scrollFocusedPanelLine(delta: number): void {
+  if (state.panelFocus === "sidebar" && state.sidebar.open) {
+    moveSidebarSelection(state.sidebar, state.channelList.channels, delta);
+    scheduleRender();
+    return;
+  }
+
+  if (state.panelFocus === "memberlist" && state.memberList.open) {
+    moveMemberListSelection(state.memberList, delta);
+    scheduleRender();
+    return;
+  }
+
+  if (state.chatFocus === "history") {
+    scrollHistoryViewportSticky(state, delta, timelinePageSize());
+    if (delta <= 0) maybeLoadOlderHistory();
+    scheduleRender();
+    return;
+  }
+
+  scrollTimeline(delta);
+}
+
 function toggleSidebar(): void {
   state.sidebar.open = !state.sidebar.open;
 
@@ -317,59 +363,26 @@ function handleGlobalAction(key: KeyEvent): boolean {
       toggleMemberList();
       return true;
     case "scroll_line_up":
-      if (state.chatFocus === "history") {
-        scrollHistoryViewportSticky(state, -1, timelinePageSize());
-        maybeLoadOlderHistory();
-        scheduleRender();
-      } else {
-        scrollTimeline(-1);
-      }
+      scrollFocusedPanelLine(-1);
       return true;
     case "scroll_line_down":
-      if (state.chatFocus === "history") {
-        scrollHistoryViewportSticky(state, 1, timelinePageSize());
-        scheduleRender();
-      } else {
-        scrollTimeline(1);
-      }
+      scrollFocusedPanelLine(1);
       return true;
     case "scroll_half_up": {
       const amount = Math.max(1, Math.floor(timelinePageSize() / 2));
-      if (state.chatFocus === "history") {
-        scrollHistoryWithCursor(state, -amount, timelinePageSize());
-        maybeLoadOlderHistory();
-        scheduleRender();
-      } else {
-        scrollTimeline(-amount);
-      }
+      scrollFocusedPanel(-amount, timelinePageSize());
       return true;
     }
     case "scroll_half_down": {
       const amount = Math.max(1, Math.floor(timelinePageSize() / 2));
-      if (state.chatFocus === "history") {
-        scrollHistoryWithCursor(state, amount, timelinePageSize());
-        scheduleRender();
-      } else {
-        scrollTimeline(amount);
-      }
+      scrollFocusedPanel(amount, timelinePageSize());
       return true;
     }
     case "scroll_page_up":
-      if (state.chatFocus === "history") {
-        scrollHistoryWithCursor(state, -timelinePageSize(), timelinePageSize());
-        maybeLoadOlderHistory();
-        scheduleRender();
-      } else {
-        scrollTimeline(-timelinePageSize());
-      }
+      scrollFocusedPanel(-timelinePageSize(), timelinePageSize());
       return true;
     case "scroll_page_down":
-      if (state.chatFocus === "history") {
-        scrollHistoryWithCursor(state, timelinePageSize(), timelinePageSize());
-        scheduleRender();
-      } else {
-        scrollTimeline(timelinePageSize());
-      }
+      scrollFocusedPanel(timelinePageSize(), timelinePageSize());
       return true;
     case "sidebar_next":
     case "sidebar_prev": {

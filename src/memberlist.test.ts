@@ -4,6 +4,7 @@ import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import {
   cacheMemberList,
   createMemberListState,
+  moveMemberListSelection,
   renderMemberList,
   setMemberListLoading,
   setMemberListMembers,
@@ -64,6 +65,30 @@ describe("member list", () => {
     for (const row of rows) {
       expect(termWidth(row)).toBe(28);
     }
+  });
+
+  test("moves selected member and scrolls to keep it visible", () => {
+    const memberList = createMemberListState();
+    memberList.open = true;
+    const members = Array.from({ length: 10 }, (_, index) => ({
+      id: String(index),
+      username: `user-${index}`,
+      displayName: `User ${index}`,
+      bot: false,
+    }));
+    setMemberListMembers(memberList, "guild-1", "channel-1", members);
+
+    moveMemberListSelection(memberList, 6);
+    renderMemberList(memberList, 5, 0);
+
+    expect(memberList.selectedIndex).toBe(6);
+    expect(memberList.scrollOffset).toBe(4);
+
+    moveMemberListSelection(memberList, -5);
+    renderMemberList(memberList, 5, 0);
+
+    expect(memberList.selectedIndex).toBe(1);
+    expect(memberList.scrollOffset).toBe(1);
   });
 
   test("highlights the viewer row and keeps all rows inside the panel width", () => {

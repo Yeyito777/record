@@ -115,6 +115,11 @@ export function cacheMemberList(
   memberList.cache.set(memberListCacheKey(guildId, channelId), members);
 }
 
+export function moveMemberListSelection(memberList: MemberListState, delta: number): void {
+  if (memberList.members.length === 0) return;
+  memberList.selectedIndex = Math.max(0, Math.min(memberList.selectedIndex + delta, memberList.members.length - 1));
+}
+
 function memberListCacheKey(guildId: string, channelId: string): string {
   return `${guildId}:${channelId}`;
 }
