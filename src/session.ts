@@ -53,6 +53,7 @@ import {
   appendTimelineMessage,
   clearTimeline,
   finishLoadingOlderMessages,
+  isTimelineNearBottom,
   markTimelineMessageFailed,
   prependTimelineMessages,
   patchTimelineMessage,
@@ -61,6 +62,7 @@ import {
   replaceTimelineMessage,
   setTimelineMessages,
 } from "./timeline";
+import { clearTypingUser, recordTypingStart } from "./typing";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -129,7 +131,25 @@ function ensureDirectMessagesGuild(state: AppState): void {
 }
 
 function activeTimelineWasPinned(state: AppState): boolean {
-  return state.timeline.scrollOffset >= state.timeline.maxScroll;
+  return isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll);
+}
+
+function displayNameForUser(state: AppState, channelId: string, userId: string, fallback: string): string {
+  const fromMemberList = state.memberList.channelId === channelId
+    ? state.memberList.members.find((member) => member.id === userId)?.displayName
+    : null;
+  if (fromMemberList) return fromMemberList;
+
+  const activeChannel = state.channelList.channels.find((channel) => channel.id === channelId);
+  const fromRecipients = activeChannel?.recipients?.find((recipient) => recipient.id === userId)?.displayName;
+  if (fromRecipients) return fromRecipients;
+
+  const fromTimeline = state.timeline.channelId === channelId
+    ? state.timeline.messages.find((message) => message.author.id === userId)?.author.displayName
+    : null;
+  if (fromTimeline) return fromTimeline;
+
+  return fallback;
 }
 
 function maybeResortDirectMessages(state: AppState, channelId: string): void {
@@ -138,6 +158,7 @@ function maybeResortDirectMessages(state: AppState, channelId: string): void {
 }
 
 function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
+  clearTypingUser(state.typing, message.channelId, message.author.id);
   maybeResortDirectMessages(state, message.channelId);
   if (state.timeline.channelId === message.channelId) {
     const pinned = activeTimelineWasPinned(state);
@@ -209,6 +230,10 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onChannelCreate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
     onChannelUpdate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
     onChannelDelete: (channelId) => handleGatewayChannelDelete(state, effects, channelId),
+    onTypingStart: (channelId, userId, displayName) => {
+      recordTypingStart(state.typing, channelId, { id: userId, displayName: displayNameForUser(state, channelId, userId, displayName) });
+      effects.scheduleRender();
+    },
     onError: (error) => {
       setNotice(state, error.message, "warning");
       effects.scheduleRender();

@@ -254,6 +254,10 @@ export function moveTimelineScroll(timeline: TimelineState, delta: number): void
   timeline.scrollOffset = Math.max(0, Math.min(timeline.scrollOffset + delta, timeline.maxScroll));
 }
 
+export function isTimelineNearBottom(scrollOffset: number, maxScroll: number, thresholdRows = 2): boolean {
+  return scrollOffset === Number.MAX_SAFE_INTEGER || scrollOffset >= Math.max(0, maxScroll - thresholdRows);
+}
+
 export function hasActiveTimelineCall(timeline: TimelineState): boolean {
   return timeline.messages.some((message) => message.call && message.call.endedTimestamp === null);
 }

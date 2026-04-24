@@ -11,6 +11,7 @@ import { createHistoryCursor, type HistoryCursor } from "./historycursor";
 import { createMemberListState, type MemberListState } from "./memberlist";
 import { createSidebarState, type SidebarState } from "./sidebar";
 import { createTimelineState, type TimelineMessageBound, type TimelineState } from "./timeline";
+import { createTypingState, type TypingState } from "./typing";
 import { normalizeToken } from "./token";
 import type { NoticeTone } from "./theme";
 
@@ -54,6 +55,7 @@ export interface AppState {
   memberList: MemberListState;
   channelList: ChannelListState;
   timeline: TimelineState;
+  typing: TypingState;
   auth: AuthState;
   notice: Notice;
   loadingFrameIndex: number;
@@ -80,6 +82,7 @@ export function createInitialState(initialToken: string | null, path: string, in
     memberList: createMemberListState(),
     channelList: createChannelListState(),
     timeline: createTimelineState(),
+    typing: createTypingState(),
     auth: {
       status: "idle",
       user: null,

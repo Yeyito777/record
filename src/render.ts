@@ -41,8 +41,9 @@ import {
   showCursor,
 } from "./terminal";
 import { theme } from "./theme";
-import { renderTimelineLines, setTimelineRenderContext } from "./timeline";
+import { isTimelineNearBottom, renderTimelineLines, setTimelineRenderContext } from "./timeline";
 import { renderTopbar } from "./topbar";
+import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
 
 function renderAutocompletePopup(
   state: AppState,
@@ -218,6 +219,8 @@ export function render(state: AppState): void {
   const historyFocused = state.panelFocus === "chat" && state.chatFocus === "history";
   const promptFocused = state.panelFocus === "chat" && state.chatFocus === "prompt";
 
+  const typingFrameText = typingFrame(state.loadingFrameIndex);
+  const typingChannelIds = channelsWithTyping(state.typing, state.auth.user?.id ?? null);
   const sidebarRows = sidebarOpen
     ? renderSidebar(
       state.sidebar,
@@ -226,6 +229,8 @@ export function render(state: AppState): void {
       state.panelFocus === "sidebar",
       state.channelList.activeChannelId,
       state.loadingFrameIndex,
+      typingChannelIds,
+      typingFrameText,
     )
     : [];
   const memberListRows = memberListOpen
@@ -282,7 +287,15 @@ export function render(state: AppState): void {
   const promptBottomSeparatorRow = firstInputRow + inputRowCount;
   const statusStartRow = promptBottomSeparatorRow + 1;
   const bodyTop = 3;
-  const bodyRows = Math.max(0, promptSeparatorRow - bodyTop);
+  const activeTypingUsers = getTypingUsers(
+    state.typing,
+    state.channelList.activeChannelId ?? state.timeline.channelId,
+    state.auth.user?.id ?? null,
+  );
+  const typingLine = formatTypingUsers(activeTypingUsers);
+  const typingRowCount = typingLine ? 1 : 0;
+  const bodyRows = Math.max(0, promptSeparatorRow - bodyTop - typingRowCount);
+  const typingRow = promptSeparatorRow - typingRowCount;
   const bodyInnerWidth = Math.max(0, mainW - 2);
 
   const oldAnchors = state.historyLineAnchors;
@@ -290,6 +303,10 @@ export function render(state: AppState): void {
   const oldCursorRow = state.historyCursor.row;
   const oldVisualAnchorRow = state.historyVisualAnchor.row;
   const pinHistoryToBottom = oldViewStart === Number.MAX_SAFE_INTEGER;
+  const pinTypingToBottom = Boolean(typingLine) && isTimelineNearBottom(oldViewStart, state.timeline.maxScroll);
+  if (pinTypingToBottom) {
+    state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+  }
 
   setTimelineRenderContext(
     state.timeline,
@@ -298,7 +315,7 @@ export function render(state: AppState): void {
   );
   const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, state.notice, state.loadingFrameIndex);
 
-  if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom) {
+  if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom && !pinTypingToBottom) {
     const anchorIndex = buildLineAnchorIndex(timeline.lineAnchors);
     state.timeline.scrollOffset = Math.max(0, Math.min(remapRenderedRow(oldViewStart, oldAnchors, anchorIndex), timeline.maxScroll));
     state.historyCursor = { ...state.historyCursor, row: remapRenderedRow(oldCursorRow, oldAnchors, anchorIndex) };
@@ -340,6 +357,13 @@ export function render(state: AppState): void {
 
     out.push(moveTo(row, mainCol) + renderedLine);
     emitMemberListCol(row);
+  }
+
+  if (typingLine) {
+    out.push(moveTo(typingRow, 1) + clearedLine);
+    emitSidebarCol(typingRow);
+    out.push(moveTo(typingRow, mainCol) + bgLine(` ${theme.muted}${typingFrameText} ${typingLine}${theme.reset}`));
+    emitMemberListCol(typingRow);
   }
 
   if (state.autocomplete) {

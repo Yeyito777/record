@@ -39,6 +39,7 @@ export interface AppGatewayCallbacks {
   onChannelCreate: (channel: DiscordChannel) => void;
   onChannelUpdate: (channel: DiscordChannel) => void;
   onChannelDelete: (channelId: string, guildId: string | null) => void;
+  onTypingStart: (channelId: string, userId: string, displayName: string) => void;
   onReconnect?: (attempt: number, delayMs: number) => void;
   onError?: (error: Error) => void;
 }
@@ -212,6 +213,11 @@ export class AppGatewayClient {
           this.callbacks.onChannelDelete(data.id, typeof data.guild_id === "string" ? data.guild_id : null);
           break;
         }
+        case "TYPING_START": {
+          if (!isObject(data) || typeof data.channel_id !== "string" || typeof data.user_id !== "string") break;
+          this.callbacks.onTypingStart(data.channel_id, data.user_id, typingDisplayName(data));
+          break;
+        }
         default:
           break;
       }
@@ -296,6 +302,15 @@ export class AppGatewayClient {
       socket.close();
     }
   }
+}
+
+function typingDisplayName(data: Record<string, any>): string {
+  const member = isObject(data.member) ? data.member : null;
+  const user = isObject(data.user) ? data.user : null;
+  const nick = member && typeof member.nick === "string" && member.nick.trim() ? member.nick : null;
+  const globalName = user && typeof user.global_name === "string" && user.global_name.trim() ? user.global_name : null;
+  const username = user && typeof user.username === "string" && user.username.trim() ? user.username : null;
+  return nick ?? globalName ?? username ?? String(data.user_id);
 }
 
 function createGatewayProperties(): Record<string, unknown> {

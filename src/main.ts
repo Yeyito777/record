@@ -66,6 +66,7 @@ import {
 } from "./terminal";
 import { theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
+import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -123,7 +124,8 @@ function hasActiveLoadingIndicator(): boolean {
     || state.channelList.loading
     || state.timeline.loading
     || state.timeline.loadingOlder
-    || hasActiveTimelineCall(state.timeline);
+    || hasActiveTimelineCall(state.timeline)
+    || Object.keys(state.typing.byChannelId).length > 0;
 }
 
 function syncLoadingAnimation(): void {
@@ -142,6 +144,7 @@ function syncLoadingAnimation(): void {
     }
 
     state.loadingFrameIndex = (state.loadingFrameIndex + 1) % LOADING_FRAMES.length;
+    pruneTypingState(state.typing);
     scheduleRender();
   }, LOADING_INTERVAL_MS);
 }

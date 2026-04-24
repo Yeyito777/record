@@ -100,6 +100,8 @@ export function buildSidebarEntries(
   sidebar: SidebarState,
   channels: DiscordChannel[],
   loadingFrameIndex = 0,
+  typingChannelIds: ReadonlySet<string> = new Set(),
+  typingFrame = "⋯",
 ): SidebarEntry[] {
   const entries: SidebarEntry[] = [];
 
@@ -145,7 +147,7 @@ export function buildSidebarEntries(
         kind: "channel",
         id: channel.id,
         guildId: guild.id,
-        label: channel.name,
+        label: channelEntryLabel(channel, typingChannelIds, typingFrame),
         depth: 1,
         selected: false,
         active: false,
@@ -177,7 +179,7 @@ export function buildSidebarEntries(
           kind: "channel",
           id: channel.id,
           guildId: guild.id,
-          label: channel.name,
+          label: channelEntryLabel(channel, typingChannelIds, typingFrame),
           depth: 2,
           selected: false,
           active: false,
@@ -197,6 +199,10 @@ export function buildSidebarEntries(
       ? entry.guildId === sidebar.activeGuildId
       : entry.active,
   }));
+}
+
+function channelEntryLabel(channel: DiscordChannel, typingChannelIds: ReadonlySet<string>, typingFrame: string): string {
+  return typingChannelIds.has(channel.id) ? `${channel.name} ${typingFrame}` : channel.name;
 }
 
 export function getSelectedSidebarEntry(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry {
@@ -301,6 +307,8 @@ export function renderSidebar(
   focused = false,
   activeChannelId: string | null = null,
   loadingFrameIndex = 0,
+  typingChannelIds: ReadonlySet<string> = new Set(),
+  typingFrame = "⋯",
 ): string[] {
   if (!sidebar.open) return [];
 
@@ -318,7 +326,7 @@ export function renderSidebar(
     theme.sidebarBg + borderFg + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset,
   );
 
-  const entries = buildSidebarEntries(sidebar, channels, loadingFrameIndex);
+  const entries = buildSidebarEntries(sidebar, channels, loadingFrameIndex, typingChannelIds, typingFrame);
   const listRows = Math.max(0, totalRows - 2);
   let scrollOffset = sidebar.scrollOffset;
   if (sidebar.selectedIndex < scrollOffset) {

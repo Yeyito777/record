@@ -42,6 +42,23 @@ describe("sidebar state", () => {
     expect(sidebar.collapsedCategoryIds).toEqual(["cat"]);
   });
 
+  test("marks channels with active typing", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+
+    const entries = buildSidebarEntries(sidebar, [
+      { id: "1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false },
+    ], 0, new Set(["1"]));
+
+    expect(entries[1]?.label).toBe("general ⋯");
+
+    const animatedEntries = buildSidebarEntries(sidebar, [
+      { id: "1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false },
+    ], 0, new Set(["1"]), "..");
+    expect(animatedEntries[1]?.label).toBe("general ..");
+  });
+
   test("shows a loading row directly under an opening guild", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
