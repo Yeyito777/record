@@ -8,13 +8,19 @@ import {
   moveSidebarSelection,
   moveSidebarSelectionToNextCategory,
   moveSidebarSelectionToNextGuild,
+  moveSidebarSelectionToNextNotification,
   moveSidebarSelectionToPrevCategory,
   moveSidebarSelectionToPrevGuild,
+  moveSidebarSelectionToPrevNotification,
   renderSidebar,
   setSidebarGuilds,
   SIDEBAR_WIDTH,
 } from "./sidebar";
 import { termWidth } from "./textwidth";
+
+function stripAnsiForTest(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
 
 describe("sidebar state", () => {
   test("builds a collapsible guild/category/channel tree", () => {
@@ -40,6 +46,29 @@ describe("sidebar state", () => {
 
     expect(entry?.kind).toBe("category");
     expect(sidebar.collapsedCategoryIds).toEqual(["cat"]);
+  });
+
+  test("renders notification badges for guilds and channels", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+
+    const rows = renderSidebar(
+      sidebar,
+      [{ id: "1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }],
+      5,
+      false,
+      null,
+      0,
+      new Set(),
+      "⋯",
+      new Map([["1", 7]]),
+      new Map([["guild-1", 7]]),
+    ).map(stripAnsiForTest);
+
+    expect(rows[2]).toContain("7");
+    expect(rows[3]).toContain("7");
   });
 
   test("marks channels with active typing", () => {
@@ -142,6 +171,31 @@ describe("sidebar state", () => {
 
     moveSidebarSelectionToPrevCategory(sidebar, channels);
     expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("cat-1");
+  });
+
+  test("jumps between notified direct messages with bracket motions", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    const channels = [
+      { id: "dm-1", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alpha", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "dm-2", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Beta", topic: null, position: 1, type: 1, nsfw: false },
+      { id: "dm-3", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Gamma", topic: null, position: 2, type: 1, nsfw: false },
+    ];
+    const notifications = new Map([["dm-2", 1], ["dm-3", 2]]);
+
+    sidebar.selectedIndex = 0;
+    moveSidebarSelectionToNextNotification(sidebar, channels, notifications, DIRECT_MESSAGES_GUILD_ID);
+    expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-2");
+
+    moveSidebarSelectionToNextNotification(sidebar, channels, notifications, DIRECT_MESSAGES_GUILD_ID);
+    expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-3");
+
+    moveSidebarSelectionToNextNotification(sidebar, channels, notifications, DIRECT_MESSAGES_GUILD_ID);
+    expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-2");
+
+    moveSidebarSelectionToPrevNotification(sidebar, channels, notifications, DIRECT_MESSAGES_GUILD_ID);
+    expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-3");
   });
 
   test("renders wide channel names without overflowing the sidebar border", () => {

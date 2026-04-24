@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   DIRECT_MESSAGES_GUILD_ID,
+  ackChannelMessage,
   fetchChannelMessages,
   applyDiscordMessagePatch,
   fetchDirectMessages,
@@ -199,6 +200,22 @@ describe("discord helpers", () => {
     expect(requestedUrl).toBe("https://discord.com/api/v9/channels/channel-1/messages");
     expect(JSON.parse(requestedBody)).toEqual({ content: "hello world", tts: false });
     expect(message.content).toBe("hello world");
+  });
+
+  test("acknowledges read messages", async () => {
+    let requestedUrl = "";
+    let requestedBody = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrl = String(input);
+      requestedBody = String(init?.body ?? "");
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await ackChannelMessage("token", "channel-1", "message-1");
+
+    expect(requestedUrl).toBe("https://discord.com/api/v9/channels/channel-1/messages/message-1/ack");
+    expect(JSON.parse(requestedBody)).toMatchObject({ token: null });
+    expect(typeof JSON.parse(requestedBody).last_viewed).toBe("number");
   });
 
   test("marks missing referenced messages as deleted replies", async () => {

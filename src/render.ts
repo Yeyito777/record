@@ -25,6 +25,7 @@ import {
 } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
+import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
 import { renderStatusLine } from "./statusline";
@@ -221,6 +222,8 @@ export function render(state: AppState): void {
 
   const typingFrameText = typingFrame(state.loadingFrameIndex);
   const typingChannelIds = channelsWithTyping(state.typing, state.auth.user?.id ?? null);
+  const channelNotifications = channelNotificationCounts(state.notifications);
+  const guildNotifications = guildNotificationCounts(state.notifications, state.channelList.channels);
   const sidebarRows = sidebarOpen
     ? renderSidebar(
       state.sidebar,
@@ -231,6 +234,8 @@ export function render(state: AppState): void {
       state.loadingFrameIndex,
       typingChannelIds,
       typingFrameText,
+      channelNotifications,
+      guildNotifications,
     )
     : [];
   const memberListRows = memberListOpen

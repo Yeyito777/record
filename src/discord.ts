@@ -103,6 +103,7 @@ export interface DiscordCallResponse {
 export interface DiscordMessageResponse {
   id: string;
   channel_id: string;
+  guild_id?: string;
   content: string;
   timestamp: string;
   edited_timestamp: string | null;
@@ -178,6 +179,7 @@ export type DiscordMessageLocalStatus = "pending" | "failed";
 export interface DiscordMessage {
   id: string;
   channelId: string;
+  guildId?: string | null;
   type: number;
   content: string;
   timestamp: number;
@@ -199,6 +201,7 @@ export interface DiscordMessage {
 export interface DiscordMessagePatch {
   id: string;
   channelId: string;
+  guildId?: string | null;
   type?: number;
   content?: string;
   timestamp?: number;
@@ -424,6 +427,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
   return {
     id: message.id,
     channelId: message.channel_id,
+    guildId: message.guild_id,
     type: message.type,
     content: typeof message.content === "string" ? message.content : undefined,
     timestamp: message.timestamp ? Date.parse(message.timestamp) : undefined,
@@ -476,6 +480,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
 export function applyDiscordMessagePatch(message: DiscordMessage, patch: DiscordMessagePatch): DiscordMessage {
   return {
     ...message,
+    guildId: patch.guildId !== undefined ? patch.guildId : message.guildId,
     type: patch.type ?? message.type,
     content: patch.content ?? message.content,
     timestamp: patch.timestamp ?? message.timestamp,
@@ -493,6 +498,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
   return {
     id: patch.id,
     channelId: patch.channelId,
+    guildId: patch.guildId ?? null,
     type: patch.type ?? 0,
     content: patch.content ?? "",
     timestamp: patch.timestamp ?? 0,
@@ -528,6 +534,16 @@ export async function sendChannelMessage(token: string, channelId: string, conte
     body: JSON.stringify({ content, tts: false }),
   });
   return mapDiscordMessage(message);
+}
+
+export async function ackChannelMessage(token: string, channelId: string, messageId: string): Promise<void> {
+  await requestJson<unknown>(token, `/channels/${channelId}/messages/${messageId}/ack`, {
+    method: "POST",
+    body: JSON.stringify({
+      last_viewed: Math.ceil((Date.now() - 1_420_070_400_000) / 86_400_000),
+      token: null,
+    }),
+  });
 }
 
 async function apiGetJson<T>(token: string, path: string): Promise<T> {

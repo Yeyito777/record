@@ -7,12 +7,14 @@ import { join } from "path";
 
 import { configDir } from "./config";
 import type { DiscordChannel, DiscordGuild } from "./discord";
+import type { NotificationState } from "./notifications";
 
 interface AccountDataCache {
   savedAt: number;
   guilds?: DiscordGuild[];
   directMessages?: DiscordChannel[];
   guildChannels?: Record<string, DiscordChannel[]>;
+  notifications?: NotificationState;
 }
 
 interface DataCacheFile {
@@ -86,6 +88,26 @@ export function saveCachedGuildChannels(accountId: string, guildId: string, chan
   const account = accountCache(cache, accountId);
   account.guildChannels ??= {};
   account.guildChannels[guildId] = channels;
+  account.savedAt = Date.now();
+  saveCacheFile(cache);
+}
+
+export function loadCachedNotifications(accountId: string): NotificationState | null {
+  const cached = loadCacheFile().accounts[accountId]?.notifications;
+  if (!cached) return null;
+  return {
+    byChannelId: { ...(cached.byChannelId ?? {}) },
+    channelGuildIds: { ...(cached.channelGuildIds ?? {}) },
+  };
+}
+
+export function saveCachedNotifications(accountId: string, notifications: NotificationState): void {
+  const cache = loadCacheFile();
+  const account = accountCache(cache, accountId);
+  account.notifications = {
+    byChannelId: { ...notifications.byChannelId },
+    channelGuildIds: { ...notifications.channelGuildIds },
+  };
   account.savedAt = Date.now();
   saveCacheFile(cache);
 }

@@ -16,6 +16,7 @@ import {
 import {
   DIRECT_MESSAGES_GUILD_ID,
   DIRECT_MESSAGES_GUILD_NAME,
+  ackChannelMessage,
   fetchChannelMessages,
   fetchDirectMessages,
   fetchGuildChannels,
@@ -31,9 +32,11 @@ import {
   loadCachedDirectMessages,
   loadCachedGuildChannels,
   loadCachedGuilds,
+  loadCachedNotifications,
   saveCachedDirectMessages,
   saveCachedGuildChannels,
   saveCachedGuilds,
+  saveCachedNotifications,
 } from "./datacache";
 import { AppGatewayClient } from "./appgateway";
 import { MemberListGatewayClient } from "./membergateway";
@@ -46,6 +49,7 @@ import {
   setMemberListMessage,
 } from "./memberlist";
 import type { AppState } from "./state";
+import { clearChannelNotifications, recordChannelNotification, replaceNotifications } from "./notifications";
 import { clearPrompt } from "./promptstate";
 import { focusPrompt, setNotice } from "./state";
 import { clearSidebarData, setSidebarGuilds } from "./sidebar";
@@ -157,13 +161,35 @@ function maybeResortDirectMessages(state: AppState, channelId: string): void {
   bumpDirectMessageChannel(state.channelList, channelId);
 }
 
+function guildIdForChannel(state: AppState, message: DiscordMessage): string | null {
+  return message.guildId
+    ?? state.channelList.channels.find((channel) => channel.id === message.channelId)?.guildId
+    ?? null;
+}
+
+function shouldNotifyForMessage(state: AppState, message: DiscordMessage): boolean {
+  if (message.author.id === state.auth.user?.id) return false;
+  if (state.timeline.channelId !== message.channelId) return true;
+  return !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll);
+}
+
 function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
   clearTypingUser(state.typing, message.channelId, message.author.id);
+  const shouldNotify = shouldNotifyForMessage(state, message);
+  if (shouldNotify) {
+    recordChannelNotification(state.notifications, message.channelId, guildIdForChannel(state, message));
+    persistNotifications(state);
+  }
   maybeResortDirectMessages(state, message.channelId);
   if (state.timeline.channelId === message.channelId) {
     const pinned = activeTimelineWasPinned(state);
     appendTimelineMessage(state.timeline, message);
-    if (pinned) state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+    if (pinned) {
+      state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+      if (!shouldNotify) {
+        markChannelRead(state, state.auth.savedToken, message.channelId, message.id);
+      }
+    }
   }
   effects.scheduleRender();
 }
@@ -212,11 +238,56 @@ function currentAccountId(state: AppState): string | null {
   return state.auth.user?.id ?? null;
 }
 
+function persistNotifications(state: AppState): void {
+  const accountId = currentAccountId(state);
+  if (accountId) {
+    saveCachedNotifications(accountId, state.notifications);
+  }
+}
+
+function clearNotificationsForChannel(state: AppState, channelId: string): void {
+  clearChannelNotifications(state.notifications, channelId);
+  persistNotifications(state);
+}
+
+function markChannelRead(state: AppState, token: string | null, channelId: string, messageId: string): void {
+  clearNotificationsForChannel(state, channelId);
+  if (!token) return;
+
+  void ackChannelMessage(token, channelId, messageId).catch(() => {
+    // Keep read acknowledgements best-effort; failing to ack should not disrupt chat.
+  });
+}
+
+function latestTimelineMessageId(state: AppState, channelId: string): string | null {
+  if (state.timeline.channelId !== channelId) return null;
+  const latest = state.timeline.messages.at(-1);
+  if (!latest || latest.localStatus) return null;
+  return latest.id;
+}
+
+function subscribeAppGatewayToActiveChannel(state: AppState): void {
+  const channel = state.channelList.activeChannel;
+  appGateway?.subscribeToGuildChannel(channel?.guildId, channel?.id);
+}
+
 function startAppGateway(state: AppState, token: string, effects: SessionEffects): void {
   if (appGateway && appGatewayToken === token) return;
   disconnectAppGateway();
   appGatewayToken = token;
   appGateway = new AppGatewayClient(token, {
+    onInitialNotifications: (notifications) => {
+      replaceNotifications(
+        state.notifications,
+        notifications.filter((notification) => notification.channelId !== state.timeline.channelId),
+      );
+      persistNotifications(state);
+      const latestMessageId = state.timeline.channelId ? latestTimelineMessageId(state, state.timeline.channelId) : null;
+      if (state.timeline.channelId && latestMessageId && isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) {
+        markChannelRead(state, state.auth.savedToken, state.timeline.channelId, latestMessageId);
+      }
+      effects.scheduleRender();
+    },
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
     onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
     onMessageDelete: (channelId, messageId) => {
@@ -225,6 +296,10 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onMessageDeleteBulk: (channelId, messageIds) => {
       removeTimelineMessages(state.timeline, messageIds, channelId);
+      effects.scheduleRender();
+    },
+    onMessageAck: (channelId) => {
+      clearNotificationsForChannel(state, channelId);
       effects.scheduleRender();
     },
     onChannelCreate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
@@ -240,6 +315,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
   });
   appGateway.start();
+  subscribeAppGatewayToActiveChannel(state);
 }
 
 export function clearReadOnlyClient(state: AppState): void {
@@ -252,6 +328,7 @@ export function clearReadOnlyClient(state: AppState): void {
   clearMemberListData(state.memberList);
   clearChannelList(state.channelList);
   clearTimeline(state.timeline);
+  replaceNotifications(state.notifications, []);
   focusPrompt(state);
 }
 
@@ -382,6 +459,11 @@ export async function bootstrapReadOnlyClient(
   setNotice(state, "", "muted");
 
   if (accountId) {
+    const cachedNotifications = loadCachedNotifications(accountId);
+    if (cachedNotifications) {
+      state.notifications.byChannelId = { ...cachedNotifications.byChannelId };
+      state.notifications.channelGuildIds = { ...cachedNotifications.channelGuildIds };
+    }
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
     const cachedGuilds = loadCachedGuilds(accountId) ?? [];
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
@@ -484,6 +566,7 @@ export async function loadGuildChannels(
           ?? findFirstBrowsableChannel(cachedChannels);
         setActiveChannelEntry(state.channelList, cachedChannel);
         if (cachedChannel) state.sidebar.activeGuildId = cachedChannel.guildId;
+        subscribeAppGatewayToActiveChannel(state);
       }
     }
   }
@@ -526,6 +609,7 @@ export async function loadGuildChannels(
 
     setActiveChannelEntry(state.channelList, channel);
     state.sidebar.activeGuildId = channel.guildId;
+    subscribeAppGatewayToActiveChannel(state);
     effects.scheduleRender();
     await loadChannelMessages(state, token, channel.id, effects);
   } catch (error) {
@@ -559,8 +643,10 @@ export async function loadChannelMessages(
   }
 
   const requestId = ++state.timeline.requestId;
+  clearNotificationsForChannel(state, channelId);
   setActiveChannel(state.channelList, channelId);
   state.sidebar.activeGuildId = channel.guildId;
+  subscribeAppGatewayToActiveChannel(state);
   state.timeline.loading = true;
   state.timeline.loadingOlder = false;
   setNotice(state, "", "muted");
@@ -572,6 +658,10 @@ export async function loadChannelMessages(
     if (requestId !== state.timeline.requestId) return;
 
     setTimelineMessages(state.timeline, channelId, messages, { hasOlder: messages.length >= MESSAGE_PAGE_LIMIT });
+    const latestMessage = messages.at(-1);
+    if (latestMessage) {
+      markChannelRead(state, token, channelId, latestMessage.id);
+    }
     effects.scheduleRender();
   } catch (error) {
     if (requestId !== state.timeline.requestId) return;
@@ -682,6 +772,14 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
       effects.scheduleRender();
     }
   })();
+}
+
+export function ackCurrentChannelIfAtBottom(state: AppState): void {
+  const channelId = state.timeline.channelId;
+  if (!channelId || !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) return;
+  const latestMessageId = latestTimelineMessageId(state, channelId);
+  if (!latestMessageId) return;
+  markChannelRead(state, state.auth.savedToken, channelId, latestMessageId);
 }
 
 export function refreshReadOnlyClient(state: AppState, effects: SessionEffects): void {

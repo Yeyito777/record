@@ -18,6 +18,7 @@ export interface SidebarEntry {
   label: string;
   depth: number;
   channelType?: number;
+  notificationCount?: number;
   selected: boolean;
   active: boolean;
   expanded: boolean;
@@ -102,6 +103,8 @@ export function buildSidebarEntries(
   loadingFrameIndex = 0,
   typingChannelIds: ReadonlySet<string> = new Set(),
   typingFrame = "⋯",
+  channelNotificationCounts: ReadonlyMap<string, number> = new Map(),
+  guildNotificationCounts: ReadonlyMap<string, number> = new Map(),
 ): SidebarEntry[] {
   const entries: SidebarEntry[] = [];
 
@@ -113,6 +116,7 @@ export function buildSidebarEntries(
       guildId: guild.id,
       label: guild.name || "(unnamed)",
       depth: 0,
+      notificationCount: guildNotificationCounts.get(guild.id) ?? 0,
       selected: false,
       active: guild.id === sidebar.activeGuildId,
       expanded: isExpanded,
@@ -149,6 +153,7 @@ export function buildSidebarEntries(
         guildId: guild.id,
         label: channelEntryLabel(channel, typingChannelIds, typingFrame),
         depth: 1,
+        notificationCount: channelNotificationCounts.get(channel.id) ?? 0,
         selected: false,
         active: false,
         expanded: false,
@@ -181,6 +186,7 @@ export function buildSidebarEntries(
           guildId: guild.id,
           label: channelEntryLabel(channel, typingChannelIds, typingFrame),
           depth: 2,
+          notificationCount: channelNotificationCounts.get(channel.id) ?? 0,
           selected: false,
           active: false,
           expanded: false,
@@ -275,6 +281,54 @@ export function moveSidebarSelectionToNextCategory(sidebar: SidebarState, channe
   jumpSidebarSelectionToKind(sidebar, channels, "category", 1);
 }
 
+export function moveSidebarSelectionToPrevNotification(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  notificationCounts: ReadonlyMap<string, number>,
+  guildId: string,
+): void {
+  jumpSidebarSelectionToNotification(sidebar, channels, notificationCounts, guildId, -1);
+}
+
+export function moveSidebarSelectionToNextNotification(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  notificationCounts: ReadonlyMap<string, number>,
+  guildId: string,
+): void {
+  jumpSidebarSelectionToNotification(sidebar, channels, notificationCounts, guildId, 1);
+}
+
+function jumpSidebarSelectionToNotification(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  notificationCounts: ReadonlyMap<string, number>,
+  guildId: string,
+  direction: -1 | 1,
+): void {
+  const entries = buildSidebarEntries(sidebar, channels);
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    return;
+  }
+
+  const candidates = entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.kind === "channel"
+      && entry.guildId === guildId
+      && (notificationCounts.get(entry.id) ?? 0) > 0)
+    .map(({ index }) => index);
+  if (candidates.length === 0) return;
+
+  const currentIndex = clampSelectedIndex(sidebar, entries);
+  const nextIndex = direction > 0
+    ? candidates.find((index) => index > currentIndex) ?? candidates[0]
+    : candidates.findLast((index) => index < currentIndex) ?? candidates[candidates.length - 1];
+  if (nextIndex !== undefined) {
+    sidebar.selectedIndex = nextIndex;
+  }
+}
+
 export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry | null {
   const entry = getSelectedSidebarEntry(sidebar, channels);
   if (!entry.id || entry.kind === "loading") return null;
@@ -309,6 +363,8 @@ export function renderSidebar(
   loadingFrameIndex = 0,
   typingChannelIds: ReadonlySet<string> = new Set(),
   typingFrame = "⋯",
+  channelNotificationCounts: ReadonlyMap<string, number> = new Map(),
+  guildNotificationCounts: ReadonlyMap<string, number> = new Map(),
 ): string[] {
   if (!sidebar.open) return [];
 
@@ -326,7 +382,15 @@ export function renderSidebar(
     theme.sidebarBg + borderFg + "─".repeat(innerWidth) + borderBg + "┤" + theme.reset,
   );
 
-  const entries = buildSidebarEntries(sidebar, channels, loadingFrameIndex, typingChannelIds, typingFrame);
+  const entries = buildSidebarEntries(
+    sidebar,
+    channels,
+    loadingFrameIndex,
+    typingChannelIds,
+    typingFrame,
+    channelNotificationCounts,
+    guildNotificationCounts,
+  );
   const listRows = Math.max(0, totalRows - 2);
   let scrollOffset = sidebar.scrollOffset;
   if (sidebar.selectedIndex < scrollOffset) {
@@ -390,10 +454,24 @@ function renderEntryRow(
       ? entry.expanded ? "▾ " : "▸ "
       : "# ";
   const prefix = `${indent}${marker}`;
-  const labelWidth = Math.max(0, innerWidth - termWidth(prefix));
+  const badge = renderNotificationBadge(entry.notificationCount ?? 0);
+  const badgeGap = badge ? 1 : 0;
+  const badgeWidth = badge?.width ?? 0;
+  const labelWidth = Math.max(0, innerWidth - termWidth(prefix) - badgeGap - badgeWidth);
   const title = padRight(entry.label || "unnamed", labelWidth);
   const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
+  const suffix = badge ? `${" ".repeat(badgeGap)}${badge.text}` : "";
 
-  return theme.reset + bg + fg + prefix + text
+  return theme.reset + bg + fg + prefix + text + suffix
     + theme.reset + borderBg + borderFg + "│" + theme.reset;
+}
+
+function renderNotificationBadge(count: number): { text: string; width: number } | null {
+  if (count <= 0) return null;
+  const label = count > 99 ? "99+" : String(count);
+  const text = ` ${label} `;
+  return {
+    text: `${theme.notificationBg}${theme.notificationFg}${text}${theme.reset}`,
+    width: termWidth(text),
+  };
 }

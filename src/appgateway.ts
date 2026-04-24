@@ -5,6 +5,7 @@
 import { release } from "os";
 
 import {
+  compareSnowflakesDesc,
   DIRECT_MESSAGES_GUILD_ID,
   mapDirectMessageChannel,
   mapDiscordMessage,
@@ -31,11 +32,24 @@ interface GatewayPayload {
   d?: unknown;
 }
 
+interface GuildChannelSubscription {
+  guildId: string;
+  channelId: string;
+}
+
+export interface InitialNotification {
+  channelId: string;
+  guildId: string | null;
+  count: number;
+}
+
 export interface AppGatewayCallbacks {
+  onInitialNotifications: (notifications: InitialNotification[]) => void;
   onMessageCreate: (message: DiscordMessage) => void;
   onMessageUpdate: (patch: DiscordMessagePatch) => void;
   onMessageDelete: (channelId: string, messageId: string) => void;
   onMessageDeleteBulk: (channelId: string, messageIds: string[]) => void;
+  onMessageAck: (channelId: string) => void;
   onChannelCreate: (channel: DiscordChannel) => void;
   onChannelUpdate: (channel: DiscordChannel) => void;
   onChannelDelete: (channelId: string, guildId: string | null) => void;
@@ -54,6 +68,8 @@ export class AppGatewayClient {
   private manualDisconnect = false;
   private connecting = false;
   private reconnectAttempt = 0;
+  private ready = false;
+  private guildChannelSubscription: GuildChannelSubscription | null = null;
 
   constructor(
     private readonly token: string,
@@ -66,6 +82,16 @@ export class AppGatewayClient {
     void this.connect();
   }
 
+  subscribeToGuildChannel(guildId: string | null | undefined, channelId: string | null | undefined): void {
+    if (!guildId || !channelId || guildId === DIRECT_MESSAGES_GUILD_ID) {
+      this.guildChannelSubscription = null;
+      return;
+    }
+
+    this.guildChannelSubscription = { guildId, channelId };
+    this.sendGuildChannelSubscription();
+  }
+
   disconnect(): void {
     this.manualDisconnect = true;
     if (this.reconnectTimer) {
@@ -75,6 +101,7 @@ export class AppGatewayClient {
     this.closeSocket();
     this.sessionId = null;
     this.seq = null;
+    this.ready = false;
     this.reconnectAttempt = 0;
   }
 
@@ -133,12 +160,17 @@ export class AppGatewayClient {
 
     if (payload.t === "READY") {
       this.reconnectAttempt = 0;
+      this.ready = true;
       this.sessionId = isObject(payload.d) && typeof payload.d.session_id === "string" ? payload.d.session_id : null;
+      this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
+      this.sendGuildChannelSubscription();
       return;
     }
 
     if (payload.t === "RESUMED") {
       this.reconnectAttempt = 0;
+      this.ready = true;
+      this.sendGuildChannelSubscription();
       return;
     }
 
@@ -200,6 +232,11 @@ export class AppGatewayClient {
         case "MESSAGE_DELETE_BULK": {
           if (!isObject(data) || typeof data.channel_id !== "string" || !Array.isArray(data.ids)) break;
           this.callbacks.onMessageDeleteBulk(data.channel_id, data.ids.filter((id): id is string => typeof id === "string"));
+          break;
+        }
+        case "MESSAGE_ACK": {
+          if (!isObject(data) || typeof data.channel_id !== "string") break;
+          this.callbacks.onMessageAck(data.channel_id);
           break;
         }
         case "CHANNEL_CREATE":
@@ -281,6 +318,26 @@ export class AppGatewayClient {
     }, delayMs);
   }
 
+  private sendGuildChannelSubscription(): void {
+    if (!this.ready || !this.guildChannelSubscription) return;
+    const { guildId, channelId } = this.guildChannelSubscription;
+    this.send({
+      op: 37,
+      d: {
+        subscriptions: {
+          [guildId]: {
+            typing: true,
+            activities: true,
+            threads: true,
+            channels: {
+              [channelId]: [[0, 99]],
+            },
+          },
+        },
+      },
+    });
+  }
+
   private send(payload: unknown): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify(payload));
@@ -291,6 +348,7 @@ export class AppGatewayClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    this.ready = false;
     const socket = this.ws;
     this.ws = null;
     if (!socket) return;
@@ -302,6 +360,69 @@ export class AppGatewayClient {
       socket.close();
     }
   }
+}
+
+export function extractInitialNotifications(data: unknown): InitialNotification[] {
+  if (!isObject(data)) return [];
+
+  const channels = new Map<string, { guildId: string | null; lastMessageId: string | null }>();
+  for (const guild of Array.isArray(data.guilds) ? data.guilds : []) {
+    if (!isObject(guild) || typeof guild.id !== "string") continue;
+    for (const channel of Array.isArray(guild.channels) ? guild.channels : []) {
+      collectReadyChannel(channels, channel, guild.id);
+    }
+    for (const thread of Array.isArray(guild.threads) ? guild.threads : []) {
+      collectReadyChannel(channels, thread, guild.id);
+    }
+  }
+  for (const channel of Array.isArray(data.private_channels) ? data.private_channels : []) {
+    collectReadyChannel(channels, channel, DIRECT_MESSAGES_GUILD_ID);
+  }
+
+  const readStateEntries = isObject(data.read_state) && Array.isArray(data.read_state.entries)
+    ? data.read_state.entries
+    : Array.isArray(data.read_state)
+      ? data.read_state
+      : [];
+  const notifications: InitialNotification[] = [];
+  for (const readState of readStateEntries) {
+    if (!isObject(readState) || typeof readState.id !== "string") continue;
+    const channel = channels.get(readState.id);
+    const count = initialNotificationCount(readState, channel?.lastMessageId ?? null);
+    if (count <= 0) continue;
+    notifications.push({
+      channelId: readState.id,
+      guildId: channel?.guildId ?? null,
+      count,
+    });
+  }
+  return notifications;
+}
+
+function collectReadyChannel(
+  channels: Map<string, { guildId: string | null; lastMessageId: string | null }>,
+  channel: unknown,
+  guildId: string | null,
+): void {
+  if (!isObject(channel) || typeof channel.id !== "string") return;
+  channels.set(channel.id, {
+    guildId,
+    lastMessageId: typeof channel.last_message_id === "string" ? channel.last_message_id : null,
+  });
+}
+
+function initialNotificationCount(readState: Record<string, any>, latestMessageId: string | null): number {
+  if (typeof readState.mention_count === "number" && readState.mention_count > 0) {
+    return readState.mention_count;
+  }
+  if (
+    latestMessageId
+    && typeof readState.last_message_id === "string"
+    && compareSnowflakesDesc(latestMessageId, readState.last_message_id) < 0
+  ) {
+    return 1;
+  }
+  return 0;
 }
 
 function typingDisplayName(data: Record<string, any>): string {

@@ -39,6 +39,8 @@ export const cerberus: Theme = {
   selectionBg: `${ESC}48;2;74;74;74m`,
   searchBg: `${ESC}48;2;252;224;148m`,
   searchFg: `${ESC}38;2;20;20;20m`,
+  notificationBg: `${ESC}48;2;183;28;28m`,
+  notificationFg: `${ESC}38;2;255;255;255m`,
   appBg: `${ESC}48;2;20;20;20m`,
   cursorColor: "#d32f2f",
 

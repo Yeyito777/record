@@ -9,6 +9,7 @@ import type { DiscordIdentity } from "./discord";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
 import { createMemberListState, type MemberListState } from "./memberlist";
+import { createNotificationState, type NotificationState } from "./notifications";
 import { createSidebarState, type SidebarState } from "./sidebar";
 import { createTimelineState, type TimelineMessageBound, type TimelineState } from "./timeline";
 import { createTypingState, type TypingState } from "./typing";
@@ -56,6 +57,7 @@ export interface AppState {
   channelList: ChannelListState;
   timeline: TimelineState;
   typing: TypingState;
+  notifications: NotificationState;
   auth: AuthState;
   notice: Notice;
   loadingFrameIndex: number;
@@ -83,6 +85,7 @@ export function createInitialState(initialToken: string | null, path: string, in
     channelList: createChannelListState(),
     timeline: createTimelineState(),
     typing: createTypingState(),
+    notifications: createNotificationState(),
     auth: {
       status: "idle",
       user: null,

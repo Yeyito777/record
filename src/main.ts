@@ -23,8 +23,10 @@ import {
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { MEMBER_LIST_WIDTH } from "./memberlist";
+import { channelNotificationCounts } from "./notifications";
 import { render } from "./render";
 import {
+  ackCurrentChannelIfAtBottom,
   bootstrapReadOnlyClient,
   disconnectAppGateway,
   disconnectMemberListGateway,
@@ -40,8 +42,10 @@ import {
   moveSidebarSelection,
   moveSidebarSelectionToNextCategory,
   moveSidebarSelectionToNextGuild,
+  moveSidebarSelectionToNextNotification,
   moveSidebarSelectionToPrevCategory,
   moveSidebarSelectionToPrevGuild,
+  moveSidebarSelectionToPrevNotification,
   SIDEBAR_WIDTH,
 } from "./sidebar";
 import {
@@ -66,6 +70,7 @@ import {
 } from "./terminal";
 import { theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
+import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
 
@@ -234,6 +239,7 @@ function scrollTimeline(delta: number): void {
   if (delta <= 0) {
     maybeLoadOlderHistory();
   }
+  ackCurrentChannelIfAtBottom(state);
   scheduleRender();
 }
 
@@ -405,11 +411,29 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_prev_category":
-      moveSidebarSelectionToPrevCategory(state.sidebar, state.channelList.channels);
+      if (state.sidebar.expandedGuildId === DIRECT_MESSAGES_GUILD_ID) {
+        moveSidebarSelectionToPrevNotification(
+          state.sidebar,
+          state.channelList.channels,
+          channelNotificationCounts(state.notifications),
+          DIRECT_MESSAGES_GUILD_ID,
+        );
+      } else {
+        moveSidebarSelectionToPrevCategory(state.sidebar, state.channelList.channels);
+      }
       scheduleRender();
       return true;
     case "nav_next_category":
-      moveSidebarSelectionToNextCategory(state.sidebar, state.channelList.channels);
+      if (state.sidebar.expandedGuildId === DIRECT_MESSAGES_GUILD_ID) {
+        moveSidebarSelectionToNextNotification(
+          state.sidebar,
+          state.channelList.channels,
+          channelNotificationCounts(state.notifications),
+          DIRECT_MESSAGES_GUILD_ID,
+        );
+      } else {
+        moveSidebarSelectionToNextCategory(state.sidebar, state.channelList.channels);
+      }
       scheduleRender();
       return true;
     case "nav_select": {
@@ -534,6 +558,7 @@ function handlePromptFocused(key: KeyEvent): void {
 
   if (action === "scroll_bottom") {
     state.timeline.scrollOffset = state.timeline.maxScroll;
+    ackCurrentChannelIfAtBottom(state);
     scheduleRender();
     return;
   }
