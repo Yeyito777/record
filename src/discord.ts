@@ -85,6 +85,12 @@ export interface DiscordMessageReferenceResponse {
   guild_id?: string;
 }
 
+export interface DiscordStickerItemResponse {
+  id: string;
+  name: string;
+  format_type?: number;
+}
+
 export interface DiscordReferencedMessageResponse {
   id: string;
   content: string;
@@ -93,6 +99,7 @@ export interface DiscordReferencedMessageResponse {
   member?: DiscordMessageMemberResponse;
   attachments?: DiscordAttachmentResponse[];
   embeds?: unknown[];
+  sticker_items?: DiscordStickerItemResponse[];
 }
 
 export interface DiscordCallResponse {
@@ -118,6 +125,7 @@ export interface DiscordMessageResponse {
   call?: DiscordCallResponse | null;
   attachments?: DiscordAttachmentResponse[];
   embeds?: unknown[];
+  sticker_items?: DiscordStickerItemResponse[];
 }
 
 export interface DiscordIdentity {
@@ -201,6 +209,7 @@ export interface DiscordMessage {
   reply: DiscordMessageReply | null;
   call: DiscordMessageCall | null;
   attachments: DiscordMessageAttachment[];
+  stickerNames: string[];
   embedsCount: number;
   localStatus?: DiscordMessageLocalStatus;
   localError?: string;
@@ -221,6 +230,7 @@ export interface DiscordMessagePatch {
   reply?: DiscordMessageReply | null;
   call?: DiscordMessageCall | null;
   attachments?: DiscordMessageAttachment[];
+  stickerNames?: string[];
   embedsCount?: number;
 }
 
@@ -295,6 +305,7 @@ function summarizeMessageParts(
   content: string,
   attachments: Array<{ filename: string }> = [],
   embedsCount = 0,
+  stickerNames: string[] = [],
 ): string[] {
   const parts: string[] = [];
   const normalizedContent = content.replace(/\r\n?/g, "\n");
@@ -303,6 +314,9 @@ function summarizeMessageParts(
   }
   if (attachments.length > 0) {
     parts.push(`[attachments] ${attachments.map((attachment) => attachment.filename).join(", ")}`);
+  }
+  if (stickerNames.length > 0) {
+    parts.push(`[stickers] ${stickerNames.join(", ")}`);
   }
   if (embedsCount > 0) {
     parts.push(`[embeds] ${embedsCount}`);
@@ -314,8 +328,9 @@ function summarizeReplyPreview(
   content: string,
   attachments: DiscordAttachmentResponse[] = [],
   embedsCount = 0,
+  stickerNames: string[] = [],
 ): string {
-  const parts = summarizeMessageParts(content, attachments, embedsCount).map((part) => part.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const parts = summarizeMessageParts(content, attachments, embedsCount, stickerNames).map((part) => part.replace(/\s+/g, " ").trim()).filter(Boolean);
   return parts.join(" · ") || "(empty message)";
 }
 
@@ -332,6 +347,7 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
         message.referenced_message.content,
         message.referenced_message.attachments ?? [],
         message.referenced_message.embeds?.length ?? 0,
+        (message.referenced_message.sticker_items ?? []).map((sticker) => sticker.name),
       ),
     };
   }
@@ -474,6 +490,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
         call: message.call,
         attachments: message.attachments,
         embeds: message.embeds,
+        sticker_items: message.sticker_items,
       })
       : undefined,
     call: message.call === undefined
@@ -491,6 +508,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
       size: attachment.size,
       url: attachment.url,
     })),
+    stickerNames: message.sticker_items?.map((sticker) => sticker.name),
     embedsCount: message.embeds?.length,
   };
 }
@@ -510,6 +528,7 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
     reply: patch.reply !== undefined ? patch.reply : message.reply,
     call: patch.call !== undefined ? patch.call : message.call,
     attachments: patch.attachments ?? message.attachments,
+    stickerNames: patch.stickerNames ?? message.stickerNames,
     embedsCount: patch.embedsCount ?? message.embedsCount,
   };
 }
@@ -536,6 +555,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     reply: patch.reply ?? null,
     call: patch.call ?? null,
     attachments: patch.attachments ?? [],
+    stickerNames: patch.stickerNames ?? [],
     embedsCount: patch.embedsCount ?? 0,
   };
 }

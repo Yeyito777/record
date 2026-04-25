@@ -6,11 +6,13 @@ import { setTimelineMessages } from "./timeline";
 import type { DiscordMessage } from "./discord";
 
 function message(id: string, content: string): DiscordMessage {
+  const numericId = Number(id);
+  const offsetMinutes = Number.isFinite(numericId) ? numericId * 7 : 0;
   return {
     id,
     channelId: "channel-1",
     type: 0,
-    timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+    timestamp: Date.UTC(2026, 0, 1, 12, offsetMinutes, 0),
     editedTimestamp: null,
     content,
     mentionEveryone: false,
@@ -20,6 +22,7 @@ function message(id: string, content: string): DiscordMessage {
     reply: null,
     call: null,
     attachments: [],
+    stickerNames: [],
     embedsCount: 0,
   };
 }

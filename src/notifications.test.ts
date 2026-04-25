@@ -27,6 +27,7 @@ function message(overrides: Partial<DiscordMessage> = {}): DiscordMessage {
     reply: null,
     call: null,
     attachments: [],
+    stickerNames: [],
     embedsCount: 0,
     ...overrides,
   };

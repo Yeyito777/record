@@ -48,6 +48,7 @@ describe("session", () => {
       reply: null,
       call: null,
       attachments: [],
+      stickerNames: [],
       embedsCount: 0,
     }];
     state.timeline.requestId = 11;

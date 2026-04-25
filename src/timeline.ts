@@ -73,6 +73,7 @@ interface TimelineCacheState {
 }
 
 const timelineCaches = new WeakMap<TimelineState, TimelineCacheState>();
+const MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
 
 export function createTimelineState(): TimelineState {
   return {
@@ -242,7 +243,7 @@ export function prependTimelineMessages(
     return 0;
   }
 
-  const insertedRows = countRenderedMessageRows(timeline, messages, width);
+  const insertedRows = countRenderedInsertedRows(timeline, messages, width, timeline.messages[0] ?? null);
   timeline.messages = [...messages, ...timeline.messages];
   timeline.loading = false;
   timeline.loadingOlder = false;
@@ -351,11 +352,25 @@ export function renderTimelineLines(
   };
 }
 
-function countRenderedMessageRows(timeline: TimelineState, messages: DiscordMessage[], width: number): number {
+function countRenderedInsertedRows(
+  timeline: TimelineState,
+  messages: DiscordMessage[],
+  width: number,
+  firstExistingMessage: DiscordMessage | null,
+): number {
   let total = 0;
   const nowMs = Date.now();
+  let previousMessage: DiscordMessage | null = null;
+
   for (const message of messages) {
-    total += renderMessageCached(timeline, message, width, 0, nowMs).lines.length + 1;
+    const groupedWithPrevious = previousMessage ? shouldGroupMessages(previousMessage, message) : false;
+    if (previousMessage && !groupedWithPrevious) total += 1;
+    total += renderMessageCached(timeline, message, width, 0, nowMs, groupedWithPrevious).lines.length;
+    previousMessage = message;
+  }
+
+  if (previousMessage && firstExistingMessage && !shouldGroupMessages(previousMessage, firstExistingMessage)) {
+    total += 1;
   }
   return total;
 }
@@ -413,8 +428,16 @@ function getRenderedTimelineContent(
     lineAnchors.push("timeline:empty");
     wrapContinuation.push(false);
   } else {
+    let previousMessage: DiscordMessage | null = null;
     for (const message of timeline.messages) {
-      const renderedMessage = renderMessageCached(timeline, message, width, loadingFrameIndex, nowMs);
+      const groupedWithPrevious = previousMessage ? shouldGroupMessages(previousMessage, message) : false;
+      if (previousMessage && !groupedWithPrevious) {
+        lines.push("");
+        lineAnchors.push(`msg:${previousMessage.id}:gap`);
+        wrapContinuation.push(false);
+      }
+
+      const renderedMessage = renderMessageCached(timeline, message, width, loadingFrameIndex, nowMs, groupedWithPrevious);
       const start = lines.length;
       lines.push(...renderedMessage.lines);
       lineAnchors.push(...renderedMessage.lineAnchors);
@@ -426,14 +449,7 @@ function getRenderedTimelineContent(
         contentStart: start,
         contentEnd: start + renderedMessage.lines.length,
       });
-      lines.push("");
-      lineAnchors.push(`msg:${message.id}:gap`);
-      wrapContinuation.push(false);
-    }
-    while (lines.length > 0 && lines[lines.length - 1] === "") {
-      lines.pop();
-      lineAnchors.pop();
-      wrapContinuation.pop();
+      previousMessage = message;
     }
   }
 
@@ -456,16 +472,18 @@ function renderMessageCached(
   width: number,
   loadingFrameIndex: number,
   nowMs: number,
+  groupedWithPrevious = false,
 ): RenderedMessage {
   const cacheState = getTimelineCacheState(timeline);
-  const fingerprint = messageRenderFingerprint(message, loadingFrameIndex, nowMs);
-  const cached = cacheState.messageRenderCache.get(message.id);
+  const fingerprint = messageRenderFingerprint(message, loadingFrameIndex, nowMs, groupedWithPrevious);
+  const cacheKey = `${message.id}:${groupedWithPrevious ? "grouped" : "full"}`;
+  const cached = cacheState.messageRenderCache.get(cacheKey);
   if (cached && cached.width === width && cached.fingerprint === fingerprint) {
     return cached.rendered;
   }
 
-  const rendered = renderMessage(message, width, timeline.viewerId, timeline.accentViewerInDirectMessages, loadingFrameIndex, nowMs);
-  cacheState.messageRenderCache.set(message.id, { width, fingerprint, rendered });
+  const rendered = renderMessage(message, width, timeline.viewerId, timeline.accentViewerInDirectMessages, loadingFrameIndex, nowMs, groupedWithPrevious);
+  cacheState.messageRenderCache.set(cacheKey, { width, fingerprint, rendered });
   return rendered;
 }
 
@@ -476,6 +494,7 @@ function renderMessage(
   accentViewerInDirectMessages: boolean,
   loadingFrameIndex: number,
   nowMs: number,
+  groupedWithPrevious = false,
 ): RenderedMessage {
   const time = new Date(message.timestamp).toISOString().slice(11, 16);
   const author = message.author.bot
@@ -490,20 +509,24 @@ function renderMessage(
   const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${statusSuffix}${theme.reset}`;
   const replyPreview = wrapReplyPreview(message, width);
 
+  const headerLines = groupedWithPrevious ? [] : [header];
+  const headerAnchors = groupedWithPrevious ? [] : [`msg:${message.id}:header`];
+  const headerWrapContinuation = groupedWithPrevious ? [] : [false];
+
   const content = summarizeMessage(message, viewerId, loadingFrameIndex, nowMs);
   if (content === "") {
     return {
       lines: [
         ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
-        header,
+        ...headerLines,
         `${theme.dim}(empty message)${theme.reset}`,
       ],
       lineAnchors: [
         ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
-        `msg:${message.id}:header`,
+        ...headerAnchors,
         `msg:${message.id}:empty`,
       ],
-      wrapContinuation: [...replyPreview.map((line) => line.wrapContinuation), false, false],
+      wrapContinuation: [...replyPreview.map((line) => line.wrapContinuation), ...headerWrapContinuation, false],
     };
   }
 
@@ -512,23 +535,34 @@ function renderMessage(
   return {
     lines: [
       ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
-      header,
+      ...headerLines,
       ...wrappedContent.map((line) => `${message.localStatus ? theme.muted : theme.text}${line.text}${theme.reset}`),
       ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
     ],
     lineAnchors: [
       ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
-      `msg:${message.id}:header`,
+      ...headerAnchors,
       ...wrappedContent.map((line) => `msg:${message.id}:content:${line.visualIndex}`),
       ...failureLines.map((line) => `msg:${message.id}:failure:${line.visualIndex}`),
     ],
     wrapContinuation: [
       ...replyPreview.map((line) => line.wrapContinuation),
-      false,
+      ...headerWrapContinuation,
       ...wrappedContent.map((line) => line.wrapContinuation),
       ...failureLines.map((line) => line.wrapContinuation),
     ],
   };
+}
+
+function shouldGroupMessages(previous: DiscordMessage, message: DiscordMessage): boolean {
+  if (previous.channelId !== message.channelId) return false;
+  if (previous.author.id !== message.author.id) return false;
+  if (message.reply) return false;
+  if (previous.call || message.call || message.type === 3 || previous.type === 3) return false;
+  if (previous.localStatus || message.localStatus) return false;
+
+  const delta = message.timestamp - previous.timestamp;
+  return delta >= 0 && delta <= MESSAGE_GROUP_WINDOW_MS;
 }
 
 function wrapFailureMessage(message: DiscordMessage, width: number): WrappedLine[] {
@@ -551,7 +585,7 @@ function summarizeMessage(
     return summarizeCallMessage(message, viewerId, loadingFrameIndex, nowMs);
   }
 
-  return summarizeMessageParts(message.content, message.attachments, message.embedsCount).join("\n");
+  return summarizeMessageParts(message.content, message.attachments, message.embedsCount, message.stickerNames).join("\n");
 }
 
 function summarizeCallMessage(
@@ -611,6 +645,7 @@ function summarizeMessageParts(
   content: string,
   attachments: Array<{ filename: string }>,
   embedsCount: number,
+  stickerNames: string[] = [],
 ): string[] {
   const parts: string[] = [];
   const normalizedContent = content.replace(/\r\n?/g, "\n");
@@ -619,6 +654,9 @@ function summarizeMessageParts(
   }
   if (attachments.length > 0) {
     parts.push(`[attachments] ${attachments.map((attachment) => attachment.filename).join(", ")}`);
+  }
+  if (stickerNames.length > 0) {
+    parts.push(`[stickers] ${stickerNames.join(", ")}`);
   }
   if (embedsCount > 0) {
     parts.push(`[embeds] ${embedsCount}`);
@@ -757,8 +795,9 @@ function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, n
   return `${loadingFrameIndex}:${Math.floor(nowMs / 1000)}`;
 }
 
-function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: number, nowMs: number): string {
+function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: number, nowMs: number, groupedWithPrevious = false): string {
   const attachmentKey = message.attachments.map((attachment) => attachment.filename).join("\u0000");
+  const stickerKey = message.stickerNames.join("\u0000");
   const replyKey = message.reply
     ? [
       message.reply.messageId ?? "",
@@ -785,8 +824,10 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
     replyKey,
     callKey,
     attachmentKey,
+    stickerKey,
     String(message.embedsCount),
     message.localStatus ?? "",
     message.localError ?? "",
+    groupedWithPrevious ? "grouped" : "full",
   ].join("\u0001");
 }

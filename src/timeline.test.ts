@@ -45,6 +45,7 @@ function message(
     reply: options.reply ?? null,
     call: options.call ?? null,
     attachments: [],
+    stickerNames: [],
     embedsCount: 0,
   };
 }
@@ -375,6 +376,84 @@ describe("timeline rendering", () => {
     expect(stripAnsi(rendered.lines[1] ?? "")).toBe("try again");
     expect(rendered.lines[2]).toContain(theme.failure);
     expect(stripAnsi(rendered.lines[2] ?? "")).toBe("✗ Discord denied access.");
+  });
+
+  test("groups quick consecutive messages from the same author", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [
+      message("message-1", "first", {
+        authorId: "viewer",
+        authorName: "Paramount",
+        timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+      }),
+      message("message-2", "second", {
+        authorId: "viewer",
+        authorName: "Paramount",
+        timestamp: Date.UTC(2026, 0, 1, 12, 2, 0),
+      }),
+    ]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines.filter((line) => line.includes("Paramount 12:00"))).toHaveLength(1);
+    expect(plainLines).not.toContain("");
+    expect(plainLines[1]).toBe("first");
+    expect(plainLines[2]).toBe("second");
+  });
+
+  test("does not group messages from the same author after the grouping window", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [
+      message("message-1", "first", {
+        authorId: "viewer",
+        authorName: "Paramount",
+        timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+      }),
+      message("message-2", "second", {
+        authorId: "viewer",
+        authorName: "Paramount",
+        timestamp: Date.UTC(2026, 0, 1, 12, 7, 0),
+      }),
+    ]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines.some((line) => line.includes("Paramount 12:00"))).toBe(true);
+    expect(plainLines.some((line) => line.includes("Paramount 12:07"))).toBe(true);
+    expect(plainLines).toContain("");
+  });
+
+  test("renders sticker-only messages instead of empty message", () => {
+    const timeline = createTimelineState();
+    const sticker = message("message-1", "", { authorName: "Paramount" });
+    sticker.stickerNames = ["catjam"];
+    setTimelineMessages(timeline, "channel-1", [sticker]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines).not.toContain("(empty message)");
+    expect(plainLines[1]).toContain("[stickers] catjam");
   });
 
   test("renders other DM authors with deterministic colors", () => {

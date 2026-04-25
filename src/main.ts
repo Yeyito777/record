@@ -342,6 +342,7 @@ function summarizeReplyMessage(message: DiscordMessage): string {
   const content = message.content.replace(/\s+/g, " ").trim();
   if (content) return content.slice(0, 160);
   if (message.attachments.length > 0) return `[attachments] ${message.attachments.map((attachment) => attachment.filename).join(", ")}`.slice(0, 160);
+  if (message.stickerNames.length > 0) return `[stickers] ${message.stickerNames.join(", ")}`.slice(0, 160);
   if (message.embedsCount > 0) return `[embeds] ${message.embedsCount}`;
   if (message.call || message.type === 3) return "☎ Call";
   return "(empty message)";

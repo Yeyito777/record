@@ -118,6 +118,51 @@ describe("discord helpers", () => {
     });
   });
 
+  test("maps sticker-only messages and reply previews", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          sticker_items: [{ id: "sticker-1", name: "catjam", format_type: 1 }],
+          attachments: [],
+          embeds: [],
+        },
+        {
+          id: "message-2",
+          channel_id: "channel-1",
+          content: "reply body",
+          timestamp: "2026-01-01T12:01:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          message_reference: { message_id: "message-1", channel_id: "channel-1" },
+          referenced_message: {
+            id: "message-1",
+            content: "",
+            timestamp: "2026-01-01T12:00:00.000Z",
+            author: { id: "user-2", username: "alice", global_name: "Alice" },
+            sticker_items: [{ id: "sticker-1", name: "catjam", format_type: 1 }],
+            attachments: [],
+            embeds: [],
+          },
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    const stickerMessage = messages.find((message) => message.id === "message-1");
+    const replyMessage = messages.find((message) => message.id === "message-2");
+    expect(stickerMessage?.stickerNames).toEqual(["catjam"]);
+    expect(replyMessage?.reply?.summary).toBe("[stickers] catjam");
+  });
+
   test("maps Discord call payloads", async () => {
     globalThis.fetch = (async () => {
       return new Response(JSON.stringify([
@@ -163,6 +208,7 @@ describe("discord helpers", () => {
       reply: null,
       call: null,
       attachments: [],
+      stickerNames: [],
       embedsCount: 0,
     };
 

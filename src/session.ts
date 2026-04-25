@@ -943,6 +943,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
       reply: replyPreview,
       call: null,
       attachments: localAttachments,
+      stickerNames: [],
       embedsCount: 0,
       localStatus: "pending",
     });
