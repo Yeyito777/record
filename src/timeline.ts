@@ -150,8 +150,20 @@ function findMatchingPendingLocalMessageIndex(timeline: TimelineState, message: 
     && existing.channelId === message.channelId
     && existing.author.id === message.author.id
     && existing.content === message.content
-    && existing.attachments.length === 0
-    && message.attachments.length === 0);
+    && attachmentsMatchPendingLocalEcho(existing, message));
+}
+
+function attachmentsMatchPendingLocalEcho(pending: DiscordMessage, message: DiscordMessage): boolean {
+  if (pending.attachments.length !== message.attachments.length) return false;
+  if (pending.attachments.length === 0) return true;
+
+  return pending.attachments.every((attachment, index) => {
+    const echoed = message.attachments[index];
+    return Boolean(echoed)
+      && attachment.filename === echoed.filename
+      && attachment.size === echoed.size
+      && (attachment.contentType === null || echoed.contentType === null || attachment.contentType === echoed.contentType);
+  });
 }
 
 export function replaceTimelineMessage(timeline: TimelineState, localMessageId: string, message: DiscordMessage): void {

@@ -6,6 +6,7 @@
 
 import { copyToClipboard } from "./editor-clipboard";
 import { isBufferSpace, isWORDChar, isWordChar } from "./editor-chars";
+import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
 import type { KeyEvent } from "./input";
 import type { AppState } from "./state";
 import type { TimelineMessageBound } from "./timeline";
@@ -435,6 +436,142 @@ function copyHistorySelection(state: AppState): void {
   if (text) copyToClipboard(text);
 }
 
+type HistoryRange = { start: HistoryCursor; end: HistoryCursor };
+type FlatHistoryPosition = { row: number; col: number };
+
+function flattenHistoryLines(state: AppState): { text: string; positions: FlatHistoryPosition[]; cursorIndex: number } {
+  let text = "";
+  const positions: FlatHistoryPosition[] = [];
+  let cursorIndex = 0;
+
+  for (let row = 0; row < state.historyLines.length; row++) {
+    const plain = stripAnsi(state.historyLines[row] ?? "");
+    for (let col = 0; col < plain.length; col++) {
+      if (row === state.historyCursor.row && col === state.historyCursor.col) {
+        cursorIndex = text.length;
+      }
+      text += plain[col];
+      positions.push({ row, col });
+    }
+    if (row === state.historyCursor.row && state.historyCursor.col >= plain.length) {
+      cursorIndex = Math.max(0, text.length - 1);
+    }
+    if (row < state.historyLines.length - 1) {
+      const endCol = Math.max(0, plain.length - 1);
+      text += "\n";
+      positions.push({ row, col: endCol });
+    }
+  }
+
+  return { text, positions, cursorIndex };
+}
+
+function rangeFromFlatIndexes(positions: FlatHistoryPosition[], start: number, endExclusive: number): HistoryRange | null {
+  if (positions.length === 0 || start >= endExclusive) return null;
+  const startPos = positions[Math.max(0, Math.min(start, positions.length - 1))];
+  let endIndex = Math.max(start, Math.min(endExclusive - 1, positions.length - 1));
+  while (endIndex > start && positions[endIndex].row !== positions[endIndex - 1].row && positions[endIndex].col === 0) {
+    endIndex--;
+  }
+  const endPos = positions[endIndex];
+  return { start: startPos, end: endPos };
+}
+
+function findMessageBoundsAtCursor(state: AppState): TimelineMessageBound | null {
+  const row = state.historyCursor.row;
+  return state.historyMessageBounds.find((bounds) => row >= bounds.start && row < bounds.end) ?? null;
+}
+
+function rowsToHistoryRange(state: AppState, startRow: number, endRowExclusive: number, trimBlankEdges: boolean): HistoryRange | null {
+  const lines = state.historyLines;
+  let start = startRow;
+  let end = endRowExclusive;
+
+  if (trimBlankEdges) {
+    while (start < end && stripAnsi(lines[start] ?? "").trim() === "") start++;
+    while (end > start && stripAnsi(lines[end - 1] ?? "").trim() === "") end--;
+  }
+
+  if (start >= end) return null;
+  const startBounds = contentBounds(stripAnsi(lines[start] ?? ""));
+  const endBounds = contentBounds(stripAnsi(lines[end - 1] ?? ""));
+  return {
+    start: { row: start, col: startBounds.start },
+    end: { row: end - 1, col: endBounds.end },
+  };
+}
+
+function resolveMessageTextRange(state: AppState): HistoryRange | null {
+  const bounds = findMessageBoundsAtCursor(state);
+  if (!bounds) return null;
+
+  const contentRows = state.historyLineAnchors
+    .map((anchor, row) => ({ anchor, row }))
+    .filter(({ anchor, row }) => row >= bounds.start
+      && row < bounds.end
+      && anchor.startsWith(`msg:${bounds.messageId}:content:`))
+    .map(({ row }) => row);
+
+  if (contentRows.length > 0) {
+    return rowsToHistoryRange(state, contentRows[0], contentRows[contentRows.length - 1] + 1, true);
+  }
+
+  return rowsToHistoryRange(state, bounds.contentStart, bounds.contentEnd, true);
+}
+
+function resolveFullMessageRange(state: AppState): HistoryRange | null {
+  const bounds = findMessageBoundsAtCursor(state);
+  if (!bounds) return null;
+  return rowsToHistoryRange(state, bounds.start, bounds.end, false);
+}
+
+function resolveHistoryTextObject(state: AppState, modifier: "i" | "a", key: string): HistoryRange | null {
+  if (key === "m") return resolveMessageTextRange(state);
+  if (key === "M") return resolveFullMessageRange(state);
+  if (!isTextObjectKey(key)) return null;
+
+  const flat = flattenHistoryLines(state);
+  const range = resolveTextObject(modifier, key, flat.text, flat.cursorIndex);
+  if (!range) return null;
+  return rangeFromFlatIndexes(flat.positions, range.start, range.end);
+}
+
+function selectHistoryTextObject(state: AppState, modifier: "i" | "a", key: string, visibleRows: number): boolean {
+  const range = resolveHistoryTextObject(state, modifier, key);
+  resetHistoryPending(state);
+  if (!range) return true;
+
+  state.historyVisualAnchor = range.start;
+  state.historyCursor = range.end;
+  if (state.editor.mode !== "visual-line") state.editor.mode = "visual";
+  ensureHistoryCursorVisible(state, visibleRows);
+  return true;
+}
+
+function historyRangeToText(state: AppState, range: HistoryRange): string {
+  const previousAnchor = state.historyVisualAnchor;
+  const previousCursor = state.historyCursor;
+  const previousMode = state.editor.mode;
+  state.historyVisualAnchor = range.start;
+  state.historyCursor = range.end;
+  state.editor.mode = "visual";
+  const text = getHistoryVisualSelection(state);
+  state.historyVisualAnchor = previousAnchor;
+  state.historyCursor = previousCursor;
+  state.editor.mode = previousMode;
+  return text;
+}
+
+function yankHistoryTextObject(state: AppState, modifier: "i" | "a", key: string): boolean {
+  const range = resolveHistoryTextObject(state, modifier, key);
+  resetHistoryPending(state);
+  if (!range) return true;
+
+  const text = historyRangeToText(state, range);
+  if (text) copyToClipboard(text);
+  return true;
+}
+
 function applyMotion(name: string, state: AppState): boolean {
   const lines = state.historyLines;
   const wrapContinuation = state.historyWrapContinuation;
@@ -603,6 +740,15 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
   }
 
   if (isVisualMode(state)) {
+    if (state.editor.pendingTextObjectModifier) {
+      return selectHistoryTextObject(state, state.editor.pendingTextObjectModifier, key.char, visibleRows);
+    }
+
+    if (key.char === "i" || key.char === "a") {
+      state.editor.pendingTextObjectModifier = key.char;
+      return true;
+    }
+
     if ((key.char === "v" && state.editor.mode === "visual") || (key.char === "V" && state.editor.mode === "visual-line")) {
       state.editor.mode = "normal";
       resetHistoryPending(state);
@@ -623,6 +769,24 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
       return true;
     }
   } else {
+    if (state.editor.pendingOperator === "yank") {
+      if (state.editor.pendingTextObjectModifier) {
+        return yankHistoryTextObject(state, state.editor.pendingTextObjectModifier, key.char);
+      }
+      if (key.char === "i" || key.char === "a") {
+        state.editor.pendingTextObjectModifier = key.char;
+        return true;
+      }
+      if (key.char === "y") {
+        const plain = stripAnsi(lines[state.historyCursor.row] ?? "").trimEnd();
+        if (plain) copyToClipboard(plain);
+        resetHistoryPending(state);
+        return true;
+      }
+      resetHistoryPending(state);
+      return true;
+    }
+
     if (key.char === "v") {
       state.editor.mode = "visual";
       state.historyVisualAnchor = { ...state.historyCursor };
@@ -636,13 +800,9 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
       return true;
     }
     if (key.char === "y") {
-      const pending = state.editor.pendingKeys + key.char;
-      state.editor.pendingKeys = pending;
-      if (pending === "yy") {
-        const plain = stripAnsi(lines[state.historyCursor.row] ?? "").trimEnd();
-        if (plain) copyToClipboard(plain);
-        resetHistoryPending(state);
-      }
+      state.editor.pendingOperator = "yank";
+      state.editor.pendingOperatorKey = "y";
+      state.editor.pendingKeys = "y";
       return true;
     }
   }

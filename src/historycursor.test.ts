@@ -38,6 +38,85 @@ describe("history cursor", () => {
     expect(remapRenderedRow(2, oldAnchors, index)).toBe(5);
   });
 
+  test("supports quote text objects in history visual mode", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.chatFocus = "history";
+    state.historyLines = ["The \"quick brown\" fox"];
+    state.historyWrapContinuation = [false];
+    state.historyCursor = { row: 0, col: 7 };
+
+    expect(handleHistoryVimKey(state, { type: "char", char: "v" }, 3)).toBe(true);
+    expect(handleHistoryVimKey(state, { type: "char", char: "i" }, 3)).toBe(true);
+    expect(handleHistoryVimKey(state, { type: "char", char: "\"" }, 3)).toBe(true);
+
+    expect(state.editor.mode).toBe("visual");
+    expect(getHistoryVisualSelection(state)).toBe("quick brown");
+  });
+
+  test("lowercase message text object selects only message text", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.chatFocus = "history";
+    state.historyLines = [
+      "Alice 12:00",
+      "  hello there",
+      "",
+      "Bob 12:01",
+      "  later",
+    ];
+    state.historyWrapContinuation = [false, false, false, false, false];
+    state.historyLineAnchors = [
+      "msg:message-1:header",
+      "msg:message-1:content:0",
+      "msg:message-1:gap",
+      "msg:message-2:header",
+      "msg:message-2:content:0",
+    ];
+    state.historyMessageBounds = [
+      { messageId: "message-1", start: 0, end: 3, contentStart: 1, contentEnd: 2 },
+      { messageId: "message-2", start: 3, end: 5, contentStart: 4, contentEnd: 5 },
+    ];
+    state.historyCursor = { row: 1, col: 2 };
+
+    expect(handleHistoryVimKey(state, { type: "char", char: "v" }, 5)).toBe(true);
+    expect(handleHistoryVimKey(state, { type: "char", char: "i" }, 5)).toBe(true);
+    expect(handleHistoryVimKey(state, { type: "char", char: "m" }, 5)).toBe(true);
+
+    expect(state.editor.mode).toBe("visual");
+    expect(getHistoryVisualSelection(state)).toBe("hello there");
+  });
+
+  test("uppercase message text object selects the full rendered message", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.chatFocus = "history";
+    state.historyLines = [
+      "Alice 12:00",
+      "  hello there",
+      "",
+      "Bob 12:01",
+      "  later",
+    ];
+    state.historyWrapContinuation = [false, false, false, false, false];
+    state.historyLineAnchors = [
+      "msg:message-1:header",
+      "msg:message-1:content:0",
+      "msg:message-1:gap",
+      "msg:message-2:header",
+      "msg:message-2:content:0",
+    ];
+    state.historyMessageBounds = [
+      { messageId: "message-1", start: 0, end: 3, contentStart: 1, contentEnd: 2 },
+      { messageId: "message-2", start: 3, end: 5, contentStart: 4, contentEnd: 5 },
+    ];
+    state.historyCursor = { row: 1, col: 2 };
+
+    expect(handleHistoryVimKey(state, { type: "char", char: "v" }, 5)).toBe(true);
+    expect(handleHistoryVimKey(state, { type: "char", char: "i" }, 5)).toBe(true);
+    expect(handleHistoryVimKey(state, { type: "char", char: "M" }, 5)).toBe(true);
+
+    expect(state.editor.mode).toBe("visual");
+    expect(getHistoryVisualSelection(state)).toBe("Alice 12:00\nhello there\n");
+  });
+
   test("supports vim motions and visual selection in history", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.chatFocus = "history";

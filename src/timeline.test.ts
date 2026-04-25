@@ -336,6 +336,23 @@ describe("timeline rendering", () => {
     expect(timeline.messages[0]?.localStatus).toBeUndefined();
   });
 
+  test("replaces matching pending image uploads when gateway echoes the sent message", () => {
+    const timeline = createTimelineState();
+    const pending = message("local-1", "caption", { authorId: "viewer", authorName: "Paramount" });
+    pending.localStatus = "pending";
+    pending.attachments = [{ id: "local:0", filename: "image-1.png", contentType: "image/png", size: 1536, url: "" }];
+    setTimelineMessages(timeline, "channel-1", [pending]);
+
+    const echoed = message("real-1", "caption", { authorId: "viewer", authorName: "Paramount" });
+    echoed.attachments = [{ id: "attachment-1", filename: "image-1.png", contentType: "image/png", size: 1536, url: "https://cdn.example/image-1.png" }];
+    appendTimelineMessage(timeline, echoed);
+
+    expect(timeline.messages).toHaveLength(1);
+    expect(timeline.messages[0]).toMatchObject({ id: "real-1", content: "caption" });
+    expect(timeline.messages[0]?.attachments[0]?.url).toBe("https://cdn.example/image-1.png");
+    expect(timeline.messages[0]?.localStatus).toBeUndefined();
+  });
+
   test("renders failed local messages with a visible failure line", () => {
     const timeline = createTimelineState();
     const failed = message("local-1", "try again", { authorId: "viewer", authorName: "Paramount" });
