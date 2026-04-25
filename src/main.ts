@@ -307,8 +307,6 @@ function toggleMemberList(): void {
   if (state.memberList.open) {
     syncMemberListForCurrentChannel(state, { scheduleRender });
   } else {
-    state.memberList.requestId += 1;
-    disconnectMemberListGateway();
     if (state.panelFocus === "memberlist") {
       state.panelFocus = state.sidebar.open ? "sidebar" : "chat";
     }

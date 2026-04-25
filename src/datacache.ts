@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
 import { configDir } from "./config";
-import type { DiscordChannel, DiscordGuild } from "./discord";
+import type { DiscordChannel, DiscordGuild, DiscordGuildMember } from "./discord";
 import type { NotificationState } from "./notifications";
 
 interface AccountDataCache {
@@ -14,6 +14,7 @@ interface AccountDataCache {
   guilds?: DiscordGuild[];
   directMessages?: DiscordChannel[];
   guildChannels?: Record<string, DiscordChannel[]>;
+  memberLists?: Record<string, DiscordGuildMember[]>;
   notifications?: NotificationState;
 }
 
@@ -50,8 +51,9 @@ function saveCacheFile(cache: DataCacheFile): void {
 }
 
 function accountCache(cache: DataCacheFile, accountId: string): AccountDataCache {
-  cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {} };
+  cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {}, memberLists: {} };
   cache.accounts[accountId].guildChannels ??= {};
+  cache.accounts[accountId].memberLists ??= {};
   return cache.accounts[accountId];
 }
 
@@ -88,6 +90,28 @@ export function saveCachedGuildChannels(accountId: string, guildId: string, chan
   const account = accountCache(cache, accountId);
   account.guildChannels ??= {};
   account.guildChannels[guildId] = channels;
+  account.savedAt = Date.now();
+  saveCacheFile(cache);
+}
+
+function memberListCacheKey(guildId: string, channelId: string): string {
+  return `${guildId}:${channelId}`;
+}
+
+export function loadCachedMemberList(accountId: string, guildId: string, channelId: string): DiscordGuildMember[] | null {
+  return loadCacheFile().accounts[accountId]?.memberLists?.[memberListCacheKey(guildId, channelId)] ?? null;
+}
+
+export function saveCachedMemberList(
+  accountId: string,
+  guildId: string,
+  channelId: string,
+  members: DiscordGuildMember[],
+): void {
+  const cache = loadCacheFile();
+  const account = accountCache(cache, accountId);
+  account.memberLists ??= {};
+  account.memberLists[memberListCacheKey(guildId, channelId)] = members;
   account.savedAt = Date.now();
   saveCacheFile(cache);
 }

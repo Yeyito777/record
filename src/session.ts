@@ -33,13 +33,16 @@ import {
   loadCachedDirectMessages,
   loadCachedGuildChannels,
   loadCachedGuilds,
+  loadCachedMemberList,
   loadCachedNotifications,
   saveCachedDirectMessages,
   saveCachedGuildChannels,
   saveCachedGuilds,
+  saveCachedMemberList,
   saveCachedNotifications,
 } from "./datacache";
 import { AppGatewayClient } from "./appgateway";
+import { debugLog } from "./debuglog";
 import { MemberListGatewayClient } from "./membergateway";
 import {
   cacheMemberList,
@@ -84,6 +87,7 @@ interface LoadGuildChannelsOptions {
 
 const MESSAGE_PAGE_LIMIT = 50;
 const MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS = 7_000;
+const MEMBER_LIST_SUBSCRIBE_RETRIES = 2;
 
 let memberListGateway: MemberListGatewayClient | null = null;
 let memberListGatewayToken: string | null = null;
@@ -381,7 +385,10 @@ export function clearReadOnlyClient(state: AppState): void {
 }
 
 function loadMemberListPlaceholder(state: AppState, guildId: string | null, channelId: string | null): void {
-  if (!state.memberList.open) return;
+  if (!state.memberList.open) {
+    debugLog("member_list.placeholder_skipped", { guildId, channelId, reason: "sidebar_closed" });
+    return;
+  }
 
   if (!guildId) {
     setMemberListMessage(state.memberList, null, null, "No members.");
@@ -403,8 +410,13 @@ function loadMemberListPlaceholder(state: AppState, guildId: string | null, chan
     return;
   }
 
-  const cached = getCachedMemberList(state.memberList, guildId, channelId);
+  const accountId = currentAccountId(state);
+  const memoryCached = getCachedMemberList(state.memberList, guildId, channelId);
+  const diskCached = memoryCached ? null : accountId ? loadCachedMemberList(accountId, guildId, channelId) : null;
+  const cached = memoryCached ?? diskCached;
+  debugLog("member_list.placeholder_cache", { guildId, channelId, source: memoryCached ? "memory" : diskCached ? "disk" : "miss", count: cached?.length ?? 0 });
   if (cached) {
+    cacheMemberList(state.memberList, guildId, channelId, cached);
     setMemberListMembers(state.memberList, guildId, channelId, cached, state.auth.user?.id ?? null);
     return;
   }
@@ -417,73 +429,122 @@ export function syncMemberListForGuild(state: AppState, effects: SessionEffects,
 }
 
 export function syncMemberListForCurrentChannel(state: AppState, effects: SessionEffects): void {
-  if (!state.memberList.open) return;
-
-  const previousGuildId = state.memberList.guildId;
-  const previousChannelId = state.memberList.channelId;
   const token = state.auth.savedToken;
   const activeChannel = state.channelList.activeChannel;
   const guildId = activeChannel?.guildId ?? state.channelList.guildId;
   const channelId = activeChannel?.id ?? null;
   const requestId = ++state.memberList.requestId;
+  debugLog("member_list.sync", { guildId, channelId, requestId, sidebarOpen: state.memberList.open, activeChannelId: state.channelList.activeChannelId });
 
   loadMemberListPlaceholder(state, guildId, channelId);
-  effects.scheduleRender();
+  if (state.memberList.open) effects.scheduleRender();
 
   if (!token || !guildId || !channelId || guildId === DIRECT_MESSAGES_GUILD_ID) {
+    debugLog("member_list.sync_skipped", { guildId, channelId, requestId, reason: !token ? "missing_token" : !guildId ? "missing_guild" : !channelId ? "missing_channel" : "direct_messages" });
     disconnectMemberListGateway();
     return;
   }
 
-  const targetChanged = previousGuildId !== guildId || previousChannelId !== channelId;
-  if (targetChanged) {
-    disconnectMemberListGateway();
-  }
-
-  let settled = false;
-  const clearPending = (): void => {
-    settled = true;
-    clearTimeout(timeoutId);
-  };
-  const timeoutId = setTimeout(() => {
-    if (settled) return;
-    if (requestId !== state.memberList.requestId) return;
-    if (!state.memberList.open) return;
-    if (state.channelList.activeChannelId !== channelId) return;
-    if (!state.memberList.loading) return;
-    settled = true;
-    disconnectMemberListGateway();
-    setMemberListMessage(state.memberList, guildId, channelId, "Timed out waiting for member list updates.");
-    effects.scheduleRender();
-  }, MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS);
-
   const gateway = getMemberListGateway(token);
-  void gateway.subscribe(guildId, channelId, {
-    onMembers: (members) => {
+  const subscribe = (attempt: number): void => {
+    let settled = false;
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const clearPending = (): void => {
+      settled = true;
+      clearTimeout(timeoutId);
+    };
+    const isCurrentTarget = (): boolean => (
+      requestId === state.memberList.requestId
+      && state.channelList.activeChannelId === channelId
+    );
+    const retryOrTimeout = (): void => {
+      if (settled) return;
+      if (!isCurrentTarget()) {
+        debugLog("member_list.timeout_ignored", { guildId, channelId, requestId, attempt, activeChannelId: state.channelList.activeChannelId, currentRequestId: state.memberList.requestId });
+        return;
+      }
+      settled = true;
+      debugLog("member_list.timeout", { guildId, channelId, requestId, attempt });
+      if (attempt < MEMBER_LIST_SUBSCRIBE_RETRIES) {
+        debugLog("member_list.retry", { guildId, channelId, requestId, nextAttempt: attempt + 1, reason: "timeout" });
+        subscribe(attempt + 1);
+        return;
+      }
+      disconnectMemberListGateway();
+      if (state.memberList.open && state.memberList.loading) {
+        setMemberListMessage(state.memberList, guildId, channelId, "Timed out waiting for member list updates.");
+        effects.scheduleRender();
+      }
+    };
+
+    debugLog("member_list.subscribe_attempt", { guildId, channelId, requestId, attempt });
+    timeoutId = setTimeout(retryOrTimeout, MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS);
+    void gateway.subscribe(guildId, channelId, {
+      onMembers: (members) => {
+        if (settled) {
+          debugLog("member_list.members_ignored", { guildId, channelId, requestId, attempt, reason: "settled", count: members.length });
+          return;
+        }
+        clearPending();
+        if (!isCurrentTarget()) {
+          debugLog("member_list.members_ignored", { guildId, channelId, requestId, attempt, reason: "stale_target", count: members.length, activeChannelId: state.channelList.activeChannelId, currentRequestId: state.memberList.requestId });
+          return;
+        }
+        debugLog("member_list.members", { guildId, channelId, requestId, attempt, count: members.length });
+        cacheMemberList(state.memberList, guildId, channelId, members);
+        const accountId = currentAccountId(state);
+        if (accountId) saveCachedMemberList(accountId, guildId, channelId, members);
+        if (state.memberList.open) {
+          setMemberListMembers(state.memberList, guildId, channelId, members, state.auth.user?.id ?? null);
+          effects.scheduleRender();
+        }
+      },
+      onError: (error) => {
+        if (settled) {
+          debugLog("member_list.error_ignored", { guildId, channelId, requestId, attempt, reason: "settled", error: error.message });
+          return;
+        }
+        clearPending();
+        if (!isCurrentTarget()) {
+          debugLog("member_list.error_ignored", { guildId, channelId, requestId, attempt, reason: "stale_target", error: error.message, activeChannelId: state.channelList.activeChannelId, currentRequestId: state.memberList.requestId });
+          return;
+        }
+        debugLog("member_list.error", { guildId, channelId, requestId, attempt, error: error.message });
+        if (attempt < MEMBER_LIST_SUBSCRIBE_RETRIES) {
+          debugLog("member_list.retry", { guildId, channelId, requestId, nextAttempt: attempt + 1, reason: "error" });
+          subscribe(attempt + 1);
+          return;
+        }
+        if (state.memberList.open && state.memberList.loading) {
+          setMemberListMessage(state.memberList, guildId, channelId, error.message);
+          effects.scheduleRender();
+        }
+      },
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (settled) {
+        debugLog("member_list.subscribe_error_ignored", { guildId, channelId, requestId, attempt, reason: "settled", error: message });
+        return;
+      }
       clearPending();
-      if (requestId !== state.memberList.requestId) return;
-      if (!state.memberList.open) return;
-      if (state.channelList.activeChannelId !== channelId) return;
-      cacheMemberList(state.memberList, guildId, channelId, members);
-      setMemberListMembers(state.memberList, guildId, channelId, members, state.auth.user?.id ?? null);
-      effects.scheduleRender();
-    },
-    onError: (error) => {
-      clearPending();
-      if (requestId !== state.memberList.requestId) return;
-      if (!state.memberList.open) return;
-      if (state.channelList.activeChannelId !== channelId) return;
-      setMemberListMessage(state.memberList, guildId, channelId, error.message);
-      effects.scheduleRender();
-    },
-  }).catch((error) => {
-    clearPending();
-    if (requestId !== state.memberList.requestId) return;
-    if (!state.memberList.open) return;
-    if (state.channelList.activeChannelId !== channelId) return;
-    setMemberListMessage(state.memberList, guildId, channelId, error instanceof Error ? error.message : String(error));
-    effects.scheduleRender();
-  });
+      if (!isCurrentTarget()) {
+        debugLog("member_list.subscribe_error_ignored", { guildId, channelId, requestId, attempt, reason: "stale_target", error: message, activeChannelId: state.channelList.activeChannelId, currentRequestId: state.memberList.requestId });
+        return;
+      }
+      debugLog("member_list.subscribe_error", { guildId, channelId, requestId, attempt, error: message });
+      if (attempt < MEMBER_LIST_SUBSCRIBE_RETRIES) {
+        debugLog("member_list.retry", { guildId, channelId, requestId, nextAttempt: attempt + 1, reason: "subscribe_error" });
+        subscribe(attempt + 1);
+        return;
+      }
+      if (state.memberList.open && state.memberList.loading) {
+        setMemberListMessage(state.memberList, guildId, channelId, message);
+        effects.scheduleRender();
+      }
+    });
+  };
+
+  subscribe(0);
 }
 
 export async function bootstrapReadOnlyClient(
@@ -636,7 +697,6 @@ export async function loadGuildChannels(
     }
 
     if (!options.openFirstChannel) {
-      syncMemberListForCurrentChannel(state, effects);
       effects.scheduleRender();
       return;
     }
@@ -645,7 +705,6 @@ export async function loadGuildChannels(
       ?? findFirstBrowsableChannel(channels);
     if (!channel) {
       clearTimeline(state.timeline);
-      syncMemberListForCurrentChannel(state, effects);
       setNotice(state, isDirectMessages ? "No direct messages available." : `No readable channels in ${guildName}.`, "warning");
       effects.scheduleRender();
       return;

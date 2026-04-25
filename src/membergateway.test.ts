@@ -96,6 +96,67 @@ describe("member gateway member-list ops", () => {
     expect(errors).toBe(0);
   });
 
+  test("replays existing guild rows when switching channels in the same guild", async () => {
+    const client = new MemberListGatewayClient("token") as any;
+    const seen: unknown[] = [];
+    const sent: Array<[string, string]> = [];
+
+    client.ready = true;
+    client.ws = { readyState: WebSocket.OPEN, send: () => {} };
+    client.ensureConnected = async () => {};
+    client.sendSubscription = (guildId: string, channelId: string) => {
+      sent.push([guildId, channelId]);
+    };
+    client.subscription = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      listId: "everyone",
+      waitingForSync: false,
+      rows: [{ type: "member", member: { id: "1", username: "alpha", displayName: "Alpha", bot: false } }],
+      onMembers: () => {},
+      onError: () => {},
+    };
+
+    await client.subscribe("guild-1", "channel-2", {
+      onMembers: (members: unknown) => { seen.push(members); },
+      onError: () => {},
+    });
+
+    expect(seen).toEqual([[{ id: "1", username: "alpha", displayName: "Alpha", bot: false }]]);
+    expect(client.subscription.channelId).toBe("channel-2");
+    expect(client.subscription.listId).toBe("everyone");
+    expect(client.subscription.waitingForSync).toBe(false);
+    expect(sent).toEqual([["guild-1", "channel-2"]]);
+  });
+
+  test("accepts a fresh sync with a new list id after replaying same-guild rows", async () => {
+    const client = new MemberListGatewayClient("token") as any;
+    const seen: unknown[] = [];
+
+    client.subscription = {
+      guildId: "guild-1",
+      channelId: "channel-2",
+      listId: "everyone",
+      waitingForSync: false,
+      rows: [{ type: "member", member: { id: "1", username: "alpha", displayName: "Alpha", bot: false } }],
+      onMembers: (members: unknown) => { seen.push(members); },
+      onError: () => {},
+    };
+
+    client.handleMemberListUpdate({
+      guild_id: "guild-1",
+      id: "restricted",
+      ops: [{
+        op: "SYNC",
+        range: [0, 99],
+        items: [{ member: { user: { id: "2", username: "bravo", global_name: "Bravo" }, nick: null } }],
+      }],
+    });
+
+    expect(client.subscription.listId).toBe("restricted");
+    expect(seen).toEqual([[{ id: "2", username: "bravo", displayName: "Bravo", bot: false }]]);
+  });
+
   test("reconnect resets sync state and resubscribes the active target", async () => {
     const client = new MemberListGatewayClient("token") as any;
     const subscription = {

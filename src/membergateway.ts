@@ -11,6 +11,7 @@
 
 import { release } from "os";
 
+import { debugLog } from "./debuglog";
 import type { DiscordGuildMember } from "./discord";
 
 const API_BASE = "https://discord.com/api/v9";
@@ -59,23 +60,36 @@ export class MemberListGatewayClient {
   constructor(private readonly token: string) {}
 
   async subscribe(guildId: string, channelId: string, callbacks: MemberListCallbacks): Promise<void> {
+    debugLog("member_gateway.subscribe", { guildId, channelId, ready: this.ready, hasSocket: Boolean(this.ws), socketState: this.ws?.readyState ?? null });
     const current = this.subscription;
     if (current && current.guildId === guildId && current.channelId === channelId) {
       current.onMembers = callbacks.onMembers;
       current.onError = callbacks.onError;
       if (current.listId) {
+        debugLog("member_gateway.cache_replay", { guildId, channelId, listId: current.listId, rows: current.rows.length });
         callbacks.onMembers(extractGatewayMembers(current.rows));
         return;
       }
     } else {
+      const canReplayGuildRows = current?.guildId === guildId && current.rows.length > 0;
+      debugLog("member_gateway.subscription_target", {
+        guildId,
+        channelId,
+        previousGuildId: current?.guildId ?? null,
+        previousChannelId: current?.channelId ?? null,
+        replayRows: canReplayGuildRows ? current.rows.length : 0,
+      });
       this.subscription = {
         guildId,
         channelId,
-        listId: null,
-        waitingForSync: true,
-        rows: [],
+        listId: canReplayGuildRows ? current.listId : null,
+        waitingForSync: !canReplayGuildRows,
+        rows: canReplayGuildRows ? current.rows : [],
         ...callbacks,
       };
+      if (canReplayGuildRows) {
+        callbacks.onMembers(extractGatewayMembers(current.rows));
+      }
     }
 
     await this.ensureConnected();
@@ -83,6 +97,7 @@ export class MemberListGatewayClient {
   }
 
   disconnect(): void {
+    debugLog("member_gateway.disconnect", { guildId: this.subscription?.guildId ?? null, channelId: this.subscription?.channelId ?? null });
     this.subscription = null;
     this.closeSocket(true);
   }
@@ -108,6 +123,7 @@ export class MemberListGatewayClient {
     }
 
     const gatewayUrl = `${this.gatewayUrl}/?v=${GATEWAY_VERSION}&encoding=json`;
+    debugLog("member_gateway.connect", { gatewayUrl: this.gatewayUrl });
 
     await new Promise<void>((resolve, reject) => {
       this.ready = false;
@@ -136,6 +152,7 @@ export class MemberListGatewayClient {
     }
 
     if (payload.op === 10) {
+      debugLog("member_gateway.hello");
       const interval = parseHeartbeatInterval(payload.d);
       if (!interval) {
         this.failConnection(new Error("Discord gateway did not provide a heartbeat interval."));
@@ -164,11 +181,13 @@ export class MemberListGatewayClient {
     }
 
     if (payload.op === 7 || payload.op === 9) {
+      debugLog("member_gateway.reconnect_requested", { op: payload.op });
       void this.reconnect();
       return;
     }
 
     if (payload.t === "READY") {
+      debugLog("member_gateway.ready");
       this.ready = true;
       this.readyResolve?.();
       this.readyResolve = null;
@@ -182,6 +201,7 @@ export class MemberListGatewayClient {
   };
 
   private handleClose = (event: CloseEvent): void => {
+    debugLog("member_gateway.close", { code: event.code, reason: event.reason || null, manualDisconnect: this.manualDisconnect, wasReady: this.ready });
     const error = new Error(
       event.reason
         ? `Discord member list gateway closed: ${event.reason}`
@@ -199,6 +219,7 @@ export class MemberListGatewayClient {
   };
 
   private handleError = (): void => {
+    debugLog("member_gateway.error", { ready: this.ready });
     if (!this.ready) {
       this.readyReject?.(new Error("Could not connect to the Discord member list gateway."));
       this.readyResolve = null;
@@ -208,28 +229,59 @@ export class MemberListGatewayClient {
 
   private handleMemberListUpdate(data: unknown): void {
     const subscription = this.subscription;
-    if (!subscription || !isObject(data)) return;
+    if (!subscription) {
+      debugLog("member_gateway.update_ignored", { reason: "no_subscription", summary: summarizeMemberListUpdate(data) });
+      return;
+    }
+    if (!isObject(data)) {
+      debugLog("member_gateway.update_ignored", { reason: "malformed", guildId: subscription.guildId, channelId: subscription.channelId });
+      return;
+    }
 
     const guildId = typeof data.guild_id === "string" ? data.guild_id : null;
-    if (!guildId || guildId !== subscription.guildId) return;
+    if (!guildId || guildId !== subscription.guildId) {
+      debugLog("member_gateway.update_ignored", { reason: "guild_mismatch", expectedGuildId: subscription.guildId, actualGuildId: guildId, channelId: subscription.channelId, summary: summarizeMemberListUpdate(data) });
+      return;
+    }
 
     const listId = typeof data.id === "string" ? data.id : null;
     const ops = Array.isArray(data.ops) ? data.ops : [];
     const hasInitialSync = ops.some(isInitialSyncOp);
+    debugLog("member_gateway.update", { guildId, channelId: subscription.channelId, listId, waitingForSync: subscription.waitingForSync, hasInitialSync, rowsBefore: subscription.rows.length, ops: summarizeMemberListOps(ops) });
 
     if (subscription.waitingForSync) {
-      if (!hasInitialSync || !listId) return;
+      if (!hasInitialSync || !listId) {
+        debugLog("member_gateway.update_ignored", { reason: !listId ? "missing_list_id" : "waiting_for_initial_sync", guildId, channelId: subscription.channelId, listId, ops: summarizeMemberListOps(ops) });
+        return;
+      }
       subscription.listId = listId;
       subscription.waitingForSync = false;
       subscription.rows = applyGatewayMemberListOps([], ops);
-      subscription.onMembers(extractGatewayMembers(subscription.rows));
+      const members = extractGatewayMembers(subscription.rows);
+      debugLog("member_gateway.members", { guildId, channelId: subscription.channelId, listId, rows: subscription.rows.length, members: members.length, initial: true });
+      subscription.onMembers(members);
       return;
     }
 
-    if (!listId || subscription.listId !== listId) return;
+    if (listId && subscription.listId !== listId && hasInitialSync) {
+      debugLog("member_gateway.list_replaced", { guildId, channelId: subscription.channelId, previousListId: subscription.listId, nextListId: listId });
+      subscription.listId = listId;
+      subscription.rows = applyGatewayMemberListOps([], ops);
+      const members = extractGatewayMembers(subscription.rows);
+      debugLog("member_gateway.members", { guildId, channelId: subscription.channelId, listId, rows: subscription.rows.length, members: members.length, initial: true });
+      subscription.onMembers(members);
+      return;
+    }
+
+    if (!listId || subscription.listId !== listId) {
+      debugLog("member_gateway.update_ignored", { reason: !listId ? "missing_list_id" : "list_id_mismatch", guildId, channelId: subscription.channelId, expectedListId: subscription.listId, actualListId: listId, ops: summarizeMemberListOps(ops) });
+      return;
+    }
 
     subscription.rows = applyGatewayMemberListOps(subscription.rows, ops);
-    subscription.onMembers(extractGatewayMembers(subscription.rows));
+    const members = extractGatewayMembers(subscription.rows);
+    debugLog("member_gateway.members", { guildId, channelId: subscription.channelId, listId, rows: subscription.rows.length, members: members.length, initial: false });
+    subscription.onMembers(members);
   }
 
   private startHeartbeat(intervalMs: number): void {
@@ -243,7 +295,11 @@ export class MemberListGatewayClient {
   }
 
   private sendSubscription(guildId: string, channelId: string): void {
-    if (!this.ready) return;
+    if (!this.ready) {
+      debugLog("member_gateway.subscribe_skipped", { guildId, channelId, reason: "not_ready" });
+      return;
+    }
+    debugLog("member_gateway.send_subscription", { guildId, channelId, range: [0, 99] });
     this.send({
       op: 37,
       d: {
@@ -262,13 +318,17 @@ export class MemberListGatewayClient {
   }
 
   private send(payload: unknown): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      debugLog("member_gateway.send_skipped", { socketState: this.ws?.readyState ?? null });
+      return;
+    }
     this.ws.send(JSON.stringify(payload));
   }
 
   private async reconnect(): Promise<void> {
     const subscription = this.subscription;
     if (!subscription) return;
+    debugLog("member_gateway.reconnect", { guildId: subscription.guildId, channelId: subscription.channelId });
     if (this.reconnectPromise) return this.reconnectPromise;
 
     this.reconnectPromise = (async () => {
@@ -296,6 +356,7 @@ export class MemberListGatewayClient {
   }
 
   private failConnection(error: Error): void {
+    debugLog("member_gateway.fail_connection", { error: error.message });
     this.readyReject?.(error);
     this.readyResolve = null;
     this.readyReject = null;
@@ -455,6 +516,33 @@ function isInitialSyncOp(op: unknown): boolean {
     && op.op === "SYNC"
     && Array.isArray(op.range)
     && op.range[0] === 0;
+}
+
+function summarizeMemberListUpdate(data: unknown): Record<string, unknown> | null {
+  if (!isObject(data)) return null;
+  return {
+    guildId: typeof data.guild_id === "string" ? data.guild_id : null,
+    id: typeof data.id === "string" ? data.id : null,
+    ops: Array.isArray(data.ops) ? summarizeMemberListOps(data.ops) : [],
+  };
+}
+
+function summarizeMemberListOps(ops: unknown[]): Record<string, unknown>[] {
+  return ops.map((op) => {
+    if (!isObject(op)) return { op: "malformed" };
+    const summary: Record<string, unknown> = { op: typeof op.op === "string" ? op.op : "unknown" };
+    if (Array.isArray(op.range)) summary.range = op.range.slice(0, 2);
+    if (typeof op.index === "number") summary.index = op.index;
+    if (Array.isArray(op.items)) {
+      summary.items = op.items.length;
+      summary.memberItems = op.items.filter((item) => isObject(item) && isObject(item.member)).length;
+      summary.groupItems = op.items.filter((item) => isObject(item) && isObject(item.group)).length;
+    }
+    if (isObject(op.item)) {
+      summary.item = isObject(op.item.member) ? "member" : isObject(op.item.group) ? "group" : "unknown";
+    }
+    return summary;
+  });
 }
 
 function parseHeartbeatInterval(data: unknown): number | null {
