@@ -61,4 +61,9 @@ describe("keybinds", () => {
   test("navigation m toggles guild mute", () => {
     expect(resolveAction({ type: "char", char: "m" }, "navigation")).toBe("nav_toggle_guild_mute");
   });
+
+  test("ctrl brackets jump between notifications globally", () => {
+    expect(resolveAction({ type: "ctrl-left-bracket" })).toBe("notification_prev");
+    expect(resolveAction({ type: "ctrl-right-bracket" })).toBe("notification_next");
+  });
 });

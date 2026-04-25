@@ -29,7 +29,9 @@ export type Action =
   | "nav_next_server"
   | "nav_prev_category"
   | "nav_next_category"
-  | "nav_toggle_guild_mute";
+  | "nav_toggle_guild_mute"
+  | "notification_prev"
+  | "notification_next";
 
 const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-b": "scroll_page_up",
@@ -43,6 +45,8 @@ const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-n": "focus_history",
   "ctrl-s": "sidebar_toggle",
   "ctrl-semicolon": "member_list_toggle",
+  "ctrl-left-bracket": "notification_prev",
+  "ctrl-right-bracket": "notification_next",
   "ctrl-u": "scroll_half_up",
   "ctrl-y": "scroll_line_up",
 };

@@ -32,10 +32,16 @@ describe("input parser", () => {
     expect(parseInput(String.fromCharCode(18))).toEqual([{ type: "ctrl-r" }]);
   });
 
+  test("parses Ctrl+] from raw control byte", () => {
+    expect(parseInput(String.fromCharCode(29))).toEqual([{ type: "ctrl-right-bracket" }]);
+  });
+
   test("parses kitty CSI-u control sequences", () => {
     expect(parseInput("\x1b[98;5u")).toEqual([{ type: "ctrl-b" }]);
     expect(parseInput("\x1b[109;5u")).toEqual([{ type: "ctrl-m" }]);
     expect(parseInput("\x1b[59;5u")).toEqual([{ type: "ctrl-semicolon" }]);
+    expect(parseInput("\x1b[91;5u")).toEqual([{ type: "ctrl-left-bracket" }]);
+    expect(parseInput("\x1b[93;5u")).toEqual([{ type: "ctrl-right-bracket" }]);
     expect(parseInput("\x1b[121;5u")).toEqual([{ type: "ctrl-y" }]);
   });
 

@@ -7,11 +7,13 @@ import {
   createSidebarState,
   moveSidebarSelection,
   moveSidebarSelectionToNextCategory,
+  moveSidebarSelectionToNextAnyNotification,
+  moveSidebarSelectionToNextDirectMessage,
   moveSidebarSelectionToNextGuild,
-  moveSidebarSelectionToNextNotification,
+  moveSidebarSelectionToPrevAnyNotification,
   moveSidebarSelectionToPrevCategory,
+  moveSidebarSelectionToPrevDirectMessage,
   moveSidebarSelectionToPrevGuild,
-  moveSidebarSelectionToPrevNotification,
   renderSidebar,
   setSidebarGuilds,
   SIDEBAR_WIDTH,
@@ -195,7 +197,32 @@ describe("sidebar state", () => {
     expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("cat-1");
   });
 
-  test("jumps between notified direct messages with bracket motions", () => {
+  test("jumps between notified guilds and visible channels globally", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: "guild-1", name: "Guild 1", icon: null },
+      { id: "guild-2", name: "Guild 2", icon: null },
+    ]);
+    sidebar.expandedGuildId = "guild-1";
+    const channels = [
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "one", topic: null, position: 0, type: 0, nsfw: false },
+      { id: "channel-2", guildId: "guild-1", parentId: null, name: "two", topic: null, position: 1, type: 0, nsfw: false },
+    ];
+    const channelNotifications = new Map([["channel-2", 1]]);
+    const guildNotifications = new Map([["guild-2", 2]]);
+
+    sidebar.selectedIndex = 0;
+    moveSidebarSelectionToNextAnyNotification(sidebar, channels, channelNotifications, guildNotifications);
+    expect(buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", channelNotifications, guildNotifications)[sidebar.selectedIndex]?.id).toBe("channel-2");
+
+    moveSidebarSelectionToNextAnyNotification(sidebar, channels, channelNotifications, guildNotifications);
+    expect(buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", channelNotifications, guildNotifications)[sidebar.selectedIndex]?.id).toBe("guild-2");
+
+    moveSidebarSelectionToPrevAnyNotification(sidebar, channels, channelNotifications, guildNotifications);
+    expect(buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", channelNotifications, guildNotifications)[sidebar.selectedIndex]?.id).toBe("channel-2");
+  });
+
+  test("jumps between direct messages with bracket motions", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
     sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
@@ -204,19 +231,20 @@ describe("sidebar state", () => {
       { id: "dm-2", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Beta", topic: null, position: 1, type: 1, nsfw: false },
       { id: "dm-3", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Gamma", topic: null, position: 2, type: 1, nsfw: false },
     ];
-    const notifications = new Map([["dm-2", 1], ["dm-3", 2]]);
-
     sidebar.selectedIndex = 0;
-    moveSidebarSelectionToNextNotification(sidebar, channels, notifications, DIRECT_MESSAGES_GUILD_ID);
+    moveSidebarSelectionToNextDirectMessage(sidebar, channels);
+    expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-1");
+
+    moveSidebarSelectionToNextDirectMessage(sidebar, channels);
     expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-2");
 
-    moveSidebarSelectionToNextNotification(sidebar, channels, notifications, DIRECT_MESSAGES_GUILD_ID);
+    moveSidebarSelectionToNextDirectMessage(sidebar, channels);
     expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-3");
 
-    moveSidebarSelectionToNextNotification(sidebar, channels, notifications, DIRECT_MESSAGES_GUILD_ID);
-    expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-2");
+    moveSidebarSelectionToNextDirectMessage(sidebar, channels);
+    expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-1");
 
-    moveSidebarSelectionToPrevNotification(sidebar, channels, notifications, DIRECT_MESSAGES_GUILD_ID);
+    moveSidebarSelectionToPrevDirectMessage(sidebar, channels);
     expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-3");
   });
 

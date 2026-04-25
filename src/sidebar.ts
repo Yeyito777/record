@@ -311,28 +311,35 @@ export function moveSidebarSelectionToNextCategory(sidebar: SidebarState, channe
   jumpSidebarSelectionToKind(sidebar, channels, "category", 1);
 }
 
-export function moveSidebarSelectionToPrevNotification(
-  sidebar: SidebarState,
-  channels: DiscordChannel[],
-  notificationCounts: ReadonlyMap<string, number>,
-  guildId: string,
-): void {
-  jumpSidebarSelectionToNotification(sidebar, channels, notificationCounts, guildId, -1);
+export function moveSidebarSelectionToPrevDirectMessage(sidebar: SidebarState, channels: DiscordChannel[]): void {
+  jumpSidebarSelectionToGuildChannel(sidebar, channels, DIRECT_MESSAGES_GUILD_ID, -1);
 }
 
-export function moveSidebarSelectionToNextNotification(
-  sidebar: SidebarState,
-  channels: DiscordChannel[],
-  notificationCounts: ReadonlyMap<string, number>,
-  guildId: string,
-): void {
-  jumpSidebarSelectionToNotification(sidebar, channels, notificationCounts, guildId, 1);
+export function moveSidebarSelectionToNextDirectMessage(sidebar: SidebarState, channels: DiscordChannel[]): void {
+  jumpSidebarSelectionToGuildChannel(sidebar, channels, DIRECT_MESSAGES_GUILD_ID, 1);
 }
 
-function jumpSidebarSelectionToNotification(
+export function moveSidebarSelectionToPrevAnyNotification(
   sidebar: SidebarState,
   channels: DiscordChannel[],
-  notificationCounts: ReadonlyMap<string, number>,
+  channelNotificationCounts: ReadonlyMap<string, number>,
+  guildNotificationCounts: ReadonlyMap<string, number>,
+): void {
+  jumpSidebarSelectionToAnyNotification(sidebar, channels, channelNotificationCounts, guildNotificationCounts, -1);
+}
+
+export function moveSidebarSelectionToNextAnyNotification(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  channelNotificationCounts: ReadonlyMap<string, number>,
+  guildNotificationCounts: ReadonlyMap<string, number>,
+): void {
+  jumpSidebarSelectionToAnyNotification(sidebar, channels, channelNotificationCounts, guildNotificationCounts, 1);
+}
+
+function jumpSidebarSelectionToGuildChannel(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
   guildId: string,
   direction: -1 | 1,
 ): void {
@@ -344,9 +351,44 @@ function jumpSidebarSelectionToNotification(
 
   const candidates = entries
     .map((entry, index) => ({ entry, index }))
-    .filter(({ entry }) => entry.kind === "channel"
-      && entry.guildId === guildId
-      && (notificationCounts.get(entry.id) ?? 0) > 0)
+    .filter(({ entry }) => entry.kind === "channel" && entry.guildId === guildId)
+    .map(({ index }) => index);
+  if (candidates.length === 0) return;
+
+  const currentIndex = clampSelectedIndex(sidebar, entries);
+  const nextIndex = direction > 0
+    ? candidates.find((index) => index > currentIndex) ?? candidates[0]
+    : candidates.findLast((index) => index < currentIndex) ?? candidates[candidates.length - 1];
+  if (nextIndex !== undefined) {
+    sidebar.selectedIndex = nextIndex;
+  }
+}
+
+function jumpSidebarSelectionToAnyNotification(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  channelNotificationCounts: ReadonlyMap<string, number>,
+  guildNotificationCounts: ReadonlyMap<string, number>,
+  direction: -1 | 1,
+): void {
+  const entries = buildSidebarEntries(
+    sidebar,
+    channels,
+    0,
+    new Set(),
+    "⋯",
+    channelNotificationCounts,
+    guildNotificationCounts,
+  );
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    return;
+  }
+
+  const candidates = entries
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => (entry.kind === "guild" || entry.kind === "channel")
+      && (entry.notificationCount ?? 0) > 0)
     .map(({ index }) => index);
   if (candidates.length === 0) return;
 

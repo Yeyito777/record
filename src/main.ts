@@ -23,7 +23,7 @@ import {
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { MEMBER_LIST_WIDTH, moveMemberListSelection } from "./memberlist";
-import { channelNotificationCounts } from "./notifications";
+import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { render } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
@@ -41,12 +41,14 @@ import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
   moveSidebarSelection,
+  moveSidebarSelectionToNextAnyNotification,
   moveSidebarSelectionToNextCategory,
+  moveSidebarSelectionToNextDirectMessage,
   moveSidebarSelectionToNextGuild,
-  moveSidebarSelectionToNextNotification,
+  moveSidebarSelectionToPrevAnyNotification,
   moveSidebarSelectionToPrevCategory,
+  moveSidebarSelectionToPrevDirectMessage,
   moveSidebarSelectionToPrevGuild,
-  moveSidebarSelectionToPrevNotification,
   SIDEBAR_WIDTH,
 } from "./sidebar";
 import {
@@ -290,6 +292,19 @@ function scrollFocusedPanelLine(delta: number): void {
   scrollTimeline(delta);
 }
 
+function jumpToNotification(direction: -1 | 1): void {
+  if (!state.sidebar.open) state.sidebar.open = true;
+  focusSidebar(state);
+  const channelCounts = channelNotificationCounts(state.notifications);
+  const guildCounts = guildNotificationCounts(state.notifications, state.channelList.channels);
+  if (direction < 0) {
+    moveSidebarSelectionToPrevAnyNotification(state.sidebar, state.channelList.channels, channelCounts, guildCounts);
+  } else {
+    moveSidebarSelectionToNextAnyNotification(state.sidebar, state.channelList.channels, channelCounts, guildCounts);
+  }
+  scheduleRender();
+}
+
 function toggleSidebar(): void {
   state.sidebar.open = !state.sidebar.open;
 
@@ -383,6 +398,12 @@ function handleGlobalAction(key: KeyEvent): boolean {
     case "scroll_page_down":
       scrollFocusedPanel(timelinePageSize(), timelinePageSize());
       return true;
+    case "notification_prev":
+      jumpToNotification(-1);
+      return true;
+    case "notification_next":
+      jumpToNotification(1);
+      return true;
     case "sidebar_next":
     case "sidebar_prev": {
       if (isPromptTyping()) return false;
@@ -424,12 +445,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     case "nav_prev_category":
       if (state.sidebar.expandedGuildId === DIRECT_MESSAGES_GUILD_ID) {
-        moveSidebarSelectionToPrevNotification(
-          state.sidebar,
-          state.channelList.channels,
-          channelNotificationCounts(state.notifications),
-          DIRECT_MESSAGES_GUILD_ID,
-        );
+        moveSidebarSelectionToPrevDirectMessage(state.sidebar, state.channelList.channels);
       } else {
         moveSidebarSelectionToPrevCategory(state.sidebar, state.channelList.channels);
       }
@@ -437,12 +453,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     case "nav_next_category":
       if (state.sidebar.expandedGuildId === DIRECT_MESSAGES_GUILD_ID) {
-        moveSidebarSelectionToNextNotification(
-          state.sidebar,
-          state.channelList.channels,
-          channelNotificationCounts(state.notifications),
-          DIRECT_MESSAGES_GUILD_ID,
-        );
+        moveSidebarSelectionToNextDirectMessage(state.sidebar, state.channelList.channels);
       } else {
         moveSidebarSelectionToNextCategory(state.sidebar, state.channelList.channels);
       }
