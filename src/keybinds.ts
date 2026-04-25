@@ -7,6 +7,7 @@
 import type { KeyEvent } from "./input";
 
 export type Action =
+  | "cancel_action"
   | "quit"
   | "sidebar_toggle"
   | "focus_cycle_next"
@@ -31,7 +32,8 @@ export type Action =
   | "nav_next_category"
   | "nav_toggle_guild_mute"
   | "notification_prev"
-  | "notification_next";
+  | "notification_next"
+  | "reply_toggle";
 
 const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-b": "scroll_page_up",
@@ -43,6 +45,8 @@ const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-k": "focus_cycle_prev",
   "ctrl-m": "sidebar_toggle",
   "ctrl-n": "focus_history",
+  "ctrl-q": "cancel_action",
+  "ctrl-r": "reply_toggle",
   "ctrl-s": "sidebar_toggle",
   "ctrl-semicolon": "member_list_toggle",
   "ctrl-left-bracket": "notification_prev",

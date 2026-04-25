@@ -206,6 +206,70 @@ describe("discord helpers", () => {
     expect(message.content).toBe("hello world");
   });
 
+  test("posts reply metadata when sending a reply", async () => {
+    let requestedBody = "";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({
+        id: "message-2",
+        channel_id: "channel-1",
+        guild_id: "guild-1",
+        type: 0,
+        content: "hello reply",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        attachments: [],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await sendChannelMessage("token", "channel-1", "hello reply", {
+      reply: { messageId: "message-1", channelId: "channel-1", guildId: "guild-1", mention: false },
+    });
+
+    expect(JSON.parse(requestedBody)).toEqual({
+      content: "hello reply",
+      tts: false,
+      message_reference: {
+        message_id: "message-1",
+        channel_id: "channel-1",
+        guild_id: "guild-1",
+      },
+      allowed_mentions: {
+        parse: ["users", "roles", "everyone"],
+        replied_user: false,
+      },
+    });
+  });
+
+  test("omits guild_id when sending a direct-message reply", async () => {
+    let requestedBody = "";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({
+        id: "message-2",
+        channel_id: "dm-1",
+        type: 0,
+        content: "hello dm reply",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        attachments: [],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await sendChannelMessage("token", "dm-1", "hello dm reply", {
+      reply: { messageId: "message-1", channelId: "dm-1", guildId: null, mention: true },
+    });
+
+    expect(JSON.parse(requestedBody).message_reference).toEqual({
+      message_id: "message-1",
+      channel_id: "dm-1",
+    });
+  });
+
   test("mutes and unmutes guilds through user guild settings", async () => {
     const requests: Array<{ url: string; body: any }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

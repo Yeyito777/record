@@ -302,7 +302,7 @@ describe("timeline rendering", () => {
     expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00");
   });
 
-  test("renders pending local messages dimmed", () => {
+  test("renders pending local messages muted", () => {
     const timeline = createTimelineState();
     const pending = message("local-1", "sending now", { authorId: "viewer", authorName: "Paramount" });
     pending.localStatus = "pending";
@@ -319,7 +319,7 @@ describe("timeline rendering", () => {
 
     expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00");
     expect(stripAnsi(rendered.lines[0] ?? "")).not.toContain("sending");
-    expect(rendered.lines[1]).toContain(theme.dim);
+    expect(rendered.lines[1]).toContain(theme.muted);
     expect(stripAnsi(rendered.lines[1] ?? "")).toBe("sending now");
   });
 
@@ -353,6 +353,9 @@ describe("timeline rendering", () => {
     );
 
     expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00 failed");
+    expect(rendered.lines[0]).toContain(theme.error);
+    expect(rendered.lines[1]).toContain(theme.muted);
+    expect(stripAnsi(rendered.lines[1] ?? "")).toBe("try again");
     expect(rendered.lines[2]).toContain(theme.failure);
     expect(stripAnsi(rendered.lines[2] ?? "")).toBe("✗ Discord denied access.");
   });

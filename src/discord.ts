@@ -552,10 +552,43 @@ export async function fetchChannelMessages(
   return messages.map(mapDiscordMessage).reverse();
 }
 
-export async function sendChannelMessage(token: string, channelId: string, content: string): Promise<DiscordMessage> {
+export interface SendMessageReplyOptions {
+  messageId: string;
+  channelId: string;
+  guildId?: string | null;
+  mention?: boolean;
+}
+
+export interface SendMessageOptions {
+  reply?: SendMessageReplyOptions | null;
+}
+
+export async function sendChannelMessage(
+  token: string,
+  channelId: string,
+  content: string,
+  options: SendMessageOptions = {},
+): Promise<DiscordMessage> {
+  const body: Record<string, unknown> = { content, tts: false };
+  const reply = options.reply;
+  if (reply) {
+    const reference: Record<string, string> = {
+      message_id: reply.messageId,
+      channel_id: reply.channelId,
+    };
+    if (reply.guildId) reference.guild_id = reply.guildId;
+    body.message_reference = reference;
+    if (reply.mention === false) {
+      body.allowed_mentions = {
+        parse: ["users", "roles", "everyone"],
+        replied_user: false,
+      };
+    }
+  }
+
   const message = await requestJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, tts: false }),
+    body: JSON.stringify(body),
   });
   return mapDiscordMessage(message);
 }

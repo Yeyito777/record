@@ -22,6 +22,7 @@ export interface TimelineState {
 }
 
 export interface TimelineMessageBound {
+  messageId: string;
   start: number;
   end: number;
   contentStart: number;
@@ -363,6 +364,7 @@ function appendRenderedTimelineContent(
     return;
   }
   messageBounds.push(...content.messageBounds.map((bound) => ({
+    messageId: bound.messageId,
     start: bound.start + offset,
     end: bound.end + offset,
     contentStart: bound.contentStart + offset,
@@ -406,6 +408,7 @@ function getRenderedTimelineContent(
       lineAnchors.push(...renderedMessage.lineAnchors);
       wrapContinuation.push(...renderedMessage.wrapContinuation);
       messageBounds.push({
+        messageId: message.id,
         start,
         end: start + renderedMessage.lines.length,
         contentStart: start,
@@ -471,7 +474,7 @@ function renderMessage(
       ? theme.accent
       : dmAuthorColor(message.author.id)
     : "";
-  const statusSuffix = message.localStatus === "failed" ? " failed" : "";
+  const statusSuffix = message.localStatus === "failed" ? `${theme.error} failed` : "";
   const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${statusSuffix}${theme.reset}`;
   const replyPreview = wrapReplyPreview(message, width);
 
@@ -498,7 +501,7 @@ function renderMessage(
     lines: [
       ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
       header,
-      ...wrappedContent.map((line) => `${message.localStatus === "pending" ? theme.dim : theme.text}${line.text}${theme.reset}`),
+      ...wrappedContent.map((line) => `${message.localStatus ? theme.muted : theme.text}${line.text}${theme.reset}`),
       ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
     ],
     lineAnchors: [

@@ -38,6 +38,18 @@ export interface AuthState {
   activeRequestId: number;
 }
 
+export interface ReplyTarget {
+  messageId: string;
+  channelId: string;
+  guildId: string | null;
+  authorId: string;
+  authorDisplayName: string;
+  authorColor: string;
+  summary: string;
+  timestamp: number | null;
+  mention: boolean;
+}
+
 export interface AppState {
   cols: number;
   rows: number;
@@ -58,6 +70,7 @@ export interface AppState {
   timeline: TimelineState;
   typing: TypingState;
   notifications: NotificationState;
+  replyTarget: ReplyTarget | null;
   roleIdsByGuildId: Record<string, string[]>;
   auth: AuthState;
   notice: Notice;
@@ -87,6 +100,7 @@ export function createInitialState(initialToken: string | null, path: string, in
     timeline: createTimelineState(),
     typing: createTypingState(),
     notifications: createNotificationState(),
+    replyTarget: null,
     roleIdsByGuildId: {},
     auth: {
       status: "idle",

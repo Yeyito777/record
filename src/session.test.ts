@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
+import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { clearReadOnlyClient, sendCurrentChannelMessage } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
@@ -165,6 +166,81 @@ describe("session", () => {
     expect(state.timeline.scrollOffset).toBe(Number.MAX_SAFE_INTEGER);
     expect(state.timeline.messages).toHaveLength(1);
     expect(state.timeline.messages[0]).toMatchObject({ content: "hello", localStatus: "pending" });
+  });
+
+  test("sending a reply includes a local reply preview and clears reply state", () => {
+    globalThis.fetch = (async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+    state.replyTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      authorId: "user-2",
+      authorDisplayName: "Other",
+      authorColor: "",
+      summary: "original message",
+      timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+      mention: true,
+    };
+
+    sendCurrentChannelMessage(state, "token-1", "hello", { scheduleRender: () => {} });
+
+    expect(state.replyTarget).toBeNull();
+    expect(state.timeline.messages[0]?.reply).toEqual({
+      messageId: "message-1",
+      authorId: "user-2",
+      authorDisplayName: "Other",
+      timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+      summary: "original message",
+    });
+  });
+
+  test("defensively omits the direct-message pseudo-guild from reply sends", async () => {
+    let requestedBody = "";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({
+        id: "message-2",
+        channel_id: "dm-1",
+        type: 0,
+        content: "hello",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "self", username: "self", global_name: "Self" },
+        attachments: [],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = DIRECT_MESSAGES_GUILD_ID;
+    state.channelList.channels = [{ id: "dm-1", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Paramount", topic: null, position: 0, type: 1, nsfw: false }];
+    state.channelList.activeChannelId = "dm-1";
+    state.timeline.channelId = "dm-1";
+    state.replyTarget = {
+      messageId: "message-1",
+      channelId: "dm-1",
+      guildId: DIRECT_MESSAGES_GUILD_ID,
+      authorId: "user-2",
+      authorDisplayName: "Paramount",
+      authorColor: "",
+      summary: "original dm",
+      timestamp: null,
+      mention: true,
+    };
+
+    sendCurrentChannelMessage(state, "token-1", "hello", { scheduleRender: () => {} });
+    await flushTimers();
+
+    expect(JSON.parse(requestedBody).message_reference).toEqual({
+      message_id: "message-1",
+      channel_id: "dm-1",
+    });
   });
 
   test("failed sends restore the prompt and leave a failure in history", async () => {

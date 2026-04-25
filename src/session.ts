@@ -23,6 +23,8 @@ import {
   fetchGuilds,
   sendChannelMessage,
   setGuildMuted,
+  type DiscordMessageReply,
+  type SendMessageReplyOptions,
   sortDirectMessageChannels,
   type DiscordChannel,
   type DiscordGuild,
@@ -784,6 +786,9 @@ export async function loadChannelMessages(
   const requestId = ++state.timeline.requestId;
   clearNotificationsForChannel(state, channelId);
   setActiveChannel(state.channelList, channelId);
+  if (state.replyTarget && state.replyTarget.channelId !== channelId) {
+    state.replyTarget = null;
+  }
   state.sidebar.activeGuildId = channel.guildId;
   subscribeAppGatewayToActiveChannel(state);
   state.timeline.loading = true;
@@ -843,6 +848,29 @@ export async function loadOlderChannelMessages(
   }
 }
 
+function activeReplyForChannel(state: AppState, channelId: string): SendMessageReplyOptions | null {
+  const target = state.replyTarget;
+  if (!target || target.channelId !== channelId) return null;
+  return {
+    messageId: target.messageId,
+    channelId: target.channelId,
+    guildId: target.guildId === DIRECT_MESSAGES_GUILD_ID ? null : target.guildId,
+    mention: target.mention,
+  };
+}
+
+function localReplyPreview(state: AppState, channelId: string): DiscordMessageReply | null {
+  const target = state.replyTarget;
+  if (!target || target.channelId !== channelId) return null;
+  return {
+    messageId: target.messageId,
+    authorId: target.authorId,
+    authorDisplayName: target.authorDisplayName,
+    timestamp: target.timestamp,
+    summary: target.summary,
+  };
+}
+
 export function sendCurrentChannelMessage(state: AppState, token: string | null, content: string, effects: SessionEffects): void {
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
   if (!token) {
@@ -863,7 +891,11 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
 
   const viewer = state.auth.user;
   const localMessageId = `local:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const replyTarget = state.replyTarget?.channelId === channelId ? state.replyTarget : null;
+  const replyOptions = activeReplyForChannel(state, channelId);
+  const replyPreview = localReplyPreview(state, channelId);
   clearPrompt(state);
+  state.replyTarget = null;
   setNotice(state, "", "muted");
 
   if (state.timeline.channelId === channelId) {
@@ -883,7 +915,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
         displayName: viewer?.globalName ?? viewer?.username ?? "Me",
         bot: viewer?.bot ?? false,
       },
-      reply: null,
+      reply: replyPreview,
       call: null,
       attachments: [],
       embedsCount: 0,
@@ -895,7 +927,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
 
   void (async () => {
     try {
-      const message = await sendChannelMessage(token, channelId, content);
+      const message = await sendChannelMessage(token, channelId, content, { reply: replyOptions });
       if (state.timeline.channelId === channelId) {
         replaceTimelineMessage(state.timeline, localMessageId, message);
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
@@ -905,6 +937,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failed = markTimelineMessageFailed(state.timeline, localMessageId, message);
+      state.replyTarget = replyTarget;
       state.editor.buffer = failed?.content ?? content;
       state.editor.cursor = state.editor.buffer.length;
       if (state.timeline.channelId === channelId) {

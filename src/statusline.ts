@@ -11,6 +11,7 @@ import { theme } from "./theme";
 
 import { accountBlock } from "./statusblocks/account";
 import { presenceBlock } from "./statusblocks/presence";
+import { replyBlock } from "./statusblocks/reply";
 
 export interface StatusBlock {
   id: string;
@@ -25,6 +26,7 @@ type BlockBuilder = (state: AppState) => StatusBlock | null;
 const BLOCK_BUILDERS: BlockBuilder[] = [
   accountBlock,
   presenceBlock,
+  replyBlock,
 ];
 
 const DELIMITER_WIDTH = 3; // " │ "

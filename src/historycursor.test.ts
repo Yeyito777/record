@@ -48,9 +48,9 @@ describe("history cursor", () => {
     ];
     state.historyWrapContinuation = [false, false, false];
     state.historyMessageBounds = [
-      { start: 0, end: 1, contentStart: 0, contentEnd: 1 },
-      { start: 1, end: 2, contentStart: 1, contentEnd: 2 },
-      { start: 2, end: 3, contentStart: 2, contentEnd: 3 },
+      { messageId: "message-1", start: 0, end: 1, contentStart: 0, contentEnd: 1 },
+      { messageId: "message-2", start: 1, end: 2, contentStart: 1, contentEnd: 2 },
+      { messageId: "message-3", start: 2, end: 3, contentStart: 2, contentEnd: 3 },
     ];
 
     expect(handleHistoryVimKey(state, { type: "char", char: "j" }, 3)).toBe(true);

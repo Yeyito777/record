@@ -71,9 +71,9 @@ import {
   setCursorColor,
   showCursor,
 } from "./terminal";
-import { theme } from "./theme";
+import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
-import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
 import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
 
@@ -330,6 +330,86 @@ function toggleMemberList(): void {
   scheduleRender();
 }
 
+function selectedHistoryMessage(): DiscordMessage | null {
+  const row = state.historyCursor.row;
+  const bound = state.historyMessageBounds.find((entry) => row >= entry.start && row < entry.end);
+  if (!bound) return null;
+  return state.timeline.messages.find((message) => message.id === bound.messageId) ?? null;
+}
+
+function summarizeReplyMessage(message: DiscordMessage): string {
+  const content = message.content.replace(/\s+/g, " ").trim();
+  if (content) return content.slice(0, 160);
+  if (message.attachments.length > 0) return `[attachments] ${message.attachments.map((attachment) => attachment.filename).join(", ")}`.slice(0, 160);
+  if (message.embedsCount > 0) return `[embeds] ${message.embedsCount}`;
+  if (message.call || message.type === 3) return "☎ Call";
+  return "(empty message)";
+}
+
+function cancelCurrentAction(): void {
+  if (state.replyTarget) {
+    state.replyTarget = null;
+    setNotice(state, "Reply cancelled.", "muted");
+    scheduleRender();
+    return;
+  }
+
+  if (state.autocomplete) {
+    dismissAutocomplete(state);
+    scheduleRender();
+    return;
+  }
+
+  setNotice(state, "No active action to cancel.", "muted");
+  scheduleRender();
+}
+
+function replyGuildIdForMessage(message: DiscordMessage): string | null {
+  const guildId = message.guildId ?? state.channelList.activeChannel?.guildId ?? null;
+  return guildId === DIRECT_MESSAGES_GUILD_ID ? null : guildId;
+}
+
+function replyAuthorColor(message: DiscordMessage): string {
+  if (state.channelList.activeChannel?.guildId !== DIRECT_MESSAGES_GUILD_ID) return "";
+  return message.author.id === state.auth.user?.id ? theme.accent : dmAuthorColor(message.author.id);
+}
+
+function startReplyToSelectedHistoryMessage(mention = false): void {
+  if (state.panelFocus !== "chat" || state.chatFocus !== "history") {
+    setNotice(state, "Focus history and select a message to reply.", "muted");
+    scheduleRender();
+    return;
+  }
+
+  const message = selectedHistoryMessage();
+  if (!message) {
+    setNotice(state, "Select a message to reply.", "muted");
+    scheduleRender();
+    return;
+  }
+  if (message.localStatus === "pending" || message.id.startsWith("local:")) {
+    setNotice(state, "Wait until the message is sent before replying to it.", "warning");
+    scheduleRender();
+    return;
+  }
+
+  state.replyTarget = {
+    messageId: message.id,
+    channelId: message.channelId,
+    guildId: replyGuildIdForMessage(message),
+    authorId: message.author.id,
+    authorDisplayName: message.author.displayName,
+    authorColor: replyAuthorColor(message),
+    summary: summarizeReplyMessage(message),
+    timestamp: message.timestamp,
+    mention: mention && message.author.id !== state.auth.user?.id,
+  };
+  setNotice(state, "", "muted");
+  focusPrompt(state);
+  syncPromptAutocomplete();
+  scheduleRender();
+}
+
 function toggleHistoryFocus(): void {
   if (state.panelFocus === "chat" && state.chatFocus === "history") {
     focusPrompt(state);
@@ -358,6 +438,9 @@ function handleGlobalAction(key: KeyEvent): boolean {
   const action = resolveAction(key, context);
 
   switch (action) {
+    case "cancel_action":
+      cancelCurrentAction();
+      return true;
     case "quit":
       cleanup();
       return true;
@@ -403,6 +486,9 @@ function handleGlobalAction(key: KeyEvent): boolean {
       return true;
     case "notification_next":
       jumpToNotification(1);
+      return true;
+    case "reply_toggle":
+      startReplyToSelectedHistoryMessage(false);
       return true;
     case "sidebar_next":
     case "sidebar_prev": {
@@ -492,6 +578,11 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
+  if (state.editor.mode === "normal" && key.type === "char" && (key.char === "r" || key.char === "R")) {
+    startReplyToSelectedHistoryMessage(key.char === "R");
+    return true;
+  }
+
   if (handleHistoryVimKey(state, key, timelinePageSize())) {
     if (state.chatFocus === "history") maybeLoadOlderHistory();
     scheduleRender();

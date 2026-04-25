@@ -30,6 +30,7 @@ export interface KeyEvent {
     | "ctrl-l"
     | "ctrl-m"
     | "ctrl-n"
+    | "ctrl-q"
     | "ctrl-r"
     | "ctrl-s"
     | "ctrl-semicolon"
@@ -58,6 +59,7 @@ const CONTROL_BYTE_MAP: Partial<Record<number, KeyEvent["type"]>> = {
   12: "ctrl-l",
   13: "enter",
   14: "ctrl-n",
+  17: "ctrl-q",
   18: "ctrl-r",
   19: "ctrl-s",
   21: "ctrl-u",
@@ -83,6 +85,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "108;5": "ctrl-l",
   "109;5": "ctrl-m",
   "110;5": "ctrl-n",
+  "113;5": "ctrl-q",
   "114;5": "ctrl-r",
   "115;5": "ctrl-s",
   "59;5": "ctrl-semicolon",

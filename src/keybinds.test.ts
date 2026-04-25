@@ -66,4 +66,12 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "ctrl-left-bracket" })).toBe("notification_prev");
     expect(resolveAction({ type: "ctrl-right-bracket" })).toBe("notification_next");
   });
+
+  test("ctrl-r toggles reply mode globally", () => {
+    expect(resolveAction({ type: "ctrl-r" })).toBe("reply_toggle");
+  });
+
+  test("ctrl-q cancels the current action globally", () => {
+    expect(resolveAction({ type: "ctrl-q" })).toBe("cancel_action");
+  });
 });
