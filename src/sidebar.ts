@@ -19,6 +19,7 @@ export interface SidebarEntry {
   depth: number;
   channelType?: number;
   notificationCount?: number;
+  muted?: boolean;
   selected: boolean;
   active: boolean;
   expanded: boolean;
@@ -85,7 +86,11 @@ export function clearSidebarData(sidebar: SidebarState): void {
 }
 
 export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]): void {
-  sidebar.guilds = guilds;
+  const previousMutedByGuildId = new Map(sidebar.guilds.map((guild) => [guild.id, guild.muted]));
+  sidebar.guilds = guilds.map((guild) => ({
+    ...guild,
+    muted: guild.muted ?? previousMutedByGuildId.get(guild.id),
+  }));
   sidebar.scrollOffset = 0;
   sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, guilds.length - 1)));
 
@@ -95,6 +100,30 @@ export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]):
   if (sidebar.expandedGuildId && !guilds.some((guild) => guild.id === sidebar.expandedGuildId)) {
     sidebar.expandedGuildId = null;
   }
+}
+
+export function setSidebarGuildMuted(sidebar: SidebarState, guildId: string, muted: boolean): boolean {
+  const index = sidebar.guilds.findIndex((guild) => guild.id === guildId);
+  if (index < 0) return false;
+  sidebar.guilds[index] = { ...sidebar.guilds[index]!, muted };
+  return true;
+}
+
+export function applySidebarGuildMuteSettings(sidebar: SidebarState, mutedByGuildId: Record<string, boolean>): void {
+  sidebar.guilds = sidebar.guilds.map((guild) => (
+    Object.prototype.hasOwnProperty.call(mutedByGuildId, guild.id)
+      ? { ...guild, muted: mutedByGuildId[guild.id] }
+      : guild
+  ));
+}
+
+export function sidebarCachedGuilds(sidebar: SidebarState): DiscordGuild[] {
+  return sidebar.guilds.filter((guild) => guild.id !== DIRECT_MESSAGES_GUILD_ID);
+}
+
+export function isSidebarGuildMuted(sidebar: SidebarState, guildId: string | null | undefined): boolean {
+  if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return false;
+  return Boolean(sidebar.guilds.find((guild) => guild.id === guildId)?.muted);
 }
 
 export function buildSidebarEntries(
@@ -116,7 +145,8 @@ export function buildSidebarEntries(
       guildId: guild.id,
       label: guild.name || "(unnamed)",
       depth: 0,
-      notificationCount: guildNotificationCounts.get(guild.id) ?? 0,
+      notificationCount: guild.muted ? 0 : guildNotificationCounts.get(guild.id) ?? 0,
+      muted: Boolean(guild.muted),
       selected: false,
       active: guild.id === sidebar.activeGuildId,
       expanded: isExpanded,
@@ -455,12 +485,14 @@ function renderEntryRow(
       : "# ";
   const prefix = `${indent}${marker}`;
   const badge = renderNotificationBadge(entry.notificationCount ?? 0);
+  const muteIcon = entry.kind === "guild" && entry.muted ? " 🔕" : "";
   const badgeGap = badge ? 1 : 0;
   const badgeWidth = badge?.width ?? 0;
-  const labelWidth = Math.max(0, innerWidth - termWidth(prefix) - badgeGap - badgeWidth);
+  const muteWidth = termWidth(muteIcon);
+  const labelWidth = Math.max(0, innerWidth - termWidth(prefix) - muteWidth - badgeGap - badgeWidth);
   const title = padRight(entry.label || "unnamed", labelWidth);
   const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
-  const suffix = badge ? `${" ".repeat(badgeGap)}${badge.text}` : "";
+  const suffix = `${muteIcon}${badge ? `${" ".repeat(badgeGap)}${badge.text}` : ""}`;
 
   return theme.reset + bg + fg + prefix + text + suffix
     + theme.reset + borderBg + borderFg + "│" + theme.reset;

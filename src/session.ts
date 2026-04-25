@@ -22,6 +22,7 @@ import {
   fetchGuildChannels,
   fetchGuilds,
   sendChannelMessage,
+  setGuildMuted,
   sortDirectMessageChannels,
   type DiscordChannel,
   type DiscordGuild,
@@ -55,13 +56,22 @@ import {
 import type { AppState } from "./state";
 import {
   clearChannelNotifications,
+  clearGuildNotifications,
   recordChannelNotification,
   replaceNotifications,
   shouldNotifyForMessage as messageMatchesNotificationRules,
 } from "./notifications";
 import { clearPrompt } from "./promptstate";
 import { focusPrompt, setNotice } from "./state";
-import { clearSidebarData, setSidebarGuilds } from "./sidebar";
+import {
+  applySidebarGuildMuteSettings,
+  clearSidebarData,
+  getSelectedSidebarEntry,
+  isSidebarGuildMuted,
+  setSidebarGuildMuted,
+  setSidebarGuilds,
+  sidebarCachedGuilds,
+} from "./sidebar";
 import {
   appendTimelineMessage,
   clearTimeline,
@@ -192,6 +202,8 @@ function shouldNotifyForIncomingMessage(state: AppState, message: DiscordMessage
   if (state.timeline.channelId === message.channelId && isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) {
     return false;
   }
+  const guildId = guildIdForChannel(state, message);
+  if (isSidebarGuildMuted(state.sidebar, guildId)) return false;
 
   return messageMatchesNotificationRules(message, {
     viewerId: state.auth.user?.id ?? null,
@@ -272,6 +284,20 @@ function persistNotifications(state: AppState): void {
   }
 }
 
+function persistSidebarGuilds(state: AppState): void {
+  const accountId = currentAccountId(state);
+  if (accountId) saveCachedGuilds(accountId, sidebarCachedGuilds(state.sidebar));
+}
+
+function applyGuildMuteSettings(state: AppState, mutedByGuildId: Record<string, boolean>): void {
+  applySidebarGuildMuteSettings(state.sidebar, mutedByGuildId);
+  for (const [guildId, muted] of Object.entries(mutedByGuildId)) {
+    if (muted) clearGuildNotifications(state.notifications, guildId);
+  }
+  persistSidebarGuilds(state);
+  persistNotifications(state);
+}
+
 function applyCachedNotifications(state: AppState): void {
   const accountId = currentAccountId(state);
   if (!accountId) return;
@@ -281,7 +307,8 @@ function applyCachedNotifications(state: AppState): void {
   replaceNotifications(
     state.notifications,
     Object.entries(cachedNotifications.byChannelId)
-      .filter(([, count]) => count > 0)
+      .filter(([channelId, count]) => count > 0
+        && !isSidebarGuildMuted(state.sidebar, cachedNotifications.channelGuildIds[channelId]))
       .map(([channelId, count]) => ({
         channelId,
         guildId: cachedNotifications.channelGuildIds[channelId] ?? null,
@@ -327,10 +354,19 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onCurrentUserGuildRoles: (guildId, roleIds) => {
       state.roleIdsByGuildId[guildId] = roleIds;
     },
+    onGuildMuteSettings: (mutedByGuildId) => {
+      applyGuildMuteSettings(state, mutedByGuildId);
+      effects.scheduleRender();
+    },
+    onGuildMuteSetting: (guildId, muted) => {
+      applyGuildMuteSettings(state, { [guildId]: muted });
+      effects.scheduleRender();
+    },
     onInitialNotifications: (notifications) => {
       replaceNotifications(
         state.notifications,
-        notifications.filter((notification) => notification.channelId !== state.timeline.channelId),
+        notifications.filter((notification) => notification.channelId !== state.timeline.channelId
+          && !isSidebarGuildMuted(state.sidebar, notification.guildId)),
       );
       persistNotifications(state);
       const latestMessageId = state.timeline.channelId ? latestTimelineMessageId(state, state.timeline.channelId) : null;
@@ -568,11 +604,11 @@ export async function bootstrapReadOnlyClient(
   setNotice(state, "", "muted");
 
   if (accountId) {
-    applyCachedNotifications(state);
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
     const cachedGuilds = loadCachedGuilds(accountId) ?? [];
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
       setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
+      applyCachedNotifications(state);
       state.sidebar.expandedGuildId = previousExpandedGuildId;
       state.sidebar.activeGuildId = previousActiveGuildId;
       if (previousChannelListGuildId && previousChannels.length > 0) {
@@ -607,7 +643,7 @@ export async function bootstrapReadOnlyClient(
     }
     if (accountId) {
       saveCachedDirectMessages(accountId, directMessages);
-      saveCachedGuilds(accountId, guilds);
+      saveCachedGuilds(accountId, sidebarCachedGuilds(state.sidebar));
     }
     startAppGateway(state, token, effects);
 
@@ -878,6 +914,48 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
       effects.scheduleRender();
     }
   })();
+}
+
+export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects): void {
+  const token = state.auth.savedToken;
+  if (!token) {
+    setNotice(state, "Login required to mute servers.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels);
+  if (entry.kind !== "guild" || !entry.guildId || entry.guildId === DIRECT_MESSAGES_GUILD_ID) {
+    setNotice(state, "Select a server row to mute or unmute it.", "muted");
+    effects.scheduleRender();
+    return;
+  }
+
+  const guild = state.sidebar.guilds.find((item) => item.id === entry.guildId);
+  const previousMuted = Boolean(guild?.muted);
+  const nextMuted = !previousMuted;
+  const previousNotifications = {
+    byChannelId: { ...state.notifications.byChannelId },
+    channelGuildIds: { ...state.notifications.channelGuildIds },
+  };
+  setSidebarGuildMuted(state.sidebar, entry.guildId, nextMuted);
+  if (nextMuted) {
+    clearGuildNotifications(state.notifications, entry.guildId);
+    persistNotifications(state);
+  }
+  persistSidebarGuilds(state);
+  setNotice(state, `${nextMuted ? "Muted" : "Unmuted"} ${guild?.name ?? "server"}.`, "muted");
+  effects.scheduleRender();
+
+  void setGuildMuted(token, entry.guildId, nextMuted).catch((error) => {
+    setSidebarGuildMuted(state.sidebar, entry.guildId, previousMuted);
+    state.notifications.byChannelId = previousNotifications.byChannelId;
+    state.notifications.channelGuildIds = previousNotifications.channelGuildIds;
+    persistSidebarGuilds(state);
+    persistNotifications(state);
+    setNotice(state, `Failed to ${nextMuted ? "mute" : "unmute"} ${guild?.name ?? "server"}: ${error instanceof Error ? error.message : String(error)}`, "error");
+    effects.scheduleRender();
+  });
 }
 
 export function ackCurrentChannelIfAtBottom(state: AppState): void {

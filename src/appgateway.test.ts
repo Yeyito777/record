@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { extractCurrentUserRoleIdsByGuildId, extractInitialNotifications } from "./appgateway";
+import { extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractInitialNotifications } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -41,6 +41,18 @@ describe("app gateway helpers", () => {
     });
 
     expect(notifications).toEqual([]);
+  });
+
+  test("extracts guild mute settings from READY", () => {
+    expect(extractGuildMuteSettings({
+      user_guild_settings: {
+        entries: [
+          { guild_id: "guild-1", muted: true },
+          { guild_id: "guild-2", muted: false },
+          { guild_id: null, muted: true },
+        ],
+      },
+    })).toEqual({ "guild-1": true, "guild-2": false });
   });
 
   test("extracts current user role ids from READY merged members", () => {

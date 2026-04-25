@@ -48,6 +48,28 @@ describe("sidebar state", () => {
     expect(sidebar.collapsedCategoryIds).toEqual(["cat"]);
   });
 
+  test("renders muted guild icon and suppresses its guild badge", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null, muted: true }]);
+
+    const rows = renderSidebar(
+      sidebar,
+      [],
+      4,
+      false,
+      null,
+      0,
+      new Set(),
+      "⋯",
+      new Map(),
+      new Map([["guild-1", 7]]),
+    ).map(stripAnsiForTest);
+
+    expect(rows[2]).toContain("🔕");
+    expect(rows[2]).not.toContain(" 7 ");
+  });
+
   test("renders notification badges for guilds and channels", () => {
     const sidebar = createSidebarState();
     sidebar.open = true;

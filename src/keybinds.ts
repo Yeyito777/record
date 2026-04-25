@@ -28,7 +28,8 @@ export type Action =
   | "nav_prev_server"
   | "nav_next_server"
   | "nav_prev_category"
-  | "nav_next_category";
+  | "nav_next_category"
+  | "nav_toggle_guild_mute";
 
 const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-b": "scroll_page_up",
@@ -66,6 +67,7 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
   "char:}": "nav_next_server",
   "char:[": "nav_prev_category",
   "char:]": "nav_next_category",
+  "char:m": "nav_toggle_guild_mute",
 };
 
 export type KeyContext = "prompt" | "navigation";

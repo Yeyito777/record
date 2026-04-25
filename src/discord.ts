@@ -135,6 +135,7 @@ export interface DiscordGuild {
   id: string;
   name: string;
   icon: string | null;
+  muted?: boolean;
 }
 
 export interface DiscordChannel {
@@ -565,6 +566,25 @@ export async function ackChannelMessage(token: string, channelId: string, messag
     body: JSON.stringify({
       last_viewed: Math.ceil((Date.now() - 1_420_070_400_000) / 86_400_000),
       token: null,
+    }),
+  });
+}
+
+export async function setGuildMuted(token: string, guildId: string, muted: boolean): Promise<void> {
+  const guildSettings: Record<string, unknown> = { muted };
+  if (muted) {
+    guildSettings.mute_config = {
+      end_time: null,
+      selected_time_window: -1,
+    };
+  }
+
+  await requestJson<unknown>(token, "/users/@me/guilds/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      guilds: {
+        [guildId]: guildSettings,
+      },
     }),
   });
 }

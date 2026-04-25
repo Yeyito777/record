@@ -87,6 +87,15 @@ export function clearChannelNotifications(notifications: NotificationState, chan
   delete notifications.byChannelId[channelId];
 }
 
+export function clearGuildNotifications(notifications: NotificationState, guildId: string): void {
+  for (const [channelId, channelGuildId] of Object.entries(notifications.channelGuildIds)) {
+    if (channelGuildId === guildId) {
+      delete notifications.byChannelId[channelId];
+      delete notifications.channelGuildIds[channelId];
+    }
+  }
+}
+
 export function channelNotificationCounts(notifications: NotificationState): ReadonlyMap<string, number> {
   return new Map(
     Object.entries(notifications.byChannelId)

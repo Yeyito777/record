@@ -45,6 +45,8 @@ export interface InitialNotification {
 
 export interface AppGatewayCallbacks {
   onInitialNotifications: (notifications: InitialNotification[]) => void;
+  onGuildMuteSettings?: (mutedByGuildId: Record<string, boolean>) => void;
+  onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
   onCurrentUserGuildRoles?: (guildId: string, roleIds: string[]) => void;
   onMessageCreate: (message: DiscordMessage) => void;
@@ -167,6 +169,7 @@ export class AppGatewayClient {
       this.currentUserId = extractCurrentUserId(payload.d);
       this.sessionId = isObject(payload.d) && typeof payload.d.session_id === "string" ? payload.d.session_id : null;
       this.callbacks.onCurrentUserRoleIds?.(extractCurrentUserRoleIdsByGuildId(payload.d));
+      this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
       this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
       this.sendGuildChannelSubscription();
       return;
@@ -265,6 +268,11 @@ export class AppGatewayClient {
           const user = isObject(data.user) ? data.user : null;
           if (!this.currentUserId || !user || user.id !== this.currentUserId) break;
           this.callbacks.onCurrentUserGuildRoles?.(data.guild_id, data.roles.filter((roleId): roleId is string => typeof roleId === "string"));
+          break;
+        }
+        case "USER_GUILD_SETTINGS_UPDATE": {
+          if (!isObject(data) || typeof data.guild_id !== "string" || typeof data.muted !== "boolean") break;
+          this.callbacks.onGuildMuteSetting?.(data.guild_id, data.muted);
           break;
         }
         default:
@@ -396,6 +404,19 @@ export function extractCurrentUserRoleIdsByGuildId(data: unknown): Record<string
   });
 
   return rolesByGuildId;
+}
+
+export function extractGuildMuteSettings(data: unknown): Record<string, boolean> {
+  if (!isObject(data)) return {};
+  const settings = isObject(data.user_guild_settings) && Array.isArray(data.user_guild_settings.entries)
+    ? data.user_guild_settings.entries
+    : [];
+  const mutedByGuildId: Record<string, boolean> = {};
+  for (const setting of settings) {
+    if (!isObject(setting) || typeof setting.guild_id !== "string" || typeof setting.muted !== "boolean") continue;
+    mutedByGuildId[setting.guild_id] = setting.muted;
+  }
+  return mutedByGuildId;
 }
 
 export function extractInitialNotifications(data: unknown): InitialNotification[] {

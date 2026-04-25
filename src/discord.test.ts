@@ -10,6 +10,7 @@ import {
   isDirectMessageChannel,
   mapDiscordMessagePatch,
   sendChannelMessage,
+  setGuildMuted,
 } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -203,6 +204,28 @@ describe("discord helpers", () => {
     expect(requestedUrl).toBe("https://discord.com/api/v9/channels/channel-1/messages");
     expect(JSON.parse(requestedBody)).toEqual({ content: "hello world", tts: false });
     expect(message.content).toBe("hello world");
+  });
+
+  test("mutes and unmutes guilds through user guild settings", async () => {
+    const requests: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await setGuildMuted("token", "guild-1", true);
+    await setGuildMuted("token", "guild-1", false);
+
+    expect(requests[0]?.url).toBe("https://discord.com/api/v9/users/@me/guilds/settings");
+    expect(requests[0]?.body).toEqual({
+      guilds: {
+        "guild-1": {
+          muted: true,
+          mute_config: { end_time: null, selected_time_window: -1 },
+        },
+      },
+    });
+    expect(requests[1]?.body).toEqual({ guilds: { "guild-1": { muted: false } } });
   });
 
   test("acknowledges read messages", async () => {

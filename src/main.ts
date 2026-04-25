@@ -34,6 +34,7 @@ import {
   loadGuildChannels,
   loadOlderChannelMessages,
   syncMemberListForCurrentChannel,
+  toggleSelectedGuildMute,
 } from "./session";
 import { renderStatusLine } from "./statusline";
 import {
@@ -446,6 +447,9 @@ function handleSidebarFocused(key: KeyEvent): boolean {
         moveSidebarSelectionToNextCategory(state.sidebar, state.channelList.channels);
       }
       scheduleRender();
+      return true;
+    case "nav_toggle_guild_mute":
+      toggleSelectedGuildMute(state, { scheduleRender });
       return true;
     case "nav_select": {
       const token = tokenOrWarn();

@@ -57,4 +57,8 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "char", char: "[" }, "navigation")).toBe("nav_prev_category");
     expect(resolveAction({ type: "char", char: "]" }, "navigation")).toBe("nav_next_category");
   });
+
+  test("navigation m toggles guild mute", () => {
+    expect(resolveAction({ type: "char", char: "m" }, "navigation")).toBe("nav_toggle_guild_mute");
+  });
 });
