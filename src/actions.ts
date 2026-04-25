@@ -173,10 +173,11 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
 
 export function submitCurrentBuffer(state: AppState, effects: AppEffects): void {
   const text = state.editor.buffer.trim();
+  const hasImages = state.pendingImages.length > 0;
   state.autocomplete = null;
 
-  if (!text) return;
-  if (handleCommandSubmit(state, text, effects)) return;
+  if (!text && !hasImages) return;
+  if (text && !hasImages && handleCommandSubmit(state, text, effects)) return;
 
   sendCurrentChannelMessage(state, state.auth.savedToken, text, effects);
 }

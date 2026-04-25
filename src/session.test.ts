@@ -168,6 +168,26 @@ describe("session", () => {
     expect(state.timeline.messages[0]).toMatchObject({ content: "hello", localStatus: "pending" });
   });
 
+  test("sending images appends local attachments and clears pending images", () => {
+    globalThis.fetch = (async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+    state.pendingImages = [{ mediaType: "image/png", base64: Buffer.from("test").toString("base64"), sizeBytes: 4, filename: "image-1.png" }];
+
+    sendCurrentChannelMessage(state, "token-1", "caption", { scheduleRender: () => {} });
+
+    expect(state.pendingImages).toEqual([]);
+    expect(state.timeline.messages[0]).toMatchObject({
+      content: "caption",
+      localStatus: "pending",
+      attachments: [{ filename: "image-1.png", contentType: "image/png", size: 4 }],
+    });
+  });
+
   test("sending a reply includes a local reply preview and clears reply state", () => {
     globalThis.fetch = (async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
     const state = createInitialState("token-1", "/tmp/record-config.json");

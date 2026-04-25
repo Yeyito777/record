@@ -559,8 +559,15 @@ export interface SendMessageReplyOptions {
   mention?: boolean;
 }
 
+export interface SendMessageUpload {
+  filename: string;
+  mediaType: string;
+  base64: string;
+}
+
 export interface SendMessageOptions {
   reply?: SendMessageReplyOptions | null;
+  uploads?: SendMessageUpload[];
 }
 
 export async function sendChannelMessage(
@@ -569,6 +576,20 @@ export async function sendChannelMessage(
   content: string,
   options: SendMessageOptions = {},
 ): Promise<DiscordMessage> {
+  const body = buildSendMessagePayload(content, options);
+  const uploads = options.uploads ?? [];
+  const requestBody = uploads.length > 0
+    ? buildSendMessageMultipartBody(body, uploads)
+    : JSON.stringify(body);
+
+  const message = await requestJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages`, {
+    method: "POST",
+    body: requestBody,
+  });
+  return mapDiscordMessage(message);
+}
+
+function buildSendMessagePayload(content: string, options: SendMessageOptions): Record<string, unknown> {
   const body: Record<string, unknown> = { content, tts: false };
   const reply = options.reply;
   if (reply) {
@@ -586,11 +607,25 @@ export async function sendChannelMessage(
     }
   }
 
-  const message = await requestJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify(body),
+  const uploads = options.uploads ?? [];
+  if (uploads.length > 0) {
+    body.attachments = uploads.map((upload, index) => ({
+      id: String(index),
+      filename: upload.filename,
+    }));
+  }
+
+  return body;
+}
+
+function buildSendMessageMultipartBody(payload: Record<string, unknown>, uploads: SendMessageUpload[]): FormData {
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify(payload));
+  uploads.forEach((upload, index) => {
+    const bytes = Buffer.from(upload.base64, "base64");
+    form.append(`files[${index}]`, new Blob([bytes], { type: upload.mediaType }), upload.filename);
   });
-  return mapDiscordMessage(message);
+  return form;
 }
 
 export async function ackChannelMessage(token: string, channelId: string, messageId: string): Promise<void> {
@@ -633,13 +668,7 @@ async function requestJson<T>(token: string, path: string, init: RequestInit): P
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: {
-        "Accept": "application/json",
-        "Authorization": token,
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT,
-        ...(init.headers ?? {}),
-      },
+      headers: requestHeaders(token, init),
       signal: controller.signal,
     });
 
@@ -659,6 +688,21 @@ async function requestJson<T>(token: string, path: string, init: RequestInit): P
   } finally {
     clearTimeout(timer);
   }
+}
+
+function requestHeaders(token: string, init: RequestInit): HeadersInit {
+  const headers: Record<string, string> = {
+    "Accept": "application/json",
+    "Authorization": token,
+    "User-Agent": USER_AGENT,
+  };
+  if (!(init.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  return {
+    ...headers,
+    ...(init.headers as Record<string, string> | undefined),
+  };
 }
 
 function buildDiscordError(status: number, body: DiscordErrorResponse | null): Error {

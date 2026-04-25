@@ -29,7 +29,8 @@ import { channelNotificationCounts, guildNotificationCounts } from "./notificati
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
 import { renderStatusLine } from "./statusline";
-import { padRight, termWidth } from "./textwidth";
+import { padRight, termWidth, truncate } from "./textwidth";
+import { formatSize, imageLabel } from "./imageclipboard";
 import type { AppState } from "./state";
 import {
   applyLineBg,
@@ -45,6 +46,25 @@ import { theme } from "./theme";
 import { isTimelineNearBottom, renderTimelineLines, setTimelineRenderContext } from "./timeline";
 import { renderTopbar } from "./topbar";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
+
+function renderImageIndicator(state: AppState, width: number): string {
+  const images = state.pendingImages;
+  if (width <= 0 || images.length === 0) return "";
+
+  let label: string;
+  if (images.length === 1) {
+    const image = images[0];
+    label = `📎 Image pasted (${imageLabel(image.mediaType)}, ${formatSize(image.sizeBytes)})`;
+  } else {
+    const parts = images.map((image) => `${imageLabel(image.mediaType)} ${formatSize(image.sizeBytes)}`);
+    label = `📎 ${images.length} images (${parts.join(", ")})`;
+  }
+
+  const innerWidth = Math.max(0, width - 4);
+  const clipped = truncate(label, innerWidth);
+  const padded = padRight(clipped, innerWidth);
+  return `${theme.accent}│${theme.reset} ${theme.dim}${padded}${theme.reset} ${theme.accent}│${theme.reset}`;
+}
 
 function renderAutocompletePopup(
   state: AppState,
@@ -275,20 +295,22 @@ export function render(state: AppState): void {
   const status = renderStatusLine(state, mainW);
   const statusHeight = status.height;
   const bottomStatusRows = statusHeight > 0 ? statusHeight + 1 : 0;
+  const imageIndicatorRows = state.pendingImages.length > 0 ? 1 : 0;
 
   const maxInputWidth = Math.max(1, mainW - PROMPT_PREFIX_WIDTH);
   const input = getInputLines(
     state.editor.buffer,
     displayCursor(state.editor),
     maxInputWidth,
-    Math.max(1, Math.min(MAX_PROMPT_ROWS, rows - 3 - bottomStatusRows)),
+    Math.max(1, Math.min(MAX_PROMPT_ROWS, rows - 3 - bottomStatusRows - imageIndicatorRows)),
     state.editor.scroll,
   );
   state.editor.scroll = input.scrollOffset;
 
   const inputRowCount = Math.max(1, input.lines.length);
-  const promptSeparatorRow = Math.max(3, rows - inputRowCount - bottomStatusRows);
-  const firstInputRow = promptSeparatorRow + 1;
+  const promptSeparatorRow = Math.max(3, rows - inputRowCount - bottomStatusRows - imageIndicatorRows);
+  const imageIndicatorRow = promptSeparatorRow + 1;
+  const firstInputRow = promptSeparatorRow + imageIndicatorRows + 1;
   const promptBottomSeparatorRow = firstInputRow + inputRowCount;
   const statusStartRow = promptBottomSeparatorRow + 1;
   const bodyTop = 3;
@@ -308,8 +330,9 @@ export function render(state: AppState): void {
   const oldCursorRow = state.historyCursor.row;
   const oldVisualAnchorRow = state.historyVisualAnchor.row;
   const pinHistoryToBottom = oldViewStart === Number.MAX_SAFE_INTEGER;
+  const pinPromptChromeToBottom = state.chatFocus === "prompt" && isTimelineNearBottom(oldViewStart, state.timeline.maxScroll);
   const pinTypingToBottom = Boolean(typingLine) && isTimelineNearBottom(oldViewStart, state.timeline.maxScroll);
-  if (pinTypingToBottom) {
+  if (pinPromptChromeToBottom || pinTypingToBottom) {
     state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
   }
 
@@ -320,7 +343,7 @@ export function render(state: AppState): void {
   );
   const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, state.notice, state.loadingFrameIndex);
 
-  if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom && !pinTypingToBottom) {
+  if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom && !pinPromptChromeToBottom && !pinTypingToBottom) {
     const anchorIndex = buildLineAnchorIndex(timeline.lineAnchors);
     state.timeline.scrollOffset = Math.max(0, Math.min(remapRenderedRow(oldViewStart, oldAnchors, anchorIndex), timeline.maxScroll));
     state.historyCursor = { ...state.historyCursor, row: remapRenderedRow(oldCursorRow, oldAnchors, anchorIndex) };
@@ -379,6 +402,13 @@ export function render(state: AppState): void {
   emitSidebarCol(promptSeparatorRow);
   out.push(moveTo(promptSeparatorRow, mainCol) + bgLine(`${promptColor}${"─".repeat(mainW)}${theme.reset}`));
   emitMemberListCol(promptSeparatorRow);
+
+  if (imageIndicatorRows > 0) {
+    out.push(moveTo(imageIndicatorRow, 1) + clearedLine);
+    emitSidebarCol(imageIndicatorRow);
+    out.push(moveTo(imageIndicatorRow, mainCol) + bgLine(renderImageIndicator(state, mainW)));
+    emitMemberListCol(imageIndicatorRow);
+  }
 
   const offsets = wrappedLineOffsets(state.editor.buffer, maxInputWidth);
   const promptInVisual = promptFocused && (state.editor.mode === "visual" || state.editor.mode === "visual-line");

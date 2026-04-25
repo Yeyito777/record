@@ -36,6 +36,10 @@ describe("input parser", () => {
     expect(parseInput(String.fromCharCode(18))).toEqual([{ type: "ctrl-r" }]);
   });
 
+  test("parses Ctrl+V from raw control byte", () => {
+    expect(parseInput(String.fromCharCode(22))).toEqual([{ type: "ctrl-v" }]);
+  });
+
   test("parses Ctrl+] from raw control byte", () => {
     expect(parseInput(String.fromCharCode(29))).toEqual([{ type: "ctrl-right-bracket" }]);
   });
@@ -47,6 +51,7 @@ describe("input parser", () => {
     expect(parseInput("\x1b[91;5u")).toEqual([{ type: "ctrl-left-bracket" }]);
     expect(parseInput("\x1b[93;5u")).toEqual([{ type: "ctrl-right-bracket" }]);
     expect(parseInput("\x1b[113;5u")).toEqual([{ type: "ctrl-q" }]);
+    expect(parseInput("\x1b[118;5u")).toEqual([{ type: "ctrl-v" }]);
     expect(parseInput("\x1b[121;5u")).toEqual([{ type: "ctrl-y" }]);
   });
 

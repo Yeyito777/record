@@ -20,6 +20,7 @@ import {
   scrollHistoryViewportSticky,
   scrollHistoryWithCursor,
 } from "./historycursor";
+import { imageExtension, readClipboardImage } from "./imageclipboard";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { MEMBER_LIST_WIDTH, moveMemberListSelection } from "./memberlist";
@@ -346,7 +347,38 @@ function summarizeReplyMessage(message: DiscordMessage): string {
   return "(empty message)";
 }
 
+function pasteImageFromClipboard(): void {
+  const image = readClipboardImage();
+  if (!image) {
+    setNotice(state, "No image found in clipboard.", "warning");
+    scheduleRender();
+    return;
+  }
+
+  const index = state.pendingImages.length + 1;
+  const filename = `image-${index}.${imageExtension(image.mediaType)}`;
+  state.pendingImages.push({ ...image, filename });
+  setNotice(state, "", "muted");
+  focusPrompt(state);
+  scheduleRender();
+}
+
+function removeLastPendingImage(): boolean {
+  if (state.editor.cursor !== 0 || state.pendingImages.length === 0) return false;
+  state.pendingImages.pop();
+  setNotice(state, "", "muted");
+  scheduleRender();
+  return true;
+}
+
 function cancelCurrentAction(): void {
+  if (state.pendingImages.length > 0) {
+    state.pendingImages = [];
+    setNotice(state, "Image attachments cleared.", "muted");
+    scheduleRender();
+    return;
+  }
+
   if (state.replyTarget) {
     state.replyTarget = null;
     setNotice(state, "Reply cancelled.", "muted");
@@ -486,6 +518,9 @@ function handleGlobalAction(key: KeyEvent): boolean {
       return true;
     case "notification_next":
       jumpToNotification(1);
+      return true;
+    case "paste_image":
+      pasteImageFromClipboard();
       return true;
     case "reply_toggle":
       startReplyToSelectedHistoryMessage(false);
@@ -635,6 +670,8 @@ function handleMemberListFocused(key: KeyEvent): boolean {
 }
 
 function handlePromptFocused(key: KeyEvent): void {
+  if (key.type === "backspace" && removeLastPendingImage()) return;
+
   if (key.type === "tab" && state.autocomplete) {
     cycleAutocomplete(state, 1);
     scheduleRender();

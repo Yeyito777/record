@@ -33,6 +33,7 @@ export type Action =
   | "nav_toggle_guild_mute"
   | "notification_prev"
   | "notification_next"
+  | "paste_image"
   | "reply_toggle";
 
 const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
@@ -52,6 +53,7 @@ const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-left-bracket": "notification_prev",
   "ctrl-right-bracket": "notification_next",
   "ctrl-u": "scroll_half_up",
+  "ctrl-v": "paste_image",
   "ctrl-y": "scroll_line_up",
 };
 

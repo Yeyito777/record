@@ -30,6 +30,15 @@ describe("submitCurrentBuffer", () => {
     expect(state.editor.buffer).toBe("hello world");
   });
 
+  test("image-only messages submit", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.pendingImages = [{ mediaType: "image/png", base64: "", sizeBytes: 1, filename: "image-1.png" }];
+
+    submitCurrentBuffer(state, effects);
+
+    expect(state.notice.text).toBe("Login first with /login <token|username>.");
+  });
+
   test("empty prompt does nothing", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
 

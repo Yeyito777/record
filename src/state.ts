@@ -14,6 +14,7 @@ import { createSidebarState, type SidebarState } from "./sidebar";
 import { createTimelineState, type TimelineMessageBound, type TimelineState } from "./timeline";
 import { createTypingState, type TypingState } from "./typing";
 import { normalizeToken } from "./token";
+import type { ClipboardImageAttachment } from "./imageclipboard";
 import type { NoticeTone } from "./theme";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
@@ -64,6 +65,7 @@ export interface AppState {
   historyWrapContinuation: boolean[];
   historyMessageBounds: TimelineMessageBound[];
   autocomplete: AutocompleteState | null;
+  pendingImages: ClipboardImageAttachment[];
   sidebar: SidebarState;
   memberList: MemberListState;
   channelList: ChannelListState;
@@ -94,6 +96,7 @@ export function createInitialState(initialToken: string | null, path: string, in
     historyWrapContinuation: [],
     historyMessageBounds: [],
     autocomplete: null,
+    pendingImages: [],
     sidebar: createSidebarState(),
     memberList: createMemberListState(),
     channelList: createChannelListState(),

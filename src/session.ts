@@ -23,8 +23,10 @@ import {
   fetchGuilds,
   sendChannelMessage,
   setGuildMuted,
+  type DiscordMessageAttachment,
   type DiscordMessageReply,
   type SendMessageReplyOptions,
+  type SendMessageUpload,
   sortDirectMessageChannels,
   type DiscordChannel,
   type DiscordGuild,
@@ -64,6 +66,7 @@ import {
   shouldNotifyForMessage as messageMatchesNotificationRules,
 } from "./notifications";
 import { clearPrompt } from "./promptstate";
+import type { ClipboardImageAttachment } from "./imageclipboard";
 import { focusPrompt, setNotice } from "./state";
 import {
   applySidebarGuildMuteSettings,
@@ -871,6 +874,24 @@ function localReplyPreview(state: AppState, channelId: string): DiscordMessageRe
   };
 }
 
+function uploadOptionsForImages(images: ClipboardImageAttachment[]): SendMessageUpload[] {
+  return images.map((image) => ({
+    filename: image.filename ?? "image.png",
+    mediaType: image.mediaType,
+    base64: image.base64,
+  }));
+}
+
+function localAttachmentsForImages(images: ClipboardImageAttachment[]): DiscordMessageAttachment[] {
+  return images.map((image, index) => ({
+    id: `local:${index}`,
+    filename: image.filename ?? "image.png",
+    contentType: image.mediaType,
+    size: image.sizeBytes,
+    url: "",
+  }));
+}
+
 export function sendCurrentChannelMessage(state: AppState, token: string | null, content: string, effects: SessionEffects): void {
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
   if (!token) {
@@ -894,7 +915,11 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
   const replyTarget = state.replyTarget?.channelId === channelId ? state.replyTarget : null;
   const replyOptions = activeReplyForChannel(state, channelId);
   const replyPreview = localReplyPreview(state, channelId);
+  const pendingImages = [...state.pendingImages];
+  const uploads = uploadOptionsForImages(pendingImages);
+  const localAttachments = localAttachmentsForImages(pendingImages);
   clearPrompt(state);
+  state.pendingImages = [];
   state.replyTarget = null;
   setNotice(state, "", "muted");
 
@@ -917,7 +942,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
       },
       reply: replyPreview,
       call: null,
-      attachments: [],
+      attachments: localAttachments,
       embedsCount: 0,
       localStatus: "pending",
     });
@@ -927,7 +952,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
 
   void (async () => {
     try {
-      const message = await sendChannelMessage(token, channelId, content, { reply: replyOptions });
+      const message = await sendChannelMessage(token, channelId, content, { reply: replyOptions, uploads });
       if (state.timeline.channelId === channelId) {
         replaceTimelineMessage(state.timeline, localMessageId, message);
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
@@ -938,6 +963,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
       const message = error instanceof Error ? error.message : String(error);
       const failed = markTimelineMessageFailed(state.timeline, localMessageId, message);
       state.replyTarget = replyTarget;
+      state.pendingImages = pendingImages;
       state.editor.buffer = failed?.content ?? content;
       state.editor.cursor = state.editor.buffer.length;
       if (state.timeline.channelId === channelId) {

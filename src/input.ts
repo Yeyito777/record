@@ -37,6 +37,7 @@ export interface KeyEvent {
     | "ctrl-left-bracket"
     | "ctrl-right-bracket"
     | "ctrl-u"
+    | "ctrl-v"
     | "ctrl-y"
     | "escape"
     | "paste"
@@ -63,6 +64,7 @@ const CONTROL_BYTE_MAP: Partial<Record<number, KeyEvent["type"]>> = {
   18: "ctrl-r",
   19: "ctrl-s",
   21: "ctrl-u",
+  22: "ctrl-v",
   25: "ctrl-y",
   29: "ctrl-right-bracket",
   127: "backspace",
@@ -92,6 +94,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "91;5": "ctrl-left-bracket",
   "93;5": "ctrl-right-bracket",
   "117;5": "ctrl-u",
+  "118;5": "ctrl-v",
   "121;5": "ctrl-y",
 };
 

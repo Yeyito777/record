@@ -74,4 +74,8 @@ describe("keybinds", () => {
   test("ctrl-q cancels the current action globally", () => {
     expect(resolveAction({ type: "ctrl-q" })).toBe("cancel_action");
   });
+
+  test("ctrl-v pastes an image globally", () => {
+    expect(resolveAction({ type: "ctrl-v" })).toBe("paste_image");
+  });
 });

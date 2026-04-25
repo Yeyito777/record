@@ -243,6 +243,41 @@ describe("discord helpers", () => {
     });
   });
 
+  test("uploads image attachments as multipart form data", async () => {
+    let requestedBody: BodyInit | null | undefined = null;
+    let requestedContentType: string | null = null;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = init?.body;
+      requestedContentType = new Headers(init?.headers).get("Content-Type");
+      return new Response(JSON.stringify({
+        id: "message-2",
+        channel_id: "channel-1",
+        type: 0,
+        content: "caption",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        attachments: [{ id: "attachment-1", filename: "image-1.png", content_type: "image/png", size: 4, url: "https://cdn.example/image-1.png" }],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const message = await sendChannelMessage("token", "channel-1", "caption", {
+      uploads: [{ filename: "image-1.png", mediaType: "image/png", base64: Buffer.from("test").toString("base64") }],
+    });
+
+    expect(requestedBody).toBeInstanceOf(FormData);
+    expect(requestedContentType).toBeNull();
+    const form = requestedBody as unknown as FormData;
+    expect(JSON.parse(String(form.get("payload_json")))).toEqual({
+      content: "caption",
+      tts: false,
+      attachments: [{ id: "0", filename: "image-1.png" }],
+    });
+    expect(form.get("files[0]")).toBeInstanceOf(Blob);
+    expect(message.attachments[0]?.filename).toBe("image-1.png");
+  });
+
   test("omits guild_id when sending a direct-message reply", async () => {
     let requestedBody = "";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
