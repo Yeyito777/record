@@ -2,8 +2,9 @@
  * Per-account stale-while-revalidate cache for read-only Discord data.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { mkdirSync, readFileSync } from "fs";
+import { writeFile } from "fs/promises";
+import { dirname, join } from "path";
 
 import { configDir } from "./config";
 import type { DiscordChannel, DiscordGuild, DiscordGuildMember, DiscordRole } from "./discord";
@@ -28,6 +29,17 @@ interface DataCacheFile {
 }
 
 const CACHE_VERSION = 1;
+const CACHE_SAVE_DEBOUNCE_MS = 2_500;
+const MAX_PERSISTED_MESSAGE_CHANNELS = 30;
+const MAX_PERSISTED_MESSAGES_PER_CHANNEL = 75;
+
+let cacheMemo: DataCacheFile | null = null;
+let cacheMemoPath: string | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveInFlight = false;
+let saveAgain = false;
+let cacheDirty = false;
+let beforeExitFlushRegistered = false;
 
 function cachePath(): string {
   return join(configDir(), "cache.json");
@@ -38,20 +50,104 @@ function emptyCache(): DataCacheFile {
 }
 
 function loadCacheFile(): DataCacheFile {
+  const path = cachePath();
+  if (cacheMemo && cacheMemoPath === path) return cacheMemo;
+
   try {
-    const parsed = JSON.parse(readFileSync(cachePath(), "utf8")) as Partial<DataCacheFile>;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<DataCacheFile>;
     if (parsed.version !== CACHE_VERSION || typeof parsed.accounts !== "object" || parsed.accounts === null) {
-      return emptyCache();
+      cacheMemo = emptyCache();
+      cacheMemoPath = path;
+      return cacheMemo;
     }
-    return { version: CACHE_VERSION, accounts: parsed.accounts as Record<string, AccountDataCache> };
+    cacheMemo = { version: CACHE_VERSION, accounts: parsed.accounts as Record<string, AccountDataCache> };
+    cacheMemoPath = path;
+    return cacheMemo;
   } catch {
-    return emptyCache();
+    cacheMemo = emptyCache();
+    cacheMemoPath = path;
+    return cacheMemo;
   }
 }
 
 function saveCacheFile(cache: DataCacheFile): void {
-  mkdirSync(configDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(cachePath(), `${JSON.stringify(cache, null, 2)}\n`, { mode: 0o600 });
+  cacheMemo = cache;
+  cacheMemoPath = cachePath();
+  cacheDirty = true;
+  registerBeforeExitFlush();
+  scheduleCacheWrite();
+}
+
+function registerBeforeExitFlush(): void {
+  if (beforeExitFlushRegistered) return;
+  beforeExitFlushRegistered = true;
+  process.once("beforeExit", () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    void flushCacheFile();
+  });
+}
+
+function scheduleCacheWrite(): void {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void flushCacheFile();
+  }, CACHE_SAVE_DEBOUNCE_MS);
+  saveTimer.unref?.();
+}
+
+async function flushCacheFile(): Promise<void> {
+  if (saveInFlight) {
+    saveAgain = true;
+    return;
+  }
+  if (!cacheMemo || !cacheDirty) return;
+
+  const cache = cacheMemo;
+  const path = cacheMemoPath ?? cachePath();
+  cacheDirty = false;
+  saveInFlight = true;
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const compact = compactCacheForDisk(cache);
+    await writeFile(path, `${JSON.stringify(compact)}\n`, { mode: 0o600 });
+  } catch {
+    // Cache persistence is opportunistic; UI responsiveness is more important.
+    cacheDirty = true;
+  } finally {
+    saveInFlight = false;
+    if (saveAgain || cacheDirty) {
+      saveAgain = false;
+      scheduleCacheWrite();
+    }
+  }
+}
+
+function compactCacheForDisk(cache: DataCacheFile): DataCacheFile {
+  return {
+    version: CACHE_VERSION,
+    accounts: Object.fromEntries(Object.entries(cache.accounts).map(([accountId, account]) => [
+      accountId,
+      compactAccountCache(account),
+    ])),
+  };
+}
+
+function compactAccountCache(account: AccountDataCache): AccountDataCache {
+  const channelMessages = Object.fromEntries(
+    Object.entries(account.channelMessages ?? {})
+      .sort(([, left], [, right]) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+      .slice(0, MAX_PERSISTED_MESSAGE_CHANNELS)
+      .map(([channelId, entry]) => [channelId, cloneCachedChannelMessages(entry, MAX_PERSISTED_MESSAGES_PER_CHANNEL)]),
+  );
+
+  return {
+    ...account,
+    channelMessages,
+  };
 }
 
 function accountCache(cache: DataCacheFile, accountId: string): AccountDataCache {
@@ -126,10 +222,10 @@ export function saveCachedChannelMessages(accountId: string, channelId: string, 
   saveCacheFile(cache);
 }
 
-function cloneCachedChannelMessages(entry: CachedChannelMessages): CachedChannelMessages {
+function cloneCachedChannelMessages(entry: CachedChannelMessages, maxMessages = Number.POSITIVE_INFINITY): CachedChannelMessages {
   return {
     channelId: entry.channelId,
-    messages: entry.messages.map((message) => ({ ...message })),
+    messages: entry.messages.slice(-maxMessages).map((message) => ({ ...message })),
     hasOlder: entry.hasOlder,
     updatedAt: entry.updatedAt,
     latestFetchedAt: entry.latestFetchedAt ?? entry.updatedAt ?? null,
