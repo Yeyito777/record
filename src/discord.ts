@@ -74,6 +74,10 @@ export interface DiscordMessageAuthorResponse {
   bot?: boolean;
 }
 
+export interface DiscordMessageMentionResponse extends DiscordMessageAuthorResponse {
+  member?: DiscordMessageMemberResponse;
+}
+
 export interface DiscordMessageMemberResponse {
   nick?: string | null;
   roles?: string[];
@@ -125,7 +129,7 @@ export interface DiscordMessageResponse {
   type?: number;
   mention_everyone?: boolean;
   mention_roles?: string[];
-  mentions?: DiscordMessageAuthorResponse[];
+  mentions?: DiscordMessageMentionResponse[];
   author: DiscordMessageAuthorResponse;
   member?: DiscordMessageMemberResponse;
   message_reference?: DiscordMessageReferenceResponse | null;
@@ -213,6 +217,7 @@ export interface DiscordMessage {
   mentionEveryone: boolean;
   mentionRoleIds: string[];
   mentionUserIds: string[];
+  mentionUsers?: DiscordGuildMember[];
   timestamp: number;
   editedTimestamp: number | null;
   author: {
@@ -240,6 +245,7 @@ export interface DiscordMessagePatch {
   mentionEveryone?: boolean;
   mentionRoleIds?: string[];
   mentionUserIds?: string[];
+  mentionUsers?: DiscordGuildMember[];
   timestamp?: number;
   editedTimestamp?: number | null;
   author?: DiscordMessage["author"];
@@ -597,6 +603,16 @@ export async function fetchGuildRoles(token: string, guildId: string): Promise<D
   }));
 }
 
+function mapMentionedUser(mention: DiscordMessageMentionResponse): DiscordGuildMember {
+  return {
+    id: mention.id,
+    username: mention.username,
+    displayName: userDisplayName(mention),
+    bot: Boolean(mention.bot),
+    roleIds: mention.member?.roles?.filter((roleId): roleId is string => typeof roleId === "string"),
+  };
+}
+
 export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> & { id: string; channel_id: string }): DiscordMessagePatch {
   const hasReplyFields = message.referenced_message !== undefined || message.message_reference !== undefined;
   return {
@@ -608,6 +624,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     mentionEveryone: message.mention_everyone,
     mentionRoleIds: message.mention_roles,
     mentionUserIds: message.mentions?.map((mention) => mention.id),
+    mentionUsers: message.mentions?.map(mapMentionedUser),
     timestamp: message.timestamp ? Date.parse(message.timestamp) : undefined,
     editedTimestamp: message.edited_timestamp === undefined
       ? undefined
@@ -667,6 +684,7 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
     mentionEveryone: patch.mentionEveryone ?? message.mentionEveryone,
     mentionRoleIds: patch.mentionRoleIds ?? message.mentionRoleIds,
     mentionUserIds: patch.mentionUserIds ?? message.mentionUserIds,
+    mentionUsers: patch.mentionUsers ?? message.mentionUsers,
     timestamp: patch.timestamp ?? message.timestamp,
     editedTimestamp: patch.editedTimestamp !== undefined ? patch.editedTimestamp : message.editedTimestamp,
     author: patch.author
@@ -691,6 +709,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     mentionEveryone: patch.mentionEveryone ?? false,
     mentionRoleIds: patch.mentionRoleIds ?? [],
     mentionUserIds: patch.mentionUserIds ?? [],
+    mentionUsers: patch.mentionUsers ?? [],
     timestamp: patch.timestamp ?? 0,
     editedTimestamp: patch.editedTimestamp ?? null,
     author: patch.author ?? {

@@ -318,6 +318,30 @@ describe("discord helpers", () => {
     expect(messages[0]?.author.displayName).toBe("Tester");
   });
 
+  test("preserves mentioned user display names and role ids", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([{
+        id: "message-1",
+        channel_id: "channel-1",
+        guild_id: "guild-1",
+        content: "hello <@123>",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "111", username: "tester", global_name: "Tester" },
+        mentions: [{ id: "123", username: "alice", global_name: "Alice", member: { roles: ["role-1"] } }],
+        attachments: [],
+        embeds: [],
+      }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.mentionUserIds).toEqual(["123"]);
+    expect(messages[0]?.mentionUsers).toEqual([
+      { id: "123", username: "alice", displayName: "Alice", bot: false, roleIds: ["role-1"] },
+    ]);
+  });
+
   test("maps partial message updates without clobbering existing fields", () => {
     const existing = {
       id: "message-1",

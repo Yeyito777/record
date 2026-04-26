@@ -2,7 +2,7 @@
  * Message timeline state and rendering helpers.
  */
 
-import { applyDiscordMessagePatch, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
+import { applyDiscordMessagePatch, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
@@ -540,7 +540,18 @@ function renderMessage(
   const headerAnchors = groupedWithPrevious ? [] : [`msg:${message.id}:header`];
   const headerWrapContinuation = groupedWithPrevious ? [] : [false];
 
-  const content = summarizeMessage(message, viewerId, loadingFrameIndex, nowMs);
+  const contentColor = message.localStatus ? theme.muted : theme.text;
+  const content = summarizeMessage(
+    message,
+    viewerId,
+    accentViewerInDirectMessages,
+    rolesByGuildId,
+    memberRoleIdsByGuildId,
+    activeGuildId,
+    loadingFrameIndex,
+    nowMs,
+    contentColor,
+  );
   if (content === "") {
     return {
       lines: [
@@ -557,13 +568,13 @@ function renderMessage(
     };
   }
 
-  const wrappedContent = wrapMarkdownText(content, width);
+  const wrappedContent = wrapMarkdownText(content, width, contentColor);
   const failureLines = wrapFailureMessage(message, width);
   return {
     lines: [
       ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
       ...headerLines,
-      ...wrappedContent.map((line) => `${message.localStatus ? theme.muted : theme.text}${line.text}${theme.reset}`),
+      ...wrappedContent.map((line) => `${contentColor}${line.text}${theme.reset}`),
       ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
     ],
     lineAnchors: [
@@ -634,14 +645,29 @@ function wrapFailureMessage(message: DiscordMessage, width: number): WrappedLine
 function summarizeMessage(
   message: DiscordMessage,
   viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
   loadingFrameIndex: number,
   nowMs: number,
+  contentColor: string,
 ): string {
   if (message.call || message.type === 3) {
     return summarizeCallMessage(message, viewerId, loadingFrameIndex, nowMs);
   }
 
-  return summarizeMessageParts(message.content, message.attachments, message.embedsCount, message.stickerNames).join("\n");
+  const content = renderUserMentions(
+    message.content,
+    message,
+    viewerId,
+    accentViewerInDirectMessages,
+    rolesByGuildId,
+    memberRoleIdsByGuildId,
+    activeGuildId,
+    contentColor,
+  );
+  return summarizeMessageParts(content, message.attachments, message.embedsCount, message.stickerNames).join("\n");
 }
 
 function summarizeCallMessage(
@@ -695,6 +721,56 @@ function formatCallDuration(durationMs: number): string {
     return `${hours}:${two(minutes)}:${two(seconds)}`;
   }
   return `${minutes}:${two(seconds)}`;
+}
+
+function renderUserMentions(
+  content: string,
+  message: DiscordMessage,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
+  restoreColor: string,
+): string {
+  const mentionUsers = new Map((message.mentionUsers ?? []).map((user) => [user.id, user]));
+  if (mentionUsers.size === 0) return content;
+
+  return content.replace(/<@!?(\d+)>/g, (raw, userId: string) => {
+    const user = mentionUsers.get(userId);
+    if (!user) return raw;
+    const label = `@${user.displayName}`;
+    const mentionColor = mentionColorForUser(
+      message,
+      user,
+      viewerId,
+      accentViewerInDirectMessages,
+      rolesByGuildId,
+      memberRoleIdsByGuildId,
+      activeGuildId,
+    );
+    return mentionColor ? `${mentionColor}${label}${restoreColor}` : label;
+  });
+}
+
+function mentionColorForUser(
+  message: DiscordMessage,
+  user: DiscordGuildMember,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
+): string {
+  if (accentViewerInDirectMessages) {
+    return viewerId === user.id ? theme.accent : dmAuthorColor(user.id);
+  }
+
+  const guildId = message.guildId ?? activeGuildId;
+  if (!guildId) return "";
+  const roleIds = user.roleIds ?? memberRoleIdsByGuildId[guildId]?.[user.id] ?? [];
+  const color = resolvePrimaryRoleColor(rolesByGuildId[guildId] ?? [], roleIds);
+  return color ? ansiTrueColor(color) : "";
 }
 
 function summarizeMessageParts(
@@ -804,10 +880,10 @@ function wrapFirstWord(word: string, width: number, lines: string[]): string {
   return remaining;
 }
 
-function wrapMarkdownText(text: string, width: number): WrappedLine[] {
+function wrapMarkdownText(text: string, width: number, bgRestore = theme.text): WrappedLine[] {
   if (width <= 0) return [];
 
-  const wrapped = markdownWordWrap(text, width, theme.text);
+  const wrapped = markdownWordWrap(text, width, bgRestore);
   return wrapped.lines.map((line, visualIndex) => ({
     text: line,
     wrapContinuation: wrapped.cont[visualIndex] ?? false,
@@ -853,6 +929,9 @@ function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, n
 
 function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: number, nowMs: number, groupedWithPrevious = false): string {
   const attachmentKey = message.attachments.map((attachment) => attachment.filename).join("\u0000");
+  const mentionKey = (message.mentionUsers ?? [])
+    .map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002"))
+    .join("\u0000");
   const stickerKey = message.stickerNames.join("\u0000");
   const replyKey = message.reply
     ? [
@@ -877,6 +956,7 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
     message.author.bot ? "1" : "0",
     String(message.type),
     message.content,
+    mentionKey,
     replyKey,
     callKey,
     attachmentKey,

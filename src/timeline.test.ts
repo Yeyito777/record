@@ -26,6 +26,7 @@ function message(
     type?: number;
     guildId?: string | null;
     roleIds?: string[];
+    mentionUsers?: DiscordMessage["mentionUsers"];
   } = {},
 ): DiscordMessage {
   return {
@@ -38,7 +39,8 @@ function message(
     content,
     mentionEveryone: false,
     mentionRoleIds: [],
-    mentionUserIds: [],
+    mentionUserIds: options.mentionUsers?.map((user) => user.id) ?? [],
+    mentionUsers: options.mentionUsers,
     author: {
       id: options.authorId ?? "user-1",
       username: "tester",
@@ -577,6 +579,63 @@ describe("timeline rendering", () => {
     );
 
     expect(rendered.lines[0]).toContain(ansiTrueColor(0x3366ff));
+  });
+
+  test("renders user mentions as colored display names in guild messages", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hi <@123> and <@!456>", {
+      guildId: "guild-1",
+      mentionUsers: [
+        { id: "123", username: "alice", displayName: "Alice", bot: false, roleIds: ["role-low", "role-high"] },
+        { id: "456", username: "bravo", displayName: "Bravo", bot: false },
+      ],
+    })]);
+    setTimelineRenderContext(
+      timeline,
+      "viewer",
+      false,
+      { "guild-1": [
+        { id: "role-low", color: 0xff0000, position: 1 },
+        { id: "role-high", color: 0x00ff00, position: 4 },
+      ] },
+      { "guild-1": { "456": ["role-low"] } },
+      1,
+    );
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[1] ?? "")).toBe("hi @Alice and @Bravo");
+    expect(rendered.lines[1]).toContain(ansiTrueColor(0x00ff00));
+    expect(rendered.lines[1]).toContain(ansiTrueColor(0xff0000));
+  });
+
+  test("renders user mentions with assigned direct-message colors", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "dm-1", [message("message-1", "cc <@123> <@999>", {
+      mentionUsers: [
+        { id: "123", username: "alice", displayName: "Alice", bot: false },
+        { id: "999", username: "me", displayName: "Me", bot: false },
+      ],
+    })]);
+    setTimelineRenderContext(timeline, "999", true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[1] ?? "")).toBe("cc @Alice @Me");
+    expect(rendered.lines[1]).toContain(dmAuthorColor("123"));
+    expect(rendered.lines[1]).toContain(theme.accent);
   });
 
   test("renders other DM authors with deterministic colors", () => {

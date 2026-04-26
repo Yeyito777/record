@@ -248,9 +248,12 @@ function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, me
 }
 
 function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, patch: DiscordMessagePatch): void {
+  const guildId = patch.guildId ?? state.channelList.channels.find((channel) => channel.id === patch.channelId)?.guildId ?? null;
   if (patch.author?.roleIds) {
-    const guildId = patch.guildId ?? state.channelList.channels.find((channel) => channel.id === patch.channelId)?.guildId ?? null;
     recordMemberRoleIds(state, guildId, patch.author.id, patch.author.roleIds);
+  }
+  for (const mention of patch.mentionUsers ?? []) {
+    recordMemberRoleIds(state, guildId, mention.id, mention.roleIds);
   }
   maybeResortDirectMessages(state, patch.channelId, patch.id);
   if (state.timeline.channelId === patch.channelId) {
@@ -319,7 +322,12 @@ function withMessageGuildId(message: DiscordMessage, guildId: string | null | un
 }
 
 function recordMessageRoleIds(state: AppState, message: DiscordMessage, fallbackGuildId: string | null | undefined): boolean {
-  return recordMemberRoleIds(state, message.guildId ?? fallbackGuildId, message.author.id, message.author.roleIds);
+  const guildId = message.guildId ?? fallbackGuildId;
+  let changed = recordMemberRoleIds(state, guildId, message.author.id, message.author.roleIds);
+  for (const mention of message.mentionUsers ?? []) {
+    changed = recordMemberRoleIds(state, guildId, mention.id, mention.roleIds) || changed;
+  }
+  return changed;
 }
 
 function recordMessagesRoleIds(state: AppState, messages: readonly DiscordMessage[], fallbackGuildId: string | null | undefined): boolean {

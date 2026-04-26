@@ -136,7 +136,21 @@ function isTagChar(cp: number): boolean {
   return cp >= 0xE0020 && cp <= 0xE007F;
 }
 
+function ansiEscapeEnd(text: string, start: number): number | null {
+  if (text.charCodeAt(start) !== 0x1b || text[start + 1] !== "[") return null;
+  let index = start + 2;
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+    if (code >= 0x40 && code <= 0x7e) return index + 1;
+    index++;
+  }
+  return null;
+}
+
 function nextCluster(text: string, start: number): [width: number, end: number] {
+  const ansiEnd = ansiEscapeEnd(text, start);
+  if (ansiEnd !== null) return [0, ansiEnd];
+
   const cp = text.codePointAt(start)!;
   const charLen = cp > 0xFFFF ? 2 : 1;
 

@@ -27,6 +27,7 @@ describe("textwidth", () => {
 
   test("measures ANSI-wrapped text by visible width", () => {
     expect(visibleLength("\x1b[31m🦋\x1b[0m hi")).toBe(5);
+    expect(termWidth("\x1b[31m🦋\x1b[0m hi")).toBe(5);
   });
 
   test("builds a width-aware viewport that keeps the cursor visible", () => {
