@@ -244,6 +244,61 @@ describe("session", () => {
     expect(state.messageCacheByChannelId["channel-1"]?.messages.map((entry) => entry.content)).toEqual(["from rest"]);
   });
 
+  test("loading a channel with only gateway messages keeps them visible while REST loads", async () => {
+    let messageFetches = 0;
+    let resolveMessages: (response: Response) => void = () => {};
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/channels/channel-1/messages?")) {
+        messageFetches += 1;
+        return await new Promise<Response>((resolve) => {
+          resolveMessages = resolve;
+        });
+      }
+      if (url.includes("/guilds/guild-1/roles")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/ack")) {
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.messageCacheByChannelId["channel-1"] = {
+      channelId: "channel-1",
+      messages: [message("3", "from gateway")],
+      hasOlder: true,
+      updatedAt: Date.now(),
+      latestFetchedAt: null,
+    };
+
+    await loadChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
+
+    expect(messageFetches).toBe(1);
+    expect(state.timeline.loading).toBe(true);
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["from gateway"]);
+
+    resolveMessages(new Response(JSON.stringify([{
+      id: "2",
+      channel_id: "channel-1",
+      guild_id: "guild-1",
+      type: 0,
+      content: "from rest",
+      timestamp: "2026-01-01T12:02:00.000Z",
+      edited_timestamp: null,
+      author: { id: "user-1", username: "tester", global_name: "Tester" },
+      attachments: [],
+      embeds: [],
+    }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await flushTimers();
+
+    expect(state.timeline.loading).toBe(false);
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["from rest", "from gateway"]);
+  });
+
   test("sending a message immediately appends a pending local message", () => {
     globalThis.fetch = (async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
     const state = createInitialState("token-1", "/tmp/record-config.json");

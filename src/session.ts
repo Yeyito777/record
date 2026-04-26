@@ -939,6 +939,10 @@ export async function loadChannelMessages(
     }
 
     if (cached.messages.length > 0) {
+      if (cached.latestFetchedAt === null) {
+        state.timeline.loading = true;
+        effects.scheduleRender();
+      }
       void refreshLatestChannelMessages(state, token, channelId, guildId, requestId, effects, { hadCachedMessages: true });
       return;
     }

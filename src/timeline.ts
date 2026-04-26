@@ -341,6 +341,11 @@ export function renderTimelineLines(
     allLines.push(`${theme.muted}${truncate(loadingLabel("Loading messages…", loadingFrameIndex), width)}${theme.reset}`);
     lineAnchors.push("timeline:loading");
     wrapContinuation.push(false);
+
+    if (timeline.messages.length > 0) {
+      const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
+      appendRenderedTimelineContent(allLines, lineAnchors, wrapContinuation, messageBounds, content);
+    }
   } else {
     const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
     if (notice.text || timeline.loadingOlder) {
@@ -356,6 +361,10 @@ export function renderTimelineLines(
       wrapContinuation = content.wrapContinuation;
       messageBounds = content.messageBounds;
     }
+  }
+
+  if (!notice.text && timeline.loading && timeline.messages.length > 0) {
+    prependBlankTimelineRows(allLines, lineAnchors, wrapContinuation, messageBounds, Math.max(0, height - allLines.length));
   }
 
   const maxScroll = Math.max(0, allLines.length - Math.max(0, height));
@@ -394,6 +403,25 @@ function countRenderedInsertedRows(
     total += 1;
   }
   return total;
+}
+
+function prependBlankTimelineRows(
+  allLines: string[],
+  lineAnchors: string[],
+  wrapContinuation: boolean[],
+  messageBounds: TimelineMessageBound[],
+  count: number,
+): void {
+  if (count <= 0) return;
+  allLines.unshift(...Array.from({ length: count }, () => ""));
+  lineAnchors.unshift(...Array.from({ length: count }, (_unused, index) => `timeline:loading-pad:${index}`));
+  wrapContinuation.unshift(...Array.from({ length: count }, () => false));
+  for (const bound of messageBounds) {
+    bound.start += count;
+    bound.end += count;
+    bound.contentStart += count;
+    bound.contentEnd += count;
+  }
 }
 
 function appendRenderedTimelineContent(

@@ -89,6 +89,25 @@ describe("timeline rendering", () => {
     expect(rendered.lines[0]).toContain("⠋ Loading messages…");
   });
 
+  test("shows message loading above live messages while the initial page loads", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("2", "from gateway")], { hasOlder: true });
+    timeline.loading = true;
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines[0]).toBe("");
+    expect(plainLines.some((line) => line.includes("⠋ Loading messages…"))).toBe(true);
+    expect(plainLines.at(-1) ?? "").toContain("from gateway");
+  });
+
   test("shows a top loader while fetching older messages", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("2", "newer")], { hasOlder: true });
