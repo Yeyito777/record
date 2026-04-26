@@ -1,13 +1,35 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
-import { clearReadOnlyClient, sendCurrentChannelMessage } from "./session";
+import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
+import { clearReadOnlyClient, loadChannelMessages, sendCurrentChannelMessage } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
 
 function flushTimers(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function message(id: string, content: string, channelId = "channel-1"): DiscordMessage {
+  return {
+    id,
+    channelId,
+    guildId: "guild-1",
+    type: 0,
+    content,
+    mentionEveryone: false,
+    mentionRoleIds: [],
+    mentionUserIds: [],
+    mentionUsers: [],
+    timestamp: Date.UTC(2026, 0, 1, 12, Number(id) || 0, 0),
+    editedTimestamp: null,
+    author: { id: "user-1", username: "tester", displayName: "Tester", bot: false },
+    reply: null,
+    call: null,
+    attachments: [],
+    stickerNames: [],
+    embedsCount: 0,
+  };
 }
 
 afterEach(() => {
@@ -148,6 +170,78 @@ describe("session", () => {
     expect(state.channelList.guildId).toBe("guild-1");
     expect(state.channelList.channels.map((channel) => channel.id)).toEqual(["channel-1"]);
     expect(state.channelList.activeChannelId).toBe("channel-1");
+  });
+
+  test("loading a channel renders fresh cached messages without REST", async () => {
+    let messageFetches = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/channels/channel-1/messages?")) {
+        messageFetches += 1;
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/guilds/guild-1/roles")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.messageCacheByChannelId["channel-1"] = {
+      channelId: "channel-1",
+      messages: [message("1", "cached")],
+      hasOlder: false,
+      updatedAt: Date.now(),
+      latestFetchedAt: Date.now(),
+    };
+
+    await loadChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
+
+    expect(messageFetches).toBe(0);
+    expect(state.timeline.loading).toBe(false);
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["cached"]);
+  });
+
+  test("loading a channel without cache fetches once and stores the result", async () => {
+    let messageFetches = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/channels/channel-1/messages?")) {
+        messageFetches += 1;
+        return new Response(JSON.stringify([{
+          id: "2",
+          channel_id: "channel-1",
+          guild_id: "guild-1",
+          type: 0,
+          content: "from rest",
+          timestamp: "2026-01-01T12:02:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/guilds/guild-1/roles")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/ack")) {
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+
+    await loadChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
+
+    expect(messageFetches).toBe(1);
+    expect(state.timeline.loading).toBe(false);
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["from rest"]);
+    expect(state.messageCacheByChannelId["channel-1"]?.messages.map((entry) => entry.content)).toEqual(["from rest"]);
   });
 
   test("sending a message immediately appends a pending local message", () => {

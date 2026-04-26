@@ -7,6 +7,7 @@ import { join } from "path";
 
 import { configDir } from "./config";
 import type { DiscordChannel, DiscordGuild, DiscordGuildMember, DiscordRole } from "./discord";
+import type { ChannelMessageCache, CachedChannelMessages } from "./messagecache";
 import type { NotificationState } from "./notifications";
 
 interface AccountDataCache {
@@ -15,6 +16,7 @@ interface AccountDataCache {
   directMessages?: DiscordChannel[];
   guildChannels?: Record<string, DiscordChannel[]>;
   memberLists?: Record<string, DiscordGuildMember[]>;
+  channelMessages?: ChannelMessageCache;
   guildRoles?: Record<string, DiscordRole[]>;
   memberRoles?: Record<string, Record<string, string[]>>;
   notifications?: NotificationState;
@@ -53,9 +55,10 @@ function saveCacheFile(cache: DataCacheFile): void {
 }
 
 function accountCache(cache: DataCacheFile, accountId: string): AccountDataCache {
-  cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {}, memberLists: {}, guildRoles: {}, memberRoles: {} };
+  cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {}, memberLists: {}, channelMessages: {}, guildRoles: {}, memberRoles: {} };
   cache.accounts[accountId].guildChannels ??= {};
   cache.accounts[accountId].memberLists ??= {};
+  cache.accounts[accountId].channelMessages ??= {};
   cache.accounts[accountId].guildRoles ??= {};
   cache.accounts[accountId].memberRoles ??= {};
   return cache.accounts[accountId];
@@ -104,6 +107,33 @@ function memberListCacheKey(guildId: string, channelId: string): string {
 
 export function loadCachedMemberList(accountId: string, guildId: string, channelId: string): DiscordGuildMember[] | null {
   return loadCacheFile().accounts[accountId]?.memberLists?.[memberListCacheKey(guildId, channelId)] ?? null;
+}
+
+export function loadCachedChannelMessages(accountId: string): ChannelMessageCache {
+  const cached = loadCacheFile().accounts[accountId]?.channelMessages ?? {};
+  return Object.fromEntries(Object.entries(cached).map(([channelId, entry]) => [
+    channelId,
+    { ...cloneCachedChannelMessages(entry), latestFetchedAt: 0 },
+  ]));
+}
+
+export function saveCachedChannelMessages(accountId: string, channelId: string, entry: CachedChannelMessages): void {
+  const cache = loadCacheFile();
+  const account = accountCache(cache, accountId);
+  account.channelMessages ??= {};
+  account.channelMessages[channelId] = cloneCachedChannelMessages(entry);
+  account.savedAt = Date.now();
+  saveCacheFile(cache);
+}
+
+function cloneCachedChannelMessages(entry: CachedChannelMessages): CachedChannelMessages {
+  return {
+    channelId: entry.channelId,
+    messages: entry.messages.map((message) => ({ ...message })),
+    hasOlder: entry.hasOlder,
+    updatedAt: entry.updatedAt,
+    latestFetchedAt: entry.latestFetchedAt ?? entry.updatedAt ?? null,
+  };
 }
 
 export function saveCachedMemberList(

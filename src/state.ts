@@ -6,6 +6,7 @@ import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
 import type { SavedLogins } from "./config";
 import type { DiscordIdentity, DiscordRole } from "./discord";
+import type { ChannelMessageCache } from "./messagecache";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
 import { createMemberListState, type MemberListState } from "./memberlist";
@@ -70,6 +71,7 @@ export interface AppState {
   memberList: MemberListState;
   channelList: ChannelListState;
   timeline: TimelineState;
+  messageCacheByChannelId: ChannelMessageCache;
   typing: TypingState;
   notifications: NotificationState;
   replyTarget: ReplyTarget | null;
@@ -104,6 +106,7 @@ export function createInitialState(initialToken: string | null, path: string, in
     memberList: createMemberListState(),
     channelList: createChannelListState(),
     timeline: createTimelineState(),
+    messageCacheByChannelId: {},
     typing: createTypingState(),
     notifications: createNotificationState(),
     replyTarget: null,

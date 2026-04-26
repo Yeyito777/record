@@ -37,6 +37,7 @@ import {
   type DiscordMessagePatch,
 } from "./discord";
 import {
+  loadCachedChannelMessages,
   loadCachedDirectMessages,
   loadCachedGuildChannels,
   loadCachedGuilds,
@@ -44,6 +45,7 @@ import {
   loadCachedMemberList,
   loadCachedMemberRoles,
   loadCachedNotifications,
+  saveCachedChannelMessages,
   saveCachedDirectMessages,
   saveCachedGuildChannels,
   saveCachedGuildRoles,
@@ -53,6 +55,18 @@ import {
   saveCachedNotifications,
 } from "./datacache";
 import { AppGatewayClient } from "./appgateway";
+import {
+  cachedChannelMessages,
+  cachedChannelMessagesAreFresh,
+  clearCachedChannelMessages,
+  markCachedChannelMessageFailed,
+  patchCachedChannelMessage,
+  removeCachedChannelMessage,
+  removeCachedChannelMessages,
+  replaceCachedChannelMessage,
+  setCachedChannelMessages,
+  upsertCachedChannelMessage,
+} from "./messagecache";
 import { debugLog } from "./debuglog";
 import { MemberListGatewayClient } from "./membergateway";
 import {
@@ -108,6 +122,7 @@ interface LoadGuildChannelsOptions {
 }
 
 const MESSAGE_PAGE_LIMIT = 50;
+const MESSAGE_CACHE_FRESH_MS = 2 * 60 * 1000;
 const MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS = 7_000;
 const MEMBER_LIST_SUBSCRIBE_RETRIES = 2;
 
@@ -226,21 +241,25 @@ function shouldNotifyForIncomingMessage(state: AppState, message: DiscordMessage
 }
 
 function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
-  recordMessageRoleIds(state, message, guildIdForChannel(state, message));
+  const guildId = guildIdForChannel(state, message);
+  const cachedMessage = withMessageGuildId(message, guildId);
+  recordMessageRoleIds(state, cachedMessage, guildId);
+  upsertCachedChannelMessage(state.messageCacheByChannelId, cachedMessage);
+  persistChannelMessageCache(state, cachedMessage.channelId);
   clearTypingUser(state.typing, message.channelId, message.author.id);
-  const shouldNotify = shouldNotifyForIncomingMessage(state, message);
+  const shouldNotify = shouldNotifyForIncomingMessage(state, cachedMessage);
   if (shouldNotify) {
-    recordChannelNotification(state.notifications, message.channelId, guildIdForChannel(state, message));
+    recordChannelNotification(state.notifications, cachedMessage.channelId, guildId);
     persistNotifications(state);
   }
-  maybeResortDirectMessages(state, message.channelId, message.id);
-  if (state.timeline.channelId === message.channelId) {
+  maybeResortDirectMessages(state, cachedMessage.channelId, cachedMessage.id);
+  if (state.timeline.channelId === cachedMessage.channelId) {
     const pinned = activeTimelineWasPinned(state);
-    appendTimelineMessage(state.timeline, message);
+    appendTimelineMessage(state.timeline, cachedMessage);
     if (pinned) {
       state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
       if (!shouldNotify) {
-        markChannelRead(state, state.auth.savedToken, message.channelId, message.id);
+        markChannelRead(state, state.auth.savedToken, cachedMessage.channelId, cachedMessage.id);
       }
     }
   }
@@ -256,6 +275,9 @@ function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, pa
     recordMemberRoleIds(state, guildId, mention.id, mention.roleIds);
   }
   maybeResortDirectMessages(state, patch.channelId, patch.id);
+  if (patchCachedChannelMessage(state.messageCacheByChannelId, patch)) {
+    persistChannelMessageCache(state, patch.channelId);
+  }
   if (state.timeline.channelId === patch.channelId) {
     patchTimelineMessage(state.timeline, patch);
   }
@@ -280,6 +302,7 @@ function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEff
 function handleGatewayChannelDelete(state: AppState, effects: SessionEffects, channelId: string): void {
   const wasActive = state.channelList.activeChannelId === channelId;
   const removed = removeChannel(state.channelList, channelId);
+  clearCachedChannelMessages(state.messageCacheByChannelId, channelId);
   if (wasActive || state.timeline.channelId === channelId) {
     clearTimeline(state.timeline);
     setNotice(state, "Channel was deleted.", "warning");
@@ -406,6 +429,12 @@ function markChannelRead(state: AppState, token: string | null, channelId: strin
   });
 }
 
+function persistChannelMessageCache(state: AppState, channelId: string): void {
+  const accountId = currentAccountId(state);
+  const entry = state.messageCacheByChannelId[channelId];
+  if (accountId && entry) saveCachedChannelMessages(accountId, channelId, entry);
+}
+
 function latestTimelineMessageId(state: AppState, channelId: string): string | null {
   if (state.timeline.channelId !== channelId) return null;
   const latest = state.timeline.messages.at(-1);
@@ -460,10 +489,16 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
     onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
     onMessageDelete: (channelId, messageId) => {
+      if (removeCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId)) {
+        persistChannelMessageCache(state, channelId);
+      }
       removeTimelineMessage(state.timeline, messageId, channelId);
       effects.scheduleRender();
     },
     onMessageDeleteBulk: (channelId, messageIds) => {
+      if (removeCachedChannelMessages(state.messageCacheByChannelId, channelId, messageIds)) {
+        persistChannelMessageCache(state, channelId);
+      }
       removeTimelineMessages(state.timeline, messageIds, channelId);
       effects.scheduleRender();
     },
@@ -501,6 +536,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.roleIdsByGuildId = {};
   state.guildRolesByGuildId = {};
   state.memberRoleIdsByGuildId = {};
+  state.messageCacheByChannelId = {};
   state.memberRoleCacheVersion += 1;
   focusPrompt(state);
 }
@@ -696,6 +732,7 @@ export async function bootstrapReadOnlyClient(
     const cachedGuilds = loadCachedGuilds(accountId) ?? [];
     state.guildRolesByGuildId = loadCachedGuildRoles(accountId);
     state.memberRoleIdsByGuildId = loadCachedMemberRoles(accountId);
+    state.messageCacheByChannelId = loadCachedChannelMessages(accountId);
     state.memberRoleCacheVersion += 1;
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
       setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
@@ -883,31 +920,71 @@ export async function loadChannelMessages(
   }
   state.sidebar.activeGuildId = channel.guildId;
   subscribeAppGatewayToActiveChannel(state);
-  state.timeline.loading = true;
   state.timeline.loadingOlder = false;
   setNotice(state, "", "muted");
   syncMemberListForCurrentChannel(state, effects);
   const guildId = state.channelList.activeChannel?.guildId ?? null;
   if (guildId) loadGuildRolesInBackground(state, token, guildId, effects);
-  effects.scheduleRender();
 
+  const cached = cachedChannelMessages(state.messageCacheByChannelId, channelId);
+  if (cached) {
+    recordMessagesRoleIds(state, cached.messages, guildId);
+    setTimelineMessages(state.timeline, channelId, cached.messages, { hasOlder: cached.hasOlder });
+    const latestMessage = cached.messages.at(-1);
+    if (latestMessage) markChannelRead(state, token, channelId, latestMessage.id);
+    effects.scheduleRender();
+
+    if (cachedChannelMessagesAreFresh(cached, Date.now(), MESSAGE_CACHE_FRESH_MS)) {
+      return;
+    }
+
+    if (cached.messages.length > 0) {
+      void refreshLatestChannelMessages(state, token, channelId, guildId, requestId, effects, { hadCachedMessages: true });
+      return;
+    }
+  } else {
+    setTimelineMessages(state.timeline, channelId, [], { hasOlder: false });
+  }
+
+  state.timeline.loading = true;
+  effects.scheduleRender();
+  await refreshLatestChannelMessages(state, token, channelId, guildId, requestId, effects, { hadCachedMessages: false });
+}
+
+async function refreshLatestChannelMessages(
+  state: AppState,
+  token: string,
+  channelId: string,
+  guildId: string | null,
+  requestId: number,
+  effects: SessionEffects,
+  options: { hadCachedMessages: boolean },
+): Promise<void> {
   try {
     const fetchedMessages = await fetchChannelMessages(token, channelId, MESSAGE_PAGE_LIMIT);
-    if (requestId !== state.timeline.requestId) return;
-
     const messages = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
     recordMessagesRoleIds(state, messages, guildId);
-    setTimelineMessages(state.timeline, channelId, messages, { hasOlder: messages.length >= MESSAGE_PAGE_LIMIT });
-    const latestMessage = messages.at(-1);
+    const cacheEntry = setCachedChannelMessages(state.messageCacheByChannelId, channelId, messages, {
+      hasOlder: messages.length >= MESSAGE_PAGE_LIMIT,
+      updatedAt: Date.now(),
+      replace: false,
+    });
+    persistChannelMessageCache(state, channelId);
+
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
+    setTimelineMessages(state.timeline, channelId, cacheEntry.messages, { hasOlder: cacheEntry.hasOlder });
+    const latestMessage = cacheEntry.messages.at(-1);
     if (latestMessage) {
       markChannelRead(state, token, channelId, latestMessage.id);
     }
     effects.scheduleRender();
   } catch (error) {
-    if (requestId !== state.timeline.requestId) return;
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
     state.timeline.loading = false;
-    clearTimeline(state.timeline);
-    setNotice(state, error instanceof Error ? error.message : String(error), "error");
+    if (!options.hadCachedMessages) {
+      clearTimeline(state.timeline);
+      setNotice(state, error instanceof Error ? error.message : String(error), "error");
+    }
     effects.scheduleRender();
   }
 }
@@ -937,8 +1014,11 @@ export async function loadOlderChannelMessages(
     const deduped = olderMessages
       .filter((message) => !existingIds.has(message.id))
       .map((message) => withMessageGuildId(message, guildId));
+    const hasOlder = olderMessages.length >= MESSAGE_PAGE_LIMIT;
     recordMessagesRoleIds(state, deduped, guildId);
-    prependTimelineMessages(state.timeline, deduped, width, { hasOlder: olderMessages.length >= MESSAGE_PAGE_LIMIT });
+    setCachedChannelMessages(state.messageCacheByChannelId, channelId, deduped, { hasOlder, updatedAt: Date.now(), replace: false, latestFetched: false });
+    persistChannelMessageCache(state, channelId);
+    prependTimelineMessages(state.timeline, deduped, width, { hasOlder });
     effects.scheduleRender();
   } catch (error) {
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
@@ -1020,38 +1100,45 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
   state.replyTarget = null;
   setNotice(state, "", "muted");
 
+  const localMessage: DiscordMessage = {
+    id: localMessageId,
+    channelId,
+    guildId: state.channelList.activeChannel?.guildId ?? null,
+    type: 0,
+    content,
+    mentionEveryone: false,
+    mentionRoleIds: [],
+    mentionUserIds: [],
+    mentionUsers: [],
+    timestamp: Date.now(),
+    editedTimestamp: null,
+    author: {
+      id: viewer?.id ?? "me",
+      username: viewer?.username ?? "me",
+      displayName: viewer?.globalName ?? viewer?.username ?? "Me",
+      bot: viewer?.bot ?? false,
+    },
+    reply: replyPreview,
+    call: null,
+    attachments: localAttachments,
+    stickerNames: [],
+    embedsCount: 0,
+    localStatus: "pending",
+  };
+  upsertCachedChannelMessage(state.messageCacheByChannelId, localMessage);
   if (state.timeline.channelId === channelId) {
-    appendTimelineMessage(state.timeline, {
-      id: localMessageId,
-      channelId,
-      type: 0,
-      content,
-      mentionEveryone: false,
-      mentionRoleIds: [],
-      mentionUserIds: [],
-      timestamp: Date.now(),
-      editedTimestamp: null,
-      author: {
-        id: viewer?.id ?? "me",
-        username: viewer?.username ?? "me",
-        displayName: viewer?.globalName ?? viewer?.username ?? "Me",
-        bot: viewer?.bot ?? false,
-      },
-      reply: replyPreview,
-      call: null,
-      attachments: localAttachments,
-      stickerNames: [],
-      embedsCount: 0,
-      localStatus: "pending",
-    });
+    appendTimelineMessage(state.timeline, localMessage);
     state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
   }
   effects.scheduleRender();
 
   void (async () => {
     try {
-      const message = await sendChannelMessage(token, channelId, content, { reply: replyOptions, uploads });
+      const sentMessage = await sendChannelMessage(token, channelId, content, { reply: replyOptions, uploads });
+      const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
+      replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, localMessageId, message);
+      persistChannelMessageCache(state, channelId);
       if (state.timeline.channelId === channelId) {
         replaceTimelineMessage(state.timeline, localMessageId, message);
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
@@ -1060,7 +1147,8 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
       effects.scheduleRender();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const failed = markTimelineMessageFailed(state.timeline, localMessageId, message);
+      const cachedFailed = markCachedChannelMessageFailed(state.messageCacheByChannelId, channelId, localMessageId, message);
+      const failed = markTimelineMessageFailed(state.timeline, localMessageId, message) ?? cachedFailed;
       state.replyTarget = replyTarget;
       state.pendingImages = pendingImages;
       state.editor.buffer = failed?.content ?? content;
