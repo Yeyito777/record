@@ -144,6 +144,13 @@ const DM_AUTHOR_TINTS = [
 
 export const DM_AUTHOR_COLOR_COUNT = DM_AUTHOR_BASE_COLORS.length * DM_AUTHOR_TINTS.length;
 
+export function ansiTrueColor(color: number): string {
+  const red = (color >> 16) & 0xff;
+  const green = (color >> 8) & 0xff;
+  const blue = color & 0xff;
+  return `\x1b[38;2;${red};${green};${blue}m`;
+}
+
 export function dmAuthorColor(userId: string): string {
   let hash = 2166136261;
   for (let index = 0; index < userId.length; index++) {

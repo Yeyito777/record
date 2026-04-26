@@ -10,7 +10,7 @@ import {
   setMemberListMembers,
   setMemberListMessage,
 } from "./memberlist";
-import { theme } from "./theme";
+import { ansiTrueColor, theme } from "./theme";
 import { termWidth } from "./textwidth";
 
 function stripAnsi(line: string): string {
@@ -51,6 +51,30 @@ describe("member list", () => {
     expect(plainRows.some((row) => row.includes("▸ Paramount"))).toBe(true);
     expect(plainRows.some((row) => row.includes("Alice"))).toBe(true);
     expect(rows.some((row) => row.includes(theme.accent) && row.includes("Paramount"))).toBe(true);
+  });
+
+  test("renders server members with role colors", () => {
+    const memberList = createMemberListState();
+    memberList.open = true;
+    setMemberListMembers(memberList, "guild-1", "channel-1", [
+      { id: "1", username: "alpha", displayName: "Alpha", bot: false, roleIds: ["role-low", "role-high"] },
+      { id: "2", username: "bravo", displayName: "Bravo", bot: false },
+    ]);
+
+    const rows = renderMemberList(
+      memberList,
+      6,
+      0,
+      false,
+      { "guild-1": [
+        { id: "role-low", color: 0xff0000, position: 1 },
+        { id: "role-high", color: 0x00ff00, position: 4 },
+      ] },
+      { "guild-1": { "2": ["role-low"] } },
+    );
+
+    expect(rows.some((row) => row.includes(ansiTrueColor(0x00ff00)) && row.includes("Alpha"))).toBe(true);
+    expect(rows.some((row) => row.includes(ansiTrueColor(0xff0000)) && row.includes("Bravo"))).toBe(true);
   });
 
   test("wraps long info/error messages inside the member list width", () => {

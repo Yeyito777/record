@@ -12,7 +12,7 @@ describe("member gateway member-list ops", () => {
           { group: { id: "online" } },
           { member: { user: { id: "1", username: "alpha", global_name: "Alpha" }, nick: null } },
           { group: { id: "offline" } },
-          { member: { user: { id: "2", username: "bravo", global_name: null }, nick: "Bravo Nick" } },
+          { member: { user: { id: "2", username: "bravo", global_name: null }, nick: "Bravo Nick", roles: ["role-1"] } },
         ],
       },
     ]);
@@ -20,7 +20,7 @@ describe("member gateway member-list ops", () => {
     expect(rows).toHaveLength(4);
     expect(extractGatewayMembers(rows)).toEqual([
       { id: "1", username: "alpha", displayName: "Alpha", bot: false },
-      { id: "2", username: "bravo", displayName: "bravo", bot: false },
+      { id: "2", username: "bravo", displayName: "bravo", bot: false, roleIds: ["role-1"] },
     ]);
   });
 

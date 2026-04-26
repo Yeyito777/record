@@ -2,11 +2,11 @@
  * Message timeline state and rendering helpers.
  */
 
-import { applyDiscordMessagePatch, type DiscordMessage, type DiscordMessagePatch } from "./discord";
+import { applyDiscordMessagePatch, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
-import { dmAuthorColor, theme, toneColor } from "./theme";
+import { ansiTrueColor, dmAuthorColor, theme, toneColor } from "./theme";
 
 export interface TimelineState {
   channelId: string | null;
@@ -19,6 +19,10 @@ export interface TimelineState {
   requestId: number;
   viewerId: string | null;
   accentViewerInDirectMessages: boolean;
+  rolesByGuildId: Record<string, DiscordRole[]>;
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
+  memberRoleCacheVersion: number;
+  activeGuildId: string | null;
 }
 
 export interface TimelineMessageBound {
@@ -87,6 +91,10 @@ export function createTimelineState(): TimelineState {
     requestId: 0,
     viewerId: null,
     accentViewerInDirectMessages: false,
+    rolesByGuildId: {},
+    memberRoleIdsByGuildId: {},
+    memberRoleCacheVersion: 0,
+    activeGuildId: null,
   };
 }
 
@@ -280,13 +288,26 @@ export function setTimelineRenderContext(
   timeline: TimelineState,
   viewerId: string | null,
   accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]> = timeline.rolesByGuildId,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>> = timeline.memberRoleIdsByGuildId,
+  memberRoleCacheVersion = timeline.memberRoleCacheVersion,
+  activeGuildId: string | null = timeline.activeGuildId,
 ): void {
-  if (timeline.viewerId === viewerId && timeline.accentViewerInDirectMessages === accentViewerInDirectMessages) {
+  if (timeline.viewerId === viewerId
+    && timeline.accentViewerInDirectMessages === accentViewerInDirectMessages
+    && timeline.rolesByGuildId === rolesByGuildId
+    && timeline.memberRoleIdsByGuildId === memberRoleIdsByGuildId
+    && timeline.memberRoleCacheVersion === memberRoleCacheVersion
+    && timeline.activeGuildId === activeGuildId) {
     return;
   }
 
   timeline.viewerId = viewerId;
   timeline.accentViewerInDirectMessages = accentViewerInDirectMessages;
+  timeline.rolesByGuildId = rolesByGuildId;
+  timeline.memberRoleIdsByGuildId = memberRoleIdsByGuildId;
+  timeline.memberRoleCacheVersion = memberRoleCacheVersion;
+  timeline.activeGuildId = activeGuildId;
   resetTimelineRenderCaches(timeline);
 }
 
@@ -482,7 +503,7 @@ function renderMessageCached(
     return cached.rendered;
   }
 
-  const rendered = renderMessage(message, width, timeline.viewerId, timeline.accentViewerInDirectMessages, loadingFrameIndex, nowMs, groupedWithPrevious);
+  const rendered = renderMessage(message, width, timeline.viewerId, timeline.accentViewerInDirectMessages, timeline.rolesByGuildId, timeline.memberRoleIdsByGuildId, timeline.activeGuildId, loadingFrameIndex, nowMs, groupedWithPrevious);
   cacheState.messageRenderCache.set(cacheKey, { width, fingerprint, rendered });
   return rendered;
 }
@@ -492,6 +513,9 @@ function renderMessage(
   width: number,
   viewerId: string | null,
   accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
   loadingFrameIndex: number,
   nowMs: number,
   groupedWithPrevious = false,
@@ -500,11 +524,14 @@ function renderMessage(
   const author = message.author.bot
     ? `${message.author.displayName} [bot]`
     : message.author.displayName;
-  const authorColor = accentViewerInDirectMessages
-    ? viewerId === message.author.id
-      ? theme.accent
-      : dmAuthorColor(message.author.id)
-    : "";
+  const authorColor = authorColorForMessage(
+    message,
+    viewerId,
+    accentViewerInDirectMessages,
+    rolesByGuildId,
+    memberRoleIdsByGuildId,
+    activeGuildId,
+  );
   const statusSuffix = message.localStatus === "failed" ? `${theme.error} failed` : "";
   const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${statusSuffix}${theme.reset}`;
   const replyPreview = wrapReplyPreview(message, width);
@@ -552,6 +579,35 @@ function renderMessage(
       ...failureLines.map((line) => line.wrapContinuation),
     ],
   };
+}
+
+function authorColorForMessage(
+  message: DiscordMessage,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
+): string {
+  if (accentViewerInDirectMessages) {
+    return viewerId === message.author.id ? theme.accent : dmAuthorColor(message.author.id);
+  }
+
+  const guildId = message.guildId ?? activeGuildId;
+  if (!guildId) return "";
+  const roleIds = message.author.roleIds ?? memberRoleIdsByGuildId[guildId]?.[message.author.id] ?? [];
+  const color = resolvePrimaryRoleColor(rolesByGuildId[guildId] ?? [], roleIds);
+  return color ? ansiTrueColor(color) : "";
+}
+
+export function resolvePrimaryRoleColor(roles: readonly DiscordRole[], roleIds: readonly string[]): number | null {
+  const roleIdsSet = new Set(roleIds);
+  let selected: DiscordRole | null = null;
+  for (const role of roles) {
+    if (!roleIdsSet.has(role.id) || role.color === 0) continue;
+    if (!selected || role.position > selected.position) selected = role;
+  }
+  return selected?.color ?? null;
 }
 
 function shouldGroupMessages(previous: DiscordMessage, message: DiscordMessage): boolean {

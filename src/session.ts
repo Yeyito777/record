@@ -20,6 +20,7 @@ import {
   fetchChannelMessages,
   fetchDirectMessages,
   fetchGuildChannels,
+  fetchGuildRoles,
   fetchGuilds,
   sendChannelMessage,
   setGuildMuted,
@@ -39,12 +40,16 @@ import {
   loadCachedDirectMessages,
   loadCachedGuildChannels,
   loadCachedGuilds,
+  loadCachedGuildRoles,
   loadCachedMemberList,
+  loadCachedMemberRoles,
   loadCachedNotifications,
   saveCachedDirectMessages,
   saveCachedGuildChannels,
+  saveCachedGuildRoles,
   saveCachedGuilds,
   saveCachedMemberList,
+  saveCachedMemberRoles,
   saveCachedNotifications,
 } from "./datacache";
 import { AppGatewayClient } from "./appgateway";
@@ -221,6 +226,7 @@ function shouldNotifyForIncomingMessage(state: AppState, message: DiscordMessage
 }
 
 function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
+  recordMessageRoleIds(state, message, guildIdForChannel(state, message));
   clearTypingUser(state.typing, message.channelId, message.author.id);
   const shouldNotify = shouldNotifyForIncomingMessage(state, message);
   if (shouldNotify) {
@@ -242,6 +248,10 @@ function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, me
 }
 
 function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, patch: DiscordMessagePatch): void {
+  if (patch.author?.roleIds) {
+    const guildId = patch.guildId ?? state.channelList.channels.find((channel) => channel.id === patch.channelId)?.guildId ?? null;
+    recordMemberRoleIds(state, guildId, patch.author.id, patch.author.roleIds);
+  }
   maybeResortDirectMessages(state, patch.channelId, patch.id);
   if (state.timeline.channelId === patch.channelId) {
     patchTimelineMessage(state.timeline, patch);
@@ -290,6 +300,55 @@ function persistNotifications(state: AppState): void {
   if (accountId) {
     saveCachedNotifications(accountId, state.notifications);
   }
+}
+
+function recordMemberRoleIds(state: AppState, guildId: string | null | undefined, userId: string, roleIds: readonly string[] | undefined): boolean {
+  if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID || !roleIds) return false;
+  const byUserId = state.memberRoleIdsByGuildId[guildId] ??= {};
+  const previous = byUserId[userId] ?? [];
+  if (previous.length === roleIds.length && previous.every((roleId, index) => roleId === roleIds[index])) return false;
+  byUserId[userId] = [...roleIds];
+  state.memberRoleCacheVersion += 1;
+  const accountId = currentAccountId(state);
+  if (accountId) saveCachedMemberRoles(accountId, guildId, byUserId);
+  return true;
+}
+
+function withMessageGuildId(message: DiscordMessage, guildId: string | null | undefined): DiscordMessage {
+  return message.guildId || !guildId || guildId === DIRECT_MESSAGES_GUILD_ID ? message : { ...message, guildId };
+}
+
+function recordMessageRoleIds(state: AppState, message: DiscordMessage, fallbackGuildId: string | null | undefined): boolean {
+  return recordMemberRoleIds(state, message.guildId ?? fallbackGuildId, message.author.id, message.author.roleIds);
+}
+
+function recordMessagesRoleIds(state: AppState, messages: readonly DiscordMessage[], fallbackGuildId: string | null | undefined): boolean {
+  let changed = false;
+  for (const message of messages) {
+    changed = recordMessageRoleIds(state, message, fallbackGuildId) || changed;
+  }
+  return changed;
+}
+
+function recordMemberListRoleIds(state: AppState, guildId: string, members: readonly DiscordGuildMember[]): boolean {
+  let changed = false;
+  for (const member of members) {
+    changed = recordMemberRoleIds(state, guildId, member.id, member.roleIds) || changed;
+  }
+  return changed;
+}
+
+function loadGuildRolesInBackground(state: AppState, token: string, guildId: string, effects: SessionEffects): void {
+  if (guildId === DIRECT_MESSAGES_GUILD_ID || state.guildRolesByGuildId[guildId]) return;
+  void fetchGuildRoles(token, guildId).then((roles) => {
+    state.guildRolesByGuildId[guildId] = roles;
+    const accountId = currentAccountId(state);
+    if (accountId) saveCachedGuildRoles(accountId, guildId, roles);
+    state.memberRoleCacheVersion += 1;
+    effects.scheduleRender();
+  }).catch(() => {
+    // Role colors are opportunistic. Missing role metadata should not disrupt chat.
+  });
 }
 
 function persistSidebarGuilds(state: AppState): void {
@@ -358,9 +417,16 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
   appGateway = new AppGatewayClient(token, {
     onCurrentUserRoleIds: (roleIdsByGuildId) => {
       state.roleIdsByGuildId = roleIdsByGuildId;
+      if (state.auth.user) {
+        for (const [guildId, roleIds] of Object.entries(roleIdsByGuildId)) {
+          recordMemberRoleIds(state, guildId, state.auth.user.id, roleIds);
+        }
+      }
     },
     onCurrentUserGuildRoles: (guildId, roleIds) => {
       state.roleIdsByGuildId[guildId] = roleIds;
+      if (state.auth.user) recordMemberRoleIds(state, guildId, state.auth.user.id, roleIds);
+      effects.scheduleRender();
     },
     onGuildMuteSettings: (mutedByGuildId) => {
       applyGuildMuteSettings(state, mutedByGuildId);
@@ -425,6 +491,9 @@ export function clearReadOnlyClient(state: AppState): void {
   clearTimeline(state.timeline);
   replaceNotifications(state.notifications, []);
   state.roleIdsByGuildId = {};
+  state.guildRolesByGuildId = {};
+  state.memberRoleIdsByGuildId = {};
+  state.memberRoleCacheVersion += 1;
   focusPrompt(state);
 }
 
@@ -535,11 +604,14 @@ export function syncMemberListForCurrentChannel(state: AppState, effects: Sessio
           return;
         }
         debugLog("member_list.members", { guildId, channelId, requestId, attempt, count: members.length });
+        const roleIdsChanged = recordMemberListRoleIds(state, guildId, members);
         cacheMemberList(state.memberList, guildId, channelId, members);
         const accountId = currentAccountId(state);
         if (accountId) saveCachedMemberList(accountId, guildId, channelId, members);
         if (state.memberList.open) {
           setMemberListMembers(state.memberList, guildId, channelId, members, state.auth.user?.id ?? null);
+          effects.scheduleRender();
+        } else if (roleIdsChanged) {
           effects.scheduleRender();
         }
       },
@@ -614,6 +686,9 @@ export async function bootstrapReadOnlyClient(
   if (accountId) {
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
     const cachedGuilds = loadCachedGuilds(accountId) ?? [];
+    state.guildRolesByGuildId = loadCachedGuildRoles(accountId);
+    state.memberRoleIdsByGuildId = loadCachedMemberRoles(accountId);
+    state.memberRoleCacheVersion += 1;
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
       setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
       applyCachedNotifications(state);
@@ -652,6 +727,9 @@ export async function bootstrapReadOnlyClient(
     if (accountId) {
       saveCachedDirectMessages(accountId, directMessages);
       saveCachedGuilds(accountId, sidebarCachedGuilds(state.sidebar));
+    }
+    for (const guild of guilds) {
+      loadGuildRolesInBackground(state, token, guild.id, effects);
     }
     startAppGateway(state, token, effects);
 
@@ -801,12 +879,16 @@ export async function loadChannelMessages(
   state.timeline.loadingOlder = false;
   setNotice(state, "", "muted");
   syncMemberListForCurrentChannel(state, effects);
+  const guildId = state.channelList.activeChannel?.guildId ?? null;
+  if (guildId) loadGuildRolesInBackground(state, token, guildId, effects);
   effects.scheduleRender();
 
   try {
-    const messages = await fetchChannelMessages(token, channelId, MESSAGE_PAGE_LIMIT);
+    const fetchedMessages = await fetchChannelMessages(token, channelId, MESSAGE_PAGE_LIMIT);
     if (requestId !== state.timeline.requestId) return;
 
+    const messages = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
+    recordMessagesRoleIds(state, messages, guildId);
     setTimelineMessages(state.timeline, channelId, messages, { hasOlder: messages.length >= MESSAGE_PAGE_LIMIT });
     const latestMessage = messages.at(-1);
     if (latestMessage) {
@@ -843,7 +925,11 @@ export async function loadOlderChannelMessages(
     const olderMessages = await fetchChannelMessages(token, channelId, MESSAGE_PAGE_LIMIT, oldestMessageId);
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
 
-    const deduped = olderMessages.filter((message) => !existingIds.has(message.id));
+    const guildId = state.channelList.activeChannel?.guildId ?? null;
+    const deduped = olderMessages
+      .filter((message) => !existingIds.has(message.id))
+      .map((message) => withMessageGuildId(message, guildId));
+    recordMessagesRoleIds(state, deduped, guildId);
     prependTimelineMessages(state.timeline, deduped, width, { hasOlder: olderMessages.length >= MESSAGE_PAGE_LIMIT });
     effects.scheduleRender();
   } catch (error) {
@@ -957,6 +1043,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
   void (async () => {
     try {
       const message = await sendChannelMessage(token, channelId, content, { reply: replyOptions, uploads });
+      recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
       if (state.timeline.channelId === channelId) {
         replaceTimelineMessage(state.timeline, localMessageId, message);
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;

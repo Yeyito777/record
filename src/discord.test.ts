@@ -277,6 +277,27 @@ describe("discord helpers", () => {
     });
   });
 
+  test("maps gateway message member roles onto authors", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([{
+        id: "message-1",
+        channel_id: "channel-1",
+        guild_id: "guild-1",
+        content: "hello",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        member: { roles: ["role-1", "role-2"] },
+        attachments: [],
+        embeds: [],
+      }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.author.roleIds).toEqual(["role-1", "role-2"]);
+  });
+
   test("uses real display names instead of server nicknames for message authors", async () => {
     globalThis.fetch = (async () => {
       return new Response(JSON.stringify([{

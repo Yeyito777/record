@@ -2,10 +2,11 @@
  * Right-hand server member list panel.
  */
 
-import { DIRECT_MESSAGES_GUILD_ID, type DiscordGuildMember } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, type DiscordGuildMember, type DiscordRole } from "./discord";
 import { loadingLabel } from "./loading";
 import { padRight, sliceByWidth, termWidth, truncate, truncateToWidth } from "./textwidth";
-import { theme } from "./theme";
+import { ansiTrueColor, theme } from "./theme";
+import { resolvePrimaryRoleColor } from "./timeline";
 
 export const MEMBER_LIST_WIDTH = 28;
 
@@ -213,11 +214,25 @@ function messageToneColor(tone: "muted" | "error"): string {
   return tone === "error" ? theme.error : theme.muted;
 }
 
+function memberRoleColor(
+  guildId: string | null,
+  member: DiscordGuildMember,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+): string | null {
+  if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return null;
+  const roleIds = member.roleIds ?? memberRoleIdsByGuildId[guildId]?.[member.id] ?? [];
+  const color = resolvePrimaryRoleColor(rolesByGuildId[guildId] ?? [], roleIds);
+  return color ? ansiTrueColor(color) : null;
+}
+
 export function renderMemberList(
   memberList: MemberListState,
   totalRows: number,
   loadingFrameIndex = 0,
   focused = false,
+  rolesByGuildId: Record<string, DiscordRole[]> = {},
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>> = {},
 ): string[] {
   if (!memberList.open) return [];
 
@@ -271,7 +286,8 @@ export function renderMemberList(
 
     const isViewerInDm = memberList.guildId === DIRECT_MESSAGES_GUILD_ID && row.member.id === memberList.viewerId;
     const bg = row.selected ? theme.sidebarSelBg : theme.sidebarBg;
-    const fg = isViewerInDm ? theme.accent : row.selected ? theme.text : theme.muted;
+    const roleColor = memberRoleColor(memberList.guildId, row.member, rolesByGuildId, memberRoleIdsByGuildId);
+    const fg = isViewerInDm ? theme.accent : roleColor ?? (row.selected ? theme.text : theme.muted);
     const prefix = row.selected ? "▸ " : "  ";
     const maxLabelWidth = Math.max(0, innerWidth - 2);
     const label = truncate(memberLabel(row.member), maxLabelWidth);

@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
 import { configDir } from "./config";
-import type { DiscordChannel, DiscordGuild, DiscordGuildMember } from "./discord";
+import type { DiscordChannel, DiscordGuild, DiscordGuildMember, DiscordRole } from "./discord";
 import type { NotificationState } from "./notifications";
 
 interface AccountDataCache {
@@ -15,6 +15,8 @@ interface AccountDataCache {
   directMessages?: DiscordChannel[];
   guildChannels?: Record<string, DiscordChannel[]>;
   memberLists?: Record<string, DiscordGuildMember[]>;
+  guildRoles?: Record<string, DiscordRole[]>;
+  memberRoles?: Record<string, Record<string, string[]>>;
   notifications?: NotificationState;
 }
 
@@ -51,9 +53,11 @@ function saveCacheFile(cache: DataCacheFile): void {
 }
 
 function accountCache(cache: DataCacheFile, accountId: string): AccountDataCache {
-  cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {}, memberLists: {} };
+  cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {}, memberLists: {}, guildRoles: {}, memberRoles: {} };
   cache.accounts[accountId].guildChannels ??= {};
   cache.accounts[accountId].memberLists ??= {};
+  cache.accounts[accountId].guildRoles ??= {};
+  cache.accounts[accountId].memberRoles ??= {};
   return cache.accounts[accountId];
 }
 
@@ -112,6 +116,35 @@ export function saveCachedMemberList(
   const account = accountCache(cache, accountId);
   account.memberLists ??= {};
   account.memberLists[memberListCacheKey(guildId, channelId)] = members;
+  account.savedAt = Date.now();
+  saveCacheFile(cache);
+}
+
+export function loadCachedGuildRoles(accountId: string): Record<string, DiscordRole[]> {
+  return { ...(loadCacheFile().accounts[accountId]?.guildRoles ?? {}) };
+}
+
+export function saveCachedGuildRoles(accountId: string, guildId: string, roles: DiscordRole[]): void {
+  const cache = loadCacheFile();
+  const account = accountCache(cache, accountId);
+  account.guildRoles ??= {};
+  account.guildRoles[guildId] = roles;
+  account.savedAt = Date.now();
+  saveCacheFile(cache);
+}
+
+export function loadCachedMemberRoles(accountId: string): Record<string, Record<string, string[]>> {
+  const cached = loadCacheFile().accounts[accountId]?.memberRoles ?? {};
+  return Object.fromEntries(
+    Object.entries(cached).map(([guildId, members]) => [guildId, { ...members }]),
+  );
+}
+
+export function saveCachedMemberRoles(accountId: string, guildId: string, rolesByUserId: Record<string, string[]>): void {
+  const cache = loadCacheFile();
+  const account = accountCache(cache, accountId);
+  account.memberRoles ??= {};
+  account.memberRoles[guildId] = { ...rolesByUserId };
   account.savedAt = Date.now();
   saveCacheFile(cache);
 }

@@ -264,6 +264,8 @@ export function render(state: AppState): void {
       rows,
       state.loadingFrameIndex,
       state.panelFocus === "memberlist",
+      state.guildRolesByGuildId,
+      state.memberRoleIdsByGuildId,
     )
     : [];
 
@@ -340,6 +342,10 @@ export function render(state: AppState): void {
     state.timeline,
     state.auth.user?.id ?? null,
     state.channelList.activeChannel?.guildId === DIRECT_MESSAGES_GUILD_ID,
+    state.guildRolesByGuildId,
+    state.memberRoleIdsByGuildId,
+    state.memberRoleCacheVersion,
+    state.channelList.activeChannel?.guildId ?? null,
   );
   const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, state.notice, state.loadingFrameIndex);
 

@@ -76,6 +76,7 @@ export interface DiscordMessageAuthorResponse {
 
 export interface DiscordMessageMemberResponse {
   nick?: string | null;
+  roles?: string[];
 }
 
 export interface DiscordAttachmentResponse {
@@ -174,11 +175,18 @@ export interface DiscordMessageAttachment {
   url: string;
 }
 
+export interface DiscordRole {
+  id: string;
+  color: number;
+  position: number;
+}
+
 export interface DiscordGuildMember {
   id: string;
   username: string;
   displayName: string;
   bot: boolean;
+  roleIds?: string[];
 }
 
 export interface DiscordMessageReply {
@@ -212,6 +220,7 @@ export interface DiscordMessage {
     username: string;
     displayName: string;
     bot: boolean;
+    roleIds?: string[];
   };
   reply: DiscordMessageReply | null;
   call: DiscordMessageCall | null;
@@ -573,6 +582,21 @@ export async function fetchGuildChannels(token: string, guildId: string): Promis
   );
 }
 
+interface DiscordRoleResponse {
+  id: string;
+  color?: number;
+  position?: number;
+}
+
+export async function fetchGuildRoles(token: string, guildId: string): Promise<DiscordRole[]> {
+  const roles = await apiGetJson<DiscordRoleResponse[]>(token, `/guilds/${guildId}/roles`);
+  return roles.map((role) => ({
+    id: role.id,
+    color: typeof role.color === "number" ? role.color : 0,
+    position: typeof role.position === "number" ? role.position : 0,
+  }));
+}
+
 export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> & { id: string; channel_id: string }): DiscordMessagePatch {
   const hasReplyFields = message.referenced_message !== undefined || message.message_reference !== undefined;
   return {
@@ -595,6 +619,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
       username: message.author.username,
       displayName: userDisplayName(message.author),
       bot: Boolean(message.author.bot),
+      roleIds: message.member?.roles?.filter((roleId): roleId is string => typeof roleId === "string"),
     } : undefined,
     reply: hasReplyFields
       ? mapReplyPreview({
@@ -644,7 +669,9 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
     mentionUserIds: patch.mentionUserIds ?? message.mentionUserIds,
     timestamp: patch.timestamp ?? message.timestamp,
     editedTimestamp: patch.editedTimestamp !== undefined ? patch.editedTimestamp : message.editedTimestamp,
-    author: patch.author ?? message.author,
+    author: patch.author
+      ? { ...patch.author, roleIds: patch.author.roleIds ?? message.author.roleIds }
+      : message.author,
     reply: patch.reply !== undefined ? patch.reply : message.reply,
     call: patch.call !== undefined ? patch.call : message.call,
     attachments: patch.attachments ?? message.attachments,
@@ -671,6 +698,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
       username: "unknown",
       displayName: "Unknown",
       bot: false,
+      roleIds: undefined,
     },
     reply: patch.reply ?? null,
     call: patch.call ?? null,

@@ -5,7 +5,7 @@
 import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
 import type { SavedLogins } from "./config";
-import type { DiscordIdentity } from "./discord";
+import type { DiscordIdentity, DiscordRole } from "./discord";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
 import { createMemberListState, type MemberListState } from "./memberlist";
@@ -74,6 +74,9 @@ export interface AppState {
   notifications: NotificationState;
   replyTarget: ReplyTarget | null;
   roleIdsByGuildId: Record<string, string[]>;
+  guildRolesByGuildId: Record<string, DiscordRole[]>;
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
+  memberRoleCacheVersion: number;
   auth: AuthState;
   notice: Notice;
   loadingFrameIndex: number;
@@ -105,6 +108,9 @@ export function createInitialState(initialToken: string | null, path: string, in
     notifications: createNotificationState(),
     replyTarget: null,
     roleIdsByGuildId: {},
+    guildRolesByGuildId: {},
+    memberRoleIdsByGuildId: {},
+    memberRoleCacheVersion: 0,
     auth: {
       status: "idle",
       user: null,

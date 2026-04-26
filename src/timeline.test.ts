@@ -9,7 +9,7 @@ import {
   setTimelineRenderContext,
   startLoadingOlderMessages,
 } from "./timeline";
-import { dmAuthorColor, theme } from "./theme";
+import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { termWidth } from "./textwidth";
 import type { DiscordMessage } from "./discord";
 
@@ -24,11 +24,14 @@ function message(
     call?: DiscordMessage["call"];
     timestamp?: number;
     type?: number;
+    guildId?: string | null;
+    roleIds?: string[];
   } = {},
 ): DiscordMessage {
   return {
     id,
     channelId: "channel-1",
+    guildId: options.guildId,
     type: options.type ?? 0,
     timestamp: options.timestamp ?? Date.UTC(2026, 0, 1, 12, 0, 0),
     editedTimestamp: null,
@@ -41,6 +44,7 @@ function message(
       username: "tester",
       displayName: options.authorName ?? "Tester",
       bot: options.bot ?? false,
+      roleIds: options.roleIds,
     },
     reply: options.reply ?? null,
     call: options.call ?? null,
@@ -487,6 +491,92 @@ describe("timeline rendering", () => {
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines).not.toContain("(empty message)");
     expect(plainLines[1]).toContain("[stickers] catjam");
+  });
+
+  test("renders guild authors with their highest colored role", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hello", {
+      authorId: "user-1",
+      authorName: "Alice",
+      guildId: "guild-1",
+      roleIds: ["role-low", "role-high"],
+    })]);
+    setTimelineRenderContext(
+      timeline,
+      "viewer",
+      false,
+      { "guild-1": [
+        { id: "role-low", color: 0xff0000, position: 1 },
+        { id: "role-high", color: 0x00ff00, position: 3 },
+      ] },
+      {},
+      1,
+    );
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lines[0]).toContain(ansiTrueColor(0x00ff00));
+    expect(rendered.lines[0]).not.toContain(ansiTrueColor(0xff0000));
+  });
+
+  test("renders guild authors with active channel guild when REST messages omit guild_id", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hello", {
+      authorId: "user-1",
+      authorName: "Alice",
+    })]);
+    setTimelineRenderContext(
+      timeline,
+      "viewer",
+      false,
+      { "guild-1": [{ id: "role-1", color: 0x8844ff, position: 1 }] },
+      { "guild-1": { "user-1": ["role-1"] } },
+      1,
+      "guild-1",
+    );
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lines[0]).toContain(ansiTrueColor(0x8844ff));
+  });
+
+  test("renders guild authors with cached member role ids", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hello", {
+      authorId: "user-1",
+      authorName: "Alice",
+      guildId: "guild-1",
+    })]);
+    setTimelineRenderContext(
+      timeline,
+      "viewer",
+      false,
+      { "guild-1": [{ id: "role-1", color: 0x3366ff, position: 1 }] },
+      { "guild-1": { "user-1": ["role-1"] } },
+      1,
+    );
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lines[0]).toContain(ansiTrueColor(0x3366ff));
   });
 
   test("renders other DM authors with deterministic colors", () => {
