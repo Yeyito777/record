@@ -50,6 +50,7 @@ import {
 } from "./editor-operations";
 import { getVisualRange } from "./editor-selection";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
+import { getSymbol } from "./symbols";
 import {
   keyString,
   resetPending,
@@ -378,6 +379,14 @@ function handlePaste(editor: EditorState, text: string): EditorAction {
 }
 
 function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
+  // Symbol keys (Ctrl+number row → F14-F24 from st). Only insert them from
+  // prompt insert mode; in normal/visual/history contexts they stay inert.
+  const sym = getSymbol(key);
+  if (sym) {
+    insertText(editor, sym);
+    return "handled";
+  }
+
   switch (key.type) {
     case "char":
       if (key.char) insertText(editor, key.char);

@@ -64,6 +64,25 @@ describe("editor", () => {
     expect(editor.buffer).toBe("hello\nx");
   });
 
+  test("symbol function keys insert only in insert mode", () => {
+    const editor = createEditorState("ab", "insert");
+    editor.cursor = 1;
+
+    handleEditorKey(editor, { type: "f14" });
+    handleEditorKey(editor, { type: "f15" });
+    handleEditorKey(editor, { type: "f16" });
+    handleEditorKey(editor, { type: "f22" });
+    handleEditorKey(editor, { type: "f23" });
+    handleEditorKey(editor, { type: "f24" });
+
+    expect(editor.buffer).toBe("a←•→✗✓—b");
+
+    editor.mode = "normal";
+    const before = editor.buffer;
+    handleEditorKey(editor, { type: "f14" });
+    expect(editor.buffer).toBe(before);
+  });
+
   test("gg and G return scroll actions in prompt normal mode", () => {
     const editor = createEditorState("hello", "normal");
 

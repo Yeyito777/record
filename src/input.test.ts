@@ -58,4 +58,13 @@ describe("input parser", () => {
   test("parses Shift+Enter from kitty CSI-u", () => {
     expect(parseInput("\x1b[13;2u")).toEqual([{ type: "shift-enter" }]);
   });
+
+  test("parses st ctrl-number-row symbol function keys", () => {
+    expect(parseInput("\x1b[1;2Q")).toEqual([{ type: "f14" }]);
+    expect(parseInput("\x1b[1;2R")).toEqual([{ type: "f15" }]);
+    expect(parseInput("\x1b[1;2S")).toEqual([{ type: "f16" }]);
+    expect(parseInput("\x1b[21;2~")).toEqual([{ type: "f22" }]);
+    expect(parseInput("\x1b[23;2~")).toEqual([{ type: "f23" }]);
+    expect(parseInput("\x1b[24;2~")).toEqual([{ type: "f24" }]);
+  });
 });
