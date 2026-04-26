@@ -5,12 +5,16 @@ import {
   ackChannelMessage,
   fetchChannelMessages,
   applyDiscordMessagePatch,
+  buildGuildOrderSettingsPatch,
+  extractGuildOrderFromUserSettings,
   fetchDirectMessages,
+  fetchGuilds,
   formatChannelName,
   isDirectMessageChannel,
   mapDiscordMessagePatch,
   sendChannelMessage,
   setGuildMuted,
+  updateGuildSidebarOrder,
 } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -45,6 +49,86 @@ describe("discord helpers", () => {
     expect(isDirectMessageChannel(dm)).toBe(true);
     expect(formatChannelName(dm)).toBe("Alice");
     expect(formatChannelName(guildChannel)).toBe("#general");
+  });
+
+  test("extracts Discord sidebar guild order from user settings", () => {
+    expect(extractGuildOrderFromUserSettings({
+      guild_folders: [
+        { id: null, guild_ids: ["guild-2"] },
+        { id: "folder-1", guild_ids: ["guild-3", "guild-1"] },
+      ],
+      guild_positions: ["ignored"],
+    })).toEqual(["guild-2", "guild-3", "guild-1"]);
+
+    expect(extractGuildOrderFromUserSettings({ guild_positions: ["guild-4", "guild-5"] })).toEqual(["guild-4", "guild-5"]);
+  });
+
+  test("builds a guild folder patch for optimistic sidebar moves", () => {
+    const patch = buildGuildOrderSettingsPatch({
+      guild_folders: [
+        { id: null, name: null, color: null, guild_ids: ["guild-1"] },
+        { id: "folder-1", name: "Folder", color: 123, guild_ids: ["guild-2", "guild-3"] },
+      ],
+    }, ["guild-2", "guild-1", "guild-3"]);
+
+    expect(patch).toEqual({
+      guild_folders: [
+        { id: null, name: null, color: null, guild_ids: ["guild-2"] },
+        { id: "folder-1", name: "Folder", color: 123, guild_ids: ["guild-1", "guild-3"] },
+      ],
+    });
+  });
+
+  test("patches Discord user settings when updating guild sidebar order", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      requests.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (method === "GET") {
+        return new Response(JSON.stringify({
+          guild_folders: [
+            { id: null, name: null, color: null, guild_ids: ["guild-1"] },
+            { id: null, name: null, color: null, guild_ids: ["guild-2"] },
+          ],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await updateGuildSidebarOrder("token", ["guild-2", "guild-1"]);
+
+    const patch = requests.find((request) => request.method === "PATCH");
+    expect(patch?.url).toContain("/users/@me/settings");
+    expect(patch?.body).toEqual({
+      guild_folders: [
+        { id: null, name: null, color: null, guild_ids: ["guild-2"] },
+        { id: null, name: null, color: null, guild_ids: ["guild-1"] },
+      ],
+    });
+  });
+
+  test("sorts guilds by Discord sidebar settings", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/users/@me/settings")) {
+        return new Response(JSON.stringify({
+          guild_folders: [{ id: null, guild_ids: ["guild-2", "guild-1"] }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify([
+        { id: "guild-1", name: "One", icon: null },
+        { id: "guild-2", name: "Two", icon: null },
+        { id: "guild-3", name: "Three", icon: null },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const guilds = await fetchGuilds("token");
+
+    expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(true);
+    expect(guilds.map((guild) => guild.id)).toEqual(["guild-2", "guild-1", "guild-3"]);
   });
 
   test("sorts direct messages by most recent last_message_id", async () => {
@@ -112,7 +196,7 @@ describe("discord helpers", () => {
     expect(messages[0]?.reply).toEqual({
       messageId: "message-0",
       authorId: "user-2",
-      authorDisplayName: "Alicia",
+      authorDisplayName: "Alice",
       timestamp: Date.parse("2026-01-01T11:59:00.000Z"),
       summary: "hello there · [attachments] cat.png · [embeds] 1",
     });
@@ -191,6 +275,26 @@ describe("discord helpers", () => {
       endedTimestamp: Date.parse("2026-01-01T12:03:04.000Z"),
       participantIds: ["user-1", "user-2"],
     });
+  });
+
+  test("uses real display names instead of server nicknames for message authors", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([{
+        id: "message-1",
+        channel_id: "channel-1",
+        content: "hello",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        member: { nick: "Server Nick" },
+        attachments: [],
+        embeds: [],
+      }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.author.displayName).toBe("Tester");
   });
 
   test("maps partial message updates without clobbering existing fields", () => {

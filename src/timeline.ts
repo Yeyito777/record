@@ -559,7 +559,7 @@ function shouldGroupMessages(previous: DiscordMessage, message: DiscordMessage):
   if (previous.author.id !== message.author.id) return false;
   if (message.reply) return false;
   if (previous.call || message.call || message.type === 3 || previous.type === 3) return false;
-  if (previous.localStatus || message.localStatus) return false;
+  if (previous.localStatus === "failed" || message.localStatus === "failed") return false;
 
   const delta = message.timestamp - previous.timestamp;
   return delta >= 0 && delta <= MESSAGE_GROUP_WINDOW_MS;

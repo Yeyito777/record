@@ -23,6 +23,7 @@ import {
   fetchGuilds,
   sendChannelMessage,
   setGuildMuted,
+  updateGuildSidebarOrder,
   type DiscordMessageAttachment,
   type DiscordMessageReply,
   type SendMessageReplyOptions,
@@ -73,6 +74,7 @@ import {
   clearSidebarData,
   getSelectedSidebarEntry,
   isSidebarGuildMuted,
+  moveSelectedSidebarGuild,
   setSidebarGuildMuted,
   setSidebarGuilds,
   sidebarCachedGuilds,
@@ -108,6 +110,7 @@ let memberListGateway: MemberListGatewayClient | null = null;
 let memberListGatewayToken: string | null = null;
 let appGateway: AppGatewayClient | null = null;
 let appGatewayToken: string | null = null;
+let guildOrderMutationId = 0;
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
   const members: DiscordGuildMember[] = [];
@@ -1014,6 +1017,41 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
     persistSidebarGuilds(state);
     persistNotifications(state);
     setNotice(state, `Failed to ${nextMuted ? "mute" : "unmute"} ${guild?.name ?? "server"}: ${error instanceof Error ? error.message : String(error)}`, "error");
+    effects.scheduleRender();
+  });
+}
+
+export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects, direction: "up" | "down"): void {
+  const token = state.auth.savedToken;
+  if (!token) {
+    setNotice(state, "Login required to reorder servers.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  const previousSelectedIndex = state.sidebar.selectedIndex;
+  const move = moveSelectedSidebarGuild(state.sidebar, state.channelList.channels, direction);
+  if (!move) {
+    setNotice(state, "Select a server row that can move.", "muted");
+    effects.scheduleRender();
+    return;
+  }
+
+  persistSidebarGuilds(state);
+  effects.scheduleRender();
+
+  const mutationId = ++guildOrderMutationId;
+  const guildOrder = sidebarCachedGuilds(state.sidebar).map((guild) => guild.id);
+  void updateGuildSidebarOrder(token, guildOrder).catch((error) => {
+    if (mutationId !== guildOrderMutationId) return;
+    state.sidebar.guilds = move.previousGuilds;
+    state.sidebar.selectedIndex = previousSelectedIndex;
+    persistSidebarGuilds(state);
+    setNotice(
+      state,
+      `Failed to move ${move.guild.name || "server"}: ${error instanceof Error ? error.message : String(error)}`,
+      "error",
+    );
     effects.scheduleRender();
   });
 }

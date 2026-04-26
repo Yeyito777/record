@@ -14,6 +14,7 @@ import {
   moveSidebarSelectionToPrevCategory,
   moveSidebarSelectionToPrevDirectMessage,
   moveSidebarSelectionToPrevGuild,
+  moveSelectedSidebarGuild,
   renderSidebar,
   setSidebarGuilds,
   SIDEBAR_WIDTH,
@@ -152,6 +153,35 @@ describe("sidebar state", () => {
 
     expect(sidebar.activeGuildId).toBeNull();
     expect(sidebar.expandedGuildId).toBeNull();
+  });
+
+  test("moves selected guilds optimistically without crossing direct messages", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "Guild One", icon: null },
+      { id: "guild-2", name: "Guild Two", icon: null },
+      { id: "guild-3", name: "Guild Three", icon: null },
+    ]);
+    sidebar.selectedIndex = 2;
+
+    const movedUp = moveSelectedSidebarGuild(sidebar, [], "up");
+    expect(movedUp?.guild.id).toBe("guild-2");
+    expect(sidebar.guilds.map((guild) => guild.id)).toEqual([
+      DIRECT_MESSAGES_GUILD_ID,
+      "guild-2",
+      "guild-1",
+      "guild-3",
+    ]);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("guild-2");
+
+    expect(moveSelectedSidebarGuild(sidebar, [], "up")).toBeNull();
+    expect(sidebar.guilds.map((guild) => guild.id)).toEqual([
+      DIRECT_MESSAGES_GUILD_ID,
+      "guild-2",
+      "guild-1",
+      "guild-3",
+    ]);
   });
 
   test("jumps between guilds with brace motions", () => {

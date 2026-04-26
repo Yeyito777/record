@@ -354,6 +354,39 @@ describe("timeline rendering", () => {
     expect(timeline.messages[0]?.localStatus).toBeUndefined();
   });
 
+  test("groups pending local messages with previous sent messages to avoid flicker", () => {
+    const timeline = createTimelineState();
+    const pending = message("local-2", "second", {
+      authorId: "viewer",
+      authorName: "Paramount",
+      timestamp: Date.UTC(2026, 0, 1, 12, 1, 0),
+    });
+    pending.localStatus = "pending";
+    setTimelineMessages(timeline, "channel-1", [
+      message("message-1", "first", {
+        authorId: "viewer",
+        authorName: "Paramount",
+        timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+      }),
+      pending,
+    ]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines.filter((line) => line.includes("Paramount 12:00"))).toHaveLength(1);
+    expect(plainLines).not.toContain("");
+    expect(plainLines[1]).toBe("first");
+    expect(plainLines[2]).toBe("second");
+    expect(rendered.lines[2]).toContain(theme.muted);
+  });
+
   test("renders failed local messages with a visible failure line", () => {
     const timeline = createTimelineState();
     const failed = message("local-1", "try again", { authorId: "viewer", authorName: "Paramount" });

@@ -489,12 +489,10 @@ function initialNotificationCount(
 }
 
 function typingDisplayName(data: Record<string, any>): string {
-  const member = isObject(data.member) ? data.member : null;
   const user = isObject(data.user) ? data.user : null;
-  const nick = member && typeof member.nick === "string" && member.nick.trim() ? member.nick : null;
   const globalName = user && typeof user.global_name === "string" && user.global_name.trim() ? user.global_name : null;
   const username = user && typeof user.username === "string" && user.username.trim() ? user.username : null;
-  return nick ?? globalName ?? username ?? String(data.user_id);
+  return globalName ?? username ?? String(data.user_id);
 }
 
 function createGatewayProperties(): Record<string, unknown> {

@@ -495,7 +495,6 @@ function gatewayMemberFromPayload(payload: unknown): DiscordGuildMember | null {
     return null;
   }
 
-  const nick = typeof payload.nick === "string" && payload.nick.trim() ? payload.nick : null;
   const globalName = typeof payload.user.global_name === "string" && payload.user.global_name.trim()
     ? payload.user.global_name
     : null;
@@ -506,7 +505,7 @@ function gatewayMemberFromPayload(payload: unknown): DiscordGuildMember | null {
   return {
     id: payload.user.id,
     username: payload.user.username,
-    displayName: nick ?? globalName ?? displayName ?? payload.user.username,
+    displayName: globalName ?? displayName ?? payload.user.username,
     bot: Boolean(payload.user.bot),
   };
 }

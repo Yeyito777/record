@@ -34,6 +34,7 @@ import {
   loadChannelMessages,
   loadGuildChannels,
   loadOlderChannelMessages,
+  moveSelectedGuildOrder,
   syncMemberListForCurrentChannel,
   toggleSelectedGuildMute,
 } from "./session";
@@ -583,6 +584,12 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     case "nav_toggle_guild_mute":
       toggleSelectedGuildMute(state, { scheduleRender });
+      return true;
+    case "nav_move_guild_up":
+      moveSelectedGuildOrder(state, { scheduleRender }, "up");
+      return true;
+    case "nav_move_guild_down":
+      moveSelectedGuildOrder(state, { scheduleRender }, "down");
       return true;
     case "nav_select": {
       const token = tokenOrWarn();

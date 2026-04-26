@@ -109,6 +109,40 @@ export function setSidebarGuildMuted(sidebar: SidebarState, guildId: string, mut
   return true;
 }
 
+export interface SidebarGuildMoveResult {
+  guild: DiscordGuild;
+  previousGuilds: DiscordGuild[];
+  nextGuilds: DiscordGuild[];
+}
+
+export function moveSelectedSidebarGuild(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  direction: "up" | "down",
+): SidebarGuildMoveResult | null {
+  const entry = getSelectedSidebarEntry(sidebar, channels);
+  if (entry.kind !== "guild" || entry.guildId === DIRECT_MESSAGES_GUILD_ID) return null;
+
+  const fromIndex = sidebar.guilds.findIndex((guild) => guild.id === entry.guildId);
+  if (fromIndex < 0) return null;
+
+  const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
+  const target = sidebar.guilds[toIndex];
+  if (!target || target.id === DIRECT_MESSAGES_GUILD_ID) return null;
+
+  const previousGuilds = sidebar.guilds.slice();
+  const nextGuilds = sidebar.guilds.slice();
+  nextGuilds[fromIndex] = target;
+  nextGuilds[toIndex] = sidebar.guilds[fromIndex]!;
+  sidebar.guilds = nextGuilds;
+
+  const entries = buildSidebarEntries(sidebar, channels);
+  const selectedIndex = entries.findIndex((candidate) => candidate.kind === "guild" && candidate.guildId === entry.guildId);
+  if (selectedIndex >= 0) sidebar.selectedIndex = selectedIndex;
+
+  return { guild: nextGuilds[toIndex]!, previousGuilds, nextGuilds };
+}
+
 export function applySidebarGuildMuteSettings(sidebar: SidebarState, mutedByGuildId: Record<string, boolean>): void {
   sidebar.guilds = sidebar.guilds.map((guild) => (
     Object.prototype.hasOwnProperty.call(mutedByGuildId, guild.id)

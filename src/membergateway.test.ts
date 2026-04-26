@@ -20,7 +20,7 @@ describe("member gateway member-list ops", () => {
     expect(rows).toHaveLength(4);
     expect(extractGatewayMembers(rows)).toEqual([
       { id: "1", username: "alpha", displayName: "Alpha", bot: false },
-      { id: "2", username: "bravo", displayName: "Bravo Nick", bot: false },
+      { id: "2", username: "bravo", displayName: "bravo", bot: false },
     ]);
   });
 
@@ -55,7 +55,7 @@ describe("member gateway member-list ops", () => {
     ]);
 
     expect(extractGatewayMembers(updated)).toEqual([
-      { id: "3", username: "charlie", displayName: "Charlie Bot", bot: true },
+      { id: "3", username: "charlie", displayName: "charlie", bot: true },
       { id: "2", username: "bravo", displayName: "Bravo", bot: false },
     ]);
   });

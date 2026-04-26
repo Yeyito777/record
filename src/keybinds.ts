@@ -31,6 +31,8 @@ export type Action =
   | "nav_prev_category"
   | "nav_next_category"
   | "nav_toggle_guild_mute"
+  | "nav_move_guild_up"
+  | "nav_move_guild_down"
   | "notification_prev"
   | "notification_next"
   | "paste_image"
@@ -78,6 +80,8 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
   "char:[": "nav_prev_category",
   "char:]": "nav_next_category",
   "char:m": "nav_toggle_guild_mute",
+  "char:e": "nav_move_guild_up",
+  "char:E": "nav_move_guild_down",
 };
 
 export type KeyContext = "prompt" | "navigation";

@@ -38,6 +38,13 @@ interface DiscordGuildResponse {
 
 interface DiscordUserSettingsResponse {
   status?: string | null;
+  guild_folders?: unknown;
+  guild_positions?: unknown;
+}
+
+interface DiscordUserSettingsPatch {
+  guild_folders?: unknown;
+  guild_positions?: string[];
 }
 
 export interface DiscordDMRecipientResponse {
@@ -287,8 +294,12 @@ export function compareSnowflakesDesc(left: string | null | undefined, right: st
   return leftValue > rightValue ? -1 : 1;
 }
 
+function userDisplayName(user: { username: string; global_name?: string | null }): string {
+  return user.global_name ?? user.username;
+}
+
 export function displayNameFromRecipient(recipient: DiscordDMRecipientResponse): string {
-  return recipient.global_name ?? recipient.username;
+  return userDisplayName(recipient);
 }
 
 export function directMessageName(channel: DiscordChannelResponse): string {
@@ -339,9 +350,7 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
     return {
       messageId: message.referenced_message.id,
       authorId: message.referenced_message.author.id,
-      authorDisplayName: message.referenced_message.member?.nick
-        ?? message.referenced_message.author.global_name
-        ?? message.referenced_message.author.username,
+      authorDisplayName: userDisplayName(message.referenced_message.author),
       timestamp: Date.parse(message.referenced_message.timestamp),
       summary: summarizeReplyPreview(
         message.referenced_message.content,
@@ -413,6 +422,116 @@ export function sortGuildChannels(channels: DiscordChannel[]): DiscordChannel[] 
   return channels.slice().sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 }
 
+function isSettingsObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function uniqueStringList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string" || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+export function extractGuildOrderFromUserSettings(settings: unknown): string[] | null {
+  if (!isSettingsObject(settings)) return null;
+
+  const folders = Array.isArray(settings.guild_folders)
+    ? settings.guild_folders
+    : Array.isArray(settings.guildFolders)
+      ? settings.guildFolders
+      : [];
+  const folderOrder: string[] = [];
+  const seen = new Set<string>();
+  for (const folder of folders) {
+    if (!isSettingsObject(folder)) continue;
+    const guildIds = uniqueStringList(folder.guild_ids ?? folder.guildIds);
+    for (const guildId of guildIds) {
+      if (seen.has(guildId)) continue;
+      seen.add(guildId);
+      folderOrder.push(guildId);
+    }
+  }
+  if (folderOrder.length > 0) return folderOrder;
+
+  const positionOrder = uniqueStringList(settings.guild_positions ?? settings.guildPositions);
+  return positionOrder.length > 0 ? positionOrder : null;
+}
+
+export function sortGuildsByUserOrder(guilds: DiscordGuild[], guildOrder: readonly string[] | null | undefined): DiscordGuild[] {
+  if (!guildOrder || guildOrder.length === 0) return guilds;
+  const byGuildId = new Map(guilds.map((guild) => [guild.id, guild]));
+  const ordered: DiscordGuild[] = [];
+  const included = new Set<string>();
+
+  for (const guildId of guildOrder) {
+    const guild = byGuildId.get(guildId);
+    if (!guild || included.has(guildId)) continue;
+    ordered.push(guild);
+    included.add(guildId);
+  }
+
+  for (const guild of guilds) {
+    if (included.has(guild.id)) continue;
+    ordered.push(guild);
+  }
+  return ordered;
+}
+
+async function fetchGuildOrder(token: string): Promise<string[] | null> {
+  const settings = await apiGetJson<DiscordUserSettingsResponse>(token, "/users/@me/settings");
+  return extractGuildOrderFromUserSettings(settings);
+}
+
+export function buildGuildOrderSettingsPatch(settings: unknown, guildOrder: readonly string[]): DiscordUserSettingsPatch {
+  if (!isSettingsObject(settings)) return { guild_positions: [...guildOrder] };
+  const folders = Array.isArray(settings.guild_folders) ? settings.guild_folders : null;
+  if (!folders) return { guild_positions: [...guildOrder] };
+
+  const slots: Array<{ folderIndex: number; guildIndex: number }> = [];
+  for (let folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+    const folder = folders[folderIndex];
+    if (!isSettingsObject(folder) || !Array.isArray(folder.guild_ids)) continue;
+    for (let guildIndex = 0; guildIndex < folder.guild_ids.length; guildIndex++) {
+      slots.push({ folderIndex, guildIndex });
+    }
+  }
+
+  const nextFolders = folders.map((folder) => {
+    if (!isSettingsObject(folder)) return folder;
+    const guildIds = Array.isArray(folder.guild_ids) ? folder.guild_ids.filter((id): id is string => typeof id === "string") : [];
+    return { ...folder, guild_ids: guildIds };
+  });
+
+  for (const [index, guildId] of guildOrder.entries()) {
+    const slot = slots[index];
+    if (!slot) {
+      nextFolders.push({ id: null, name: null, color: null, guild_ids: [guildId] });
+      continue;
+    }
+    const folder = nextFolders[slot.folderIndex];
+    if (isSettingsObject(folder) && Array.isArray(folder.guild_ids)) {
+      folder.guild_ids[slot.guildIndex] = guildId;
+    }
+  }
+
+  return { guild_folders: nextFolders };
+}
+
+export async function updateGuildSidebarOrder(token: string, guildOrder: readonly string[]): Promise<void> {
+  const settings = await apiGetJson<DiscordUserSettingsResponse>(token, "/users/@me/settings");
+  const patch = buildGuildOrderSettingsPatch(settings, guildOrder);
+  await requestJson<unknown>(token, "/users/@me/settings", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
 export async function fetchDirectMessages(token: string): Promise<DiscordChannel[]> {
   const channels = await apiGetJson<DiscordChannelResponse[]>(token, "/users/@me/channels");
   return channels
@@ -422,6 +541,7 @@ export async function fetchDirectMessages(token: string): Promise<DiscordChannel
 }
 
 export async function fetchGuilds(token: string): Promise<DiscordGuild[]> {
+  const guildOrderPromise = fetchGuildOrder(token).catch(() => null);
   const guilds: DiscordGuild[] = [];
   let before: string | null = null;
 
@@ -441,7 +561,7 @@ export async function fetchGuilds(token: string): Promise<DiscordGuild[]> {
     if (!before) break;
   }
 
-  return guilds;
+  return sortGuildsByUserOrder(guilds, await guildOrderPromise);
 }
 
 export async function fetchGuildChannels(token: string, guildId: string): Promise<DiscordChannel[]> {
@@ -473,7 +593,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     author: message.author ? {
       id: message.author.id,
       username: message.author.username,
-      displayName: message.member?.nick ?? message.author.global_name ?? message.author.username,
+      displayName: userDisplayName(message.author),
       bot: Boolean(message.author.bot),
     } : undefined,
     reply: hasReplyFields
