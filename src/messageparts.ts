@@ -22,10 +22,6 @@ export interface MessagePartStyle {
   restore: string;
 }
 
-function attachmentContentType(attachment: DisplayAttachment): string | null {
-  return attachment.contentType ?? attachment.content_type ?? null;
-}
-
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;[^;]*;[^\x1b]*\x1b\\/g;
 const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/gi;
 
@@ -38,26 +34,10 @@ function stripAnsi(text: string): string {
 }
 
 export function formatAttachmentSummary(attachment: DisplayAttachment, style?: MessagePartStyle): string {
-  const contentType = attachmentContentType(attachment);
-  const details = [contentType, formatByteSize(attachment.size ?? 0)].filter(Boolean);
-  const label = styleText(`[${attachmentKind(attachment)}]`, style?.muted, style?.restore);
-  const filename = styleText(attachment.filename, style?.accent, style?.restore);
-  const suffix = details.length > 0
-    ? styleText(` · ${details.join(" · ")}`, style?.muted, style?.restore)
-    : "";
-  return `${label} ${filename}${suffix}`;
-}
-
-function attachmentKind(attachment: DisplayAttachment): string {
-  const type = attachmentContentType(attachment)?.toLowerCase() ?? "";
-  const filename = attachment.filename.toLowerCase();
-  if (type === "image/gif" || filename.endsWith(".gif")) return "gif";
-  if (type.startsWith("image/")) return "image";
-  if (type.startsWith("video/")) return "video";
-  if (type.startsWith("audio/")) return "audio";
-  if (type === "application/pdf" || filename.endsWith(".pdf")) return "pdf";
-  if (/\.(zip|tar|tgz|gz|bz2|xz|7z|rar)$/i.test(filename)) return "archive";
-  return "file";
+  const clip = styleText("📎", style?.muted, style?.restore);
+  const size = formatByteSize(attachment.size ?? 0);
+  const suffix = size ? styleText(` • ${size}`, style?.muted, style?.restore) : "";
+  return `${clip} ${attachment.filename}${suffix}`;
 }
 
 export function formatByteSize(size: number): string {

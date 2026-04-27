@@ -55,8 +55,8 @@ describe("history openable target lookup", () => {
 
   test("maps attachment filenames back to their CDN URL", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
-    state.historyLines = ["[image] cat.png · image/png · 10 B"];
-    state.historyCursor = { row: 0, col: "[image] cat".length };
+    state.historyLines = ["📎 cat.png • 10 B"];
+    state.historyCursor = { row: 0, col: "📎 cat".length };
     state.historyMessageBounds = [{ messageId: "m1", start: 0, end: 1, contentStart: 0, contentEnd: 1 }];
     state.timeline.messages = [baseMessage({
       attachments: [

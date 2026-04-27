@@ -535,10 +535,10 @@ describe("timeline rendering", () => {
 
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines[1]).toBe("files");
-    expect(plainLines[2]).toBe("[image] cat.png · image/png · 1.5 KB");
-    expect(plainLines[3]).toBe("[gif] loop.gif · image/gif · 2.1 MB");
-    expect(plainLines[4]).toBe("[pdf] notes.pdf · application/pdf · 41 KB");
-    expect(rendered.lines[2]).toContain(theme.accent);
+    expect(plainLines[2]).toBe("📎 cat.png • 1.5 KB");
+    expect(plainLines[3]).toBe("📎 loop.gif • 2.1 MB");
+    expect(plainLines[4]).toBe("📎 notes.pdf • 41 KB");
+    expect(rendered.lines[2]).not.toContain(theme.accent);
     expect(rendered.lines[2]).toContain(theme.muted);
   });
 
