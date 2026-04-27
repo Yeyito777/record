@@ -766,10 +766,14 @@ function renderUserMentions(
   activeGuildId: string | null,
   restoreColor: string,
 ): string {
-  const mentionUsers = new Map((message.mentionUsers ?? []).map((user) => [user.id, user]));
-  if (mentionUsers.size === 0) return content;
+  const withBroadcastMentions = content.replace(/(^|[^\w@])@(everyone|here)\b/g, (_raw, prefix: string, mention: string) => (
+    `${prefix}${theme.accent}@${mention}${restoreColor}`
+  ));
 
-  return content.replace(/<@!?(\d+)>/g, (raw, userId: string) => {
+  const mentionUsers = new Map((message.mentionUsers ?? []).map((user) => [user.id, user]));
+  if (mentionUsers.size === 0) return withBroadcastMentions;
+
+  return withBroadcastMentions.replace(/<@!?(\d+)>/g, (raw, userId: string) => {
     const user = mentionUsers.get(userId);
     if (!user) return raw;
     const label = `@${user.displayName}`;

@@ -601,6 +601,24 @@ describe("timeline rendering", () => {
     expect(rendered.lines[0]).toContain(ansiTrueColor(0x3366ff));
   });
 
+  test("renders @everyone and @here in accent color", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "ping @everyone and @here, not test@here", {
+      guildId: "guild-1",
+    })]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[1] ?? "")).toBe("ping @everyone and @here, not test@here");
+    expect(rendered.lines[1]?.match(new RegExp(theme.accent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).toHaveLength(2);
+  });
+
   test("renders user mentions as colored display names in guild messages", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("message-1", "hi <@123> and <@!456>", {
