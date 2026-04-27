@@ -262,7 +262,7 @@ function scrollFocusedPanel(delta: number, visibleRows: number): void {
   }
 
   if (state.chatFocus === "history") {
-    scrollHistoryWithCursor(state, delta, visibleRows);
+    scrollHistoryWithCursor(state, delta < 0 ? 1 : -1, Math.abs(delta), visibleRows);
     if (delta <= 0) maybeLoadOlderHistory();
     scheduleRender();
     return;
@@ -285,7 +285,7 @@ function scrollFocusedPanelLine(delta: number): void {
   }
 
   if (state.chatFocus === "history") {
-    scrollHistoryViewportSticky(state, delta, timelinePageSize());
+    scrollHistoryViewportSticky(state, delta < 0 ? 1 : -1, timelinePageSize());
     if (delta <= 0) maybeLoadOlderHistory();
     scheduleRender();
     return;
@@ -500,12 +500,12 @@ function handleGlobalAction(key: KeyEvent): boolean {
       scrollFocusedPanelLine(1);
       return true;
     case "scroll_half_up": {
-      const amount = Math.max(1, Math.floor(timelinePageSize() / 2));
+      const amount = Math.floor(timelinePageSize() / 2);
       scrollFocusedPanel(-amount, timelinePageSize());
       return true;
     }
     case "scroll_half_down": {
-      const amount = Math.max(1, Math.floor(timelinePageSize() / 2));
+      const amount = Math.floor(timelinePageSize() / 2);
       scrollFocusedPanel(amount, timelinePageSize());
       return true;
     }
@@ -640,12 +640,12 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       focusPromptInsert(key.type === "char" && key.char === "a");
       return true;
     case "nav_up":
-      scrollHistoryWithCursor(state, -1, timelinePageSize());
+      scrollHistoryWithCursor(state, 1, 1, timelinePageSize());
       maybeLoadOlderHistory();
       scheduleRender();
       return true;
     case "nav_down":
-      scrollHistoryWithCursor(state, 1, timelinePageSize());
+      scrollHistoryWithCursor(state, -1, 1, timelinePageSize());
       scheduleRender();
       return true;
     default:

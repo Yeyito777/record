@@ -84,6 +84,69 @@ export function remapRenderedRow(oldRow: number, oldAnchors: string[], newAnchor
   return 0;
 }
 
+interface CursorViewport {
+  totalLines: number;
+  viewportHeight: number;
+  viewStart: number;
+  cursorRow: number;
+}
+
+function maxViewStartFor(totalLines: number, viewportHeight: number): number {
+  return Math.max(0, totalLines - viewportHeight);
+}
+
+function clampViewStart(totalLines: number, viewportHeight: number, viewStart: number): number {
+  return Math.max(0, Math.min(viewStart, maxViewStartFor(totalLines, viewportHeight)));
+}
+
+function ensureCursorRowVisibleInViewport(view: CursorViewport): CursorViewport {
+  const viewportHeight = Math.max(0, view.viewportHeight);
+  const totalLines = Math.max(0, view.totalLines);
+  if (totalLines === 0 || viewportHeight <= 0 || totalLines <= viewportHeight) {
+    return { ...view, totalLines, viewportHeight, viewStart: 0, cursorRow: Math.max(0, Math.min(view.cursorRow, Math.max(0, totalLines - 1))) };
+  }
+
+  const cursorRow = Math.max(0, Math.min(view.cursorRow, totalLines - 1));
+  let viewStart = clampViewStart(totalLines, viewportHeight, view.viewStart);
+  const viewEndExclusive = viewStart + viewportHeight;
+
+  if (cursorRow < viewStart) {
+    viewStart = cursorRow;
+  } else if (cursorRow >= viewEndExclusive) {
+    viewStart = cursorRow - viewportHeight + 1;
+  }
+
+  return { ...view, totalLines, viewportHeight, viewStart: clampViewStart(totalLines, viewportHeight, viewStart), cursorRow };
+}
+
+function scrollLineWithStickyCursorInViewport(view: CursorViewport, dir: number): CursorViewport {
+  const totalLines = Math.max(0, view.totalLines);
+  if (totalLines === 0) return { ...view, totalLines, viewStart: 0, cursorRow: 0 };
+
+  const viewportHeight = Math.max(0, view.viewportHeight);
+  const viewStart = clampViewStart(totalLines, viewportHeight, view.viewStart - dir);
+  const viewEnd = viewStart + viewportHeight - 1;
+  let cursorRow = Math.max(0, Math.min(view.cursorRow, totalLines - 1));
+
+  if (cursorRow < viewStart) cursorRow = viewStart;
+  else if (cursorRow > viewEnd) cursorRow = viewEnd;
+  cursorRow = Math.max(0, Math.min(cursorRow, totalLines - 1));
+
+  return { ...view, totalLines, viewportHeight, viewStart, cursorRow };
+}
+
+function scrollWithCursorInViewport(view: CursorViewport, dir: number, amount: number): CursorViewport {
+  const totalLines = Math.max(0, view.totalLines);
+  if (totalLines === 0) return { ...view, totalLines, viewStart: 0, cursorRow: 0 };
+
+  const lines = dir * amount;
+  const viewportHeight = Math.max(0, view.viewportHeight);
+  const cursorRow = Math.max(0, Math.min(view.cursorRow - lines, totalLines - 1));
+  const viewStart = clampViewStart(totalLines, viewportHeight, view.viewStart - lines);
+
+  return ensureCursorRowVisibleInViewport({ ...view, totalLines, viewportHeight, viewStart, cursorRow });
+}
+
 export function placeHistoryCursorAtVisibleBottom(state: AppState, visibleRows: number): void {
   const lines = state.historyLines;
   if (lines.length === 0) {
@@ -97,19 +160,18 @@ export function placeHistoryCursorAtVisibleBottom(state: AppState, visibleRows: 
 
 export function ensureHistoryCursorVisible(state: AppState, visibleRows: number): void {
   const lines = state.historyLines;
-  if (lines.length === 0 || visibleRows <= 0) return;
+  if (lines.length === 0) return;
 
   const cursor = clampHistoryCursor(state.historyCursor, lines);
   state.historyCursor = cursor;
 
-  const viewStart = state.timeline.scrollOffset;
-  const viewEnd = viewStart + visibleRows - 1;
-
-  if (cursor.row < viewStart) {
-    state.timeline.scrollOffset = cursor.row;
-  } else if (cursor.row > viewEnd) {
-    state.timeline.scrollOffset = Math.max(0, cursor.row - visibleRows + 1);
-  }
+  const next = ensureCursorRowVisibleInViewport({
+    totalLines: lines.length,
+    viewportHeight: visibleRows,
+    viewStart: state.timeline.scrollOffset,
+    cursorRow: cursor.row,
+  });
+  state.timeline.scrollOffset = next.viewStart;
 }
 
 export function shiftHistorySelection(state: AppState, deltaRows: number): void {
@@ -124,22 +186,34 @@ export function shiftHistorySelection(state: AppState, deltaRows: number): void 
   };
 }
 
-export function scrollHistoryWithCursor(state: AppState, linesDelta: number, visibleRows: number): void {
+export function scrollHistoryWithCursor(state: AppState, dir: number, amount: number, visibleRows: number): void {
   const lines = state.historyLines;
-  if (lines.length === 0 || visibleRows <= 0) return;
+  if (lines.length === 0) return;
 
-  const nextRow = Math.max(0, Math.min(state.historyCursor.row + linesDelta, lines.length - 1));
-  state.historyCursor = clampHistoryCursor({ row: nextRow, col: state.historyCursor.col }, lines);
-  state.timeline.scrollOffset = Math.max(0, Math.min(state.timeline.scrollOffset + linesDelta, state.timeline.maxScroll));
-  ensureHistoryCursorVisible(state, visibleRows);
+  const next = scrollWithCursorInViewport({
+    totalLines: lines.length,
+    viewportHeight: visibleRows,
+    viewStart: state.timeline.scrollOffset,
+    cursorRow: state.historyCursor.row,
+  }, dir, amount);
+
+  state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
+  state.timeline.scrollOffset = next.viewStart;
 }
 
-export function scrollHistoryViewportSticky(state: AppState, linesDelta: number, visibleRows: number): void {
+export function scrollHistoryViewportSticky(state: AppState, dir: number, visibleRows: number): void {
   const lines = state.historyLines;
-  if (lines.length === 0 || visibleRows <= 0) return;
+  if (lines.length === 0) return;
 
-  state.timeline.scrollOffset = Math.max(0, Math.min(state.timeline.scrollOffset + linesDelta, state.timeline.maxScroll));
-  ensureHistoryCursorVisible(state, visibleRows);
+  const next = scrollLineWithStickyCursorInViewport({
+    totalLines: lines.length,
+    viewportHeight: visibleRows,
+    viewStart: state.timeline.scrollOffset,
+    cursorRow: state.historyCursor.row,
+  }, dir);
+
+  state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
+  state.timeline.scrollOffset = next.viewStart;
 }
 
 function charLeft(cursor: HistoryCursor, lines: string[]): HistoryCursor {

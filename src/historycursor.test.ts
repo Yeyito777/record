@@ -6,6 +6,8 @@ import {
   handleHistoryVimKey,
   placeHistoryCursorAtVisibleBottom,
   remapRenderedRow,
+  scrollHistoryViewportSticky,
+  scrollHistoryWithCursor,
 } from "./historycursor";
 import { createInitialState } from "./state";
 
@@ -36,6 +38,42 @@ describe("history cursor", () => {
     expect(remapRenderedRow(0, oldAnchors, index)).toBe(3);
     expect(remapRenderedRow(1, oldAnchors, index)).toBe(4);
     expect(remapRenderedRow(2, oldAnchors, index)).toBe(5);
+  });
+
+  test("line scrolling keeps the history cursor sticky until it would leave the viewport", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.historyLines = Array.from({ length: 10 }, (_unused, index) => `line ${index}`);
+    state.timeline.scrollOffset = 5;
+    state.historyCursor = { row: 5, col: 0 };
+
+    scrollHistoryViewportSticky(state, -1, 3);
+
+    expect(state.timeline.scrollOffset).toBe(6);
+    expect(state.historyCursor.row).toBe(6);
+
+    scrollHistoryViewportSticky(state, 1, 3);
+
+    expect(state.timeline.scrollOffset).toBe(5);
+    expect(state.historyCursor.row).toBe(6);
+  });
+
+  test("page scrolling moves the cursor even when the viewport is already at an edge", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.historyLines = Array.from({ length: 20 }, (_unused, index) => `line ${index}`);
+    state.timeline.scrollOffset = 0;
+    state.historyCursor = { row: 3, col: 0 };
+
+    scrollHistoryWithCursor(state, 1, 5, 5);
+
+    expect(state.timeline.scrollOffset).toBe(0);
+    expect(state.historyCursor.row).toBe(0);
+
+    state.timeline.scrollOffset = 15;
+    state.historyCursor = { row: 16, col: 0 };
+    scrollHistoryWithCursor(state, -1, 5, 5);
+
+    expect(state.timeline.scrollOffset).toBe(15);
+    expect(state.historyCursor.row).toBe(19);
   });
 
   test("supports quote text objects in history visual mode", () => {
