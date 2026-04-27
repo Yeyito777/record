@@ -65,8 +65,9 @@ export function scrollLineWithStickyCursorInViewport(view: CursorViewport, dir: 
 }
 
 /**
- * Ctrl+U / Ctrl+D: move the cursor by the requested amount first. The viewport
- * only moves if the new cursor row would be off-screen.
+ * Ctrl+U / Ctrl+D: move the cursor by the requested amount and scroll by the
+ * same amount, then correct the viewport if an edge prevented one side from
+ * moving as far as the other.
  * dir: positive = up/older, negative = down/newer.
  */
 export function scrollByAmountWithCursorInViewport(view: CursorViewport, dir: number, amount: number): CursorViewport {
@@ -76,14 +77,26 @@ export function scrollByAmountWithCursorInViewport(view: CursorViewport, dir: nu
   const lines = dir * amount;
   const viewportHeight = Math.max(0, view.viewportHeight);
   const cursorRow = Math.max(0, Math.min(view.cursorRow - lines, totalLines - 1));
+  const viewStart = clampViewStart(totalLines, viewportHeight, view.viewStart - lines);
 
-  return ensureCursorRowVisibleInViewport({ ...view, totalLines, viewportHeight, cursorRow });
+  return ensureCursorRowVisibleInViewport({ ...view, totalLines, viewportHeight, viewStart, cursorRow });
 }
 
 /**
- * Ctrl+B / Ctrl+F: same cursor-first behavior with a full-page amount.
+ * Ctrl+B / Ctrl+F: page the viewport first. The cursor is not moved by an exact
+ * page amount; Vim only brings it back on-screen if the window motion leaves it
+ * outside the visible area.
  * dir: positive = up/older, negative = down/newer.
  */
 export function scrollPageWithCursorInViewport(view: CursorViewport, dir: number, amount: number): CursorViewport {
-  return scrollByAmountWithCursorInViewport(view, dir, amount);
+  const totalLines = Math.max(0, view.totalLines);
+  if (totalLines === 0) return { ...view, totalLines, viewStart: 0, cursorRow: 0 };
+
+  const lines = dir * amount;
+  const viewportHeight = Math.max(0, view.viewportHeight);
+  const viewStart = clampViewStart(totalLines, viewportHeight, view.viewStart - lines);
+  const viewEnd = viewStart + Math.max(0, viewportHeight) - 1;
+  const cursorRow = Math.max(0, Math.min(Math.max(viewStart, Math.min(view.cursorRow, viewEnd)), totalLines - 1));
+
+  return { ...view, totalLines, viewportHeight, viewStart, cursorRow };
 }

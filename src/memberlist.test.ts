@@ -138,13 +138,13 @@ describe("member list", () => {
     expect(memberList.selectedIndex).toBe(6);
 
     scrollMemberListSelection(memberList, -1, 5, 7, "page");
-    expect(memberList.scrollOffset).toBe(7);
-    expect(memberList.selectedIndex).toBe(11);
+    expect(memberList.scrollOffset).toBe(10);
+    expect(memberList.selectedIndex).toBe(10);
 
     memberList.selectedIndex = 12;
     scrollMemberListSelection(memberList, 1, 5, 7, "page");
-    expect(memberList.scrollOffset).toBe(7);
-    expect(memberList.selectedIndex).toBe(7);
+    expect(memberList.scrollOffset).toBe(5);
+    expect(memberList.selectedIndex).toBe(9);
   });
 
   test("highlights the viewer row and keeps all rows inside the panel width", () => {
