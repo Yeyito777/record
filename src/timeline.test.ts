@@ -542,16 +542,23 @@ describe("timeline rendering", () => {
     expect(rendered.lines[2]).toContain(theme.muted);
   });
 
-  test("renders link embeds with metadata and embed-only messages as previews", () => {
+  test("renders link embeds under their source line in muted color", () => {
     const timeline = createTimelineState();
-    const linkEmbed = message("message-1", "https://example.com/story", { authorName: "Paramount" });
-    linkEmbed.embedsCount = 1;
+    const linkEmbed = message("message-1", "first link https://example.com/story\nsecond link https://youtu.be/video", { authorName: "Paramount" });
+    linkEmbed.embedsCount = 2;
     linkEmbed.embeds = [{
       type: "link",
       title: "Story title",
       url: "https://example.com/story",
       description: null,
       providerName: "Example News",
+      authorName: null,
+    }, {
+      type: "video",
+      title: "Video title",
+      url: "https://youtu.be/video",
+      description: null,
+      providerName: "YouTube",
       authorName: null,
     }];
     const embedOnly = message("message-2", "", { authorName: "Paramount", timestamp: Date.UTC(2026, 0, 1, 12, 7, 0) });
@@ -567,12 +574,15 @@ describe("timeline rendering", () => {
     );
 
     const plainLines = rendered.lines.map(stripAnsi);
-    expect(plainLines).toContain("https://example.com/story");
-    expect(plainLines).toContain("preview: Example News: Story title");
-    expect(plainLines).toContain("embed: preview 1/2");
-    expect(plainLines).toContain("embed: preview 2/2");
-    expect(rendered.lines.some((line) => line.includes(theme.accent))).toBe(true);
-    expect(rendered.lines.some((line) => line.includes(theme.muted))).toBe(true);
+    expect(plainLines).toContain("first link https://example.com/story");
+    const firstLinkRow = plainLines.indexOf("first link https://example.com/story");
+    expect(plainLines[firstLinkRow + 1]).toBe("↳ Example News: Story title");
+    const secondLinkRow = plainLines.indexOf("second link https://youtu.be/video");
+    expect(plainLines[secondLinkRow + 1]).toBe("↳ YouTube: Video title");
+    expect(plainLines).toContain("↳ preview 1/2");
+    expect(plainLines).toContain("↳ preview 2/2");
+    expect(rendered.lines[firstLinkRow + 1]).toContain(theme.muted);
+    expect(rendered.lines[firstLinkRow + 1]).not.toContain(theme.accent);
     expect(plainLines).not.toContain("[embeds] 1");
   });
 

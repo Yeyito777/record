@@ -198,7 +198,7 @@ describe("discord helpers", () => {
       authorId: "user-2",
       authorDisplayName: "Alice",
       timestamp: Date.parse("2026-01-01T11:59:00.000Z"),
-      summary: "hello there · [image] cat.png · image/png · 123 B · embed: Example: Cat story",
+      summary: "hello there · [image] cat.png · image/png · 123 B · ↳ Example: Cat story",
     });
   });
 

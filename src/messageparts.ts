@@ -26,8 +26,15 @@ function attachmentContentType(attachment: DisplayAttachment): string | null {
   return attachment.contentType ?? attachment.content_type ?? null;
 }
 
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;[^;]*;[^\x1b]*\x1b\\/g;
+const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+
 function styleText(text: string, color: string | undefined, restore: string | undefined): string {
   return color && restore ? `${color}${text}${restore}` : text;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, "");
 }
 
 export function formatAttachmentSummary(attachment: DisplayAttachment, style?: MessagePartStyle): string {
@@ -106,21 +113,38 @@ function embedLabel(embed: DisplayEmbed): string {
   return "preview";
 }
 
-export function formatEmbedSummary(embeds: readonly DisplayEmbed[] | number, content: string, style?: MessagePartStyle): string[] {
+function formatEmbedLine(embed: DisplayEmbed, suffix: string, style?: MessagePartStyle): string {
+  const text = `↳ ${embedLabel(embed)}${suffix}`;
+  return styleText(text, style?.muted, style?.restore);
+}
+
+export function formatEmbedSummary(embeds: readonly DisplayEmbed[] | number, style?: MessagePartStyle): string[] {
   const normalized = normalizeEmbeds(embeds);
   if (normalized.length === 0) return [];
 
-  const hasVisibleLink = /https?:\/\/\S+/i.test(content);
   return normalized.map((embed, index) => {
-    const prefixText = hasVisibleLink ? "preview" : "embed";
-    const prefix = styleText(`${prefixText}:`, style?.muted, style?.restore);
-    const label = embedLabel(embed);
-    const styledLabel = label === "preview"
-      ? styleText(label, style?.muted, style?.restore)
-      : styleText(label, style?.accent, style?.restore);
-    const suffix = normalized.length > 1 ? styleText(` ${index + 1}/${normalized.length}`, style?.muted, style?.restore) : "";
-    return `${prefix} ${styledLabel}${suffix}`;
+    const suffix = normalized.length > 1 ? ` ${index + 1}/${normalized.length}` : "";
+    return formatEmbedLine(embed, suffix, style);
   });
+}
+
+function trimTrailingTargetPunctuation(target: string): string {
+  return target.replace(/[),.;:!?\]}]+$/g, "");
+}
+
+function lineUrlTargets(line: string): string[] {
+  const plain = stripAnsi(line);
+  return [...plain.matchAll(URL_RE)]
+    .map((match) => trimTrailingTargetPunctuation(match[0]))
+    .filter(Boolean);
+}
+
+function embedMatchesLine(embed: DisplayEmbed, line: string): boolean {
+  const embedUrl = embed.url?.trim();
+  const targets = lineUrlTargets(line);
+  if (targets.length === 0) return false;
+  if (!embedUrl) return true;
+  return targets.some((target) => target === embedUrl || embedUrl.startsWith(target) || target.startsWith(embedUrl));
 }
 
 export function summarizeDisplayMessageParts(
@@ -132,8 +156,18 @@ export function summarizeDisplayMessageParts(
 ): string[] {
   const parts: string[] = [];
   const normalizedContent = content.replace(/\r\n?/g, "\n");
+  const normalizedEmbeds = [...normalizeEmbeds(embeds)];
+  const placedEmbeds = new Set<number>();
+
   if (/\S/.test(normalizedContent)) {
-    parts.push(normalizedContent);
+    for (const line of normalizedContent.split("\n")) {
+      parts.push(line);
+      normalizedEmbeds.forEach((embed, index) => {
+        if (placedEmbeds.has(index) || !embedMatchesLine(embed, line)) return;
+        placedEmbeds.add(index);
+        parts.push(formatEmbedLine(embed, "", style));
+      });
+    }
   }
 
   parts.push(...attachments.map((attachment) => formatAttachmentSummary(attachment, style)));
@@ -141,7 +175,9 @@ export function summarizeDisplayMessageParts(
   if (stickerNames.length > 0) {
     parts.push(formatStickerSummary(stickerNames, style));
   }
-  parts.push(...formatEmbedSummary(embeds, normalizedContent, style));
+
+  const unplaced = normalizedEmbeds.filter((_embed, index) => !placedEmbeds.has(index));
+  parts.push(...formatEmbedSummary(unplaced, style));
   return parts;
 }
 
@@ -151,8 +187,11 @@ export function summarizeInlineMessageParts(
   embeds: readonly DisplayEmbed[] | number = [],
   stickerNames: readonly string[] = [],
 ): string {
-  const parts = summarizeDisplayMessageParts(content, attachments, embeds, stickerNames)
-    .map((part) => part.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-  return parts.join(" · ") || "(empty message)";
+  const parts: string[] = [];
+  const normalizedContent = content.replace(/\s+/g, " ").trim();
+  if (normalizedContent) parts.push(normalizedContent);
+  parts.push(...attachments.map((attachment) => formatAttachmentSummary(attachment)));
+  if (stickerNames.length > 0) parts.push(formatStickerSummary(stickerNames));
+  parts.push(...formatEmbedSummary(embeds));
+  return parts.map((part) => part.replace(/\s+/g, " ").trim()).filter(Boolean).join(" · ") || "(empty message)";
 }
