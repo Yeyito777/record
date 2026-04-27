@@ -77,22 +77,26 @@ describe("history cursor", () => {
     expect(state.historyCursor.row).toBe(19);
   });
 
-  test("full-page scrolling moves the window first and only clamps the cursor on-screen", () => {
+  test("full-page scrolling moves the cursor first and scrolls only after overflow", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.historyLines = Array.from({ length: 20 }, (_unused, index) => `line ${index}`);
     state.timeline.scrollOffset = 5;
-    state.historyCursor = { row: 6, col: 0 };
+    state.historyCursor = { row: 9, col: 0 };
+
+    scrollHistoryWithCursor(state, 1, 2, 5);
+
+    expect(state.timeline.scrollOffset).toBe(5);
+    expect(state.historyCursor.row).toBe(7);
 
     scrollHistoryPageWithCursor(state, -1, 5, 5);
 
-    expect(state.timeline.scrollOffset).toBe(10);
-    expect(state.historyCursor.row).toBe(10);
+    expect(state.timeline.scrollOffset).toBe(8);
+    expect(state.historyCursor.row).toBe(12);
 
-    state.historyCursor = { row: 12, col: 0 };
     scrollHistoryPageWithCursor(state, 1, 5, 5);
 
-    expect(state.timeline.scrollOffset).toBe(5);
-    expect(state.historyCursor.row).toBe(9);
+    expect(state.timeline.scrollOffset).toBe(7);
+    expect(state.historyCursor.row).toBe(7);
   });
 
   test("supports quote text objects in history visual mode", () => {

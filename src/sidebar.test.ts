@@ -205,13 +205,13 @@ describe("sidebar state", () => {
     expect(sidebar.selectedIndex).toBe(6);
 
     scrollSidebarSelection(sidebar, [], -1, 5, 7, "page");
-    expect(sidebar.scrollOffset).toBe(10);
-    expect(sidebar.selectedIndex).toBe(10);
+    expect(sidebar.scrollOffset).toBe(7);
+    expect(sidebar.selectedIndex).toBe(11);
 
     sidebar.selectedIndex = 12;
     scrollSidebarSelection(sidebar, [], 1, 5, 7, "page");
-    expect(sidebar.scrollOffset).toBe(5);
-    expect(sidebar.selectedIndex).toBe(9);
+    expect(sidebar.scrollOffset).toBe(7);
+    expect(sidebar.selectedIndex).toBe(7);
   });
 
   test("jumps between guilds with brace motions", () => {
