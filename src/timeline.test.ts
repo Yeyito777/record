@@ -512,7 +512,7 @@ describe("timeline rendering", () => {
 
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines).not.toContain("(empty message)");
-    expect(plainLines[1]).toContain("💟 Sticker: catjam");
+    expect(plainLines[1]).toContain("[sticker] catjam");
   });
 
   test("renders attachments as individual openable-looking rows", () => {
@@ -535,15 +535,25 @@ describe("timeline rendering", () => {
 
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines[1]).toBe("files");
-    expect(plainLines[2]).toBe("🖼 cat.png · image/png · 1.5 KB");
-    expect(plainLines[3]).toBe("🎞 loop.gif · image/gif · 2.1 MB");
-    expect(plainLines[4]).toBe("📄 notes.pdf · application/pdf · 41 KB");
+    expect(plainLines[2]).toBe("[image] cat.png · image/png · 1.5 KB");
+    expect(plainLines[3]).toBe("[gif] loop.gif · image/gif · 2.1 MB");
+    expect(plainLines[4]).toBe("[pdf] notes.pdf · application/pdf · 41 KB");
+    expect(rendered.lines[2]).toContain(theme.accent);
+    expect(rendered.lines[2]).toContain(theme.muted);
   });
 
-  test("renders link embeds as previews and embed-only messages as previews", () => {
+  test("renders link embeds with metadata and embed-only messages as previews", () => {
     const timeline = createTimelineState();
     const linkEmbed = message("message-1", "https://example.com/story", { authorName: "Paramount" });
     linkEmbed.embedsCount = 1;
+    linkEmbed.embeds = [{
+      type: "link",
+      title: "Story title",
+      url: "https://example.com/story",
+      description: null,
+      providerName: "Example News",
+      authorName: null,
+    }];
     const embedOnly = message("message-2", "", { authorName: "Paramount", timestamp: Date.UTC(2026, 0, 1, 12, 7, 0) });
     embedOnly.embedsCount = 2;
     setTimelineMessages(timeline, "channel-1", [linkEmbed, embedOnly]);
@@ -558,8 +568,11 @@ describe("timeline rendering", () => {
 
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines).toContain("https://example.com/story");
-    expect(plainLines).toContain("↳ preview");
-    expect(plainLines).toContain("▣ 2 embed previews");
+    expect(plainLines).toContain("preview: Example News: Story title");
+    expect(plainLines).toContain("embed: preview 1/2");
+    expect(plainLines).toContain("embed: preview 2/2");
+    expect(rendered.lines.some((line) => line.includes(theme.accent))).toBe(true);
+    expect(rendered.lines.some((line) => line.includes(theme.muted))).toBe(true);
     expect(plainLines).not.toContain("[embeds] 1");
   });
 

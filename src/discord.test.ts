@@ -183,7 +183,7 @@ describe("discord helpers", () => {
             author: { id: "user-2", username: "alice", global_name: "Alice" },
             member: { nick: "Alicia" },
             attachments: [{ id: "a-1", filename: "cat.png", content_type: "image/png", size: 123, url: "https://example.com/cat.png" }],
-            embeds: [{}],
+            embeds: [{ provider: { name: "Example" }, title: "Cat story", url: "https://example.com/cat" }],
           },
           attachments: [],
           embeds: [],
@@ -198,7 +198,7 @@ describe("discord helpers", () => {
       authorId: "user-2",
       authorDisplayName: "Alice",
       timestamp: Date.parse("2026-01-01T11:59:00.000Z"),
-      summary: "hello there · 🖼 cat.png · image/png · 123 B · ▣ Embed preview",
+      summary: "hello there · [image] cat.png · image/png · 123 B · embed: Example: Cat story",
     });
   });
 
@@ -244,7 +244,7 @@ describe("discord helpers", () => {
     const stickerMessage = messages.find((message) => message.id === "message-1");
     const replyMessage = messages.find((message) => message.id === "message-2");
     expect(stickerMessage?.stickerNames).toEqual(["catjam"]);
-    expect(replyMessage?.reply?.summary).toBe("💟 Sticker: catjam");
+    expect(replyMessage?.reply?.summary).toBe("[sticker] catjam");
   });
 
   test("maps Discord call payloads", async () => {

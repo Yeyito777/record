@@ -355,7 +355,7 @@ function summarizeReplyMessage(message: DiscordMessage): string {
   return summarizeInlineMessageParts(
     message.content,
     message.attachments,
-    message.embedsCount,
+    message.embeds ?? message.embedsCount,
     message.stickerNames,
   ).slice(0, 160);
 }

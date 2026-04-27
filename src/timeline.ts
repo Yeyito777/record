@@ -691,7 +691,7 @@ function summarizeMessage(
     return summarizeCallMessage(message, viewerId, loadingFrameIndex, nowMs);
   }
 
-  const content = renderUserMentions(
+  const mentionsRendered = renderUserMentions(
     message.content,
     message,
     viewerId,
@@ -701,7 +701,14 @@ function summarizeMessage(
     activeGuildId,
     contentColor,
   );
-  return summarizeDisplayMessageParts(content, message.attachments, message.embedsCount, message.stickerNames).join("\n");
+  const content = renderOpenableLinks(mentionsRendered, contentColor);
+  return summarizeDisplayMessageParts(
+    content,
+    message.attachments,
+    message.embeds ?? message.embedsCount,
+    message.stickerNames,
+    { muted: theme.muted, accent: theme.accent, restore: contentColor },
+  ).join("\n");
 }
 
 function summarizeCallMessage(
@@ -788,6 +795,15 @@ function renderUserMentions(
       activeGuildId,
     );
     return mentionColor ? `${mentionColor}${label}${restoreColor}` : label;
+  });
+}
+
+function renderOpenableLinks(content: string, restoreColor: string): string {
+  return content.replace(/\bhttps?:\/\/[^\s<>"'`]+/gi, (raw) => {
+    const trailing = raw.match(/[),.;:!?\]}]+$/)?.[0] ?? "";
+    const target = trailing ? raw.slice(0, -trailing.length) : raw;
+    if (!target) return raw;
+    return `${theme.accent}${target}${restoreColor}${trailing}`;
   });
 }
 
@@ -943,11 +959,14 @@ function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, n
 }
 
 function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: number, nowMs: number, groupedWithPrevious = false): string {
-  const attachmentKey = message.attachments.map((attachment) => attachment.filename).join("\u0000");
+  const attachmentKey = message.attachments.map((attachment) => [attachment.filename, attachment.contentType ?? "", String(attachment.size)].join("\u0002")).join("\u0000");
   const mentionKey = (message.mentionUsers ?? [])
     .map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002"))
     .join("\u0000");
   const stickerKey = message.stickerNames.join("\u0000");
+  const embedKey = (message.embeds ?? [])
+    .map((embed) => [embed.type ?? "", embed.providerName ?? "", embed.authorName ?? "", embed.title ?? "", embed.url ?? "", embed.description ?? ""].join("\u0002"))
+    .join("\u0000");
   const replyKey = message.reply
     ? [
       message.reply.messageId ?? "",
@@ -977,6 +996,7 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
     attachmentKey,
     stickerKey,
     String(message.embedsCount),
+    embedKey,
     message.localStatus ?? "",
     message.localError ?? "",
     groupedWithPrevious ? "grouped" : "full",

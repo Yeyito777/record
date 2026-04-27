@@ -105,6 +105,15 @@ export interface DiscordStickerItemResponse {
   format_type?: number;
 }
 
+export interface DiscordEmbedResponse {
+  type?: string;
+  title?: string;
+  url?: string;
+  description?: string;
+  provider?: { name?: string | null; url?: string | null } | null;
+  author?: { name?: string | null; url?: string | null } | null;
+}
+
 export interface DiscordReferencedMessageResponse {
   id: string;
   content: string;
@@ -112,7 +121,7 @@ export interface DiscordReferencedMessageResponse {
   author: DiscordMessageAuthorResponse;
   member?: DiscordMessageMemberResponse;
   attachments?: DiscordAttachmentResponse[];
-  embeds?: unknown[];
+  embeds?: DiscordEmbedResponse[];
   sticker_items?: DiscordStickerItemResponse[];
 }
 
@@ -138,7 +147,7 @@ export interface DiscordMessageResponse {
   referenced_message?: DiscordReferencedMessageResponse | null;
   call?: DiscordCallResponse | null;
   attachments?: DiscordAttachmentResponse[];
-  embeds?: unknown[];
+  embeds?: DiscordEmbedResponse[];
   sticker_items?: DiscordStickerItemResponse[];
 }
 
@@ -179,6 +188,15 @@ export interface DiscordMessageAttachment {
   contentType: string | null;
   size: number;
   url: string;
+}
+
+export interface DiscordMessageEmbed {
+  type: string | null;
+  title: string | null;
+  url: string | null;
+  description: string | null;
+  providerName: string | null;
+  authorName: string | null;
 }
 
 export interface DiscordRole {
@@ -234,6 +252,7 @@ export interface DiscordMessage {
   attachments: DiscordMessageAttachment[];
   stickerNames: string[];
   embedsCount: number;
+  embeds?: DiscordMessageEmbed[];
   localStatus?: DiscordMessageLocalStatus;
   localError?: string;
 }
@@ -256,6 +275,7 @@ export interface DiscordMessagePatch {
   attachments?: DiscordMessageAttachment[];
   stickerNames?: string[];
   embedsCount?: number;
+  embeds?: DiscordMessageEmbed[];
 }
 
 export function formatDiscordDisplayName(user: DiscordIdentity): string {
@@ -332,10 +352,21 @@ export function directMessageName(channel: DiscordChannelResponse): string {
 function summarizeReplyPreview(
   content: string,
   attachments: DiscordAttachmentResponse[] = [],
-  embedsCount = 0,
+  embeds: DiscordEmbedResponse[] = [],
   stickerNames: string[] = [],
 ): string {
-  return summarizeInlineMessageParts(content, attachments, embedsCount, stickerNames);
+  return summarizeInlineMessageParts(content, attachments, embeds.map(mapDiscordEmbed), stickerNames);
+}
+
+function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
+  return {
+    type: embed.type ?? null,
+    title: embed.title ?? null,
+    url: embed.url ?? null,
+    description: embed.description ?? null,
+    providerName: embed.provider?.name ?? null,
+    authorName: embed.author?.name ?? null,
+  };
 }
 
 export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessageReply | null {
@@ -348,7 +379,7 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
       summary: summarizeReplyPreview(
         message.referenced_message.content,
         message.referenced_message.attachments ?? [],
-        message.referenced_message.embeds?.length ?? 0,
+        message.referenced_message.embeds ?? [],
         (message.referenced_message.sticker_items ?? []).map((sticker) => sticker.name),
       ),
     };
@@ -650,6 +681,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     })),
     stickerNames: message.sticker_items?.map((sticker) => sticker.name),
     embedsCount: message.embeds?.length,
+    embeds: message.embeds?.map(mapDiscordEmbed),
   };
 }
 
@@ -673,6 +705,7 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
     attachments: patch.attachments ?? message.attachments,
     stickerNames: patch.stickerNames ?? message.stickerNames,
     embedsCount: patch.embedsCount ?? message.embedsCount,
+    embeds: patch.embeds ?? message.embeds,
   };
 }
 
@@ -702,6 +735,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     attachments: patch.attachments ?? [],
     stickerNames: patch.stickerNames ?? [],
     embedsCount: patch.embedsCount ?? 0,
+    embeds: patch.embeds ?? [],
   };
 }
 
