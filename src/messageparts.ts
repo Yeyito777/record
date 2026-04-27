@@ -35,9 +35,10 @@ function stripAnsi(text: string): string {
 
 export function formatAttachmentSummary(attachment: DisplayAttachment, style?: MessagePartStyle): string {
   const clip = styleText("📎", style?.muted, style?.restore);
+  const filename = styleText(attachment.filename, style?.accent, style?.restore);
   const size = formatByteSize(attachment.size ?? 0);
   const suffix = size ? styleText(` • ${size}`, style?.muted, style?.restore) : "";
-  return `${clip} ${attachment.filename}${suffix}`;
+  return `${clip} ${filename}${suffix}`;
 }
 
 export function formatByteSize(size: number): string {

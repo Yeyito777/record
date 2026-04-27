@@ -701,7 +701,7 @@ function summarizeMessage(
     activeGuildId,
     contentColor,
   );
-  const content = mentionsRendered;
+  const content = renderOpenableLinks(mentionsRendered, contentColor);
   return summarizeDisplayMessageParts(
     content,
     message.attachments,
@@ -795,6 +795,15 @@ function renderUserMentions(
       activeGuildId,
     );
     return mentionColor ? `${mentionColor}${label}${restoreColor}` : label;
+  });
+}
+
+function renderOpenableLinks(content: string, restoreColor: string): string {
+  return content.replace(/\bhttps?:\/\/[^\s<>"'`]+/gi, (raw) => {
+    const trailing = raw.match(/[),.;:!?\]}]+$/)?.[0] ?? "";
+    const target = trailing ? raw.slice(0, -trailing.length) : raw;
+    if (!target) return raw;
+    return `${theme.accent}${target}${restoreColor}${trailing}`;
   });
 }
 

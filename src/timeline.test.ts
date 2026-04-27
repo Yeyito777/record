@@ -538,7 +538,7 @@ describe("timeline rendering", () => {
     expect(plainLines[2]).toBe("📎 cat.png • 1.5 KB");
     expect(plainLines[3]).toBe("📎 loop.gif • 2.1 MB");
     expect(plainLines[4]).toBe("📎 notes.pdf • 41 KB");
-    expect(rendered.lines[2]).not.toContain(theme.accent);
+    expect(rendered.lines[2]).toContain(theme.accent);
     expect(rendered.lines[2]).toContain(theme.muted);
   });
 
@@ -581,6 +581,7 @@ describe("timeline rendering", () => {
     expect(plainLines[secondLinkRow + 1]).toBe("↳ YouTube: Video title");
     expect(plainLines).toContain("↳ preview 1/2");
     expect(plainLines).toContain("↳ preview 2/2");
+    expect(rendered.lines[firstLinkRow]).toContain(theme.accent);
     expect(rendered.lines[firstLinkRow + 1]).toContain(theme.muted);
     expect(rendered.lines[firstLinkRow + 1]).not.toContain(theme.accent);
     expect(plainLines).not.toContain("[embeds] 1");
