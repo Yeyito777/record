@@ -6,6 +6,11 @@ import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild } from
 import { loadingLabel } from "./loading";
 import { padRight, termWidth } from "./textwidth";
 import { theme } from "./theme";
+import {
+  scrollByAmountWithCursorInViewport,
+  scrollLineWithStickyCursorInViewport,
+  scrollPageWithCursorInViewport,
+} from "./vimscroll";
 
 export const SIDEBAR_WIDTH = 28;
 
@@ -308,6 +313,70 @@ export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordCha
   sidebar.selectedIndex = selectableIndices[nextPos] ?? currentIndex;
 }
 
+function sidebarViewportRows(totalRows: number): number {
+  return Math.max(0, totalRows - 2);
+}
+
+function clampSidebarViewportToSelection(sidebar: SidebarState, entries: SidebarEntry[], viewportRows: number): void {
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    sidebar.scrollOffset = 0;
+    return;
+  }
+
+  sidebar.selectedIndex = clampSelectedIndex(sidebar, entries);
+  let scrollOffset = sidebar.scrollOffset;
+  if (sidebar.selectedIndex < scrollOffset) {
+    scrollOffset = sidebar.selectedIndex;
+  } else if (sidebar.selectedIndex >= scrollOffset + viewportRows) {
+    scrollOffset = sidebar.selectedIndex - viewportRows + 1;
+  }
+  sidebar.scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.length - viewportRows)));
+}
+
+export function scrollSidebarSelection(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  dir: number,
+  amount: number,
+  totalRows: number,
+  mode: "cursor" | "page" = "cursor",
+): void {
+  const entries = buildSidebarEntries(sidebar, channels);
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    sidebar.scrollOffset = 0;
+    return;
+  }
+
+  sidebar.selectedIndex = clampSelectedIndex(sidebar, entries);
+  const viewportRows = sidebarViewportRows(totalRows);
+  const next = mode === "page"
+    ? scrollPageWithCursorInViewport({ totalLines: entries.length, viewportHeight: viewportRows, viewStart: sidebar.scrollOffset, cursorRow: sidebar.selectedIndex }, dir, amount)
+    : scrollByAmountWithCursorInViewport({ totalLines: entries.length, viewportHeight: viewportRows, viewStart: sidebar.scrollOffset, cursorRow: sidebar.selectedIndex }, dir, amount);
+  sidebar.selectedIndex = clampSelectedIndex({ ...sidebar, selectedIndex: next.cursorRow }, entries);
+  sidebar.scrollOffset = next.viewStart;
+}
+
+export function scrollSidebarSelectionLine(sidebar: SidebarState, channels: DiscordChannel[], dir: number, totalRows: number): void {
+  const entries = buildSidebarEntries(sidebar, channels);
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    sidebar.scrollOffset = 0;
+    return;
+  }
+
+  sidebar.selectedIndex = clampSelectedIndex(sidebar, entries);
+  const next = scrollLineWithStickyCursorInViewport({
+    totalLines: entries.length,
+    viewportHeight: sidebarViewportRows(totalRows),
+    viewStart: sidebar.scrollOffset,
+    cursorRow: sidebar.selectedIndex,
+  }, dir);
+  sidebar.selectedIndex = clampSelectedIndex({ ...sidebar, selectedIndex: next.cursorRow }, entries);
+  sidebar.scrollOffset = next.viewStart;
+}
+
 function jumpSidebarSelectionToKind(
   sidebar: SidebarState,
   channels: DiscordChannel[],
@@ -497,15 +566,9 @@ export function renderSidebar(
     channelNotificationCounts,
     guildNotificationCounts,
   );
-  const listRows = Math.max(0, totalRows - 2);
-  let scrollOffset = sidebar.scrollOffset;
-  if (sidebar.selectedIndex < scrollOffset) {
-    scrollOffset = sidebar.selectedIndex;
-  } else if (sidebar.selectedIndex >= scrollOffset + listRows) {
-    scrollOffset = sidebar.selectedIndex - listRows + 1;
-  }
-  scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.length - listRows)));
-  sidebar.scrollOffset = scrollOffset;
+  const listRows = sidebarViewportRows(totalRows);
+  clampSidebarViewportToSelection(sidebar, entries, listRows);
+  const scrollOffset = sidebar.scrollOffset;
 
   if (sidebar.loading && sidebar.guilds.length === 0) {
     rows.push(

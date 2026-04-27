@@ -6,6 +6,8 @@ import {
   buildSidebarEntries,
   createSidebarState,
   moveSidebarSelection,
+  scrollSidebarSelection,
+  scrollSidebarSelectionLine,
   moveSidebarSelectionToNextCategory,
   moveSidebarSelectionToNextAnyNotification,
   moveSidebarSelectionToNextDirectMessage,
@@ -182,6 +184,34 @@ describe("sidebar state", () => {
       "guild-1",
       "guild-3",
     ]);
+  });
+
+  test("scroll bindings use vim cursor/window behavior in the servers menu", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, Array.from({ length: 20 }, (_unused, index) => ({
+      id: `guild-${index}`,
+      name: `Guild ${index}`,
+      icon: null,
+    })));
+    sidebar.selectedIndex = 5;
+    sidebar.scrollOffset = 5;
+
+    scrollSidebarSelectionLine(sidebar, [], -1, 7);
+    expect(sidebar.scrollOffset).toBe(6);
+    expect(sidebar.selectedIndex).toBe(6);
+
+    scrollSidebarSelectionLine(sidebar, [], 1, 7);
+    expect(sidebar.scrollOffset).toBe(5);
+    expect(sidebar.selectedIndex).toBe(6);
+
+    scrollSidebarSelection(sidebar, [], -1, 5, 7, "page");
+    expect(sidebar.scrollOffset).toBe(10);
+    expect(sidebar.selectedIndex).toBe(10);
+
+    sidebar.selectedIndex = 12;
+    scrollSidebarSelection(sidebar, [], 1, 5, 7, "page");
+    expect(sidebar.scrollOffset).toBe(5);
+    expect(sidebar.selectedIndex).toBe(9);
   });
 
   test("jumps between guilds with brace motions", () => {

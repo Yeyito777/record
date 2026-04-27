@@ -5,6 +5,8 @@ import {
   cacheMemberList,
   createMemberListState,
   moveMemberListSelection,
+  scrollMemberListSelection,
+  scrollMemberListSelectionLine,
   renderMemberList,
   setMemberListLoading,
   setMemberListMembers,
@@ -113,6 +115,36 @@ describe("member list", () => {
 
     expect(memberList.selectedIndex).toBe(1);
     expect(memberList.scrollOffset).toBe(1);
+  });
+
+  test("scroll bindings use vim cursor/window behavior in the members menu", () => {
+    const memberList = createMemberListState();
+    memberList.open = true;
+    setMemberListMembers(memberList, "guild-1", "channel-1", Array.from({ length: 20 }, (_, index) => ({
+      id: String(index),
+      username: `user-${index}`,
+      displayName: `User ${index}`,
+      bot: false,
+    })));
+    memberList.selectedIndex = 5;
+    memberList.scrollOffset = 5;
+
+    scrollMemberListSelectionLine(memberList, -1, 7);
+    expect(memberList.scrollOffset).toBe(6);
+    expect(memberList.selectedIndex).toBe(6);
+
+    scrollMemberListSelectionLine(memberList, 1, 7);
+    expect(memberList.scrollOffset).toBe(5);
+    expect(memberList.selectedIndex).toBe(6);
+
+    scrollMemberListSelection(memberList, -1, 5, 7, "page");
+    expect(memberList.scrollOffset).toBe(10);
+    expect(memberList.selectedIndex).toBe(10);
+
+    memberList.selectedIndex = 12;
+    scrollMemberListSelection(memberList, 1, 5, 7, "page");
+    expect(memberList.scrollOffset).toBe(5);
+    expect(memberList.selectedIndex).toBe(9);
   });
 
   test("highlights the viewer row and keeps all rows inside the panel width", () => {

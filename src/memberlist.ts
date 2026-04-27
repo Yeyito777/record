@@ -7,6 +7,11 @@ import { loadingLabel } from "./loading";
 import { padRight, sliceByWidth, termWidth, truncate, truncateToWidth } from "./textwidth";
 import { ansiTrueColor, theme } from "./theme";
 import { resolvePrimaryRoleColor } from "./timeline";
+import {
+  scrollByAmountWithCursorInViewport,
+  scrollLineWithStickyCursorInViewport,
+  scrollPageWithCursorInViewport,
+} from "./vimscroll";
 
 export const MEMBER_LIST_WIDTH = 28;
 
@@ -119,6 +124,34 @@ export function cacheMemberList(
 export function moveMemberListSelection(memberList: MemberListState, delta: number): void {
   if (memberList.members.length === 0) return;
   memberList.selectedIndex = Math.max(0, Math.min(memberList.selectedIndex + delta, memberList.members.length - 1));
+}
+
+export function scrollMemberListSelection(
+  memberList: MemberListState,
+  dir: number,
+  amount: number,
+  totalRows: number,
+  mode: "cursor" | "page" = "cursor",
+): void {
+  if (memberList.members.length === 0) return;
+  const viewportRows = memberListViewportRows(totalRows);
+  const next = mode === "page"
+    ? scrollPageWithCursorInViewport({ totalLines: memberList.members.length, viewportHeight: viewportRows, viewStart: memberList.scrollOffset, cursorRow: memberList.selectedIndex }, dir, amount)
+    : scrollByAmountWithCursorInViewport({ totalLines: memberList.members.length, viewportHeight: viewportRows, viewStart: memberList.scrollOffset, cursorRow: memberList.selectedIndex }, dir, amount);
+  memberList.selectedIndex = Math.max(0, Math.min(next.cursorRow, memberList.members.length - 1));
+  memberList.scrollOffset = next.viewStart;
+}
+
+export function scrollMemberListSelectionLine(memberList: MemberListState, dir: number, totalRows: number): void {
+  if (memberList.members.length === 0) return;
+  const next = scrollLineWithStickyCursorInViewport({
+    totalLines: memberList.members.length,
+    viewportHeight: memberListViewportRows(totalRows),
+    viewStart: memberList.scrollOffset,
+    cursorRow: memberList.selectedIndex,
+  }, dir);
+  memberList.selectedIndex = Math.max(0, Math.min(next.cursorRow, memberList.members.length - 1));
+  memberList.scrollOffset = next.viewStart;
 }
 
 function memberListCacheKey(guildId: string, channelId: string): string {

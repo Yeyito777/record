@@ -17,13 +17,14 @@ import {
   ensureHistoryCursorVisible,
   handleHistoryVimKey,
   placeHistoryCursorAtVisibleBottom,
+  scrollHistoryPageWithCursor,
   scrollHistoryViewportSticky,
   scrollHistoryWithCursor,
 } from "./historycursor";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
-import { MEMBER_LIST_WIDTH, moveMemberListSelection } from "./memberlist";
+import { MEMBER_LIST_WIDTH, moveMemberListSelection, scrollMemberListSelection, scrollMemberListSelectionLine } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { render } from "./render";
 import {
@@ -43,6 +44,8 @@ import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
   moveSidebarSelection,
+  scrollSidebarSelection,
+  scrollSidebarSelectionLine,
   moveSidebarSelectionToNextAnyNotification,
   moveSidebarSelectionToNextCategory,
   moveSidebarSelectionToNextDirectMessage,
@@ -248,21 +251,26 @@ function scrollTimeline(delta: number): void {
   scheduleRender();
 }
 
-function scrollFocusedPanel(delta: number, visibleRows: number): void {
+function scrollFocusedPanel(delta: number, visibleRows: number, mode: "cursor" | "page" = "cursor"): void {
   if (state.panelFocus === "sidebar" && state.sidebar.open) {
-    moveSidebarSelection(state.sidebar, state.channelList.channels, delta);
+    scrollSidebarSelection(state.sidebar, state.channelList.channels, delta < 0 ? 1 : -1, Math.abs(delta), state.rows, mode);
     scheduleRender();
     return;
   }
 
   if (state.panelFocus === "memberlist" && state.memberList.open) {
-    moveMemberListSelection(state.memberList, delta);
+    scrollMemberListSelection(state.memberList, delta < 0 ? 1 : -1, Math.abs(delta), state.rows, mode);
     scheduleRender();
     return;
   }
 
   if (state.chatFocus === "history") {
-    scrollHistoryWithCursor(state, delta < 0 ? 1 : -1, Math.abs(delta), visibleRows);
+    const dir = delta < 0 ? 1 : -1;
+    if (mode === "page") {
+      scrollHistoryPageWithCursor(state, dir, Math.abs(delta), visibleRows);
+    } else {
+      scrollHistoryWithCursor(state, dir, Math.abs(delta), visibleRows);
+    }
     if (delta <= 0) maybeLoadOlderHistory();
     scheduleRender();
     return;
@@ -273,13 +281,13 @@ function scrollFocusedPanel(delta: number, visibleRows: number): void {
 
 function scrollFocusedPanelLine(delta: number): void {
   if (state.panelFocus === "sidebar" && state.sidebar.open) {
-    moveSidebarSelection(state.sidebar, state.channelList.channels, delta);
+    scrollSidebarSelectionLine(state.sidebar, state.channelList.channels, delta < 0 ? 1 : -1, state.rows);
     scheduleRender();
     return;
   }
 
   if (state.panelFocus === "memberlist" && state.memberList.open) {
-    moveMemberListSelection(state.memberList, delta);
+    scrollMemberListSelectionLine(state.memberList, delta < 0 ? 1 : -1, state.rows);
     scheduleRender();
     return;
   }
@@ -510,10 +518,10 @@ function handleGlobalAction(key: KeyEvent): boolean {
       return true;
     }
     case "scroll_page_up":
-      scrollFocusedPanel(-timelinePageSize(), timelinePageSize());
+      scrollFocusedPanel(-timelinePageSize(), timelinePageSize(), "page");
       return true;
     case "scroll_page_down":
-      scrollFocusedPanel(timelinePageSize(), timelinePageSize());
+      scrollFocusedPanel(timelinePageSize(), timelinePageSize(), "page");
       return true;
     case "notification_prev":
       jumpToNotification(-1);
