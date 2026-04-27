@@ -27,6 +27,7 @@ export interface TimelineState {
 
 export interface TimelineMessageBound {
   messageId: string;
+  groupId?: string;
   start: number;
   end: number;
   contentStart: number;
@@ -441,6 +442,7 @@ function appendRenderedTimelineContent(
   }
   messageBounds.push(...content.messageBounds.map((bound) => ({
     messageId: bound.messageId,
+    groupId: bound.groupId,
     start: bound.start + offset,
     end: bound.end + offset,
     contentStart: bound.contentStart + offset,
@@ -478,6 +480,7 @@ function getRenderedTimelineContent(
     wrapContinuation.push(false);
   } else {
     let previousMessage: DiscordMessage | null = null;
+    let currentMessageGroupId: string | null = null;
     for (const message of timeline.messages) {
       const groupedWithPrevious = previousMessage ? shouldGroupMessages(previousMessage, message) : false;
       if (previousMessage && !groupedWithPrevious) {
@@ -485,6 +488,7 @@ function getRenderedTimelineContent(
         lineAnchors.push(`msg:${previousMessage.id}:gap`);
         wrapContinuation.push(false);
       }
+      if (!groupedWithPrevious) currentMessageGroupId = message.id;
 
       const renderedMessage = renderMessageCached(timeline, message, width, loadingFrameIndex, nowMs, groupedWithPrevious);
       const start = lines.length;
@@ -493,6 +497,7 @@ function getRenderedTimelineContent(
       wrapContinuation.push(...renderedMessage.wrapContinuation);
       messageBounds.push({
         messageId: message.id,
+        groupId: currentMessageGroupId ?? message.id,
         start,
         end: start + renderedMessage.lines.length,
         contentStart: start,

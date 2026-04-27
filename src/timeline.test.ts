@@ -464,6 +464,7 @@ describe("timeline rendering", () => {
     expect(plainLines).not.toContain("");
     expect(plainLines[1]).toBe("first");
     expect(plainLines[2]).toBe("second");
+    expect(rendered.messageBounds.map((bound) => bound.groupId)).toEqual(["message-1", "message-1"]);
   });
 
   test("does not group messages from the same author after the grouping window", () => {

@@ -174,6 +174,40 @@ describe("history cursor", () => {
     expect(getHistoryVisualSelection(state)).toBe("Alice 12:00\nhello there\n");
   });
 
+  test("message motions treat grouped timeline messages as one message", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.chatFocus = "history";
+    state.historyLines = [
+      "Alice 12:00",
+      "first",
+      "second",
+      "",
+      "Bob 12:01",
+      "third",
+    ];
+    state.historyWrapContinuation = [false, false, false, false, false, false];
+    state.historyMessageBounds = [
+      { messageId: "message-1", groupId: "message-1", start: 0, end: 2, contentStart: 1, contentEnd: 2 },
+      { messageId: "message-2", groupId: "message-1", start: 2, end: 3, contentStart: 2, contentEnd: 3 },
+      { messageId: "message-3", groupId: "message-3", start: 4, end: 6, contentStart: 5, contentEnd: 6 },
+    ];
+
+    state.historyCursor = { row: 1, col: 0 };
+    expect(handleHistoryVimKey(state, { type: "char", char: "}" }, 6)).toBe(true);
+    expect(state.historyCursor.row).toBe(5);
+
+    expect(handleHistoryVimKey(state, { type: "char", char: "{" }, 6)).toBe(true);
+    expect(state.historyCursor.row).toBe(1);
+
+    state.historyCursor = { row: 2, col: 0 };
+    expect(handleHistoryVimKey(state, { type: "char", char: "{" }, 6)).toBe(true);
+    expect(state.historyCursor.row).toBe(1);
+
+    state.historyCursor = { row: 2, col: 0 };
+    expect(handleHistoryVimKey(state, { type: "char", char: "}" }, 6)).toBe(true);
+    expect(state.historyCursor.row).toBe(5);
+  });
+
   test("supports vim motions and visual selection in history", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.chatFocus = "history";

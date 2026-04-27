@@ -379,30 +379,50 @@ function findBackward(cursor: HistoryCursor, lines: string[], char: string): His
   return cursor;
 }
 
+function messageBoundGroupId(bound: TimelineMessageBound): string {
+  return bound.groupId ?? bound.messageId;
+}
+
+function collapseGroupedMessageBounds(bounds: TimelineMessageBound[]): TimelineMessageBound[] {
+  const collapsed: TimelineMessageBound[] = [];
+  for (const bound of bounds) {
+    const previous = collapsed[collapsed.length - 1];
+    if (previous && messageBoundGroupId(previous) === messageBoundGroupId(bound)) {
+      previous.end = Math.max(previous.end, bound.end);
+      previous.contentEnd = Math.max(previous.contentEnd, bound.contentEnd);
+      continue;
+    }
+    collapsed.push({ ...bound });
+  }
+  return collapsed;
+}
+
 function previousMessage(cursor: HistoryCursor, bounds: TimelineMessageBound[]): HistoryCursor {
+  const messageGroups = collapseGroupedMessageBounds(bounds);
   let target = -1;
-  for (let i = bounds.length - 1; i >= 0; i--) {
-    if (bounds[i].contentStart < cursor.row) {
+  for (let i = messageGroups.length - 1; i >= 0; i--) {
+    if (messageGroups[i].contentStart < cursor.row) {
       target = i;
       break;
     }
   }
-  return target >= 0 ? { row: bounds[target].contentStart, col: 0 } : cursor;
+  return target >= 0 ? { row: messageGroups[target].contentStart, col: 0 } : cursor;
 }
 
 function nextMessage(cursor: HistoryCursor, bounds: TimelineMessageBound[], lines: string[]): HistoryCursor {
+  const messageGroups = collapseGroupedMessageBounds(bounds);
   let target = -1;
-  for (let i = 0; i < bounds.length; i++) {
-    if (bounds[i].contentStart > cursor.row) {
+  for (let i = 0; i < messageGroups.length; i++) {
+    if (messageGroups[i].contentStart > cursor.row) {
       target = i;
       break;
     }
   }
   if (target >= 0) {
-    return { row: bounds[target].contentStart, col: 0 };
+    return { row: messageGroups[target].contentStart, col: 0 };
   }
 
-  const last = bounds[bounds.length - 1];
+  const last = messageGroups[messageGroups.length - 1];
   if (last && cursor.row >= last.contentStart && cursor.row < last.contentEnd) {
     return bufferEnd(lines);
   }
