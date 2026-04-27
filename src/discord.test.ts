@@ -198,7 +198,7 @@ describe("discord helpers", () => {
       authorId: "user-2",
       authorDisplayName: "Alice",
       timestamp: Date.parse("2026-01-01T11:59:00.000Z"),
-      summary: "hello there · [attachments] cat.png · [embeds] 1",
+      summary: "hello there · 🖼 cat.png · image/png · 123 B · ▣ Embed preview",
     });
   });
 
@@ -244,7 +244,7 @@ describe("discord helpers", () => {
     const stickerMessage = messages.find((message) => message.id === "message-1");
     const replyMessage = messages.find((message) => message.id === "message-2");
     expect(stickerMessage?.stickerNames).toEqual(["catjam"]);
-    expect(replyMessage?.reply?.summary).toBe("[stickers] catjam");
+    expect(replyMessage?.reply?.summary).toBe("💟 Sticker: catjam");
   });
 
   test("maps Discord call payloads", async () => {

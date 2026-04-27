@@ -7,8 +7,31 @@ import { join } from "path";
 
 import { normalizeToken } from "./token";
 
+export interface OpenCommandConfig {
+  /** Executable to spawn when opening a matching target. */
+  command: string;
+  /** Arguments passed to command. Supports {target}, {path}, {target:sh}, and {path:sh}. */
+  args?: string[];
+}
+
+export interface OpenFileRuleConfig extends OpenCommandConfig {
+  /** File extensions handled by this opener, without a leading dot. */
+  extensions: string[];
+}
+
+export interface OpenersConfig {
+  /** Opener used for http/https links. Set to null to disable link opening. */
+  url?: OpenCommandConfig | null;
+  /** File openers matched by extension, checked in order. */
+  rules?: OpenFileRuleConfig[];
+}
+
 export interface RecordConfig {
   token?: string;
+  /** Open-on-enter commands for links and file/attachment targets. */
+  openers?: OpenersConfig;
+  /** Preserve unknown future/user keys. */
+  [key: string]: unknown;
 }
 
 export type SavedLogins = Record<string, string>;
@@ -29,6 +52,37 @@ export function configPath(): string {
 
 export function savedLoginsPath(): string {
   return join(configDir(), "saved-logins.json");
+}
+
+export function defaultOpenersConfig(): OpenersConfig {
+  return {
+    url: { command: "xdg-open", args: ["{target}"] },
+    rules: [
+      {
+        extensions: [
+          "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
+          "avif", "heic", "heif", "svg", "ico", "jxl", "jp2", "ppm", "pgm",
+          "pbm", "pnm", "pdf",
+        ],
+        command: "show",
+        args: ["{path}"],
+      },
+      {
+        extensions: [
+          "mp3", "wav", "flac", "m4a", "aac", "ogg", "oga", "opus", "wma",
+          "aif", "aiff", "alac", "mid", "midi", "mov", "mp4", "m4v", "mkv",
+          "webm", "avi",
+        ],
+        command: "st",
+        args: ["-e", "zsh", "-ic", "exec audio-play {path:sh}"],
+      },
+      {
+        extensions: ["md", "py", "txt"],
+        command: "st",
+        args: ["-e", "zsh", "-ic", "exec nvim {path:sh}"],
+      },
+    ],
+  };
 }
 
 export function loadConfig(): RecordConfig {
@@ -63,8 +117,16 @@ function writeSecureJson(path: string, value: unknown): void {
   }
 }
 
+function loadConfigIfPresent(): RecordConfig {
+  try {
+    return loadConfig();
+  } catch {
+    return {};
+  }
+}
+
 export function saveConfig(config: RecordConfig): void {
-  writeSecureJson(configPath(), config);
+  writeSecureJson(configPath(), { ...loadConfigIfPresent(), ...config });
 }
 
 export function saveSavedLogins(savedLogins: SavedLogins): void {
@@ -73,5 +135,12 @@ export function saveSavedLogins(savedLogins: SavedLogins): void {
 }
 
 export function clearConfig(): void {
-  rmSync(configPath(), { force: true });
+  const config = loadConfigIfPresent();
+  delete config.token;
+
+  if (Object.keys(config).length > 0) {
+    writeSecureJson(configPath(), config);
+  } else {
+    rmSync(configPath(), { force: true });
+  }
 }

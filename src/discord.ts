@@ -2,6 +2,8 @@
  * Discord REST client.
  */
 
+import { summarizeInlineMessageParts } from "./messageparts";
+
 const API_BASE = "https://discord.com/api/v9";
 const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) record/0.1.0 Safari/537.36";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -327,37 +329,13 @@ export function directMessageName(channel: DiscordChannelResponse): string {
   return "Unknown DM";
 }
 
-function summarizeMessageParts(
-  content: string,
-  attachments: Array<{ filename: string }> = [],
-  embedsCount = 0,
-  stickerNames: string[] = [],
-): string[] {
-  const parts: string[] = [];
-  const normalizedContent = content.replace(/\r\n?/g, "\n");
-  if (/\S/.test(normalizedContent)) {
-    parts.push(normalizedContent);
-  }
-  if (attachments.length > 0) {
-    parts.push(`[attachments] ${attachments.map((attachment) => attachment.filename).join(", ")}`);
-  }
-  if (stickerNames.length > 0) {
-    parts.push(`[stickers] ${stickerNames.join(", ")}`);
-  }
-  if (embedsCount > 0) {
-    parts.push(`[embeds] ${embedsCount}`);
-  }
-  return parts;
-}
-
 function summarizeReplyPreview(
   content: string,
   attachments: DiscordAttachmentResponse[] = [],
   embedsCount = 0,
   stickerNames: string[] = [],
 ): string {
-  const parts = summarizeMessageParts(content, attachments, embedsCount, stickerNames).map((part) => part.replace(/\s+/g, " ").trim()).filter(Boolean);
-  return parts.join(" · ") || "(empty message)";
+  return summarizeInlineMessageParts(content, attachments, embedsCount, stickerNames);
 }
 
 export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessageReply | null {

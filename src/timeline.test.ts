@@ -512,7 +512,55 @@ describe("timeline rendering", () => {
 
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines).not.toContain("(empty message)");
-    expect(plainLines[1]).toContain("[stickers] catjam");
+    expect(plainLines[1]).toContain("💟 Sticker: catjam");
+  });
+
+  test("renders attachments as individual openable-looking rows", () => {
+    const timeline = createTimelineState();
+    const withAttachments = message("message-1", "files", { authorName: "Paramount" });
+    withAttachments.attachments = [
+      { id: "a1", filename: "cat.png", contentType: "image/png", size: 1536, url: "https://cdn.example/cat.png" },
+      { id: "a2", filename: "loop.gif", contentType: "image/gif", size: 2_200_000, url: "https://cdn.example/loop.gif" },
+      { id: "a3", filename: "notes.pdf", contentType: "application/pdf", size: 42_000, url: "https://cdn.example/notes.pdf" },
+    ];
+    setTimelineMessages(timeline, "channel-1", [withAttachments]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines[1]).toBe("files");
+    expect(plainLines[2]).toBe("🖼 cat.png · image/png · 1.5 KB");
+    expect(plainLines[3]).toBe("🎞 loop.gif · image/gif · 2.1 MB");
+    expect(plainLines[4]).toBe("📄 notes.pdf · application/pdf · 41 KB");
+  });
+
+  test("renders link embeds as previews and embed-only messages as previews", () => {
+    const timeline = createTimelineState();
+    const linkEmbed = message("message-1", "https://example.com/story", { authorName: "Paramount" });
+    linkEmbed.embedsCount = 1;
+    const embedOnly = message("message-2", "", { authorName: "Paramount", timestamp: Date.UTC(2026, 0, 1, 12, 7, 0) });
+    embedOnly.embedsCount = 2;
+    setTimelineMessages(timeline, "channel-1", [linkEmbed, embedOnly]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines).toContain("https://example.com/story");
+    expect(plainLines).toContain("↳ preview");
+    expect(plainLines).toContain("▣ 2 embed previews");
+    expect(plainLines).not.toContain("[embeds] 1");
   });
 
   test("renders guild authors with their highest colored role", () => {

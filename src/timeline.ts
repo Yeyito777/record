@@ -5,6 +5,7 @@
 import { applyDiscordMessagePatch, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
+import { summarizeDisplayMessageParts } from "./messageparts";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { ansiTrueColor, dmAuthorColor, theme, toneColor } from "./theme";
 
@@ -700,7 +701,7 @@ function summarizeMessage(
     activeGuildId,
     contentColor,
   );
-  return summarizeMessageParts(content, message.attachments, message.embedsCount, message.stickerNames).join("\n");
+  return summarizeDisplayMessageParts(content, message.attachments, message.embedsCount, message.stickerNames).join("\n");
 }
 
 function summarizeCallMessage(
@@ -808,29 +809,6 @@ function mentionColorForUser(
   const roleIds = user.roleIds ?? memberRoleIdsByGuildId[guildId]?.[user.id] ?? [];
   const color = resolvePrimaryRoleColor(rolesByGuildId[guildId] ?? [], roleIds);
   return color ? ansiTrueColor(color) : "";
-}
-
-function summarizeMessageParts(
-  content: string,
-  attachments: Array<{ filename: string }>,
-  embedsCount: number,
-  stickerNames: string[] = [],
-): string[] {
-  const parts: string[] = [];
-  const normalizedContent = content.replace(/\r\n?/g, "\n");
-  if (/\S/.test(normalizedContent)) {
-    parts.push(normalizedContent);
-  }
-  if (attachments.length > 0) {
-    parts.push(`[attachments] ${attachments.map((attachment) => attachment.filename).join(", ")}`);
-  }
-  if (stickerNames.length > 0) {
-    parts.push(`[stickers] ${stickerNames.join(", ")}`);
-  }
-  if (embedsCount > 0) {
-    parts.push(`[embeds] ${embedsCount}`);
-  }
-  return parts;
 }
 
 function wrapReplyPreview(message: DiscordMessage, width: number): WrappedLine[] {

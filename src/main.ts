@@ -22,9 +22,11 @@ import {
   scrollHistoryWithCursor,
 } from "./historycursor";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
+import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { MEMBER_LIST_WIDTH, moveMemberListSelection, scrollMemberListSelection, scrollMemberListSelectionLine } from "./memberlist";
+import { summarizeInlineMessageParts } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { render } from "./render";
 import {
@@ -81,6 +83,7 @@ import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, sta
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
 import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
+import { openAttachmentDetached, openTargetDetached } from "./openable";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("record needs an interactive TTY.");
@@ -348,13 +351,13 @@ function selectedHistoryMessage(): DiscordMessage | null {
 }
 
 function summarizeReplyMessage(message: DiscordMessage): string {
-  const content = message.content.replace(/\s+/g, " ").trim();
-  if (content) return content.slice(0, 160);
-  if (message.attachments.length > 0) return `[attachments] ${message.attachments.map((attachment) => attachment.filename).join(", ")}`.slice(0, 160);
-  if (message.stickerNames.length > 0) return `[stickers] ${message.stickerNames.join(", ")}`.slice(0, 160);
-  if (message.embedsCount > 0) return `[embeds] ${message.embedsCount}`;
   if (message.call || message.type === 3) return "☎ Call";
-  return "(empty message)";
+  return summarizeInlineMessageParts(
+    message.content,
+    message.attachments,
+    message.embedsCount,
+    message.stickerNames,
+  ).slice(0, 160);
 }
 
 function pasteImageFromClipboard(): void {
@@ -656,6 +659,37 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       scrollHistoryWithCursor(state, -1, 1, timelinePageSize());
       scheduleRender();
       return true;
+    case "nav_select": {
+      const attachment = attachmentAtHistoryCursor(state);
+      if (attachment) {
+        setNotice(state, `Opening ${attachment.filename}…`, "muted", { loading: true });
+        scheduleRender();
+        void openAttachmentDetached(attachment).then((result) => {
+          if (!running) return;
+          if (!result.ok) {
+            setNotice(state, `Could not open ${attachment.filename}: ${result.error ?? "unknown error"}`, "warning");
+          } else {
+            setNotice(state, "", "muted");
+          }
+          scheduleRender();
+        });
+        return true;
+      }
+
+      const target = openableTargetAtHistoryCursor(state);
+      if (!target) {
+        setNotice(state, "No openable link or attachment under cursor.", "muted");
+        scheduleRender();
+        return true;
+      }
+      if (!openTargetDetached(target)) {
+        setNotice(state, `No opener configured for ${target}.`, "warning");
+      } else {
+        setNotice(state, "", "muted");
+      }
+      scheduleRender();
+      return true;
+    }
     default:
       return false;
   }
