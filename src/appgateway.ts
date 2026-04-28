@@ -533,11 +533,19 @@ function initialNotificationCount(
   return 0;
 }
 
-function typingDisplayName(data: Record<string, any>): string {
+export function typingDisplayName(data: Record<string, any>): string {
   const user = isObject(data.user) ? data.user : null;
-  const globalName = user && typeof user.global_name === "string" && user.global_name.trim() ? user.global_name : null;
-  const username = user && typeof user.username === "string" && user.username.trim() ? user.username : null;
-  return globalName ?? username ?? String(data.user_id);
+  const member = isObject(data.member) ? data.member : null;
+  const memberUser = member && isObject(member.user) ? member.user : null;
+
+  const globalName = displayNameField(user?.global_name) ?? displayNameField(memberUser?.global_name);
+  const username = displayNameField(user?.username) ?? displayNameField(memberUser?.username);
+  const nickname = displayNameField(member?.nick);
+  return globalName ?? username ?? nickname ?? String(data.user_id);
+}
+
+function displayNameField(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function createGatewayProperties(): Record<string, unknown> {

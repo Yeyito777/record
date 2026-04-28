@@ -26,6 +26,13 @@ describe("typing state", () => {
     expect([...channelsWithTyping(typing, "viewer", 1_000)]).toEqual(["channel-2"]);
   });
 
+  test("does not display raw user ids as names", () => {
+    const typing = createTypingState();
+    recordTypingStart(typing, "channel-1", { id: "708497088777945158", displayName: "708497088777945158" }, 1_000);
+
+    expect(formatTypingUsers(getTypingUsers(typing, "channel-1", "viewer", 1_000))).toBe("Someone is typing…");
+  });
+
   test("clears a user after their message arrives", () => {
     const typing = createTypingState();
     recordTypingStart(typing, "channel-1", { id: "user-1", displayName: "Alice" }, 1_000);

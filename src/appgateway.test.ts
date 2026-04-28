@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractInitialNotifications, extractReadyGuilds } from "./appgateway";
+import { extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractInitialNotifications, extractReadyGuilds, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -63,6 +63,17 @@ describe("app gateway helpers", () => {
         [{ user_id: "me", roles: [] }],
       ],
     })).toEqual({ "guild-1": ["role-1", "role-2"], "guild-2": [] });
+  });
+
+  test("uses member user data for typing display names", () => {
+    expect(typingDisplayName({
+      user_id: "708497088777945158",
+      member: { user: { username: "teto", global_name: "Kasane Teto" } },
+    })).toBe("Kasane Teto");
+    expect(typingDisplayName({
+      user_id: "708497088777945158",
+      member: { nick: "Teto Nick" },
+    })).toBe("Teto Nick");
   });
 
   test("extracts guilds from READY", () => {

@@ -87,9 +87,14 @@ export function channelsWithTyping(typing: TypingState, viewerId: string | null,
 
 export function formatTypingUsers(users: TypingUser[]): string {
   if (users.length === 0) return "";
-  if (users.length === 1) return `${users[0]!.displayName} is typing…`;
-  if (users.length === 2) return `${users[0]!.displayName} and ${users[1]!.displayName} are typing…`;
+  const names = users.map((user) => formatTypingDisplayName(user.displayName));
+  if (names.length === 1) return `${names[0]} is typing…`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`;
   return "several people are typing…";
+}
+
+function formatTypingDisplayName(displayName: string): string {
+  return /^\d{15,25}$/.test(displayName.trim()) ? "Someone" : displayName;
 }
 
 function pruneTypingUsers(users: TypingUser[], nowMs: number): TypingUser[] {

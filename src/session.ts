@@ -191,21 +191,53 @@ function activeTimelineWasPinned(state: AppState): boolean {
 }
 
 function displayNameForUser(state: AppState, channelId: string, userId: string, fallback: string): string {
-  const fromMemberList = state.memberList.channelId === channelId
+  const activeChannel = state.channelList.channels.find((channel) => channel.id === channelId);
+  const guildId = activeChannel?.guildId ?? null;
+
+  const fromActiveMemberList = state.memberList.channelId === channelId
     ? state.memberList.members.find((member) => member.id === userId)?.displayName
     : null;
-  if (fromMemberList) return fromMemberList;
+  if (fromActiveMemberList) return fromActiveMemberList;
 
-  const activeChannel = state.channelList.channels.find((channel) => channel.id === channelId);
+  const fromSameGuildMemberList = guildId && state.memberList.guildId === guildId
+    ? state.memberList.members.find((member) => member.id === userId)?.displayName
+    : null;
+  if (fromSameGuildMemberList) return fromSameGuildMemberList;
+
+  for (const [key, members] of state.memberList.cache.entries()) {
+    if (guildId && !key.startsWith(`${guildId}:`)) continue;
+    const fromCachedMemberList = members.find((member) => member.id === userId)?.displayName;
+    if (fromCachedMemberList) return fromCachedMemberList;
+  }
+
   const fromRecipients = activeChannel?.recipients?.find((recipient) => recipient.id === userId)?.displayName;
   if (fromRecipients) return fromRecipients;
+
+  const fromAnyDirectMessageRecipient = state.channelList.channels
+    .flatMap((channel) => channel.recipients ?? [])
+    .find((recipient) => recipient.id === userId)?.displayName;
+  if (fromAnyDirectMessageRecipient) return fromAnyDirectMessageRecipient;
 
   const fromTimeline = state.timeline.channelId === channelId
     ? state.timeline.messages.find((message) => message.author.id === userId)?.author.displayName
     : null;
   if (fromTimeline) return fromTimeline;
 
-  return fallback;
+  const fromCachedChannelMessages = state.messageCacheByChannelId[channelId]?.messages
+    .find((message) => message.author.id === userId)?.author.displayName;
+  if (fromCachedChannelMessages) return fromCachedChannelMessages;
+
+  for (const entry of Object.values(state.messageCacheByChannelId)) {
+    const fromCachedMessage = entry.messages.find((message) => message.author.id === userId && (!guildId || message.guildId === guildId))?.author.displayName;
+    if (fromCachedMessage) return fromCachedMessage;
+  }
+
+  return isRawUserIdDisplayName(fallback, userId) ? "Someone" : fallback;
+}
+
+function isRawUserIdDisplayName(displayName: string, userId: string): boolean {
+  const trimmed = displayName.trim();
+  return trimmed === userId || /^\d{15,25}$/.test(trimmed);
 }
 
 function maybeResortDirectMessages(state: AppState, channelId: string, messageId?: string): void {
