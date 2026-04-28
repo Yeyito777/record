@@ -128,6 +128,7 @@ export interface DiscordReferencedMessageResponse {
   timestamp: string;
   author: DiscordMessageAuthorResponse;
   member?: DiscordMessageMemberResponse;
+  mentions?: DiscordMessageMentionResponse[];
   attachments?: DiscordAttachmentResponse[];
   embeds?: DiscordEmbedResponse[];
   sticker_items?: DiscordStickerItemResponse[];
@@ -237,6 +238,7 @@ export interface DiscordMessageReply {
   authorDisplayName: string | null;
   timestamp: number | null;
   summary: string;
+  mentionUsers?: DiscordGuildMember[];
 }
 
 export interface DiscordMessageCall {
@@ -402,6 +404,7 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
         message.referenced_message.embeds ?? [],
         (message.referenced_message.sticker_items ?? []).map((sticker) => sticker.name),
       ),
+      ...(message.referenced_message.mentions ? { mentionUsers: message.referenced_message.mentions.map(mapMentionedUser) } : {}),
     };
   }
 

@@ -301,6 +301,43 @@ describe("timeline rendering", () => {
     expect(plainLines.some((line) => line.includes("reply body"))).toBe(true);
   });
 
+  test("renders reply preview mentions as muted colored display names", () => {
+    const timeline = createTimelineState();
+    setTimelineRenderContext(
+      timeline,
+      "viewer",
+      false,
+      { "guild-1": [{ id: "role-1", color: 0x00aaff, position: 1 }] },
+      {},
+      0,
+      "guild-1",
+    );
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "reply body", {
+      guildId: "guild-1",
+      reply: {
+        messageId: "message-0",
+        authorId: "author-0",
+        authorDisplayName: "Alice",
+        timestamp: Date.UTC(2026, 0, 1, 11, 59, 0),
+        summary: "server ping works too — <@1013105941484680823>",
+        mentionUsers: [{ id: "1013105941484680823", username: "zosa", displayName: "zosa", bot: false, roleIds: ["role-1"] }],
+      },
+    })]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      120,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("server ping works too — @zosa");
+    expect(stripAnsi(rendered.lines[0] ?? "")).not.toContain("<@1013105941484680823>");
+    expect(rendered.lines[0]).toContain(ansiTrueColor(0x00aaff));
+    expect(rendered.lines[0]).toContain(`${ansiTrueColor(0x00aaff)}@zosa${theme.muted}`);
+  });
+
   test("renders deleted reply previews", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("message-1", "reply body", {

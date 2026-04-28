@@ -570,7 +570,15 @@ function renderMessage(
   );
   const statusSuffix = message.localStatus === "failed" ? `${theme.error} failed` : "";
   const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${statusSuffix}${theme.reset}`;
-  const replyPreview = wrapReplyPreview(message, width);
+  const replyPreview = wrapReplyPreview(
+    message,
+    width,
+    viewerId,
+    accentViewerInDirectMessages,
+    rolesByGuildId,
+    memberRoleIdsByGuildId,
+    activeGuildId,
+  );
 
   const headerLines = groupedWithPrevious ? [] : [header];
   const headerAnchors = groupedWithPrevious ? [] : [`msg:${message.id}:header`];
@@ -829,14 +837,31 @@ function mentionColorForUser(
   return color ? ansiTrueColor(color) : "";
 }
 
-function wrapReplyPreview(message: DiscordMessage, width: number): WrappedLine[] {
+function wrapReplyPreview(
+  message: DiscordMessage,
+  width: number,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
+): WrappedLine[] {
   if (!message.reply || width <= 0) return [];
 
   const prefix = "↪ ";
   const preview = formatReplyPreview(message.reply);
+  const colorize = (line: string) => colorizeReplyPreviewMentions(
+    line,
+    message,
+    viewerId,
+    accentViewerInDirectMessages,
+    rolesByGuildId,
+    memberRoleIdsByGuildId,
+    activeGuildId,
+  );
   if (width <= termWidth(prefix)) {
     return wrapPlainText(`↪ ${preview}`, width).map((line, visualIndex) => ({
-      text: line,
+      text: colorize(line),
       wrapContinuation: visualIndex > 0,
       visualIndex,
     }));
@@ -847,7 +872,7 @@ function wrapReplyPreview(message: DiscordMessage, width: number): WrappedLine[]
   const lines = wrapPlainText(preview, bodyWidth);
 
   return lines.map((line, visualIndex) => ({
-    text: `${visualIndex === 0 ? prefix : continuationPrefix}${line}`,
+    text: `${visualIndex === 0 ? prefix : continuationPrefix}${colorize(line)}`,
     wrapContinuation: visualIndex > 0,
     visualIndex,
   }));
@@ -858,8 +883,48 @@ function formatReplyPreview(reply: NonNullable<DiscordMessage["reply"]>): string
   if (reply.authorDisplayName) {
     parts.push(reply.authorDisplayName);
   }
-  parts.push(reply.summary);
+  parts.push(formatReplySummaryMentions(reply));
   return parts.join(" · ");
+}
+
+function formatReplySummaryMentions(reply: NonNullable<DiscordMessage["reply"]>): string {
+  const mentionUsers = new Map((reply.mentionUsers ?? []).map((user) => [user.id, user]));
+  if (mentionUsers.size === 0) return reply.summary;
+
+  return reply.summary.replace(/<@!?(\d+)>/g, (raw, userId: string) => {
+    const user = mentionUsers.get(userId);
+    return user ? `@${user.displayName}` : raw;
+  });
+}
+
+function colorizeReplyPreviewMentions(
+  line: string,
+  message: DiscordMessage,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
+): string {
+  const mentionUsers = new Map((message.reply?.mentionUsers ?? []).map((user) => [user.id, user]));
+  if (mentionUsers.size === 0) return line;
+
+  let colorized = line;
+  for (const user of mentionUsers.values()) {
+    const label = `@${user.displayName}`;
+    const mentionColor = mentionColorForUser(
+      message,
+      user,
+      viewerId,
+      accentViewerInDirectMessages,
+      rolesByGuildId,
+      memberRoleIdsByGuildId,
+      activeGuildId,
+    );
+    if (!mentionColor) continue;
+    colorized = colorized.replaceAll(label, `${mentionColor}${label}${theme.muted}`);
+  }
+  return colorized;
 }
 
 function wrapPlainText(text: string, width: number): string[] {
@@ -976,6 +1041,7 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
       message.reply.authorDisplayName ?? "",
       String(message.reply.timestamp ?? ""),
       message.reply.summary,
+      (message.reply.mentionUsers ?? []).map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002")).join("\u0000"),
     ].join("\u0000")
     : "";
   const callKey = message.call

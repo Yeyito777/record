@@ -5,7 +5,7 @@
 import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
 import type { SavedLogins } from "./config";
-import type { DiscordIdentity, DiscordRole } from "./discord";
+import type { DiscordGuildMember, DiscordIdentity, DiscordRole } from "./discord";
 import type { ChannelMessageCache } from "./messagecache";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
@@ -52,6 +52,7 @@ export interface ReplyTarget {
   authorDisplayName: string;
   authorColor: string;
   summary: string;
+  mentionUsers?: DiscordGuildMember[];
   timestamp: number | null;
   mention: boolean;
 }

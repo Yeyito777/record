@@ -515,6 +515,7 @@ function startReplyToSelectedHistoryMessage(mention = false): void {
     authorDisplayName: message.author.displayName,
     authorColor: replyAuthorColor(message),
     summary: summarizeReplyMessage(message),
+    mentionUsers: message.mentionUsers,
     timestamp: message.timestamp,
     mention: mention && message.author.id !== state.auth.user?.id,
   };
