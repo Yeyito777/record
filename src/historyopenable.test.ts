@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { defaultOpenersConfig, saveConfig } from "./config";
 import type { DiscordMessage } from "./discord";
-import { openableTargetAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { createInitialState } from "./state";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
@@ -65,6 +65,18 @@ describe("history openable target lookup", () => {
       ],
     })];
 
+    expect(openableTargetAtHistoryCursor(state)).toBe("https://cdn.example/cat.png");
+  });
+
+  test("maps the attachment clip icon to its attachment", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.historyLines = ["📎 cat.png • 10 B"];
+    state.historyCursor = { row: 0, col: 0 };
+    state.historyMessageBounds = [{ messageId: "m1", start: 0, end: 1, contentStart: 0, contentEnd: 1 }];
+    const attachment = { id: "a1", filename: "cat.png", contentType: "image/png", size: 10, url: "https://cdn.example/cat.png" };
+    state.timeline.messages = [baseMessage({ attachments: [attachment] })];
+
+    expect(attachmentAtHistoryCursor(state)).toEqual(attachment);
     expect(openableTargetAtHistoryCursor(state)).toBe("https://cdn.example/cat.png");
   });
 });

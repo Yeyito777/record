@@ -54,11 +54,13 @@ export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttach
   for (const attachment of message.attachments) {
     let searchFrom = 0;
     while (searchFrom < logicalLine.text.length) {
-      const start = logicalLine.text.indexOf(attachment.filename, searchFrom);
-      if (start === -1) break;
-      const end = start + attachment.filename.length;
-      if (logicalLine.cursorOffset >= start && logicalLine.cursorOffset < end) return attachment;
-      searchFrom = end;
+      const filenameStart = logicalLine.text.indexOf(attachment.filename, searchFrom);
+      if (filenameStart === -1) break;
+      const filenameEnd = filenameStart + attachment.filename.length;
+      const clipStart = logicalLine.text.lastIndexOf("📎", filenameStart);
+      const start = clipStart >= searchFrom ? clipStart : filenameStart;
+      if (logicalLine.cursorOffset >= start && logicalLine.cursorOffset < filenameEnd) return attachment;
+      searchFrom = filenameEnd;
     }
   }
 
