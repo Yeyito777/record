@@ -95,6 +95,27 @@ describe("statusline", () => {
     expect(line).toContain(`${theme.accent}PING \x1b[38;2;1;2;3mOther: ${theme.text}original message that is definitely lon…${theme.reset}`);
   });
 
+  test("shows active edit target after account details", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      authorDisplayName: "Self",
+      authorColor: "\x1b[38;2;1;2;3m",
+      summary: "original message that is definitely longer than forty columns",
+      originalContent: "original message that is definitely longer than forty columns",
+      timestamp: null,
+    };
+
+    const line = renderStatusLine(state, 120).lines[0] ?? "";
+    const plain = stripAnsi(line);
+
+    expect(plain.indexOf("Editing:")).toBeGreaterThan(plain.indexOf("Logged In As:"));
+    expect(plain.indexOf("Editing:")).toBeGreaterThan(plain.indexOf("Status:"));
+    expect(plain).toContain("Editing: Self: original message that is definitely lon…");
+    expect(line).toContain(`\x1b[38;2;1;2;3mSelf: ${theme.text}original message that is definitely lon…${theme.reset}`);
+  });
+
   test("omits PING for non-pinging replies", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.replyTarget = {

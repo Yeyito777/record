@@ -18,6 +18,7 @@ import {
   DIRECT_MESSAGES_GUILD_NAME,
   ackChannelMessage,
   fetchChannelMessages,
+  editChannelMessage,
   fetchDirectMessages,
   fetchGuildChannels,
   fetchGuildOrder,
@@ -762,6 +763,8 @@ export function clearReadOnlyClient(state: AppState): void {
   state.guildRolesByGuildId = {};
   state.memberRoleIdsByGuildId = {};
   state.messageCacheByChannelId = {};
+  state.replyTarget = null;
+  state.editTarget = null;
   state.memberRoleCacheVersion += 1;
   focusPrompt(state);
 }
@@ -1179,6 +1182,9 @@ export async function loadChannelMessages(
   if (state.replyTarget && state.replyTarget.channelId !== channelId) {
     state.replyTarget = null;
   }
+  if (state.editTarget && state.editTarget.channelId !== channelId) {
+    state.editTarget = null;
+  }
   state.sidebar.activeGuildId = channel.guildId;
   subscribeAppGatewayToActiveChannel(state);
   state.timeline.loadingOlder = false;
@@ -1332,6 +1338,83 @@ function localAttachmentsForImages(images: ClipboardImageAttachment[]): DiscordM
     size: image.sizeBytes,
     url: "",
   }));
+}
+
+export function editCurrentMessage(state: AppState, token: string | null, content: string, effects: SessionEffects): void {
+  const target = state.editTarget;
+  if (!target) return;
+  if (!token) {
+    setNotice(state, "Login first with /login <token|username>.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+  if (content.length > 2_000) {
+    setNotice(state, "Discord messages cannot exceed 2000 characters.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+  if (content === target.originalContent) {
+    clearPrompt(state);
+    state.editTarget = null;
+    setNotice(state, "", "muted");
+    effects.scheduleRender();
+    return;
+  }
+
+  const channelId = target.channelId;
+  const messageId = target.messageId;
+  const originalCached = state.messageCacheByChannelId[channelId]?.messages.find((message) => message.id === messageId) ?? null;
+  const originalTimeline = state.timeline.channelId === channelId
+    ? state.timeline.messages.find((message) => message.id === messageId) ?? null
+    : null;
+  const originalMessage = originalTimeline ?? originalCached;
+
+  clearPrompt(state);
+  state.pendingImages = [];
+  state.editTarget = null;
+  state.replyTarget = null;
+  setNotice(state, "", "muted");
+
+  const optimisticPatch: DiscordMessagePatch = {
+    id: messageId,
+    channelId,
+    content,
+    editedTimestamp: Date.now(),
+  };
+  const patchedCache = patchCachedChannelMessage(state.messageCacheByChannelId, optimisticPatch);
+  if (patchedCache) persistChannelMessageCache(state, channelId);
+  if (state.timeline.channelId === channelId) {
+    patchTimelineMessage(state.timeline, optimisticPatch);
+  }
+  effects.scheduleRender();
+
+  void (async () => {
+    try {
+      const editedMessage = await editChannelMessage(token, channelId, messageId, content);
+      const message = withMessageGuildId(editedMessage, originalMessage?.guildId ?? state.channelList.activeChannel?.guildId ?? null);
+      recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
+      replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId, message);
+      persistChannelMessageCache(state, channelId);
+      if (state.timeline.channelId === channelId) {
+        replaceTimelineMessage(state.timeline, messageId, message);
+      }
+      effects.scheduleRender();
+    } catch (error) {
+      if (originalMessage) {
+        replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId, originalMessage);
+        persistChannelMessageCache(state, channelId);
+        if (state.timeline.channelId === channelId) {
+          replaceTimelineMessage(state.timeline, messageId, originalMessage);
+        }
+      }
+      state.editTarget = target;
+      state.editor.buffer = content;
+      state.editor.cursor = state.editor.buffer.length;
+      const message = error instanceof Error ? error.message : String(error);
+      setNotice(state, `Edit failed: ${message}`, "warning");
+      effects.scheduleRender();
+    }
+  })();
 }
 
 export function sendCurrentChannelMessage(state: AppState, token: string | null, content: string, effects: SessionEffects): void {

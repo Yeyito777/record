@@ -8,7 +8,7 @@
 import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
-import { clearReadOnlyClient, refreshReadOnlyClient, sendCurrentChannelMessage, type SessionEffects } from "./session";
+import { clearReadOnlyClient, editCurrentMessage, refreshReadOnlyClient, sendCurrentChannelMessage, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
@@ -172,9 +172,15 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
 }
 
 export function submitCurrentBuffer(state: AppState, effects: AppEffects): void {
-  const text = state.editor.buffer.trim();
+  const rawText = state.editor.buffer;
+  const text = rawText.trim();
   const hasImages = state.pendingImages.length > 0;
   state.autocomplete = null;
+
+  if (state.editTarget) {
+    editCurrentMessage(state, state.auth.savedToken, rawText, effects);
+    return;
+  }
 
   if (!text && !hasImages) return;
   if (text && !hasImages && handleCommandSubmit(state, text, effects)) return;

@@ -13,6 +13,7 @@ import {
   handleEditorKey,
   MAX_PROMPT_ROWS,
   PROMPT_PREFIX_WIDTH,
+  resetEditor,
 } from "./editor";
 import {
   ensureHistoryCursorVisible,
@@ -433,6 +434,12 @@ function cancelCurrentAction(): void {
     return;
   }
 
+  if (state.editTarget) {
+    state.editTarget = null;
+    scheduleRender();
+    return;
+  }
+
   if (state.autocomplete) {
     dismissAutocomplete(state);
     scheduleRender();
@@ -450,6 +457,35 @@ function replyGuildIdForMessage(message: DiscordMessage): string | null {
 function replyAuthorColor(message: DiscordMessage): string {
   if (state.channelList.activeChannel?.guildId !== DIRECT_MESSAGES_GUILD_ID) return "";
   return message.author.id === state.auth.user?.id ? theme.accent : dmAuthorColor(message.author.id);
+}
+
+function selectedMessageCanBeEdited(message: DiscordMessage | null): message is DiscordMessage {
+  if (!message) return false;
+  if (!state.auth.user || message.author.id !== state.auth.user.id) return false;
+  if (message.localStatus === "pending" || message.id.startsWith("local:")) return false;
+  return true;
+}
+
+function startEditSelectedHistoryMessage(): void {
+  const message = selectedHistoryMessage();
+  if (!selectedMessageCanBeEdited(message)) return;
+
+  state.editTarget = {
+    messageId: message.id,
+    channelId: message.channelId,
+    authorDisplayName: message.author.displayName,
+    authorColor: replyAuthorColor(message),
+    summary: summarizeReplyMessage(message),
+    originalContent: message.content,
+    timestamp: message.timestamp,
+  };
+  state.replyTarget = null;
+  state.pendingImages = [];
+  setNotice(state, "", "muted");
+  resetEditor(state.editor, message.content, "insert");
+  focusPrompt(state);
+  syncPromptAutocomplete();
+  scheduleRender();
 }
 
 function startReplyToSelectedHistoryMessage(mention = false): void {
@@ -667,6 +703,11 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 function handleHistoryFocused(key: KeyEvent): boolean {
   if (state.editor.mode === "normal" && key.type === "char" && (key.char === "r" || key.char === "R")) {
     startReplyToSelectedHistoryMessage(key.char === "R");
+    return true;
+  }
+
+  if (state.editor.mode === "normal" && key.type === "char" && key.char === "e" && selectedMessageCanBeEdited(selectedHistoryMessage())) {
+    startEditSelectedHistoryMessage();
     return true;
   }
 

@@ -846,6 +846,19 @@ export async function sendChannelMessage(
   return mapDiscordMessage(message);
 }
 
+export async function editChannelMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+  content: string,
+): Promise<DiscordMessage> {
+  const message = await requestJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages/${messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ content }),
+  });
+  return mapDiscordMessage(message);
+}
+
 function buildSendMessagePayload(content: string, options: SendMessageOptions): Record<string, unknown> {
   const body: Record<string, unknown> = { content, tts: false };
   const reply = options.reply;

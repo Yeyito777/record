@@ -13,6 +13,7 @@ import {
   formatChannelName,
   isDirectMessageChannel,
   mapDiscordMessagePatch,
+  editChannelMessage,
   sendChannelMessage,
   setGuildMuted,
   updateGuildSidebarOrder,
@@ -422,6 +423,36 @@ describe("discord helpers", () => {
     expect(requestedUrl).toBe("https://discord.com/api/v9/channels/channel-1/messages");
     expect(JSON.parse(requestedBody)).toEqual({ content: "hello world", tts: false });
     expect(message.content).toBe("hello world");
+  });
+
+  test("patches message content when editing a message", async () => {
+    let requestedUrl = "";
+    let requestedMethod = "";
+    let requestedBody = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrl = String(input);
+      requestedMethod = String(init?.method ?? "");
+      requestedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({
+        id: "message-1",
+        channel_id: "channel-1",
+        type: 0,
+        content: "edited message",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: "2026-01-01T12:01:00.000Z",
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        attachments: [],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const message = await editChannelMessage("token", "channel-1", "message-1", "edited message");
+
+    expect(requestedUrl).toBe("https://discord.com/api/v9/channels/channel-1/messages/message-1");
+    expect(requestedMethod).toBe("PATCH");
+    expect(JSON.parse(requestedBody)).toEqual({ content: "edited message" });
+    expect(message.content).toBe("edited message");
+    expect(message.editedTimestamp).toBe(Date.parse("2026-01-01T12:01:00.000Z"));
   });
 
   test("posts reply metadata when sending a reply", async () => {

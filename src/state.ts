@@ -56,6 +56,16 @@ export interface ReplyTarget {
   mention: boolean;
 }
 
+export interface EditTarget {
+  messageId: string;
+  channelId: string;
+  authorDisplayName: string;
+  authorColor: string;
+  summary: string;
+  originalContent: string;
+  timestamp: number | null;
+}
+
 export interface AppState {
   cols: number;
   rows: number;
@@ -79,6 +89,7 @@ export interface AppState {
   typing: TypingState;
   notifications: NotificationState;
   replyTarget: ReplyTarget | null;
+  editTarget: EditTarget | null;
   roleIdsByGuildId: Record<string, string[]>;
   guildRolesByGuildId: Record<string, DiscordRole[]>;
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
@@ -120,6 +131,7 @@ export function createInitialState(
     typing: createTypingState(),
     notifications: createNotificationState(),
     replyTarget: null,
+    editTarget: null,
     roleIdsByGuildId: {},
     guildRolesByGuildId: {},
     memberRoleIdsByGuildId: {},

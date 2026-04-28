@@ -11,6 +11,7 @@ import { theme } from "./theme";
 import { truncate } from "./textwidth";
 
 import { accountBlock } from "./statusblocks/account";
+import { editBlock } from "./statusblocks/edit";
 import { noticeBlock } from "./statusblocks/notice";
 import { presenceBlock } from "./statusblocks/presence";
 import { replyBlock } from "./statusblocks/reply";
@@ -28,6 +29,7 @@ type BlockBuilder = (state: AppState) => StatusBlock | null;
 const BLOCK_BUILDERS: BlockBuilder[] = [
   accountBlock,
   presenceBlock,
+  editBlock,
   replyBlock,
   noticeBlock,
 ];

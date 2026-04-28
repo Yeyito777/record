@@ -39,6 +39,23 @@ describe("submitCurrentBuffer", () => {
     expect(state.notice.text).toBe("Login first with /login <token|username>.");
   });
 
+  test("empty prompt submits while editing", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      authorDisplayName: "Self",
+      authorColor: "",
+      summary: "original",
+      originalContent: "original",
+      timestamp: null,
+    };
+
+    submitCurrentBuffer(state, effects);
+
+    expect(state.notice.text).toBe("Login first with /login <token|username>.");
+  });
+
   test("empty prompt does nothing", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
 

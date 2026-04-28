@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { saveCachedGuildChannels } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
-import { bootstrapReadOnlyClient, clearReadOnlyClient, loadChannelMessages, loadGuildChannels, sendCurrentChannelMessage } from "./session";
+import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, sendCurrentChannelMessage } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -517,6 +517,84 @@ describe("session", () => {
       message_id: "message-1",
       channel_id: "dm-1",
     });
+  });
+
+  test("editing a message patches it optimistically and clears edit state", async () => {
+    let requestedBody = "";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({
+        id: "message-1",
+        channel_id: "channel-1",
+        guild_id: "guild-1",
+        type: 0,
+        content: "edited",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: "2026-01-01T12:01:00.000Z",
+        author: { id: "self", username: "self", global_name: "Self" },
+        attachments: [],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+    state.timeline.messages = [message("message-1", "original")];
+    state.messageCacheByChannelId["channel-1"] = { channelId: "channel-1", messages: [message("message-1", "original")], hasOlder: false, updatedAt: 0, latestFetchedAt: null };
+    state.editTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      authorDisplayName: "Self",
+      authorColor: "",
+      summary: "original",
+      originalContent: "original",
+      timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+    };
+    state.editor.buffer = "edited";
+
+    editCurrentMessage(state, "token-1", "edited", { scheduleRender: () => {} });
+
+    expect(state.editTarget).toBeNull();
+    expect(state.editor.buffer).toBe("");
+    expect(state.timeline.messages[0]?.content).toBe("edited");
+    expect(typeof state.timeline.messages[0]?.editedTimestamp).toBe("number");
+
+    await flushTimers();
+
+    expect(JSON.parse(requestedBody)).toEqual({ content: "edited" });
+    expect(state.timeline.messages[0]?.content).toBe("edited");
+    expect(state.timeline.messages[0]?.editedTimestamp).toBe(Date.parse("2026-01-01T12:01:00.000Z"));
+  });
+
+  test("failed edits restore the prompt, edit state, and original message", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ message: "Missing Access" }), { status: 403 })) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+    state.timeline.messages = [message("message-1", "original")];
+    state.editTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      authorDisplayName: "Self",
+      authorColor: "",
+      summary: "original",
+      originalContent: "original",
+      timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+    };
+
+    editCurrentMessage(state, "token-1", "edited", { scheduleRender: () => {} });
+    await flushTimers();
+
+    expect(state.editTarget?.messageId).toBe("message-1");
+    expect(state.editor.buffer).toBe("edited");
+    expect(state.timeline.messages[0]?.content).toBe("original");
+    expect(state.notice.text).toContain("Edit failed");
   });
 
   test("failed sends restore the prompt and leave a failure in history", async () => {

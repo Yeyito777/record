@@ -987,6 +987,7 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
     : "";
   return [
     String(message.timestamp),
+    String(message.editedTimestamp ?? ""),
     message.author.id,
     message.author.displayName,
     message.author.bot ? "1" : "0",
