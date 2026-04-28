@@ -69,9 +69,9 @@ function handleChannelsCommand(text: string, state: AppState): CommandResult {
 
   try {
     saveConfig({ channels: { showHidden: next } });
-    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}.`, "muted");
+    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}.`, "muted", { statusLine: false });
   } catch (error) {
-    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}, but saving failed: ${(error as Error).message}`, "warning");
+    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}, but saving failed: ${(error as Error).message}`, "warning", { statusLine: false });
   }
 
   return { type: "handled" };
