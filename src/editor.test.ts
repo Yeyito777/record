@@ -13,6 +13,47 @@ describe("editor", () => {
     expect(editor.cursor).toBe(editor.buffer.length - 1);
   });
 
+  test("backspace and delete remove whole emoji graphemes", () => {
+    const editor = createEditorState("a😭b", "insert");
+    editor.cursor = "a😭".length;
+
+    handleEditorKey(editor, { type: "backspace" });
+
+    expect(editor.buffer).toBe("ab");
+    expect(editor.cursor).toBe(1);
+
+    editor.buffer = "a❤️b";
+    editor.cursor = 1;
+    handleEditorKey(editor, { type: "delete" });
+
+    expect(editor.buffer).toBe("ab");
+    expect(editor.cursor).toBe(1);
+  });
+
+  test("cursor movement treats emoji as one character", () => {
+    const editor = createEditorState("a😭b", "insert");
+    editor.cursor = editor.buffer.length;
+
+    handleEditorKey(editor, { type: "left" });
+    expect(editor.cursor).toBe("a😭".length);
+
+    handleEditorKey(editor, { type: "left" });
+    expect(editor.cursor).toBe(1);
+
+    handleEditorKey(editor, { type: "right" });
+    expect(editor.cursor).toBe("a😭".length);
+  });
+
+  test("escape leaves normal cursor on emoji start", () => {
+    const editor = createEditorState("😭", "insert");
+    editor.cursor = editor.buffer.length;
+
+    handleEditorKey(editor, { type: "escape" });
+
+    expect(editor.mode).toBe("normal");
+    expect(editor.cursor).toBe(0);
+  });
+
   test("dd clears the buffer in normal mode", () => {
     const editor = createEditorState("secret", "normal");
 

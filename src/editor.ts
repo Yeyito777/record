@@ -15,7 +15,7 @@ import {
   redo as redoEdit,
   undo as undoEdit,
 } from "./undo";
-import { lineEndOf, lineStartOf, clampInsertCursor, clampNormalCursor } from "./editor-buffer";
+import { lineEndOf, lineStartOf, clampInsertCursor, clampNormalCursor, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import { copyToClipboard, pasteFromClipboard } from "./editor-clipboard";
 import { lookupCommand, isPrefix } from "./editor-keymap";
 import {
@@ -394,23 +394,24 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
     case "backspace": {
       const pos = clampInsertCursor(editor.buffer, editor.cursor);
       if (pos > 0) {
-        editor.buffer = editor.buffer.slice(0, pos - 1) + editor.buffer.slice(pos);
-        editor.cursor = pos - 1;
+        const start = previousGraphemeStart(editor.buffer, pos);
+        editor.buffer = editor.buffer.slice(0, start) + editor.buffer.slice(pos);
+        editor.cursor = start;
       }
       return "handled";
     }
     case "delete": {
       const pos = clampInsertCursor(editor.buffer, editor.cursor);
       if (pos < editor.buffer.length) {
-        editor.buffer = editor.buffer.slice(0, pos) + editor.buffer.slice(pos + 1);
+        editor.buffer = editor.buffer.slice(0, pos) + editor.buffer.slice(nextGraphemeEnd(editor.buffer, pos));
       }
       return "handled";
     }
     case "left":
-      editor.cursor = clampInsertCursor(editor.buffer, editor.cursor - 1);
+      editor.cursor = previousGraphemeStart(editor.buffer, clampInsertCursor(editor.buffer, editor.cursor));
       return "handled";
     case "right":
-      editor.cursor = clampInsertCursor(editor.buffer, editor.cursor + 1);
+      editor.cursor = nextGraphemeEnd(editor.buffer, clampInsertCursor(editor.buffer, editor.cursor));
       return "handled";
     case "home":
       editor.cursor = lineStartOf(editor.buffer, editor.cursor);
@@ -734,7 +735,7 @@ export function leaveInsertMode(editor: EditorState): void {
 
   let newCursor = editor.cursor;
   if (newCursor > 0 && editor.buffer[newCursor - 1] !== "\n") {
-    newCursor--;
+    newCursor = previousGraphemeStart(editor.buffer, newCursor);
   }
   editor.cursor = clampNormalCursor(editor.buffer, newCursor);
 }

@@ -2,19 +2,19 @@
  * Prompt editor motions.
  */
 
-import { lineEndOf, lineStartOf } from "./editor-buffer";
+import { lineEndOf, lineStartOf, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import { isBufferSpace, isPunct, isWordChar } from "./editor-chars";
 
 export function charLeft(buffer: string, pos: number): number {
   if (pos <= 0) return 0;
   if (buffer[pos - 1] === "\n") return pos;
-  return pos - 1;
+  return previousGraphemeStart(buffer, pos);
 }
 
 export function charRight(buffer: string, pos: number): number {
   if (pos >= buffer.length) return buffer.length;
   if (buffer[pos] === "\n") return pos;
-  return pos + 1;
+  return nextGraphemeEnd(buffer, pos);
 }
 
 export function wordForward(buffer: string, pos: number): number {

@@ -3,7 +3,7 @@
  */
 
 import type { BufferEdit } from "./editor-types";
-import { clampNormalCursor, lineEndOf, lineStartOf } from "./editor-buffer";
+import { clampNormalCursor, lineEndOf, lineStartOf, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 
 export function deleteRange(buffer: string, start: number, end: number): BufferEdit {
   if (start > end) [start, end] = [end, start];
@@ -32,12 +32,12 @@ export function changeLine(buffer: string, pos: number): BufferEdit {
 
 export function deleteChar(buffer: string, pos: number): BufferEdit {
   if (pos >= buffer.length) return { buffer, cursor: pos };
-  return deleteRange(buffer, pos, pos + 1);
+  return deleteRange(buffer, pos, nextGraphemeEnd(buffer, pos));
 }
 
 export function deleteCharBefore(buffer: string, pos: number): BufferEdit {
   if (pos <= 0) return { buffer, cursor: 0 };
-  return deleteRange(buffer, pos - 1, pos);
+  return deleteRange(buffer, previousGraphemeStart(buffer, pos), pos);
 }
 
 export function deleteToEnd(buffer: string, pos: number): BufferEdit {
@@ -85,7 +85,7 @@ export function swapCase(buffer: string, pos: number, count: number): BufferEdit
 
 export function replaceChar(buffer: string, pos: number, ch: string): BufferEdit {
   if (pos >= buffer.length || buffer[pos] === "\n") return { buffer, cursor: pos };
-  return { buffer: buffer.slice(0, pos) + ch + buffer.slice(pos + 1), cursor: pos };
+  return { buffer: buffer.slice(0, pos) + ch + buffer.slice(nextGraphemeEnd(buffer, pos)), cursor: pos };
 }
 
 export function swapCaseRange(buffer: string, start: number, end: number): BufferEdit {
