@@ -72,13 +72,16 @@ describe("submitCurrentBuffer", () => {
     state.timeline.channelId = "channel-1";
     state.memberList.guildId = "guild-1";
     state.memberList.channelId = "channel-1";
-    state.memberList.members = [{ id: "user-1", username: "zosa", displayName: "Zosa", bot: false }];
+    state.memberList.members = [{ id: "user-1", username: "zosa", displayName: "Zosa", bot: false, roleIds: ["role-1"] }];
     state.editor.buffer = "hi @zosa";
 
     submitCurrentBuffer(state, effects);
 
     expect(JSON.parse(requestedBody).content).toBe("hi <@user-1>");
     expect(state.timeline.messages[0]?.content).toBe("hi @zosa");
+    expect(state.timeline.messages[0]?.localMentionUsers).toEqual([
+      { id: "user-1", username: "zosa", displayName: "Zosa", bot: false, roleIds: ["role-1"] },
+    ]);
   });
 
   test("empty prompt submits while editing", () => {

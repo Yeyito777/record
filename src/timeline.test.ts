@@ -399,6 +399,34 @@ describe("timeline rendering", () => {
     expect(stripAnsi(rendered.lines[1] ?? "")).toBe("sending now");
   });
 
+  test("renders pending local @mentions with color inside muted sending text", () => {
+    const timeline = createTimelineState();
+    setTimelineRenderContext(
+      timeline,
+      "viewer",
+      false,
+      { "guild-1": [{ id: "role-1", color: 0x00aaff, position: 1 }] },
+      {},
+      0,
+      "guild-1",
+    );
+    const pending = message("local-1", "hi @Zosa", { guildId: "guild-1", authorId: "viewer", authorName: "Paramount" });
+    pending.localStatus = "pending";
+    pending.localMentionUsers = [{ id: "user-1", username: "zosa", displayName: "Zosa", bot: false, roleIds: ["role-1"] }];
+    setTimelineMessages(timeline, "channel-1", [pending]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[1] ?? "")).toBe("hi @Zosa");
+    expect(rendered.lines[1]).toContain(`${ansiTrueColor(0x00aaff)}@Zosa${theme.muted}`);
+  });
+
   test("replaces matching pending local messages when gateway echoes the sent message", () => {
     const timeline = createTimelineState();
     const pending = message("local-1", "hello", { authorId: "viewer", authorName: "Paramount" });

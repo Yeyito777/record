@@ -197,3 +197,24 @@ export function resolvePromptMentionsForSend(state: AppState, content: string): 
     return candidate ? `${boundary}<@${candidate.id}>` : raw;
   });
 }
+
+export function promptMentionUsers(state: AppState, content: string): DiscordGuildMember[] {
+  const byId = new Map<string, DiscordGuildMember>();
+  MENTION_TOKEN_RE.lastIndex = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = MENTION_TOKEN_RE.exec(content)) !== null) {
+    const token = match[2] ?? "";
+    const candidate = mentionCandidateForToken(state, token);
+    if (!candidate) continue;
+    byId.set(candidate.id, {
+      id: candidate.id,
+      username: candidate.username,
+      displayName: candidate.displayName,
+      bot: false,
+      roleIds: candidate.roleIds,
+    });
+  }
+
+  return [...byId.values()];
+}

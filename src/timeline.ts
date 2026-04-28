@@ -788,14 +788,19 @@ function renderUserMentions(
     `${prefix}${theme.accent}@${mention}${restoreColor}`
   ));
 
-  const mentionUsers = new Map((message.mentionUsers ?? []).map((user) => [user.id, user]));
+  const mentionUsers = new Map([...(message.mentionUsers ?? []), ...(message.localMentionUsers ?? [])].map((user) => [user.id, user]));
   if (mentionUsers.size === 0) return withBroadcastMentions;
 
-  return withBroadcastMentions.replace(/<@!?(\d+)>/g, (raw, userId: string) => {
+  const withCanonicalMentions = withBroadcastMentions.replace(/<@!?(\d+)>/g, (raw, userId: string) => {
     const user = mentionUsers.get(userId);
     if (!user) return raw;
+    return renderMentionLabel(message, user, viewerId, accentViewerInDirectMessages, rolesByGuildId, memberRoleIdsByGuildId, activeGuildId, restoreColor);
+  });
+
+  return [...mentionUsers.values()].reduce((text, user) => {
     const label = `@${user.displayName}`;
-    const mentionColor = mentionColorForUser(
+    if (!text.includes(label)) return text;
+    return text.replaceAll(label, renderMentionLabel(
       message,
       user,
       viewerId,
@@ -803,9 +808,32 @@ function renderUserMentions(
       rolesByGuildId,
       memberRoleIdsByGuildId,
       activeGuildId,
-    );
-    return mentionColor ? `${mentionColor}${label}${restoreColor}` : label;
-  });
+      restoreColor,
+    ));
+  }, withCanonicalMentions);
+}
+
+function renderMentionLabel(
+  message: DiscordMessage,
+  user: DiscordGuildMember,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
+  restoreColor: string,
+): string {
+  const label = `@${user.displayName}`;
+  const mentionColor = mentionColorForUser(
+    message,
+    user,
+    viewerId,
+    accentViewerInDirectMessages,
+    rolesByGuildId,
+    memberRoleIdsByGuildId,
+    activeGuildId,
+  );
+  return mentionColor ? `${mentionColor}${label}${restoreColor}` : label;
 }
 
 function renderOpenableLinks(content: string, restoreColor: string): string {
@@ -1069,6 +1097,7 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
     message.localStatus ?? "",
     message.localError ?? "",
     message.localSendContent ?? "",
+    (message.localMentionUsers ?? []).map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002")).join("\u0000"),
     groupedWithPrevious ? "grouped" : "full",
   ].join("\u0001");
 }

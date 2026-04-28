@@ -1461,7 +1461,7 @@ export function sendCurrentChannelMessage(
   token: string | null,
   content: string,
   effects: SessionEffects,
-  options: { sendContent?: string } = {},
+  options: { sendContent?: string; localMentionUsers?: DiscordGuildMember[] } = {},
 ): void {
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
   if (!token) {
@@ -1519,6 +1519,7 @@ export function sendCurrentChannelMessage(
     embedsCount: 0,
     localStatus: "pending",
     localSendContent: sendContent !== content ? sendContent : undefined,
+    localMentionUsers: options.localMentionUsers && options.localMentionUsers.length > 0 ? options.localMentionUsers : undefined,
   };
   upsertCachedChannelMessage(state.messageCacheByChannelId, localMessage);
   if (state.timeline.channelId === channelId) {

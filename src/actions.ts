@@ -8,7 +8,7 @@
 import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
-import { resolvePromptMentionsForSend } from "./mentions";
+import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
 import { clearReadOnlyClient, editCurrentMessage, refreshReadOnlyClient, sendCurrentChannelMessage, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
@@ -186,5 +186,8 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   if (!text && !hasImages) return;
   if (text && !hasImages && handleCommandSubmit(state, text, effects)) return;
 
-  sendCurrentChannelMessage(state, state.auth.savedToken, text, effects, { sendContent: resolvePromptMentionsForSend(state, text) });
+  sendCurrentChannelMessage(state, state.auth.savedToken, text, effects, {
+    sendContent: resolvePromptMentionsForSend(state, text),
+    localMentionUsers: promptMentionUsers(state, text),
+  });
 }

@@ -277,6 +277,8 @@ export interface DiscordMessage {
   localError?: string;
   /** Actual content sent to Discord when it differs from the friendly local prompt text. */
   localSendContent?: string;
+  /** Mention metadata for friendly local @name text before Discord echoes canonical mentions. */
+  localMentionUsers?: DiscordGuildMember[];
 }
 
 export interface DiscordMessagePatch {
