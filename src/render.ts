@@ -348,7 +348,10 @@ export function render(state: AppState): void {
     state.memberRoleCacheVersion,
     state.channelList.activeChannel?.guildId ?? null,
   );
-  const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, state.notice, state.loadingFrameIndex);
+  const timelineNotice = state.timeline.messages.length === 0 && state.timeline.channelId === null
+    ? state.notice
+    : { ...state.notice, chat: false };
+  const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, timelineNotice, state.loadingFrameIndex);
 
   if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom && !pinPromptChromeToBottom && !pinTypingToBottom) {
     const anchorIndex = buildLineAnchorIndex(timeline.lineAnchors);

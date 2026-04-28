@@ -74,6 +74,19 @@ describe("timeline rendering", () => {
     expect(rendered.lines[0]).toContain("⠙ Validating token…");
   });
 
+  test("status-only notices do not render into timeline content", () => {
+    const timeline = createTimelineState();
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "Downloading image.png…", tone: "muted", loading: true, chat: false },
+      1,
+    );
+
+    expect(rendered.lines.join("\n")).not.toContain("Downloading image.png");
+  });
+
   test("message loading uses the shared spinner label", () => {
     const timeline = createTimelineState();
     timeline.loading = true;

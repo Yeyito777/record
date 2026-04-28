@@ -187,7 +187,7 @@ function clearNoticeLater(text: string, delayMs: number): void {
 }
 
 function showTransientNotice(text: string, delayMs = OPEN_NOTICE_MS): void {
-  setNotice(state, text, "muted", { loading: true });
+  setNotice(state, text, "muted", { loading: true, chat: false });
   scheduleRender();
   clearNoticeLater(text, delayMs);
 }
@@ -202,7 +202,7 @@ function formatAttachmentDownloadProgress(progress: AttachmentDownloadProgress):
 }
 
 function showAttachmentDownloadProgress(filename: string, progress: AttachmentDownloadProgress): void {
-  setNotice(state, `Downloading ${filename}… ${formatAttachmentDownloadProgress(progress)}`, "muted", { loading: true });
+  setNotice(state, `Downloading ${filename}… ${formatAttachmentDownloadProgress(progress)}`, "muted", { loading: true, chat: false });
   scheduleRender();
 }
 
@@ -698,7 +698,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
     case "nav_select": {
       const attachment = attachmentAtHistoryCursor(state);
       if (attachment) {
-        setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true });
+        setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true, chat: false });
         scheduleRender();
         void (async () => {
           const downloaded = await downloadAttachment(attachment, {

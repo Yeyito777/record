@@ -94,4 +94,19 @@ describe("render", () => {
     expect(output).toContain("📎 Image pasted (PNG, 1.5 KB)");
     expect(output.indexOf("📎 Image pasted")).toBeLessThan(output.indexOf("I\x1b["));
   });
+
+  test("keeps status notices out of populated chat history", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 100;
+    state.rows = 12;
+    setTimelineMessages(state.timeline, "channel-1", [message("1", "sacred chat")]);
+    state.notice = { text: "Hidden channels shown.", tone: "muted", loading: false, statusLine: true, chat: true };
+
+    const output = captureRender(state);
+
+    expect(output).toContain("sacred chat");
+    expect(output).toContain("Hidden channels shown.");
+    expect(output.indexOf("Hidden channels shown.")).toBeGreaterThan(output.indexOf("N "));
+    expect(state.historyLines.join("\n")).not.toContain("Hidden channels shown.");
+  });
 });

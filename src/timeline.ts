@@ -317,7 +317,7 @@ export function renderTimelineLines(
   timeline: TimelineState,
   width: number,
   height: number,
-  notice: { text: string; tone: "muted" | "success" | "warning" | "error"; loading?: boolean },
+  notice: { text: string; tone: "muted" | "success" | "warning" | "error"; loading?: boolean; chat?: boolean },
   loadingFrameIndex = 0,
 ): RenderedTimeline {
   let allLines: string[] = [];
@@ -325,7 +325,9 @@ export function renderTimelineLines(
   let wrapContinuation: boolean[] = [];
   let messageBounds: TimelineMessageBound[] = [];
 
-  if (notice.text) {
+  const showNoticeInTimeline = notice.chat !== false;
+
+  if (showNoticeInTimeline && notice.text) {
     for (const [index, line] of notice.text.split("\n").entries()) {
       const renderedLine = notice.loading ? loadingLabel(line, loadingFrameIndex) : line;
       allLines.push(`${toneColor(notice.tone)}${truncate(renderedLine, width)}${theme.reset}`);
@@ -350,7 +352,7 @@ export function renderTimelineLines(
     }
   } else {
     const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
-    if (notice.text || timeline.loadingOlder) {
+    if ((showNoticeInTimeline && notice.text) || timeline.loadingOlder) {
       if (timeline.loadingOlder) {
         allLines.push(`${theme.muted}${truncate(loadingLabel("Loading older messages…", loadingFrameIndex), width)}${theme.reset}`);
         lineAnchors.push("timeline:loading-older");
@@ -365,7 +367,7 @@ export function renderTimelineLines(
     }
   }
 
-  if (!notice.text && timeline.loading && timeline.messages.length > 0) {
+  if (!(showNoticeInTimeline && notice.text) && timeline.loading && timeline.messages.length > 0) {
     prependBlankTimelineRows(allLines, lineAnchors, wrapContinuation, messageBounds, Math.max(0, height - allLines.length));
   }
 

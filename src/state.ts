@@ -27,8 +27,10 @@ export interface Notice {
   tone: NoticeTone;
   text: string;
   loading: boolean;
-  /** Whether this notice should also be mirrored into the status line. */
+  /** Whether this notice should be shown in the status line. */
   statusLine?: boolean;
+  /** Whether this notice may be shown in the empty chat body when no messages are visible. */
+  chat?: boolean;
 }
 
 export interface AuthState {
@@ -133,7 +135,7 @@ export function createInitialState(
       lastValidatedAt: null,
       activeRequestId: 0,
     },
-    notice: { tone: "muted", text: "", loading: false },
+    notice: { tone: "muted", text: "", loading: false, statusLine: true, chat: true },
     loadingFrameIndex: 0,
     configPath: path,
   };
@@ -143,13 +145,19 @@ export function setNotice(
   state: AppState,
   text: string,
   tone: NoticeTone = "muted",
-  options: { loading?: boolean; statusLine?: boolean } = {},
+  options: { loading?: boolean; statusLine?: boolean; chat?: boolean } = {},
 ): void {
-  state.notice = { text, tone, loading: options.loading ?? false, statusLine: options.statusLine ?? true };
+  state.notice = {
+    text,
+    tone,
+    loading: options.loading ?? false,
+    statusLine: options.statusLine ?? true,
+    chat: options.chat ?? true,
+  };
 }
 
-export function setLoadingNotice(state: AppState, text: string): void {
-  setNotice(state, text, "muted", { loading: true });
+export function setLoadingNotice(state: AppState, text: string, options: { statusLine?: boolean; chat?: boolean } = {}): void {
+  setNotice(state, text, "muted", { loading: true, ...options });
 }
 
 export function nextAuthRequestId(state: AppState): number {
