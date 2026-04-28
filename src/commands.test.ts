@@ -53,11 +53,15 @@ describe("commands", () => {
       expect(state.showHiddenChannels).toBe(true);
       expect(loadConfig().channels).toEqual({ showHidden: true });
       expect(state.notice.text).toContain("shown");
+      expect(state.notice.tone).toBe("muted");
+      expect(state.notice.statusLine).toBe(false);
 
       expect(tryCommand("/channels show-hidden off", state)).toEqual({ type: "handled" });
       expect(state.showHiddenChannels).toBe(false);
       expect(loadConfig().channels).toEqual({ showHidden: false });
       expect(state.notice.text).toContain("hidden");
+      expect(state.notice.tone).toBe("muted");
+      expect(state.notice.statusLine).toBe(false);
     });
   });
 

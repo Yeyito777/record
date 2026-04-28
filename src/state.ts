@@ -27,6 +27,8 @@ export interface Notice {
   tone: NoticeTone;
   text: string;
   loading: boolean;
+  /** Whether this notice should also be mirrored into the status line. */
+  statusLine?: boolean;
 }
 
 export interface AuthState {
@@ -141,9 +143,9 @@ export function setNotice(
   state: AppState,
   text: string,
   tone: NoticeTone = "muted",
-  options: { loading?: boolean } = {},
+  options: { loading?: boolean; statusLine?: boolean } = {},
 ): void {
-  state.notice = { text, tone, loading: options.loading ?? false };
+  state.notice = { text, tone, loading: options.loading ?? false, statusLine: options.statusLine ?? true };
 }
 
 export function setLoadingNotice(state: AppState, text: string): void {

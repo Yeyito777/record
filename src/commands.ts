@@ -27,6 +27,8 @@ export interface SlashCommand {
   name: string;
   description: string;
   args?: CompletionItem[];
+  /** Optional dynamic/nested argument completions keyed by command prefix. */
+  getArgs?: (state: AppState) => Record<string, CompletionItem[]>;
   handler: (text: string, state: AppState) => CommandResult;
 }
 
@@ -35,6 +37,15 @@ function usage(state: AppState, text: string): CommandResult {
   clearPrompt(state);
   return { type: "handled" };
 }
+
+const CHANNELS_ARGS: CompletionItem[] = [
+  { name: "show-hidden", desc: "toggle inaccessible channel rows" },
+];
+
+const SHOW_HIDDEN_ARGS: CompletionItem[] = [
+  { name: "on", desc: "Show inaccessible channel rows" },
+  { name: "off", desc: "Hide inaccessible channel rows" },
+];
 
 function parseOnOff(value: string | undefined): boolean | null {
   if (value === undefined) return null;
@@ -58,9 +69,9 @@ function handleChannelsCommand(text: string, state: AppState): CommandResult {
 
   try {
     saveConfig({ channels: { showHidden: next } });
-    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}.`, "success");
+    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}.`, "muted", { statusLine: false });
   } catch (error) {
-    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}, but saving failed: ${(error as Error).message}`, "warning");
+    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}, but saving failed: ${(error as Error).message}`, "warning", { statusLine: false });
   }
 
   return { type: "handled" };
@@ -124,7 +135,11 @@ const commands: SlashCommand[] = [
   {
     name: "/channels",
     description: "Configure channel display options",
-    args: [{ name: "show-hidden", desc: "toggle inaccessible channel rows" }],
+    args: CHANNELS_ARGS,
+    getArgs: () => ({
+      "/channels": CHANNELS_ARGS,
+      "/channels show-hidden": SHOW_HIDDEN_ARGS,
+    }),
     handler: handleChannelsCommand,
   },
   {
@@ -164,19 +179,21 @@ export const COMMAND_LIST: CompletionItem[] = commands
   .filter((command) => command.name !== "/exit")
   .map((command) => ({ name: command.name, desc: command.description }));
 
-const STATIC_COMMAND_ARGS: Record<string, CompletionItem[]> = Object.fromEntries(
-  commands
-    .filter((command) => command.name !== "/login" && command.args && command.args.length > 0)
-    .map((command) => [command.name, command.args!]),
-);
-
 export function getCommandArgs(state: AppState): Record<string, CompletionItem[]> {
+  const registry: Record<string, CompletionItem[]> = {};
+  for (const command of commands) {
+    if (command.name !== "/login" && command.args && command.args.length > 0) {
+      registry[command.name] = command.args;
+    }
+    if (command.getArgs) {
+      Object.assign(registry, command.getArgs(state));
+    }
+  }
+
   const loginArgs = Object.keys(state.auth.savedLogins)
     .sort((a, b) => a.localeCompare(b))
     .map((name) => ({ name, desc: "saved login" }));
+  if (loginArgs.length > 0) registry["/login"] = loginArgs;
 
-  return {
-    ...STATIC_COMMAND_ARGS,
-    ...(loginArgs.length > 0 ? { "/login": loginArgs } : {}),
-  };
+  return registry;
 }

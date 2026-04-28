@@ -141,6 +141,15 @@ describe("statusline", () => {
     expect(plain).toContain("…");
   });
 
+  test("can keep notices out of the status line", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.notice = { text: "Hidden channels shown.", tone: "muted", loading: false, statusLine: false };
+
+    const plain = stripAnsi(renderStatusLine(state, 120).lines[0] ?? "");
+
+    expect(plain).not.toContain("Hidden channels shown");
+  });
+
   test("shows N/A in red while auth is loading", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.status = "loading";

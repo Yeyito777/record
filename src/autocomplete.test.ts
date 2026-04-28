@@ -34,4 +34,17 @@ describe("autocomplete", () => {
       { name: "bob", desc: "saved login" },
     ]);
   });
+
+  test("shows nested command args after completing a subcommand", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "/channels show-hidden ";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.matches).toEqual([
+      { name: "on", desc: "Show inaccessible channel rows" },
+      { name: "off", desc: "Hide inaccessible channel rows" },
+    ]);
+  });
 });

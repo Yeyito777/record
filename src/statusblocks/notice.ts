@@ -23,6 +23,7 @@ function toneColor(tone: Notice["tone"]): string {
 }
 
 export function noticeBlock(state: AppState): StatusBlock | null {
+  if (state.notice.statusLine === false) return null;
   const text = state.notice.text.split("\n")[0]?.trim();
   if (!text) return null;
 
