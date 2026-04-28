@@ -83,7 +83,7 @@ import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, sta
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
 import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
-import { downloadAttachment, openTargetDetached, type AttachmentDownloadProgress } from "./openable";
+import { downloadAttachment, spawnOpenTargetDetached, type AttachmentDownloadProgress } from "./openable";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("record needs an interactive TTY.");
@@ -119,7 +119,6 @@ if (startupWarnings.length > 0) {
 }
 
 const LOADING_INTERVAL_MS = 80;
-const OPEN_NOTICE_MS = 1200;
 
 let running = true;
 let terminalReady = false;
@@ -175,18 +174,29 @@ function scheduleRender(): void {
   }, 16);
 }
 
-function clearNoticeLater(text: string, delayMs: number): void {
-  setTimeout(() => {
-    if (!running || state.notice.text !== text) return;
-    setNotice(state, "", "muted");
-    scheduleRender();
-  }, delayMs);
+function clearNoticeIfCurrent(text: string): void {
+  if (state.notice.text !== text) return;
+  setNotice(state, "", "muted");
 }
 
-function showTransientNotice(text: string, delayMs = OPEN_NOTICE_MS): void {
-  setNotice(state, text, "muted", { loading: true });
+function openTargetWithNotice(target: string, label: string): boolean {
+  const notice = `Opening ${label}…`;
+  setNotice(state, notice, "muted", { loading: true });
   scheduleRender();
-  clearNoticeLater(text, delayMs);
+  const child = spawnOpenTargetDetached(target);
+  if (!child) {
+    clearNoticeIfCurrent(notice);
+    return false;
+  }
+
+  const clearOpeningNotice = () => {
+    if (!running) return;
+    clearNoticeIfCurrent(notice);
+    scheduleRender();
+  };
+  child.once("spawn", clearOpeningNotice);
+  child.once("error", clearOpeningNotice);
+  return true;
 }
 
 function formatAttachmentDownloadProgress(progress: AttachmentDownloadProgress): string {
@@ -706,14 +716,9 @@ function handleHistoryFocused(key: KeyEvent): boolean {
             scheduleRender();
             return;
           }
-          const openNotice = downloaded.cached
-            ? `Opening cached ${attachment.filename}…`
-            : `Opening ${attachment.filename}…`;
-          if (!openTargetDetached(downloaded.path)) {
+          if (!openTargetWithNotice(downloaded.path, downloaded.cached ? `cached ${attachment.filename}` : attachment.filename)) {
             setNotice(state, `Could not open ${attachment.filename}: No opener configured for ${downloaded.path}.`, "warning");
             scheduleRender();
-          } else {
-            showTransientNotice(openNotice);
           }
         })();
         return true;
@@ -725,11 +730,9 @@ function handleHistoryFocused(key: KeyEvent): boolean {
         scheduleRender();
         return true;
       }
-      if (!openTargetDetached(target)) {
+      if (!openTargetWithNotice(target, target)) {
         setNotice(state, `No opener configured for ${target}.`, "warning");
         scheduleRender();
-      } else {
-        showTransientNotice(`Opening ${target}…`);
       }
       return true;
     }
