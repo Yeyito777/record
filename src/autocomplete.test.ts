@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { cycleAutocomplete, updateAutocomplete } from "./autocomplete";
+import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
 import { createInitialState } from "./state";
 
 describe("autocomplete", () => {
@@ -70,6 +70,34 @@ describe("autocomplete", () => {
     expect(typeof state.autocomplete?.matches[0]?.color).toBe("string");
     cycleAutocomplete(state, 1);
     expect(state.editor.buffer).toBe("that was 😭");
+  });
+
+  test("accepting autocomplete keeps the filled completion", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "that was :so";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+    cycleAutocomplete(state, 1);
+    acceptAutocomplete(state);
+
+    expect(state.autocomplete).toBeNull();
+    expect(state.editor.buffer).toBe("that was 😭");
+    expect(state.editor.cursor).toBe("that was 😭".length);
+  });
+
+  test("explicitly dismissing autocomplete still restores the original prefix", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "that was :so";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+    cycleAutocomplete(state, 1);
+    dismissAutocomplete(state);
+
+    expect(state.autocomplete).toBeNull();
+    expect(state.editor.buffer).toBe("that was :so");
+    expect(state.editor.cursor).toBe("that was :so".length);
   });
 
   test("shows common emoji after a bare colon trigger", () => {

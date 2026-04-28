@@ -5,7 +5,7 @@
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { flushDataCacheSync } from "./datacache";
 import { configPath, loadConfig, loadSavedLogins } from "./config";
-import { cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
+import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
 import {
   displayCursor,
@@ -821,7 +821,7 @@ function handlePromptFocused(key: KeyEvent): void {
   }
 
   if (key.type === "escape" && state.autocomplete) {
-    dismissAutocomplete(state);
+    acceptAutocomplete(state);
   }
 
   const previousBuffer = state.editor.buffer;

@@ -151,3 +151,7 @@ export function dismissAutocomplete(state: AppState): void {
 
   state.autocomplete = null;
 }
+
+export function acceptAutocomplete(state: AppState): void {
+  state.autocomplete = null;
+}
