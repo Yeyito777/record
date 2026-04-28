@@ -8,6 +8,7 @@
  * - VoiceAudioBackend: pluggable local audio capture/playback implementation.
  */
 
+import { DAVE_PROTOCOL_VERSION, DAVESession, MediaType, type ProposalsOperationType } from "@snazzah/davey";
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createCipheriv, createDecipheriv } from "crypto";
 import { createSocket, type Socket as UdpSocket } from "dgram";
@@ -24,6 +25,7 @@ const VOICE_REGION_TIMEOUT_MS = 3_000;
 const OPUS_PAYLOAD_TYPE = 120;
 const OPUS_RTP_CLOCK_INCREMENT = 960; // 20 ms at 48 kHz.
 const RTP_HEADER_LENGTH = 12;
+const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
 
 let cachedPreferredVoiceRegions: string[] | null = null;
 
@@ -120,6 +122,8 @@ export interface VoiceAudioContext {
   secretKey: Buffer;
   ssrc: number;
   sendSpeaking: (speaking: boolean) => void;
+  encodeOutgoingOpus?: (payload: Buffer) => Buffer | null;
+  decodeIncomingOpus?: (ssrc: number, payload: Buffer) => Buffer | null;
   onError: (error: Error) => void;
 }
 
@@ -135,6 +139,278 @@ export class NoopVoiceAudioBackend implements VoiceAudioBackend {
 
   stop(): void {
     // Intentionally no-op.
+  }
+}
+
+interface DaveVoiceEncryptionOptions {
+  userId: string;
+  channelId: string;
+  sendJson: (payload: unknown) => void;
+  sendBinary: (opcode: number, payload: Buffer) => void;
+  onError?: (error: Error) => void;
+}
+
+class DaveVoiceEncryption {
+  private session: DAVESession | null = null;
+  private protocolVersion = 0;
+  private pendingTransitions = new Map<number, number>();
+  private knownUserIds = new Set<string>();
+  private externalSender: Buffer | null = null;
+  private downgraded = false;
+  private reinitializing = false;
+  private lastTransitionId: number | null = null;
+  private lastMediaErrorAt = 0;
+
+  constructor(private readonly options: DaveVoiceEncryptionOptions) {
+    this.knownUserIds.add(options.userId);
+  }
+
+  get advertisedProtocolVersion(): number {
+    return DAVE_PROTOCOL_VERSION;
+  }
+
+  get ready(): boolean {
+    return this.protocolVersion !== 0 && Boolean(this.session?.ready);
+  }
+
+  handleSessionDescription(data: Record<string, unknown>): void {
+    const version = typeof data.dave_protocol_version === "number" ? data.dave_protocol_version : 0;
+    this.protocolVersion = version;
+    this.reinit();
+  }
+
+  addKnownUsers(userIds: readonly string[]): void {
+    for (const userId of userIds) this.knownUserIds.add(userId);
+  }
+
+  removeKnownUser(userId: string): void {
+    this.knownUserIds.delete(userId);
+  }
+
+  handleJsonOpcode(opcode: number | undefined, data: unknown): boolean {
+    switch (opcode) {
+      case 21:
+        this.handlePrepareTransition(data);
+        return true;
+      case 22:
+        this.handleExecuteTransition(data);
+        return true;
+      case 24:
+        this.handlePrepareEpoch(data);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  handleBinaryOpcode(opcode: number, payload: Buffer): boolean {
+    switch (opcode) {
+      case 25:
+        this.handleExternalSender(payload);
+        return true;
+      case 27:
+        this.handleProposals(payload);
+        return true;
+      case 29:
+        this.handleAnnounceCommitTransition(payload);
+        return true;
+      case 30:
+        this.handleWelcome(payload);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  encodeOutgoingOpus(payload: Buffer): Buffer | null {
+    if (payload.equals(OPUS_SILENCE_FRAME)) return payload;
+    if (this.protocolVersion === 0) return payload;
+    if (!this.session?.ready) return null;
+    try {
+      return this.session.encryptOpus(payload);
+    } catch (error) {
+      this.reportMediaError(asError(error, "Failed to DAVE-encrypt outgoing voice audio."));
+      return null;
+    }
+  }
+
+  decodeIncomingOpus(userId: string | null, payload: Buffer): Buffer | null {
+    if (payload.equals(OPUS_SILENCE_FRAME)) return payload;
+    if (!this.session) return this.protocolVersion === 0 ? payload : null;
+    if (!userId) return this.protocolVersion === 0 ? payload : null;
+
+    const canDecrypt = this.ready || (this.session.ready && this.session.canPassthrough(userId));
+    if (!canDecrypt) return this.protocolVersion === 0 ? payload : null;
+
+    try {
+      return this.session.decrypt(userId, MediaType.AUDIO, payload);
+    } catch (error) {
+      this.reportMediaError(asError(error, `Failed to DAVE-decrypt voice audio from ${userId}.`));
+      return null;
+    }
+  }
+
+  private handlePrepareTransition(data: unknown): void {
+    if (!isObject(data)) return;
+    const transitionId = typeof data.transition_id === "number" ? data.transition_id : null;
+    const protocolVersion = typeof data.protocol_version === "number" ? data.protocol_version : null;
+    if (transitionId === null || protocolVersion === null) return;
+
+    this.pendingTransitions.set(transitionId, protocolVersion);
+    if (transitionId === 0) {
+      this.executePendingTransition(transitionId);
+      return;
+    }
+
+    if (protocolVersion === 0) this.session?.setPassthroughMode(true, 30);
+    this.sendTransitionReady(transitionId);
+  }
+
+  private handleExecuteTransition(data: unknown): void {
+    if (!isObject(data) || typeof data.transition_id !== "number") return;
+    this.executePendingTransition(data.transition_id);
+  }
+
+  private handlePrepareEpoch(data: unknown): void {
+    if (!isObject(data)) return;
+    const epoch = typeof data.epoch === "number" ? data.epoch : null;
+    const protocolVersion = typeof data.protocol_version === "number" ? data.protocol_version : null;
+    if (epoch !== 1 || protocolVersion === null) return;
+
+    this.protocolVersion = protocolVersion;
+    this.reinit();
+  }
+
+  private handleExternalSender(payload: Buffer): void {
+    this.externalSender = Buffer.from(payload);
+    this.applyExternalSender();
+  }
+
+  private handleProposals(payload: Buffer): void {
+    if (!this.session || payload.length < 1) return;
+    try {
+      const operationType = payload.readUInt8(0) as ProposalsOperationType;
+      const result = this.session.processProposals(operationType, payload.subarray(1), [...this.knownUserIds]);
+      if (!result.commit) return;
+      this.sendBinary(28, result.welcome ? Buffer.concat([result.commit, result.welcome]) : result.commit);
+    } catch (error) {
+      this.reportError(asError(error, "Failed to process DAVE MLS proposals."));
+      this.recoverFromInvalidTransition(this.lastTransitionId);
+    }
+  }
+
+  private handleAnnounceCommitTransition(payload: Buffer): void {
+    if (!this.session || payload.length < 2) return;
+    const transitionId = payload.readUInt16BE(0);
+    try {
+      this.session.processCommit(payload.subarray(2));
+      this.finishCommitOrWelcomeTransition(transitionId);
+    } catch (error) {
+      this.reportError(asError(error, "Failed to process DAVE MLS commit."));
+      this.recoverFromInvalidTransition(transitionId);
+    }
+  }
+
+  private handleWelcome(payload: Buffer): void {
+    if (!this.session || payload.length < 2) return;
+    const transitionId = payload.readUInt16BE(0);
+    try {
+      this.session.processWelcome(payload.subarray(2));
+      this.finishCommitOrWelcomeTransition(transitionId);
+    } catch (error) {
+      this.reportError(asError(error, "Failed to process DAVE MLS welcome."));
+      this.recoverFromInvalidTransition(transitionId);
+    }
+  }
+
+  private finishCommitOrWelcomeTransition(transitionId: number): void {
+    if (transitionId === 0) {
+      this.lastTransitionId = 0;
+      this.reinitializing = false;
+      return;
+    }
+
+    this.pendingTransitions.set(transitionId, this.protocolVersion);
+    this.sendTransitionReady(transitionId);
+  }
+
+  private executePendingTransition(transitionId: number): boolean {
+    const nextVersion = this.pendingTransitions.get(transitionId);
+    if (nextVersion === undefined) return false;
+
+    this.protocolVersion = nextVersion;
+    this.pendingTransitions.delete(transitionId);
+    if (nextVersion === 0) {
+      this.downgraded = true;
+      this.session?.setPassthroughMode(true, 10);
+    } else if (this.downgraded && transitionId > 0) {
+      this.downgraded = false;
+      this.session?.setPassthroughMode(true, 10);
+    }
+    this.reinitializing = false;
+    this.lastTransitionId = transitionId;
+    return true;
+  }
+
+  private reinit(): void {
+    if (this.protocolVersion <= 0) {
+      this.session?.setPassthroughMode(true, 10);
+      this.session?.reset();
+      return;
+    }
+
+    try {
+      if (this.session) this.session.reinit(this.protocolVersion, this.options.userId, this.options.channelId);
+      else this.session = new DAVESession(this.protocolVersion, this.options.userId, this.options.channelId);
+      this.applyExternalSender();
+      this.sendKeyPackage();
+    } catch (error) {
+      this.reportError(asError(error, "Failed to initialize DAVE voice encryption."));
+    }
+  }
+
+  private applyExternalSender(): void {
+    if (!this.session || !this.externalSender) return;
+    try {
+      this.session.setExternalSender(this.externalSender);
+    } catch (error) {
+      this.reportError(asError(error, "Failed to apply DAVE MLS external sender."));
+    }
+  }
+
+  private sendKeyPackage(): void {
+    if (!this.session || this.protocolVersion <= 0) return;
+    try {
+      this.sendBinary(26, this.session.getSerializedKeyPackage());
+    } catch (error) {
+      this.reportError(asError(error, "Failed to send DAVE MLS key package."));
+    }
+  }
+
+  private recoverFromInvalidTransition(transitionId: number | null): void {
+    if (transitionId === null || this.reinitializing) return;
+    this.reinitializing = true;
+    this.options.sendJson({ op: 31, d: { transition_id: transitionId } });
+    this.reinit();
+  }
+
+  private sendTransitionReady(transitionId: number): void {
+    this.options.sendJson({ op: 23, d: { transition_id: transitionId } });
+  }
+
+  private sendBinary(opcode: number, payload: Buffer): void {
+    this.options.sendBinary(opcode, payload);
+  }
+
+  private reportMediaError(error: Error): void {
+    const now = Date.now();
+    if (now - this.lastMediaErrorAt < 5_000) return;
+    this.lastMediaErrorAt = now;
+    this.reportError(error);
+  }
+
+  private reportError(error: Error): void {
+    this.options.onError?.(error);
   }
 }
 
@@ -318,7 +594,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private udp: UdpSocket | null = null;
-  private seq = 1;
+  private seq = -1;
   private ssrc: number | null = null;
   private selectedMode: string | null = null;
   private secretKey: Buffer | null = null;
@@ -326,13 +602,23 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private readyReject: ((error: Error) => void) | null = null;
   private disconnected = false;
   private audioStarted = false;
+  private readonly ssrcToUserId = new Map<number, string>();
+  private readonly dave: DaveVoiceEncryption;
   mediaSessionId: string | null = null;
 
   constructor(
     private readonly data: VoiceGatewayJoinData,
     private readonly audio: VoiceAudioBackend = new NoopVoiceAudioBackend(),
     private readonly callbacks: { onError?: (error: Error) => void } = {},
-  ) {}
+  ) {
+    this.dave = new DaveVoiceEncryption({
+      userId: data.userId,
+      channelId: data.channelId,
+      sendJson: (payload) => this.send(payload),
+      sendBinary: (opcode, payload) => this.sendBinary(opcode, payload),
+      onError: callbacks.onError,
+    });
+  }
 
   connect(): Promise<void> {
     if (this.ws) return Promise.resolve();
@@ -386,9 +672,21 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   }
 
   private handleMessage = (event: MessageEvent<unknown>): void => {
+    void this.handleMessageData(event.data).catch((error) => {
+      this.reportError(asError(error, "Failed to handle Discord voice gateway payload."));
+    });
+  };
+
+  private async handleMessageData(data: unknown): Promise<void> {
+    const binary = await messageDataToBinaryBuffer(data);
+    if (binary && isDaveVoiceGatewayBinaryMessage(binary)) {
+      this.handleBinaryMessage(binary);
+      return;
+    }
+
     let payload: { op?: number; seq?: number; d?: unknown };
     try {
-      payload = JSON.parse(messageDataToString(event.data)) as { op?: number; seq?: number; d?: unknown };
+      payload = JSON.parse(messageDataToString(data)) as { op?: number; seq?: number; d?: unknown };
     } catch (error) {
       this.reportError(asError(error, "Failed to parse Discord voice gateway payload."));
       return;
@@ -411,10 +709,50 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
       case 3:
         this.sendHeartbeat();
         break;
+      case 5:
+        this.handleSpeaking(payload.d);
+        break;
+      case 11:
+        this.handleClientsConnect(payload.d);
+        break;
+      case 13:
+        this.handleClientDisconnect(payload.d);
+        break;
       default:
+        this.dave.handleJsonOpcode(payload.op, payload.d);
         break;
     }
-  };
+  }
+
+  private handleBinaryMessage(packet: Buffer): void {
+    this.seq = Math.max(this.seq, packet.readUInt16BE(0));
+    const opcode = packet.readUInt8(2);
+    this.dave.handleBinaryOpcode(opcode, packet.subarray(3));
+  }
+
+  private handleSpeaking(data: unknown): void {
+    if (!isObject(data)) return;
+    const userId = snowflakeToString(data.user_id);
+    if (!userId) return;
+    const ssrc = typeof data.ssrc === "number" ? data.ssrc : null;
+    if (ssrc !== null) this.ssrcToUserId.set(ssrc, userId);
+    this.dave.addKnownUsers([userId]);
+  }
+
+  private handleClientsConnect(data: unknown): void {
+    if (!isObject(data) || !Array.isArray(data.user_ids)) return;
+    this.dave.addKnownUsers(data.user_ids.map(snowflakeToString).filter((userId): userId is string => Boolean(userId)));
+  }
+
+  private handleClientDisconnect(data: unknown): void {
+    if (!isObject(data)) return;
+    const disconnectedUserId = snowflakeToString(data.user_id);
+    if (!disconnectedUserId) return;
+    this.dave.removeKnownUser(disconnectedUserId);
+    for (const [ssrc, userId] of this.ssrcToUserId) {
+      if (userId === disconnectedUserId) this.ssrcToUserId.delete(ssrc);
+    }
+  }
 
   private handleHello(data: unknown): void {
     const interval = isObject(data) && typeof data.heartbeat_interval === "number" ? data.heartbeat_interval : null;
@@ -461,6 +799,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.mediaSessionId = typeof data.media_session_id === "string" ? data.media_session_id : null;
     this.selectedMode = data.mode;
     this.secretKey = Buffer.from(data.secret_key.filter((byte): byte is number => typeof byte === "number"));
+    this.dave.handleSessionDescription(data);
 
     if (!this.udp || this.ssrc === null || !this.secretKey) {
       this.rejectReady(new Error("Discord voice session became ready before UDP setup completed."));
@@ -476,6 +815,8 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
           secretKey: this.secretKey,
           ssrc: this.ssrc,
           sendSpeaking: (speaking) => this.sendSpeaking(speaking),
+          encodeOutgoingOpus: (payload) => this.dave.encodeOutgoingOpus(payload),
+          decodeIncomingOpus: (ssrc, payload) => this.dave.decodeIncomingOpus(this.ssrcToUserId.get(ssrc) ?? null, payload),
           onError: (error) => this.reportError(error),
         });
       } catch (error) {
@@ -487,18 +828,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   }
 
   private identify(): void {
-    this.send({
-      op: 0,
-      d: {
-        server_id: this.data.guildId,
-        channel_id: this.data.channelId,
-        user_id: this.data.userId,
-        session_id: this.data.sessionId,
-        token: this.data.token,
-        video: false,
-        max_dave_protocol_version: 0,
-      },
-    });
+    this.send(buildVoiceIdentifyPayload(this.data, this.dave.advertisedProtocolVersion));
   }
 
   private selectProtocol(address: string, port: number, mode: string): void {
@@ -535,9 +865,17 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.ws.send(JSON.stringify(payload));
   }
 
+  private sendBinary(opcode: number, payload: Buffer): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(Buffer.concat([Buffer.from([opcode]), payload]));
+  }
+
   private handleClose = (event: CloseEvent): void => {
     if (this.disconnected) return;
-    this.rejectReady(new Error(`Discord voice gateway closed (${event.code || "unknown"}).`));
+    const reason = event.code === 4017
+      ? "DAVE/E2EE protocol required"
+      : event.reason || "unknown reason";
+    this.rejectReady(new Error(`Discord voice gateway closed (${event.code || "unknown"}: ${reason}).`));
     this.disconnect();
   };
 
@@ -725,6 +1063,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const extensionBodyLength = parsed.hasExtension ? packet.readUInt16BE(parsed.headerLength - 2) * 4 : 0;
     const opusPayload = extensionBodyLength < decrypted.length ? decrypted.subarray(extensionBodyLength) : Buffer.alloc(0);
     if (opusPayload.length === 0) return;
+    const decodedPayload = context.decodeIncomingOpus ? context.decodeIncomingOpus(parsed.ssrc, opusPayload) : opusPayload;
+    if (!decodedPayload || decodedPayload.length === 0) return;
 
     const header = Buffer.alloc(RTP_HEADER_LENGTH);
     header[0] = 0x80;
@@ -732,7 +1072,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     header.writeUInt16BE(parsed.sequence, 2);
     header.writeUInt32BE(parsed.timestamp, 4);
     header.writeUInt32BE(parsed.ssrc, 8);
-    this.playbackSocket.send(Buffer.concat([header, opusPayload]), this.localPlaybackPort, "127.0.0.1");
+    this.playbackSocket.send(Buffer.concat([header, decodedPayload]), this.localPlaybackPort, "127.0.0.1");
   }
 
   private forwardCapturePacket(packet: Buffer): void {
@@ -742,6 +1082,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     if (!parsed || parsed.payloadType !== OPUS_PAYLOAD_TYPE) return;
     const opusPayload = parsed.payload;
     if (opusPayload.length === 0) return;
+    const encodedPayload = context.encodeOutgoingOpus ? context.encodeOutgoingOpus(opusPayload) : opusPayload;
+    if (!encodedPayload || encodedPayload.length === 0) return;
 
     if (!this.speaking) {
       this.speaking = true;
@@ -757,7 +1099,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.sendSequence += 1;
     this.sendTimestamp = (this.sendTimestamp + OPUS_RTP_CLOCK_INCREMENT) >>> 0;
 
-    const encrypted = encryptAes256GcmRtp(header, opusPayload, context.secretKey, this.nextCounter());
+    const encrypted = encryptAes256GcmRtp(header, encodedPayload, context.secretKey, this.nextCounter());
     context.udp.send(encrypted);
   }
 
@@ -920,11 +1262,32 @@ function decryptAes256GcmRtp(packet: Buffer, headerLength: number, key: Buffer):
   }
 }
 
+async function messageDataToBinaryBuffer(data: unknown): Promise<Buffer | null> {
+  if (typeof data === "string") return null;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  if (typeof Blob !== "undefined" && data instanceof Blob) return Buffer.from(await data.arrayBuffer());
+  return null;
+}
+
+function isDaveVoiceGatewayBinaryMessage(packet: Buffer): boolean {
+  if (packet.length < 3) return false;
+  const opcode = packet.readUInt8(2);
+  return opcode === 25 || opcode === 27 || opcode === 29 || opcode === 30;
+}
+
 function messageDataToString(data: unknown): string {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
   if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
   return String(data);
+}
+
+function snowflakeToString(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+  if (typeof value === "bigint") return value.toString();
+  return null;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -934,6 +1297,21 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function asError(error: unknown, prefix: string): Error {
   const message = error instanceof Error ? error.message : String(error);
   return new Error(`${prefix} ${message}`.trim());
+}
+
+export function buildVoiceIdentifyPayload(data: VoiceGatewayJoinData, maxDaveProtocolVersion = DAVE_PROTOCOL_VERSION): unknown {
+  return {
+    op: 0,
+    d: {
+      server_id: data.guildId,
+      channel_id: data.channelId,
+      user_id: data.userId,
+      session_id: data.sessionId,
+      token: data.token,
+      video: false,
+      max_dave_protocol_version: maxDaveProtocolVersion,
+    },
+  };
 }
 
 export function buildVoiceStatePayload(request: VoiceStateRequest): unknown {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildVoiceStatePayload, fetchPreferredVoiceRegions, NoopVoiceAudioBackend, VoiceCallController, type VoiceGatewayConnection, type VoiceStateRequest } from "./voice";
+import { buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, NoopVoiceAudioBackend, VoiceCallController, type VoiceGatewayConnection, type VoiceStateRequest } from "./voice";
 
 class FakeSignaling {
   requests: VoiceStateRequest[] = [];
@@ -34,6 +34,33 @@ class FakeGateway implements VoiceGatewayConnection {
 }
 
 describe("voice backend", () => {
+  test("builds Discord voice gateway identify payload with DAVE support", () => {
+    const joinData = {
+      guildId: "dm-1",
+      channelId: "dm-1",
+      userId: "me",
+      sessionId: "voice-session",
+      token: "voice-token",
+      endpoint: "voice.example",
+    };
+
+    expect(buildVoiceIdentifyPayload(joinData, 1)).toEqual({
+      op: 0,
+      d: {
+        server_id: "dm-1",
+        channel_id: "dm-1",
+        user_id: "me",
+        session_id: "voice-session",
+        token: "voice-token",
+        video: false,
+        max_dave_protocol_version: 1,
+      },
+    });
+
+    const defaultPayload = buildVoiceIdentifyPayload(joinData) as { d: { max_dave_protocol_version: number } };
+    expect(defaultPayload.d.max_dave_protocol_version).toBeGreaterThan(0);
+  });
+
   test("builds Discord gateway voice-state payloads", () => {
     expect(buildVoiceStatePayload({
       guildId: null,
