@@ -7,6 +7,7 @@
 
 import type { AppState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
+import { emojiCompletions, emojiQueryAtCursor } from "./emojis";
 import { loadedMentionCandidates, mentionCandidateMatches, mentionQueryAtCursor } from "./mentions";
 
 export interface AutocompleteState {
@@ -65,6 +66,21 @@ export function updateAutocomplete(state: AppState): void {
         matches,
         replaceStart: mentionQuery.start,
         replaceEnd: mentionQuery.end,
+      };
+      return;
+    }
+  }
+
+  const emojiQuery = emojiQueryAtCursor(state.editor.buffer, state.editor.cursor);
+  if (emojiQuery) {
+    const matches = emojiCompletions(emojiQuery.query);
+    if (matches.length > 0) {
+      state.autocomplete = {
+        selection: -1,
+        prefix: state.editor.buffer,
+        matches,
+        replaceStart: emojiQuery.start,
+        replaceEnd: emojiQuery.end,
       };
       return;
     }

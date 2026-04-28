@@ -59,6 +59,29 @@ describe("autocomplete", () => {
     expect(state.editor.buffer).toBe("hi @Zosa");
   });
 
+  test("suggests emoji after a colon trigger", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "that was :so";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.matches[0]).toMatchObject({ name: "😭", desc: ":sob:" });
+    expect(typeof state.autocomplete?.matches[0]?.color).toBe("string");
+    cycleAutocomplete(state, 1);
+    expect(state.editor.buffer).toBe("that was 😭");
+  });
+
+  test("shows common emoji after a bare colon trigger", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = ":";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.matches.slice(0, 4).map((match) => match.desc)).toEqual([":sob:", ":joy:", ":rofl:", ":skull:"]);
+  });
+
   test("places broadcast and role mentions after user mentions", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
