@@ -1487,6 +1487,7 @@ export function sendCurrentChannelMessage(
   const pendingImages = [...state.pendingImages];
   const uploads = uploadOptionsForImages(pendingImages);
   const localAttachments = localAttachmentsForImages(pendingImages);
+  const sendContent = options.sendContent ?? content;
   clearPrompt(state);
   state.pendingImages = [];
   state.replyTarget = null;
@@ -1516,6 +1517,7 @@ export function sendCurrentChannelMessage(
     stickerNames: [],
     embedsCount: 0,
     localStatus: "pending",
+    localSendContent: sendContent !== content ? sendContent : undefined,
   };
   upsertCachedChannelMessage(state.messageCacheByChannelId, localMessage);
   if (state.timeline.channelId === channelId) {
@@ -1526,7 +1528,7 @@ export function sendCurrentChannelMessage(
 
   void (async () => {
     try {
-      const sentMessage = await sendChannelMessage(token, channelId, options.sendContent ?? content, { reply: replyOptions, uploads });
+      const sentMessage = await sendChannelMessage(token, channelId, sendContent, { reply: replyOptions, uploads });
       const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, localMessageId, message);

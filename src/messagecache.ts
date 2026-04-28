@@ -202,7 +202,7 @@ function findMatchingPendingLocalMessageIndex(messages: readonly DiscordMessage[
   return messages.findIndex((existing) => existing.localStatus === "pending"
     && existing.channelId === message.channelId
     && existing.author.id === message.author.id
-    && existing.content === message.content
+    && (existing.content === message.content || existing.localSendContent === message.content)
     && attachmentsMatchPendingLocalEcho(existing, message));
 }
 

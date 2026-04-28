@@ -62,4 +62,13 @@ describe("message cache", () => {
     expect(cache["channel-1"]?.messages.map((entry) => entry.id)).toEqual(["2"]);
     expect(cache["channel-1"]?.messages[0]?.localStatus).toBeUndefined();
   });
+
+  test("canonical mention echoes replace friendly pending local messages", () => {
+    const cache: ChannelMessageCache = {};
+    upsertCachedChannelMessage(cache, message("local:1", "hi @Zosa", { localStatus: "pending", localSendContent: "hi <@user-1>" }));
+    upsertCachedChannelMessage(cache, message("2", "hi <@user-1>"));
+
+    expect(cache["channel-1"]?.messages.map((entry) => entry.id)).toEqual(["2"]);
+    expect(cache["channel-1"]?.messages[0]?.localStatus).toBeUndefined();
+  });
 });

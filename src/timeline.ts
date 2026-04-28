@@ -160,7 +160,7 @@ function findMatchingPendingLocalMessageIndex(timeline: TimelineState, message: 
   return timeline.messages.findIndex((existing) => existing.localStatus === "pending"
     && existing.channelId === message.channelId
     && existing.author.id === message.author.id
-    && existing.content === message.content
+    && (existing.content === message.content || existing.localSendContent === message.content)
     && attachmentsMatchPendingLocalEcho(existing, message));
 }
 
@@ -1002,6 +1002,7 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
     embedKey,
     message.localStatus ?? "",
     message.localError ?? "",
+    message.localSendContent ?? "",
     groupedWithPrevious ? "grouped" : "full",
   ].join("\u0001");
 }

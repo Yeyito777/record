@@ -375,6 +375,20 @@ describe("timeline rendering", () => {
     expect(timeline.messages[0]?.localStatus).toBeUndefined();
   });
 
+  test("replaces friendly pending mention messages when gateway echoes canonical mention content", () => {
+    const timeline = createTimelineState();
+    const pending = message("local-1", "hi @Zosa", { authorId: "viewer", authorName: "Paramount" });
+    pending.localStatus = "pending";
+    pending.localSendContent = "hi <@user-1>";
+    setTimelineMessages(timeline, "channel-1", [pending]);
+
+    appendTimelineMessage(timeline, message("real-1", "hi <@user-1>", { authorId: "viewer", authorName: "Paramount" }));
+
+    expect(timeline.messages).toHaveLength(1);
+    expect(timeline.messages[0]).toMatchObject({ id: "real-1", content: "hi <@user-1>" });
+    expect(timeline.messages[0]?.localStatus).toBeUndefined();
+  });
+
   test("replaces matching pending image uploads when gateway echoes the sent message", () => {
     const timeline = createTimelineState();
     const pending = message("local-1", "caption", { authorId: "viewer", authorName: "Paramount" });

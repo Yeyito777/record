@@ -273,6 +273,8 @@ export interface DiscordMessage {
   embeds?: DiscordMessageEmbed[];
   localStatus?: DiscordMessageLocalStatus;
   localError?: string;
+  /** Actual content sent to Discord when it differs from the friendly local prompt text. */
+  localSendContent?: string;
 }
 
 export interface DiscordMessagePatch {
