@@ -15,6 +15,7 @@ import {
   editChannelMessage,
   sendChannelMessage,
   setGuildMuted,
+  ringDirectMessageCall,
 } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -519,6 +520,21 @@ describe("discord helpers", () => {
       message_id: "message-1",
       channel_id: "dm-1",
     });
+  });
+
+  test("rings direct-message call recipients", async () => {
+    let requestedUrl = "";
+    let requestedBody = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrl = String(input);
+      requestedBody = String(init?.body ?? "");
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await ringDirectMessageCall("token", "dm-1", ["user-1", "user-2"]);
+
+    expect(requestedUrl).toBe("https://discord.com/api/v9/channels/dm-1/call/ring");
+    expect(JSON.parse(requestedBody)).toEqual({ recipients: ["user-1", "user-2"] });
   });
 
   test("mutes and unmutes guilds through user guild settings", async () => {

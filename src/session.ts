@@ -27,6 +27,8 @@ import {
   sendChannelMessage,
   setGuildMuted,
   sortGuildsByOrder,
+  ringDirectMessageCall,
+  isDirectMessageChannel,
   type DiscordMessageAttachment,
   type DiscordMessageReply,
   type SendMessageReplyOptions,
@@ -118,6 +120,7 @@ import {
   setTimelineMessages,
 } from "./timeline";
 import { clearTypingUser, recordTypingStart } from "./typing";
+import { VoiceCallController, type VoiceCallSession } from "./voice";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -136,6 +139,7 @@ let memberListGateway: MemberListGatewayClient | null = null;
 let memberListGatewayToken: string | null = null;
 let appGateway: AppGatewayClient | null = null;
 let appGatewayToken: string | null = null;
+let voiceCallController: VoiceCallController | null = null;
 let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | null = null;
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
@@ -168,6 +172,8 @@ export function disconnectMemberListGateway(): void {
 }
 
 export function disconnectAppGateway(): void {
+  voiceCallController?.disconnect();
+  voiceCallController = null;
   appGateway?.disconnect();
   appGateway = null;
   appGatewayToken = null;
@@ -730,6 +736,30 @@ function subscribeAppGatewayToActiveChannel(state: AppState): void {
   appGateway?.subscribeToGuildChannel(channel?.guildId, channel?.id);
 }
 
+function callDisplayName(session: VoiceCallSession | null): string {
+  return session?.target.displayName || "call";
+}
+
+function ensureVoiceCallController(state: AppState, token: string, effects: SessionEffects): VoiceCallController | null {
+  const selfUserId = state.auth.user?.id;
+  if (!selfUserId || !appGateway || appGatewayToken !== token) return null;
+  if (voiceCallController) return voiceCallController;
+
+  voiceCallController = new VoiceCallController({
+    selfUserId,
+    signaling: appGateway,
+    ringRecipients: (channelId, recipientIds) => ringDirectMessageCall(token, channelId, recipientIds),
+    onStateChange: (session) => {
+      debugLog("voice.state", { state: session?.state ?? "idle", channelId: session?.target.channelId ?? null });
+    },
+    onError: (error) => {
+      setNotice(state, `Voice call: ${error.message}`, "warning", { chat: false });
+      effects.scheduleRender();
+    },
+  });
+  return voiceCallController;
+}
+
 function startAppGateway(state: AppState, token: string, effects: SessionEffects): void {
   if (appGateway && appGatewayToken === token) return;
   disconnectAppGateway();
@@ -795,6 +825,12 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
         markChannelRead(state, state.auth.savedToken, state.timeline.channelId, latestMessageId);
       }
       effects.scheduleRender();
+    },
+    onVoiceStateUpdate: (update) => {
+      voiceCallController?.handleVoiceStateUpdate(update);
+    },
+    onVoiceServerUpdate: (update) => {
+      voiceCallController?.handleVoiceServerUpdate(update);
     },
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
     onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
@@ -1609,6 +1645,71 @@ export function sendCurrentChannelMessage(
       effects.scheduleRender();
     }
   })();
+}
+
+export function startCurrentDirectMessageCall(state: AppState, effects: SessionEffects): void {
+  const token = state.auth.savedToken;
+  if (!token || !state.auth.user) {
+    setNotice(state, "Login required to start a call.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  const channel = state.channelList.activeChannel;
+  if (!channel || !isDirectMessageChannel(channel)) {
+    setNotice(state, "Open a DM to start a call.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  const recipients = (channel.recipients ?? [])
+    .filter((recipient) => recipient.id !== state.auth.user?.id)
+    .map((recipient) => recipient.id);
+  if (recipients.length === 0) {
+    setNotice(state, "No call recipients in this DM.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  const controller = ensureVoiceCallController(state, token, effects);
+  if (!controller) {
+    setNotice(state, "Discord gateway is still connecting; try again in a moment.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  const displayName = channel.name || "DM";
+  setNotice(state, `Calling ${displayName}…`, "muted", { loading: true, chat: false });
+  effects.scheduleRender();
+
+  void controller.startCall({
+    guildId: null,
+    channelId: channel.id,
+    recipientIds: recipients,
+    displayName,
+  }).then(({ session, warnings }) => {
+    const suffix = warnings.length > 0 ? ` (${warnings[0]})` : "";
+    setNotice(state, `Connected to ${callDisplayName(session)}.${suffix}`, warnings.length > 0 ? "warning" : "success", { chat: false });
+    effects.scheduleRender();
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "Call cancelled.") return;
+    setNotice(state, `Failed to start call: ${message}`, "error", { chat: false });
+    effects.scheduleRender();
+  });
+}
+
+export function hangUpCurrentCall(state: AppState, effects: SessionEffects): void {
+  if (!voiceCallController?.activeSession) {
+    setNotice(state, "No active call.", "muted", { chat: false });
+    effects.scheduleRender();
+    return;
+  }
+
+  const name = callDisplayName(voiceCallController.activeSession);
+  voiceCallController.leave();
+  setNotice(state, `Left ${name}.`, "muted", { chat: false });
+  effects.scheduleRender();
 }
 
 export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects): void {

@@ -22,6 +22,8 @@ export type CommandResult =
   | { type: "login"; credential: string }
   | { type: "logout" }
   | { type: "refresh" }
+  | { type: "call" }
+  | { type: "hangup" }
   | { type: "theme_changed" };
 
 export interface SlashCommand {
@@ -131,6 +133,26 @@ const commands: SlashCommand[] = [
       if (parts.length !== 1) return usage(state, "Usage: /refresh");
       clearPrompt(state);
       return { type: "refresh" };
+    },
+  },
+  {
+    name: "/call",
+    description: "Start a voice call in the current DM",
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length !== 1) return usage(state, "Usage: /call");
+      clearPrompt(state);
+      return { type: "call" };
+    },
+  },
+  {
+    name: "/hangup",
+    description: "Leave the current voice call",
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length !== 1) return usage(state, "Usage: /hangup");
+      clearPrompt(state);
+      return { type: "hangup" };
     },
   },
   {

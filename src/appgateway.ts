@@ -18,6 +18,7 @@ import {
   type DiscordMessagePatch,
   type DiscordMessageResponse,
 } from "./discord";
+import { buildVoiceStatePayload, type VoiceServerUpdate, type VoiceSignalingClient, type VoiceStateRequest, type VoiceStateUpdate } from "./voice";
 
 const API_BASE = "https://discord.com/api/v9";
 const GATEWAY_VERSION = 9;
@@ -46,6 +47,8 @@ export interface InitialNotification {
 
 export interface AppGatewayCallbacks {
   onInitialNotifications: (notifications: InitialNotification[]) => void;
+  onVoiceStateUpdate?: (update: VoiceStateUpdate) => void;
+  onVoiceServerUpdate?: (update: VoiceServerUpdate) => void;
   onGuildMuteSettings?: (mutedByGuildId: Record<string, boolean>) => void;
   onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
@@ -67,7 +70,7 @@ export interface AppGatewayCallbacks {
   onError?: (error: Error) => void;
 }
 
-export class AppGatewayClient {
+export class AppGatewayClient implements VoiceSignalingClient {
   private gatewayUrl: string | null = null;
   private ws: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -100,6 +103,22 @@ export class AppGatewayClient {
 
     this.guildChannelSubscription = { guildId, channelId };
     this.sendGuildChannelSubscription();
+  }
+
+  requestVoiceState(request: VoiceStateRequest): boolean {
+    if (!this.ready || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.send(buildVoiceStatePayload(request));
+    return true;
+  }
+
+  leaveVoice(): boolean {
+    return this.requestVoiceState({
+      guildId: null,
+      channelId: null,
+      selfMute: false,
+      selfDeaf: false,
+      selfVideo: false,
+    });
   }
 
   disconnect(): void {
@@ -284,6 +303,16 @@ export class AppGatewayClient {
           this.callbacks.onTypingStart(data.channel_id, data.user_id, typingDisplayName(data));
           break;
         }
+        case "VOICE_STATE_UPDATE": {
+          const update = mapVoiceStateUpdate(data);
+          if (update) this.callbacks.onVoiceStateUpdate?.(update);
+          break;
+        }
+        case "VOICE_SERVER_UPDATE": {
+          const update = mapVoiceServerUpdate(data);
+          if (update) this.callbacks.onVoiceServerUpdate?.(update);
+          break;
+        }
         case "GUILD_MEMBER_UPDATE": {
           if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.roles)) break;
           const user = isObject(data.user) ? data.user : null;
@@ -407,6 +436,29 @@ export function extractCurrentUserId(data: unknown): string | null {
   if (!isObject(data)) return null;
   const user = isObject(data.user) ? data.user : null;
   return user && typeof user.id === "string" ? user.id : null;
+}
+
+export function mapVoiceStateUpdate(data: unknown): VoiceStateUpdate | null {
+  if (!isObject(data) || typeof data.user_id !== "string") return null;
+  return {
+    userId: data.user_id,
+    channelId: typeof data.channel_id === "string" ? data.channel_id : null,
+    guildId: typeof data.guild_id === "string" ? data.guild_id : null,
+    sessionId: typeof data.session_id === "string" ? data.session_id : null,
+    selfMute: Boolean(data.self_mute),
+    selfDeaf: Boolean(data.self_deaf),
+    mute: Boolean(data.mute),
+    deaf: Boolean(data.deaf),
+  };
+}
+
+export function mapVoiceServerUpdate(data: unknown): VoiceServerUpdate | null {
+  if (!isObject(data) || typeof data.token !== "string") return null;
+  return {
+    token: data.token,
+    endpoint: typeof data.endpoint === "string" ? data.endpoint : null,
+    guildId: typeof data.guild_id === "string" ? data.guild_id : null,
+  };
 }
 
 function mapGatewayGuild(data: unknown): DiscordGuild | null {

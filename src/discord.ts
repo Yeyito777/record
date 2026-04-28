@@ -821,6 +821,13 @@ export async function ackChannelMessage(token: string, channelId: string, messag
   });
 }
 
+export async function ringDirectMessageCall(token: string, channelId: string, recipientIds: readonly string[]): Promise<void> {
+  await requestJson<unknown>(token, `/channels/${channelId}/call/ring`, {
+    method: "POST",
+    body: JSON.stringify({ recipients: [...recipientIds] }),
+  });
+}
+
 export async function setGuildMuted(token: string, guildId: string, muted: boolean): Promise<void> {
   const guildSettings: Record<string, unknown> = { muted };
   if (muted) {

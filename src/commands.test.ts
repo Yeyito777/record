@@ -45,6 +45,13 @@ describe("commands", () => {
     expect(state.editor.buffer).toBe("");
   });
 
+  test("parses voice call commands", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand("/call", state)).toEqual({ type: "call" });
+    expect(tryCommand("/hangup", state)).toEqual({ type: "hangup" });
+  });
+
   test("toggles hidden channel display", () => {
     withTempConfigHome(() => {
       const state = createInitialState("token", "/tmp/record-config.json");
