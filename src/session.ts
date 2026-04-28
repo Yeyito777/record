@@ -454,8 +454,9 @@ function canViewGuildChannel(
 function refreshHiddenChannelFlags(state: AppState, guildId: string | null | undefined): void {
   if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return;
   const roles = state.guildRolesByGuildId[guildId];
-  const currentUserRoleIds = state.roleIdsByGuildId[guildId];
   const currentUserId = state.auth.user?.id ?? null;
+  const currentUserRoleIds = state.roleIdsByGuildId[guildId]
+    ?? (currentUserId ? state.memberRoleIdsByGuildId[guildId]?.[currentUserId] : undefined);
   let changed = false;
 
   state.channelList.channels = state.channelList.channels.map((channel) => {

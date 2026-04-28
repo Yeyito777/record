@@ -1,10 +1,16 @@
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+
 import { afterEach, describe, expect, test } from "bun:test";
 
+import { saveCachedGuildChannels } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
-import { bootstrapReadOnlyClient, clearReadOnlyClient, loadChannelMessages, sendCurrentChannelMessage } from "./session";
+import { bootstrapReadOnlyClient, clearReadOnlyClient, loadChannelMessages, loadGuildChannels, sendCurrentChannelMessage } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
+const originalXdg = process.env.XDG_CONFIG_HOME;
 
 function flushTimers(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -34,6 +40,8 @@ function message(id: string, content: string, channelId = "channel-1"): DiscordM
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = originalXdg;
 });
 
 describe("session", () => {
@@ -206,6 +214,60 @@ describe("session", () => {
 
     expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-new", "guild-1", "guild-2"]);
     expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual(["New", "One Fresh", "Two Fresh"]);
+  });
+
+  test("cached channels use cached current-user roles for immediate visibility filtering", async () => {
+    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-session-test-"));
+    const viewChannel = String(1 << 10);
+
+    saveCachedGuildChannels("self", "guild-1", [
+      {
+        id: "visible",
+        guildId: "guild-1",
+        parentId: null,
+        name: "visible",
+        topic: null,
+        position: 0,
+        type: 0,
+        nsfw: false,
+      },
+      {
+        id: "hidden",
+        guildId: "guild-1",
+        parentId: null,
+        name: "hidden",
+        topic: null,
+        position: 1,
+        type: 0,
+        nsfw: false,
+        permissionOverwrites: [{ id: "guild-1", type: 0, allow: "0", deny: viewChannel }],
+      },
+    ]);
+
+    let resolveChannels: (response: Response) => void = () => {};
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/guilds/guild-1/channels")) {
+        return await new Promise<Response>((resolve) => {
+          resolveChannels = resolve;
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.guildRolesByGuildId["guild-1"] = [{ id: "guild-1", color: 0, position: 0, permissions: viewChannel }];
+    state.memberRoleIdsByGuildId["guild-1"] = { self: [] };
+
+    const load = loadGuildChannels(state, "token-1", "guild-1", { scheduleRender: () => {} });
+    await flushTimers();
+
+    expect(state.channelList.channels.find((channel) => channel.id === "hidden")?.hidden).toBe(true);
+    expect(state.channelList.channels.find((channel) => channel.id === "visible")?.hidden).toBe(false);
+
+    resolveChannels(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await load;
   });
 
   test("loading a channel renders fresh cached messages without REST", async () => {
