@@ -119,6 +119,7 @@ if (startupWarnings.length > 0) {
 }
 
 const LOADING_INTERVAL_MS = 80;
+const OPEN_NOTICE_MS = 1200;
 
 let running = true;
 let terminalReady = false;
@@ -172,6 +173,20 @@ function scheduleRender(): void {
     renderTimer = null;
     render(state);
   }, 16);
+}
+
+function clearNoticeLater(text: string, delayMs: number): void {
+  setTimeout(() => {
+    if (!running || state.notice.text !== text) return;
+    setNotice(state, "", "muted");
+    scheduleRender();
+  }, delayMs);
+}
+
+function showTransientNotice(text: string, delayMs = OPEN_NOTICE_MS): void {
+  setNotice(state, text, "muted", { loading: true });
+  scheduleRender();
+  clearNoticeLater(text, delayMs);
 }
 
 function formatAttachmentDownloadProgress(progress: AttachmentDownloadProgress): string {
@@ -691,14 +706,15 @@ function handleHistoryFocused(key: KeyEvent): boolean {
             scheduleRender();
             return;
           }
-          setNotice(state, `Opening ${attachment.filename}…`, "muted", { loading: true });
-          scheduleRender();
+          const openNotice = downloaded.cached
+            ? `Opening cached ${attachment.filename}…`
+            : `Opening ${attachment.filename}…`;
           if (!openTargetDetached(downloaded.path)) {
             setNotice(state, `Could not open ${attachment.filename}: No opener configured for ${downloaded.path}.`, "warning");
+            scheduleRender();
           } else {
-            setNotice(state, "", "muted");
+            showTransientNotice(openNotice);
           }
-          scheduleRender();
         })();
         return true;
       }
