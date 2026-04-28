@@ -2,7 +2,7 @@
  * Per-account stale-while-revalidate cache for read-only Discord data.
  */
 
-import { mkdirSync, readFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { writeFile } from "fs/promises";
 import { dirname, join } from "path";
 
@@ -88,6 +88,9 @@ function registerBeforeExitFlush(): void {
     }
     void flushCacheFile();
   });
+  process.once("exit", () => {
+    flushDataCacheSync();
+  });
 }
 
 function scheduleCacheWrite(): void {
@@ -123,6 +126,25 @@ async function flushCacheFile(): Promise<void> {
       saveAgain = false;
       scheduleCacheWrite();
     }
+  }
+}
+
+export function flushDataCacheSync(): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (!cacheMemo || !cacheDirty) return;
+
+  const path = cacheMemoPath ?? cachePath();
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const compact = compactCacheForDisk(cacheMemo);
+    writeFileSync(path, `${JSON.stringify(compact)}\n`, { mode: 0o600 });
+    cacheDirty = false;
+    saveAgain = false;
+  } catch {
+    cacheDirty = true;
   }
 }
 

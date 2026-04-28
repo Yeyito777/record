@@ -3,6 +3,7 @@
  */
 
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
+import { flushDataCacheSync } from "./datacache";
 import { configPath, loadConfig, loadSavedLogins } from "./config";
 import { cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
@@ -878,6 +879,7 @@ function cleanup(): void {
   stopLoadingAnimation();
   disconnectMemberListGateway();
   disconnectAppGateway();
+  flushDataCacheSync();
   restoreTerminal();
   process.exit(0);
 }
@@ -927,6 +929,7 @@ process.on("SIGINT", cleanup);
 process.on("SIGTERM", cleanup);
 
 main().catch((error) => {
+  flushDataCacheSync();
   restoreTerminal();
   console.error(`Fatal: ${(error as Error).message}`);
   process.exit(1);
