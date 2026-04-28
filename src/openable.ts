@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,16 @@ export interface AttachmentOpenResult {
   ok: boolean;
   path?: string;
   error?: string;
+  cached?: boolean;
+}
+
+export interface AttachmentDownloadProgress {
+  receivedBytes: number;
+  totalBytes: number | null;
+}
+
+export interface AttachmentDownloadOptions {
+  onProgress?: (progress: AttachmentDownloadProgress) => void;
 }
 
 interface NormalizedOpenCommandConfig {
@@ -289,12 +299,98 @@ export function openTargetDetached(target: string): boolean {
   }
 }
 
-export async function downloadAttachment(attachment: DiscordMessageAttachment): Promise<AttachmentOpenResult> {
+function responseContentLength(response: Response, fallbackSize: number): number | null {
+  const header = response.headers.get("content-length");
+  const parsed = header ? Number.parseInt(header, 10) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return fallbackSize > 0 ? fallbackSize : null;
+}
+
+function notifyDownloadProgress(options: AttachmentDownloadOptions | undefined, receivedBytes: number, totalBytes: number | null): void {
+  options?.onProgress?.({ receivedBytes, totalBytes });
+}
+
+function writeStreamChunk(stream: ReturnType<typeof createWriteStream>, chunk: Uint8Array): Promise<void> {
+  return new Promise((resolve, reject) => {
+    stream.write(chunk, (error?: Error | null) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function finishWriteStream(stream: ReturnType<typeof createWriteStream>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onFinish = () => {
+      cleanup();
+      resolve();
+    };
+    const cleanup = () => {
+      stream.off("error", onError);
+      stream.off("finish", onFinish);
+    };
+    stream.once("error", onError);
+    stream.once("finish", onFinish);
+    stream.end();
+  });
+}
+
+async function writeResponseBodyToFile(
+  response: Response,
+  path: string,
+  totalBytes: number | null,
+  options?: AttachmentDownloadOptions,
+): Promise<void> {
+  const tmpPath = `${path}.part-${process.pid}-${Date.now()}`;
+  const body = response.body;
+
+  try {
+    if (!body) {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      notifyDownloadProgress(options, bytes.byteLength, totalBytes);
+      writeFileSync(tmpPath, bytes, { mode: 0o600 });
+      renameSync(tmpPath, path);
+      return;
+    }
+
+    const stream = createWriteStream(tmpPath, { mode: 0o600 });
+    let receivedBytes = 0;
+    try {
+      const reader = body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        receivedBytes += value.byteLength;
+        await writeStreamChunk(stream, value);
+        notifyDownloadProgress(options, receivedBytes, totalBytes);
+      }
+      await finishWriteStream(stream);
+    } catch (error) {
+      stream.destroy();
+      throw error;
+    }
+
+    renameSync(tmpPath, path);
+  } catch (error) {
+    rmSync(tmpPath, { force: true });
+    throw error;
+  }
+}
+
+export async function downloadAttachment(
+  attachment: DiscordMessageAttachment,
+  options: AttachmentDownloadOptions = {},
+): Promise<AttachmentOpenResult> {
   if (!attachment.url) return { ok: false, error: "Attachment has no URL." };
 
   const path = attachmentCachePath(attachment);
   if (existsSync(path) && cachedAttachmentIsComplete(path, attachment.size)) {
-    return { ok: true, path };
+    return { ok: true, path, cached: true };
   }
 
   try {
@@ -304,19 +400,23 @@ export async function downloadAttachment(attachment: DiscordMessageAttachment): 
       return { ok: false, error: `Download failed: HTTP ${response.status}` };
     }
 
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    writeFileSync(path, bytes, { mode: 0o600 });
-    return { ok: true, path };
+    const totalBytes = responseContentLength(response, attachment.size);
+    notifyDownloadProgress(options, 0, totalBytes);
+    await writeResponseBodyToFile(response, path, totalBytes, options);
+    return { ok: true, path, cached: false };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export async function openAttachmentDetached(attachment: DiscordMessageAttachment): Promise<AttachmentOpenResult> {
-  const downloaded = await downloadAttachment(attachment);
+export async function openAttachmentDetached(
+  attachment: DiscordMessageAttachment,
+  options: AttachmentDownloadOptions = {},
+): Promise<AttachmentOpenResult> {
+  const downloaded = await downloadAttachment(attachment, options);
   if (!downloaded.ok || !downloaded.path) return downloaded;
   if (!openTargetDetached(downloaded.path)) {
-    return { ok: false, path: downloaded.path, error: `No opener configured for ${downloaded.path}.` };
+    return { ok: false, path: downloaded.path, error: `No opener configured for ${downloaded.path}.`, cached: downloaded.cached };
   }
   return downloaded;
 }

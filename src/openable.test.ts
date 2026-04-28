@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { defaultOpenersConfig, saveConfig } from "./config";
 import type { DiscordMessageAttachment } from "./discord";
-import { cachedAttachmentPath, downloadAttachment, findOpenableTargetMatches, openTargetDetached, resolveOpenCommand } from "./openable";
+import { cachedAttachmentPath, downloadAttachment, findOpenableTargetMatches, openTargetDetached, resolveOpenCommand, type AttachmentDownloadProgress } from "./openable";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -159,8 +159,41 @@ describe("attachment downloads", () => {
     try {
       const result = await downloadAttachment(attachment);
       expect(result.ok).toBe(true);
+      expect(result.cached).toBe(false);
       expect(result.path).toBe(cachedAttachmentPath(attachment));
       expect(existsSync(result.path ?? "")).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("reports attachment download progress", async () => {
+    const previousFetch = globalThis.fetch;
+    const attachment: DiscordMessageAttachment = {
+      id: "progress-a1",
+      filename: "progress-image.png",
+      contentType: "image/png",
+      size: 4,
+      url: "https://cdn.example/progress-image.png",
+    };
+    const progress: AttachmentDownloadProgress[] = [];
+
+    globalThis.fetch = (() => Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.enqueue(new Uint8Array([3, 4]));
+        controller.close();
+      },
+    }), { headers: { "Content-Length": "4" } }))) as unknown as typeof fetch;
+
+    try {
+      const result = await downloadAttachment(attachment, { onProgress: (event) => progress.push(event) });
+      expect(result.ok).toBe(true);
+      expect(progress).toEqual([
+        { receivedBytes: 0, totalBytes: 4 },
+        { receivedBytes: 2, totalBytes: 4 },
+        { receivedBytes: 4, totalBytes: 4 },
+      ]);
     } finally {
       globalThis.fetch = previousFetch;
     }

@@ -26,7 +26,7 @@ import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./hist
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
 import { MEMBER_LIST_WIDTH, moveMemberListSelection, scrollMemberListSelection, scrollMemberListSelectionLine } from "./memberlist";
-import { summarizeInlineMessageParts } from "./messageparts";
+import { formatByteSize, summarizeInlineMessageParts } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { render } from "./render";
 import {
@@ -83,7 +83,7 @@ import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, sta
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
 import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
-import { openAttachmentDetached, openTargetDetached } from "./openable";
+import { downloadAttachment, openTargetDetached, type AttachmentDownloadProgress } from "./openable";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("record needs an interactive TTY.");
@@ -172,6 +172,20 @@ function scheduleRender(): void {
     renderTimer = null;
     render(state);
   }, 16);
+}
+
+function formatAttachmentDownloadProgress(progress: AttachmentDownloadProgress): string {
+  const received = formatByteSize(progress.receivedBytes) || "0 B";
+  if (progress.totalBytes !== null && progress.totalBytes > 0) {
+    const percent = Math.max(0, Math.min(100, Math.floor((progress.receivedBytes / progress.totalBytes) * 100)));
+    return `${percent}% (${received} / ${formatByteSize(progress.totalBytes)})`;
+  }
+  return received;
+}
+
+function showAttachmentDownloadProgress(filename: string, progress: AttachmentDownloadProgress): void {
+  setNotice(state, `Downloading ${filename}… ${formatAttachmentDownloadProgress(progress)}`, "muted", { loading: true });
+  scheduleRender();
 }
 
 function applyThemeCursor(): void {
@@ -662,17 +676,30 @@ function handleHistoryFocused(key: KeyEvent): boolean {
     case "nav_select": {
       const attachment = attachmentAtHistoryCursor(state);
       if (attachment) {
-        setNotice(state, `Opening ${attachment.filename}…`, "muted", { loading: true });
+        setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true });
         scheduleRender();
-        void openAttachmentDetached(attachment).then((result) => {
+        void (async () => {
+          const downloaded = await downloadAttachment(attachment, {
+            onProgress: (progress) => {
+              if (!running) return;
+              showAttachmentDownloadProgress(attachment.filename, progress);
+            },
+          });
           if (!running) return;
-          if (!result.ok) {
-            setNotice(state, `Could not open ${attachment.filename}: ${result.error ?? "unknown error"}`, "warning");
+          if (!downloaded.ok || !downloaded.path) {
+            setNotice(state, `Could not open ${attachment.filename}: ${downloaded.error ?? "unknown error"}`, "warning");
+            scheduleRender();
+            return;
+          }
+          setNotice(state, `Opening ${attachment.filename}…`, "muted", { loading: true });
+          scheduleRender();
+          if (!openTargetDetached(downloaded.path)) {
+            setNotice(state, `Could not open ${attachment.filename}: No opener configured for ${downloaded.path}.`, "warning");
           } else {
             setNotice(state, "", "muted");
           }
           scheduleRender();
-        });
+        })();
         return true;
       }
 
