@@ -26,10 +26,10 @@ export interface StatusBlock {
 type BlockBuilder = (state: AppState) => StatusBlock | null;
 
 const BLOCK_BUILDERS: BlockBuilder[] = [
-  noticeBlock,
   accountBlock,
   presenceBlock,
   replyBlock,
+  noticeBlock,
 ];
 
 const DELIMITER_WIDTH = 3; // " │ "

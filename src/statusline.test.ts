@@ -125,6 +125,7 @@ describe("statusline", () => {
 
     expect(status.height).toBe(1);
     expect(plain).toContain("Downloading image.png… 50% (1 MB / 2 MB)");
+    expect(plain.indexOf("Downloading image.png")).toBeGreaterThan(plain.indexOf("Status:"));
     expect(status.lines[0]).toContain(theme.muted);
   });
 
