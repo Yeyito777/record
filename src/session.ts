@@ -387,6 +387,52 @@ function persistSidebarGuilds(state: AppState): void {
   if (accountId) saveCachedGuilds(accountId, sidebarCachedGuilds(state.sidebar));
 }
 
+function withCurrentDirectMessagesGuild(state: AppState, guilds: DiscordGuild[]): DiscordGuild[] {
+  return state.sidebar.guilds.some((guild) => guild.id === DIRECT_MESSAGES_GUILD_ID)
+    ? [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, ...guilds]
+    : guilds;
+}
+
+function mergeGatewayGuilds(state: AppState, guilds: DiscordGuild[]): boolean {
+  if (guilds.length === 0) return false;
+  const byGuildId = new Map(sidebarCachedGuilds(state.sidebar).map((guild) => [guild.id, guild]));
+  const order = sidebarCachedGuilds(state.sidebar).map((guild) => guild.id);
+  let changed = false;
+
+  for (const guild of guilds) {
+    if (guild.id === DIRECT_MESSAGES_GUILD_ID) continue;
+    const existing = byGuildId.get(guild.id);
+    if (!existing) {
+      byGuildId.set(guild.id, guild);
+      order.push(guild.id);
+      changed = true;
+      continue;
+    }
+    const merged = { ...existing, name: guild.name, icon: guild.icon };
+    if (existing.name !== merged.name || existing.icon !== merged.icon) changed = true;
+    byGuildId.set(guild.id, merged);
+  }
+
+  if (!changed) return false;
+  setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, order.map((guildId) => byGuildId.get(guildId)!).filter(Boolean)));
+  persistSidebarGuilds(state);
+  return true;
+}
+
+function removeGatewayGuild(state: AppState, guildId: string): boolean {
+  if (guildId === DIRECT_MESSAGES_GUILD_ID || !state.sidebar.guilds.some((guild) => guild.id === guildId)) return false;
+  const nextGuilds = sidebarCachedGuilds(state.sidebar).filter((guild) => guild.id !== guildId);
+  setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, nextGuilds));
+  persistSidebarGuilds(state);
+  clearGuildNotifications(state.notifications, guildId);
+  persistNotifications(state);
+  if (state.channelList.guildId === guildId) {
+    clearChannelList(state.channelList);
+    clearTimeline(state.timeline);
+  }
+  return true;
+}
+
 function applyGuildMuteSettings(state: AppState, mutedByGuildId: Record<string, boolean>): void {
   applySidebarGuildMuteSettings(state.sidebar, mutedByGuildId);
   for (const [guildId, muted] of Object.entries(mutedByGuildId)) {
@@ -472,6 +518,24 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onGuildMuteSetting: (guildId, muted) => {
       applyGuildMuteSettings(state, { [guildId]: muted });
       effects.scheduleRender();
+    },
+    onReadyGuilds: (guilds) => {
+      if (mergeGatewayGuilds(state, guilds)) {
+        for (const guild of guilds) loadGuildRolesInBackground(state, token, guild.id, effects);
+        effects.scheduleRender();
+      }
+    },
+    onGuildCreate: (guild) => {
+      if (mergeGatewayGuilds(state, [guild])) {
+        loadGuildRolesInBackground(state, token, guild.id, effects);
+        effects.scheduleRender();
+      }
+    },
+    onGuildUpdate: (guild) => {
+      if (mergeGatewayGuilds(state, [guild])) effects.scheduleRender();
+    },
+    onGuildDelete: (guildId) => {
+      if (removeGatewayGuild(state, guildId)) effects.scheduleRender();
     },
     onInitialNotifications: (notifications) => {
       replaceNotifications(

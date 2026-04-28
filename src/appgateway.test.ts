@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractInitialNotifications } from "./appgateway";
+import { extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractInitialNotifications, extractReadyGuilds } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -63,5 +63,18 @@ describe("app gateway helpers", () => {
         [{ user_id: "me", roles: [] }],
       ],
     })).toEqual({ "guild-1": ["role-1", "role-2"], "guild-2": [] });
+  });
+
+  test("extracts guilds from READY", () => {
+    expect(extractReadyGuilds({
+      guilds: [
+        { id: "guild-1", name: "One", icon: "icon-1" },
+        { id: "guild-2", name: "Two", icon: null },
+        { id: "guild-3", unavailable: true },
+      ],
+    })).toEqual([
+      { id: "guild-1", name: "One", icon: "icon-1" },
+      { id: "guild-2", name: "Two", icon: null },
+    ]);
   });
 });

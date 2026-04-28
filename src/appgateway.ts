@@ -12,6 +12,7 @@ import {
   mapDiscordMessagePatch,
   mapGuildChannel,
   type DiscordChannel,
+  type DiscordGuild,
   type DiscordChannelResponse,
   type DiscordMessage,
   type DiscordMessagePatch,
@@ -49,6 +50,10 @@ export interface AppGatewayCallbacks {
   onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
   onCurrentUserGuildRoles?: (guildId: string, roleIds: string[]) => void;
+  onReadyGuilds?: (guilds: DiscordGuild[]) => void;
+  onGuildCreate?: (guild: DiscordGuild) => void;
+  onGuildUpdate?: (guild: DiscordGuild) => void;
+  onGuildDelete?: (guildId: string) => void;
   onMessageCreate: (message: DiscordMessage) => void;
   onMessageUpdate: (patch: DiscordMessagePatch) => void;
   onMessageDelete: (channelId: string, messageId: string) => void;
@@ -169,6 +174,7 @@ export class AppGatewayClient {
       this.currentUserId = extractCurrentUserId(payload.d);
       this.sessionId = isObject(payload.d) && typeof payload.d.session_id === "string" ? payload.d.session_id : null;
       this.callbacks.onCurrentUserRoleIds?.(extractCurrentUserRoleIdsByGuildId(payload.d));
+      this.callbacks.onReadyGuilds?.(extractReadyGuilds(payload.d));
       this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
       this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
       this.sendGuildChannelSubscription();
@@ -256,6 +262,21 @@ export class AppGatewayClient {
         case "CHANNEL_DELETE": {
           if (!isObject(data) || typeof data.id !== "string") break;
           this.callbacks.onChannelDelete(data.id, typeof data.guild_id === "string" ? data.guild_id : null);
+          break;
+        }
+        case "GUILD_CREATE": {
+          const guild = mapGatewayGuild(data);
+          if (guild) this.callbacks.onGuildCreate?.(guild);
+          break;
+        }
+        case "GUILD_UPDATE": {
+          const guild = mapGatewayGuild(data);
+          if (guild) this.callbacks.onGuildUpdate?.(guild);
+          break;
+        }
+        case "GUILD_DELETE": {
+          if (!isObject(data) || typeof data.id !== "string") break;
+          this.callbacks.onGuildDelete?.(data.id);
           break;
         }
         case "TYPING_START": {
@@ -386,6 +407,22 @@ export function extractCurrentUserId(data: unknown): string | null {
   if (!isObject(data)) return null;
   const user = isObject(data.user) ? data.user : null;
   return user && typeof user.id === "string" ? user.id : null;
+}
+
+function mapGatewayGuild(data: unknown): DiscordGuild | null {
+  if (!isObject(data) || typeof data.id !== "string" || typeof data.name !== "string") return null;
+  return {
+    id: data.id,
+    name: data.name,
+    icon: typeof data.icon === "string" ? data.icon : null,
+  };
+}
+
+export function extractReadyGuilds(data: unknown): DiscordGuild[] {
+  if (!isObject(data) || !Array.isArray(data.guilds)) return [];
+  return data.guilds
+    .map(mapGatewayGuild)
+    .filter((guild): guild is DiscordGuild => guild !== null);
 }
 
 export function extractCurrentUserRoleIdsByGuildId(data: unknown): Record<string, string[]> {
