@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -280,9 +280,9 @@ export function resolveOpenCommand(target: string): OpenCommand | null {
   return commandFromConfig(rule, target, expandedPath);
 }
 
-export function spawnOpenTargetDetached(target: string): ChildProcess | null {
+export function openTargetDetached(target: string): boolean {
   const openCommand = resolveOpenCommand(target);
-  if (!openCommand) return null;
+  if (!openCommand) return false;
 
   try {
     const child = spawn(openCommand.command, openCommand.args, {
@@ -293,14 +293,10 @@ export function spawnOpenTargetDetached(target: string): ChildProcess | null {
       // Best effort: opening a target should never disrupt the TUI.
     });
     child.unref();
-    return child;
+    return true;
   } catch {
-    return null;
+    return false;
   }
-}
-
-export function openTargetDetached(target: string): boolean {
-  return spawnOpenTargetDetached(target) !== null;
 }
 
 function responseContentLength(response: Response, fallbackSize: number): number | null {
@@ -419,7 +415,7 @@ export async function openAttachmentDetached(
 ): Promise<AttachmentOpenResult> {
   const downloaded = await downloadAttachment(attachment, options);
   if (!downloaded.ok || !downloaded.path) return downloaded;
-  if (!spawnOpenTargetDetached(downloaded.path)) {
+  if (!openTargetDetached(downloaded.path)) {
     return { ok: false, path: downloaded.path, error: `No opener configured for ${downloaded.path}.`, cached: downloaded.cached };
   }
   return downloaded;

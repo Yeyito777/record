@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { defaultOpenersConfig, saveConfig } from "./config";
 import type { DiscordMessageAttachment } from "./discord";
-import { cachedAttachmentPath, downloadAttachment, findOpenableTargetMatches, openTargetDetached, resolveOpenCommand, spawnOpenTargetDetached, type AttachmentDownloadProgress } from "./openable";
+import { cachedAttachmentPath, downloadAttachment, findOpenableTargetMatches, openTargetDetached, resolveOpenCommand, type AttachmentDownloadProgress } from "./openable";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -101,7 +101,6 @@ describe("openable target command resolution", () => {
   test("does not open unconfigured extensions", () => {
     expect(resolveOpenCommand("/tmp/archive.zip")).toBeNull();
     expect(openTargetDetached("/tmp/archive.zip")).toBe(false);
-    expect(spawnOpenTargetDetached("/tmp/archive.zip")).toBeNull();
   });
 
   test("uses opener commands configured in config.json", () => {
