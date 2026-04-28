@@ -194,27 +194,38 @@ export function saveCachedGuilds(accountId: string, guilds: DiscordGuild[]): voi
   saveCacheFile(cache);
 }
 
+function stripChannelDisplayState(channel: DiscordChannel): DiscordChannel {
+  const { hidden: _hidden, ...cachedChannel } = channel;
+  return { ...cachedChannel };
+}
+
+function stripChannelsDisplayState(channels: DiscordChannel[]): DiscordChannel[] {
+  return channels.map(stripChannelDisplayState);
+}
+
 export function loadCachedDirectMessages(accountId: string): DiscordChannel[] | null {
-  return loadCacheFile().accounts[accountId]?.directMessages ?? null;
+  const cached = loadCacheFile().accounts[accountId]?.directMessages ?? null;
+  return cached ? stripChannelsDisplayState(cached) : null;
 }
 
 export function saveCachedDirectMessages(accountId: string, directMessages: DiscordChannel[]): void {
   const cache = loadCacheFile();
   const account = accountCache(cache, accountId);
-  account.directMessages = directMessages;
+  account.directMessages = stripChannelsDisplayState(directMessages);
   account.savedAt = Date.now();
   saveCacheFile(cache);
 }
 
 export function loadCachedGuildChannels(accountId: string, guildId: string): DiscordChannel[] | null {
-  return loadCacheFile().accounts[accountId]?.guildChannels?.[guildId] ?? null;
+  const cached = loadCacheFile().accounts[accountId]?.guildChannels?.[guildId] ?? null;
+  return cached ? stripChannelsDisplayState(cached) : null;
 }
 
 export function saveCachedGuildChannels(accountId: string, guildId: string, channels: DiscordChannel[]): void {
   const cache = loadCacheFile();
   const account = accountCache(cache, accountId);
   account.guildChannels ??= {};
-  account.guildChannels[guildId] = channels;
+  account.guildChannels[guildId] = stripChannelsDisplayState(channels);
   account.savedAt = Date.now();
   saveCacheFile(cache);
 }

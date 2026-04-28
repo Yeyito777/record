@@ -472,8 +472,6 @@ function refreshHiddenChannelFlags(state: AppState, guildId: string | null | und
     state.channelList.activeChannel = state.channelList.activeChannelId
       ? state.channelList.channels.find((channel) => channel.id === state.channelList.activeChannelId) ?? state.channelList.activeChannel
       : state.channelList.activeChannel;
-    const accountId = currentAccountId(state);
-    if (accountId) saveCachedGuildChannels(accountId, guildId, state.channelList.channels.filter((channel) => channel.guildId === guildId));
   }
 }
 

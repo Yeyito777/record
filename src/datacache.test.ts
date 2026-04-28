@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { flushDataCacheSync, loadCachedMemberList, saveCachedGuilds, saveCachedMemberList } from "./datacache";
+import { flushDataCacheSync, loadCachedGuildChannels, loadCachedMemberList, saveCachedGuildChannels, saveCachedGuilds, saveCachedMemberList } from "./datacache";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -42,6 +42,24 @@ describe("data cache", () => {
 
     expect(JSON.parse(readFileSync(cachePath, "utf8")).accounts["account-1"].guilds).toEqual([
       { id: "guild-new", name: "New Guild", icon: null },
+    ]);
+  });
+
+  test("does not persist derived channel display flags", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    saveCachedGuildChannels("account-1", "guild-1", [
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false, hidden: true },
+    ]);
+
+    expect(loadCachedGuildChannels("account-1", "guild-1")).toEqual([
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false },
+    ]);
+
+    flushDataCacheSync();
+    expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).accounts["account-1"].guildChannels["guild-1"]).toEqual([
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false },
     ]);
   });
 });
