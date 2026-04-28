@@ -160,6 +160,7 @@ class DaveVoiceEncryption {
   private reinitializing = false;
   private lastTransitionId: number | null = null;
   private lastMediaErrorAt = 0;
+  private passthroughRecoveryEnabled = false;
 
   constructor(private readonly options: DaveVoiceEncryptionOptions) {
     this.knownUserIds.add(options.userId);
@@ -245,6 +246,10 @@ class DaveVoiceEncryption {
     try {
       return this.session.decrypt(userId, MediaType.AUDIO, payload);
     } catch (error) {
+      if (isUnencryptedDavePassthroughError(error)) {
+        this.enablePassthroughRecovery();
+        return payload;
+      }
       this.reportMediaError(asError(error, `Failed to DAVE-decrypt voice audio from ${userId}.`));
       return null;
     }
@@ -400,6 +405,12 @@ class DaveVoiceEncryption {
 
   private sendBinary(opcode: number, payload: Buffer): void {
     this.options.sendBinary(opcode, payload);
+  }
+
+  private enablePassthroughRecovery(): void {
+    if (this.passthroughRecoveryEnabled) return;
+    this.passthroughRecoveryEnabled = true;
+    this.session?.setPassthroughMode(true, 120);
   }
 
   private reportMediaError(error: Error): void {
@@ -1292,6 +1303,11 @@ function snowflakeToString(value: unknown): string | null {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isUnencryptedDavePassthroughError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("UnencryptedWhenPassthroughDisabled");
 }
 
 function asError(error: unknown, prefix: string): Error {

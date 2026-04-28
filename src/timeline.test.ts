@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   appendTimelineMessage,
   createTimelineState,
+  markTimelineCallEnded,
   prependTimelineMessages,
   renderTimelineLines,
   setTimelineMessages,
@@ -988,6 +989,31 @@ describe("timeline rendering", () => {
 
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines[1]).toMatch(/^⠙ ☎ Call in progress · 1:0[45] · 2 participants$/);
+  });
+
+  test("can locally mark active calls ended", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("call-1", "", {
+      type: 3,
+      timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+      call: {
+        endedTimestamp: null,
+        participantIds: ["viewer", "other-user"],
+      },
+    })]);
+    setTimelineRenderContext(timeline, "viewer", true);
+
+    expect(markTimelineCallEnded(timeline, "channel-1", Date.UTC(2026, 0, 1, 12, 0, 19))).toBe(true);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.lines[1] ?? "")).toContain("✓ ☎ Call ended · 0:19 · 2 participants");
   });
 
   test("renders incoming calls before the viewer joins", () => {

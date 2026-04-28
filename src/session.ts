@@ -112,6 +112,7 @@ import {
   finishLoadingOlderMessages,
   isTimelineNearBottom,
   markTimelineMessageFailed,
+  markTimelineCallEnded,
   prependTimelineMessages,
   patchTimelineMessage,
   removeTimelineMessage,
@@ -326,6 +327,24 @@ function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, pa
     patchTimelineMessage(state.timeline, patch);
   }
   effects.scheduleRender();
+}
+
+function markActiveCallEnded(state: AppState, channelId: string, endedTimestamp = Date.now()): boolean {
+  let changed = false;
+  const patchMessage = (message: DiscordMessage): DiscordMessage => {
+    if (message.channelId !== channelId || !message.call || message.call.endedTimestamp !== null) return message;
+    changed = true;
+    return { ...message, call: { ...message.call, endedTimestamp } };
+  };
+
+  const cached = state.messageCacheByChannelId[channelId];
+  if (cached) cached.messages = cached.messages.map(patchMessage);
+  if (state.timeline.channelId === channelId) {
+    const timelineChanged = markTimelineCallEnded(state.timeline, channelId, endedTimestamp);
+    changed ||= timelineChanged;
+  }
+  if (changed) persistChannelMessageCache(state, channelId);
+  return changed;
 }
 
 function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEffects, channel: DiscordChannel): void {
@@ -831,6 +850,10 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onVoiceServerUpdate: (update) => {
       voiceCallController?.handleVoiceServerUpdate(update);
+    },
+    onCallDelete: (channelId) => {
+      markActiveCallEnded(state, channelId);
+      effects.scheduleRender();
     },
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
     onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
@@ -1506,6 +1529,7 @@ export function editCurrentMessage(
   const optimisticPatch: DiscordMessagePatch = {
     id: messageId,
     channelId,
+    local: true,
     content,
     editedTimestamp: Date.now(),
   };

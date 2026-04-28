@@ -320,6 +320,30 @@ describe("discord helpers", () => {
     ]);
   });
 
+  test("clears stale call payloads when Discord sends a type-3 update without call data", () => {
+    const existing = {
+      id: "call-1",
+      channelId: "channel-1",
+      type: 3,
+      content: "",
+      mentionEveryone: false,
+      mentionRoleIds: [],
+      mentionUserIds: [],
+      timestamp: Date.parse("2026-01-01T12:00:00.000Z"),
+      editedTimestamp: null,
+      author: { id: "user-1", username: "tester", displayName: "Tester", bot: false },
+      reply: null,
+      call: { endedTimestamp: null, participantIds: ["user-1", "user-2"] },
+      attachments: [],
+      stickerNames: [],
+      embedsCount: 0,
+    };
+
+    const patch = mapDiscordMessagePatch({ id: "call-1", channel_id: "channel-1", type: 3 });
+
+    expect(applyDiscordMessagePatch(existing, patch).call).toBeNull();
+  });
+
   test("maps partial message updates without clobbering existing fields", () => {
     const existing = {
       id: "message-1",

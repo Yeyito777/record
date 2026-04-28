@@ -223,6 +223,18 @@ export function patchTimelineMessage(timeline: TimelineState, patch: DiscordMess
   invalidateTimelineContentCache(timeline);
 }
 
+export function markTimelineCallEnded(timeline: TimelineState, channelId: string, endedTimestamp = Date.now()): boolean {
+  if (timeline.channelId !== channelId) return false;
+  let changed = false;
+  timeline.messages = timeline.messages.map((message) => {
+    if (!message.call || message.call.endedTimestamp !== null) return message;
+    changed = true;
+    return { ...message, call: { ...message.call, endedTimestamp } };
+  });
+  if (changed) invalidateTimelineContentCache(timeline);
+  return changed;
+}
+
 export function removeTimelineMessage(timeline: TimelineState, messageId: string, channelId?: string): void {
   if (channelId && timeline.channelId !== channelId) return;
   const before = timeline.messages.length;

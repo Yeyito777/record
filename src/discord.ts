@@ -280,6 +280,8 @@ export interface DiscordMessage {
 export interface DiscordMessagePatch {
   id: string;
   channelId: string;
+  /** Internal/local patch; false for gateway patches where undefined means absent. */
+  local?: boolean;
   guildId?: string | null;
   type?: number;
   content?: string;
@@ -672,7 +674,9 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
       ? { ...patch.author, roleIds: patch.author.roleIds ?? message.author.roleIds }
       : message.author,
     reply: patch.reply !== undefined ? patch.reply : message.reply,
-    call: patch.call !== undefined ? patch.call : message.call,
+    call: patch.local
+      ? patch.call !== undefined ? patch.call : message.call
+      : patch.type === 3 && patch.call === undefined ? null : patch.call !== undefined ? patch.call : message.call,
     attachments: patch.attachments ?? message.attachments,
     stickerNames: patch.stickerNames ?? message.stickerNames,
     embedsCount: patch.embedsCount ?? message.embedsCount,

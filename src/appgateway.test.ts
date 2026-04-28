@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractInitialNotifications, extractReadyGuilds, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
+import { extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractInitialNotifications, extractReadyGuilds, mapCallGatewayEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -100,6 +100,23 @@ describe("app gateway helpers", () => {
       token: "voice-token",
       endpoint: "voice.example",
       guildId: null,
+    });
+  });
+
+  test("maps call gateway events", () => {
+    expect(mapCallGatewayEvent({
+      channel_id: "dm-1",
+      ringing: ["user-2"],
+      region: "atl",
+      voice_states: [
+        { user_id: "user-1" },
+        { user_id: "user-2" },
+      ],
+    })).toEqual({
+      channelId: "dm-1",
+      ringingUserIds: ["user-2"],
+      region: "atl",
+      voiceStateUserIds: ["user-1", "user-2"],
     });
   });
 

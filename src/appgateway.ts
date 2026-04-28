@@ -45,10 +45,20 @@ export interface InitialNotification {
   count: number;
 }
 
+export interface CallGatewayEvent {
+  channelId: string;
+  ringingUserIds: string[];
+  region: string | null;
+  voiceStateUserIds: string[];
+}
+
 export interface AppGatewayCallbacks {
   onInitialNotifications: (notifications: InitialNotification[]) => void;
   onVoiceStateUpdate?: (update: VoiceStateUpdate) => void;
   onVoiceServerUpdate?: (update: VoiceServerUpdate) => void;
+  onCallCreate?: (event: CallGatewayEvent) => void;
+  onCallUpdate?: (event: CallGatewayEvent) => void;
+  onCallDelete?: (channelId: string) => void;
   onGuildMuteSettings?: (mutedByGuildId: Record<string, boolean>) => void;
   onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
@@ -313,6 +323,21 @@ export class AppGatewayClient implements VoiceSignalingClient {
           if (update) this.callbacks.onVoiceServerUpdate?.(update);
           break;
         }
+        case "CALL_CREATE": {
+          const event = mapCallGatewayEvent(data);
+          if (event) this.callbacks.onCallCreate?.(event);
+          break;
+        }
+        case "CALL_UPDATE": {
+          const event = mapCallGatewayEvent(data);
+          if (event) this.callbacks.onCallUpdate?.(event);
+          break;
+        }
+        case "CALL_DELETE": {
+          if (!isObject(data) || typeof data.channel_id !== "string") break;
+          this.callbacks.onCallDelete?.(data.channel_id);
+          break;
+        }
         case "GUILD_MEMBER_UPDATE": {
           if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.roles)) break;
           const user = isObject(data.user) ? data.user : null;
@@ -458,6 +483,23 @@ export function mapVoiceServerUpdate(data: unknown): VoiceServerUpdate | null {
     token: data.token,
     endpoint: typeof data.endpoint === "string" ? data.endpoint : null,
     guildId: typeof data.guild_id === "string" ? data.guild_id : null,
+  };
+}
+
+export function mapCallGatewayEvent(data: unknown): CallGatewayEvent | null {
+  if (!isObject(data) || typeof data.channel_id !== "string") return null;
+  const voiceStateUserIds = Array.isArray(data.voice_states)
+    ? data.voice_states
+      .map((state) => isObject(state) ? snowflakeToString(state.user_id) : null)
+      .filter((userId): userId is string => Boolean(userId))
+    : [];
+  return {
+    channelId: data.channel_id,
+    ringingUserIds: Array.isArray(data.ringing)
+      ? data.ringing.map(snowflakeToString).filter((userId): userId is string => Boolean(userId))
+      : [],
+    region: typeof data.region === "string" ? data.region : null,
+    voiceStateUserIds,
   };
 }
 
@@ -643,6 +685,13 @@ function messageDataToString(data: unknown): string {
   if (data instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(data));
   if (ArrayBuffer.isView(data)) return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
   return String(data);
+}
+
+function snowflakeToString(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+  if (typeof value === "bigint") return value.toString();
+  return null;
 }
 
 function isObject(value: unknown): value is Record<string, any> {
