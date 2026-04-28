@@ -727,11 +727,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       }
 
       const target = openableTargetAtHistoryCursor(state);
-      if (!target) {
-        setNotice(state, "No openable link or attachment under cursor.", "muted");
-        scheduleRender();
-        return true;
-      }
+      if (!target) return true;
       if (!openTargetDetached(target)) {
         setNotice(state, `No opener configured for ${target}.`, "warning");
         scheduleRender();
