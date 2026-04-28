@@ -73,12 +73,13 @@ describe("submitCurrentBuffer", () => {
     state.memberList.guildId = "guild-1";
     state.memberList.channelId = "channel-1";
     state.memberList.members = [{ id: "user-1", username: "zosa", displayName: "Zosa", bot: false, roleIds: ["role-1"] }];
-    state.editor.buffer = "hi @zosa";
+    state.guildRolesByGuildId["guild-1"] = [{ id: "role-2", name: "artist", color: 0x3366ff, position: 1 }];
+    state.editor.buffer = "hi @zosa @here @artist";
 
     submitCurrentBuffer(state, effects);
 
-    expect(JSON.parse(requestedBody).content).toBe("hi <@user-1>");
-    expect(state.timeline.messages[0]?.content).toBe("hi @zosa");
+    expect(JSON.parse(requestedBody).content).toBe("hi <@user-1> @here <@&role-2>");
+    expect(state.timeline.messages[0]?.content).toBe("hi @zosa @here @artist");
     expect(state.timeline.messages[0]?.localMentionUsers).toEqual([
       { id: "user-1", username: "zosa", displayName: "Zosa", bot: false, roleIds: ["role-1"] },
     ]);

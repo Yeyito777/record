@@ -59,6 +59,29 @@ describe("autocomplete", () => {
     expect(state.editor.buffer).toBe("hi @Zosa");
   });
 
+  test("places broadcast and role mentions after user mentions", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.activeChannel = state.channelList.channels[0] ?? null;
+    state.memberList.guildId = "guild-1";
+    state.memberList.channelId = "channel-1";
+    state.memberList.members = [{ id: "user-1", username: "alice", displayName: "Alice", bot: false, roleIds: [] }];
+    state.guildRolesByGuildId["guild-1"] = [
+      { id: "guild-1", name: "@everyone", color: 0, position: 0 },
+      { id: "role-1", name: "artist", color: 0x3366ff, position: 1 },
+    ];
+    state.editor.buffer = "@";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.matches.map((match) => match.name)).toEqual(["@Alice", "@everyone", "@here", "@artist"]);
+    expect(state.autocomplete?.matches.map((match) => match.desc)).toEqual(["Alice", "broadcast", "broadcast", "role"]);
+  });
+
   test("shows nested command args after completing a subcommand", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editor.buffer = "/channels show-hidden ";

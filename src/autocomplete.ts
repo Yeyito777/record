@@ -47,7 +47,9 @@ function getMentionMatches(state: AppState, query: string): CompletionItem[] {
     .filter((candidate) => mentionCandidateMatches(candidate, query))
     .map((candidate) => ({
       name: `@${candidate.token}`,
-      desc: candidate.username && candidate.username !== candidate.displayName ? candidate.displayName : "user",
+      desc: candidate.kind === "user"
+        ? (candidate.username && candidate.username !== candidate.displayName ? candidate.displayName : "user")
+        : candidate.kind,
       color: candidate.color,
     }));
 }

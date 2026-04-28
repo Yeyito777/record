@@ -10,6 +10,7 @@ import {
   fetchDirectMessages,
   fetchGuilds,
   fetchGuildChannels,
+  fetchGuildRoles,
   formatChannelName,
   isDirectMessageChannel,
   mapDiscordMessagePatch,
@@ -397,6 +398,20 @@ describe("discord helpers", () => {
       content: "new",
       editedTimestamp: Date.parse("2026-01-01T12:01:00.000Z"),
     });
+  });
+
+  test("maps guild role names", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify([
+      { id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "1024" },
+      { id: "role-1", name: "artist", color: 0x3366ff, position: 1, permissions: "0" },
+    ]), { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+
+    const roles = await fetchGuildRoles("token", "guild-1");
+
+    expect(roles).toEqual([
+      { id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "1024" },
+      { id: "role-1", name: "artist", color: 0x3366ff, position: 1, permissions: "0" },
+    ]);
   });
 
   test("posts message content to the active channel", async () => {

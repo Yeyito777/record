@@ -219,6 +219,7 @@ export interface DiscordMessageEmbed {
 
 export interface DiscordRole {
   id: string;
+  name?: string;
   color: number;
   position: number;
   permissions?: string;
@@ -653,6 +654,7 @@ export async function fetchGuildChannels(token: string, guildId: string): Promis
 
 interface DiscordRoleResponse {
   id: string;
+  name?: string;
   color?: number;
   position?: number;
   permissions?: string;
@@ -671,6 +673,7 @@ export async function fetchGuildRoles(token: string, guildId: string): Promise<D
   const roles = await apiGetJson<DiscordRoleResponse[]>(token, `/guilds/${guildId}/roles`);
   return roles.map((role) => ({
     id: role.id,
+    name: typeof role.name === "string" ? role.name : undefined,
     color: typeof role.color === "number" ? role.color : 0,
     position: typeof role.position === "number" ? role.position : 0,
     permissions: typeof role.permissions === "string" ? role.permissions : "0",

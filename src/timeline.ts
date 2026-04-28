@@ -532,7 +532,7 @@ function renderMessageCached(
   groupedWithPrevious = false,
 ): RenderedMessage {
   const cacheState = getTimelineCacheState(timeline);
-  const fingerprint = messageRenderFingerprint(message, loadingFrameIndex, nowMs, groupedWithPrevious);
+  const fingerprint = messageRenderFingerprint(message, loadingFrameIndex, nowMs, timeline.rolesByGuildId, timeline.activeGuildId, groupedWithPrevious);
   const cacheKey = `${message.id}:${groupedWithPrevious ? "grouped" : "full"}`;
   const cached = cacheState.messageRenderCache.get(cacheKey);
   if (cached && cached.width === width && cached.fingerprint === fingerprint) {
@@ -787,11 +787,12 @@ function renderUserMentions(
   const withBroadcastMentions = content.replace(/(^|[^\w@])@(everyone|here)\b/g, (_raw, prefix: string, mention: string) => (
     `${prefix}${theme.accent}@${mention}${restoreColor}`
   ));
+  const withRoleMentions = renderRoleMentions(withBroadcastMentions, message, rolesByGuildId, activeGuildId, restoreColor);
 
   const mentionUsers = new Map([...(message.mentionUsers ?? []), ...(message.localMentionUsers ?? [])].map((user) => [user.id, user]));
-  if (mentionUsers.size === 0) return withBroadcastMentions;
+  if (mentionUsers.size === 0) return withRoleMentions;
 
-  const withCanonicalMentions = withBroadcastMentions.replace(/<@!?(\d+)>/g, (raw, userId: string) => {
+  const withCanonicalMentions = withRoleMentions.replace(/<@!?(\d+)>/g, (raw, userId: string) => {
     const user = mentionUsers.get(userId);
     if (!user) return raw;
     return renderMentionLabel(message, user, viewerId, accentViewerInDirectMessages, rolesByGuildId, memberRoleIdsByGuildId, activeGuildId, restoreColor);
@@ -811,6 +812,29 @@ function renderUserMentions(
       restoreColor,
     ));
   }, withCanonicalMentions);
+}
+
+function renderRoleMentions(
+  content: string,
+  message: DiscordMessage,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  activeGuildId: string | null,
+  restoreColor: string,
+): string {
+  const guildId = message.guildId ?? activeGuildId;
+  if (!guildId || message.mentionRoleIds.length === 0) return content;
+
+  const roles = rolesByGuildId[guildId] ?? [];
+  if (roles.length === 0) return content;
+  const rolesById = new Map(roles.map((role) => [role.id, role]));
+
+  return content.replace(/<@&([^>]+)>/g, (raw, roleId: string) => {
+    const role = rolesById.get(roleId);
+    if (!role) return raw;
+    const label = `@${role.name?.trim() || role.id}`;
+    const color = role.color > 0 ? ansiTrueColor(role.color) : theme.accent;
+    return `${color}${label}${restoreColor}`;
+  });
 }
 
 function renderMentionLabel(
@@ -1053,7 +1077,26 @@ function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, n
   return `${loadingFrameIndex}:${Math.floor(nowMs / 1000)}`;
 }
 
-function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: number, nowMs: number, groupedWithPrevious = false): string {
+function rolesByGuildFingerprint(
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  messageGuildId: string | null | undefined,
+  activeGuildId: string | null,
+): string {
+  const guildId = messageGuildId ?? activeGuildId;
+  if (!guildId) return "";
+  return (rolesByGuildId[guildId] ?? [])
+    .map((role) => [role.id, role.name ?? "", String(role.color)].join("\u0002"))
+    .join("\u0000");
+}
+
+function messageRenderFingerprint(
+  message: DiscordMessage,
+  loadingFrameIndex: number,
+  nowMs: number,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  activeGuildId: string | null,
+  groupedWithPrevious = false,
+): string {
   const attachmentKey = message.attachments.map((attachment) => [attachment.filename, attachment.contentType ?? "", String(attachment.size)].join("\u0002")).join("\u0000");
   const mentionKey = (message.mentionUsers ?? [])
     .map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002"))
@@ -1098,6 +1141,7 @@ function messageRenderFingerprint(message: DiscordMessage, loadingFrameIndex: nu
     message.localError ?? "",
     message.localSendContent ?? "",
     (message.localMentionUsers ?? []).map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002")).join("\u0000"),
+    rolesByGuildFingerprint(rolesByGuildId, message.guildId, activeGuildId),
     groupedWithPrevious ? "grouped" : "full",
   ].join("\u0001");
 }
