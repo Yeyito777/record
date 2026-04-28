@@ -128,7 +128,7 @@ describe("discord helpers", () => {
     const guilds = await fetchGuilds("token");
 
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(true);
-    expect(guilds.map((guild) => guild.id)).toEqual(["guild-3", "guild-2", "guild-1"]);
+    expect(guilds.map((guild) => guild.id)).toEqual(["guild-2", "guild-1", "guild-3"]);
   });
 
   test("sorts direct messages by most recent last_message_id", async () => {

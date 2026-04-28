@@ -492,16 +492,6 @@ export function sortGuildsByUserOrder(guilds: DiscordGuild[], guildOrder: readon
   const byGuildId = new Map(guilds.map((guild) => [guild.id, guild]));
   const ordered: DiscordGuild[] = [];
   const included = new Set<string>();
-  const orderSet = new Set(guildOrder);
-
-  // Newly joined guilds can be present in /users/@me/guilds before Discord's
-  // sidebar settings include them. Keep those visible instead of burying them
-  // after the full ordered list.
-  for (const guild of guilds) {
-    if (orderSet.has(guild.id)) continue;
-    ordered.push(guild);
-    included.add(guild.id);
-  }
 
   for (const guildId of guildOrder) {
     const guild = byGuildId.get(guildId);
@@ -510,6 +500,10 @@ export function sortGuildsByUserOrder(guilds: DiscordGuild[], guildOrder: readon
     included.add(guildId);
   }
 
+  for (const guild of guilds) {
+    if (included.has(guild.id)) continue;
+    ordered.push(guild);
+  }
   return ordered;
 }
 
