@@ -216,7 +216,7 @@ describe("session", () => {
     expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual(["New", "One Fresh", "Two Fresh"]);
   });
 
-  test("cached channels use cached current-user roles for immediate visibility filtering", async () => {
+  test("cached channels fetch missing current-user roles before immediate visibility filtering", async () => {
     process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-session-test-"));
     const viewChannel = String(1 << 10);
 
@@ -245,9 +245,14 @@ describe("session", () => {
       },
     ]);
 
+    let memberFetches = 0;
     let resolveChannels: (response: Response) => void = () => {};
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/users/@me/guilds/guild-1/member")) {
+        memberFetches += 1;
+        return new Response(JSON.stringify({ roles: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
       if (url.includes("/guilds/guild-1/channels")) {
         return await new Promise<Response>((resolve) => {
           resolveChannels = resolve;
@@ -257,13 +262,15 @@ describe("session", () => {
     }) as unknown as typeof fetch;
 
     const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.savedToken = "token-1";
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
     state.guildRolesByGuildId["guild-1"] = [{ id: "guild-1", color: 0, position: 0, permissions: viewChannel }];
-    state.memberRoleIdsByGuildId["guild-1"] = { self: [] };
 
     const load = loadGuildChannels(state, "token-1", "guild-1", { scheduleRender: () => {} });
     await flushTimers();
 
+    expect(memberFetches).toBe(1);
+    expect(state.memberRoleIdsByGuildId["guild-1"]?.self).toEqual([]);
     expect(state.channelList.channels.find((channel) => channel.id === "hidden")?.hidden).toBe(true);
     expect(state.channelList.channels.find((channel) => channel.id === "visible")?.hidden).toBe(false);
 

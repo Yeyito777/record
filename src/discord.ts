@@ -651,6 +651,15 @@ interface DiscordRoleResponse {
   permissions?: string;
 }
 
+interface DiscordCurrentGuildMemberResponse {
+  roles?: unknown;
+}
+
+export async function fetchCurrentUserGuildRoleIds(token: string, guildId: string): Promise<string[]> {
+  const member = await apiGetJson<DiscordCurrentGuildMemberResponse>(token, `/users/@me/guilds/${guildId}/member`);
+  return Array.isArray(member.roles) ? member.roles.filter((roleId): roleId is string => typeof roleId === "string") : [];
+}
+
 export async function fetchGuildRoles(token: string, guildId: string): Promise<DiscordRole[]> {
   const roles = await apiGetJson<DiscordRoleResponse[]>(token, `/guilds/${guildId}/roles`);
   return roles.map((role) => ({

@@ -21,6 +21,7 @@ import {
   fetchDirectMessages,
   fetchGuildChannels,
   fetchGuildOrder,
+  fetchCurrentUserGuildRoleIds,
   fetchGuildRoles,
   fetchGuilds,
   sendChannelMessage,
@@ -334,8 +335,9 @@ function persistNotifications(state: AppState): void {
 function recordMemberRoleIds(state: AppState, guildId: string | null | undefined, userId: string, roleIds: readonly string[] | undefined): boolean {
   if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID || !roleIds) return false;
   const byUserId = state.memberRoleIdsByGuildId[guildId] ??= {};
+  const hadPrevious = Object.hasOwn(byUserId, userId);
   const previous = byUserId[userId] ?? [];
-  if (previous.length === roleIds.length && previous.every((roleId, index) => roleId === roleIds[index])) return false;
+  if (hadPrevious && previous.length === roleIds.length && previous.every((roleId, index) => roleId === roleIds[index])) return false;
   byUserId[userId] = [...roleIds];
   state.memberRoleCacheVersion += 1;
   const accountId = currentAccountId(state);
@@ -1050,6 +1052,17 @@ export async function loadGuildChannels(
     setNotice(state, "", "muted");
   }
   if (accountId) {
+    if (!isDirectMessages && !state.roleIdsByGuildId[guildId] && !state.memberRoleIdsByGuildId[guildId]?.[accountId]) {
+      try {
+        const roleIds = await fetchCurrentUserGuildRoleIds(token, guildId);
+        debugLog("current_member_roles.fetched_before_cache", { guildId, count: roleIds.length });
+        state.roleIdsByGuildId[guildId] = roleIds;
+        recordMemberRoleIds(state, guildId, accountId, roleIds);
+      } catch (error) {
+        debugLog("current_member_roles.fetch_failed", { guildId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
     const cachedChannels = isDirectMessages
       ? loadCachedDirectMessages(accountId)
       : loadCachedGuildChannels(accountId, guildId);
