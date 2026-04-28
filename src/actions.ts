@@ -8,6 +8,7 @@
 import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
+import { resolvePromptMentionsForSend } from "./mentions";
 import { clearReadOnlyClient, editCurrentMessage, refreshReadOnlyClient, sendCurrentChannelMessage, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
@@ -178,12 +179,12 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   state.autocomplete = null;
 
   if (state.editTarget) {
-    editCurrentMessage(state, state.auth.savedToken, rawText, effects);
+    editCurrentMessage(state, state.auth.savedToken, rawText, effects, { sendContent: resolvePromptMentionsForSend(state, rawText) });
     return;
   }
 
   if (!text && !hasImages) return;
   if (text && !hasImages && handleCommandSubmit(state, text, effects)) return;
 
-  sendCurrentChannelMessage(state, state.auth.savedToken, text, effects);
+  sendCurrentChannelMessage(state, state.auth.savedToken, text, effects, { sendContent: resolvePromptMentionsForSend(state, text) });
 }

@@ -13,6 +13,7 @@ import { THEME_NAMES, setTheme, type ThemeName } from "./theme";
 export interface CompletionItem {
   name: string;
   desc: string;
+  color?: string;
 }
 
 export type CommandResult =

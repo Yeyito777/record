@@ -102,9 +102,10 @@ function renderAutocompletePopup(
     const marker = selected ? "▸ " : "  ";
     const name = padRight(matches[index].name, nameWidth);
     const desc = padRight(matches[index].desc, descWidth);
+    const nameColor = matches[index].color ?? theme.text;
     out.push(
       moveTo(row, mainCol)
-      + `${bg}${theme.accent}${marker}${theme.text}${name}${theme.muted}${desc}${theme.reset}`,
+      + `${bg}${theme.accent}${marker}${nameColor}${name}${theme.muted}${desc}${theme.reset}`,
     );
   }
 

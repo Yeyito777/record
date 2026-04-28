@@ -7,11 +7,14 @@
 
 import type { AppState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
+import { loadedMentionCandidates, mentionCandidateMatches, mentionQueryAtCursor } from "./mentions";
 
 export interface AutocompleteState {
   selection: number;
   prefix: string;
   matches: CompletionItem[];
+  replaceStart?: number;
+  replaceEnd?: number;
 }
 
 function escapeRegex(text: string): string {
@@ -39,7 +42,32 @@ function getCommandMatches(state: AppState, input: string): CompletionItem[] {
   return COMMAND_LIST.filter((command) => command.name.startsWith(prefix));
 }
 
+function getMentionMatches(state: AppState, query: string): CompletionItem[] {
+  return loadedMentionCandidates(state)
+    .filter((candidate) => mentionCandidateMatches(candidate, query))
+    .map((candidate) => ({
+      name: `@${candidate.token}`,
+      desc: candidate.username && candidate.username !== candidate.displayName ? candidate.displayName : "user",
+      color: candidate.color,
+    }));
+}
+
 export function updateAutocomplete(state: AppState): void {
+  const mentionQuery = mentionQueryAtCursor(state.editor.buffer, state.editor.cursor);
+  if (mentionQuery) {
+    const matches = getMentionMatches(state, mentionQuery.query);
+    if (matches.length > 0) {
+      state.autocomplete = {
+        selection: -1,
+        prefix: state.editor.buffer,
+        matches,
+        replaceStart: mentionQuery.start,
+        replaceEnd: mentionQuery.end,
+      };
+      return;
+    }
+  }
+
   const trimmed = state.editor.buffer.trimStart();
   if (trimmed.startsWith("/") && !trimmed.includes("\n")) {
     const matches = getCommandMatches(state, state.editor.buffer);
@@ -59,6 +87,14 @@ export function updateAutocomplete(state: AppState): void {
 function fillAutocomplete(state: AppState, name: string): void {
   const autocomplete = state.autocomplete;
   if (!autocomplete) return;
+
+  if (autocomplete.replaceStart !== undefined && autocomplete.replaceEnd !== undefined) {
+    state.editor.buffer = autocomplete.prefix.slice(0, autocomplete.replaceStart)
+      + name
+      + autocomplete.prefix.slice(autocomplete.replaceEnd);
+    state.editor.cursor = autocomplete.replaceStart + name.length;
+    return;
+  }
 
   if (!name.startsWith("/")) {
     const lastSpace = autocomplete.prefix.lastIndexOf(" ");

@@ -5,6 +5,7 @@
  */
 
 import { COMMAND_LIST, getCommandArgs } from "./commands";
+import { promptMentionSpans } from "./mentions";
 import type { AppState } from "./state";
 import { theme } from "./theme";
 
@@ -66,29 +67,48 @@ export function highlightPromptViewport(
   viewportStart: number,
   state: AppState,
 ): string {
-  const spans = findCommandSpans(buffer, state);
-  if (spans.length === 0 || visibleText.length === 0) return visibleText;
+  if (visibleText.length === 0) return visibleText;
 
   const viewportEnd = viewportStart + visibleText.length;
-  const regions: Array<{ start: number; end: number }> = [];
+  const regions: Array<{ start: number; end: number; color: string; priority: number }> = [];
 
-  for (const span of spans) {
+  for (const span of findCommandSpans(buffer, state)) {
     if (span.end <= viewportStart || span.start >= viewportEnd) continue;
     regions.push({
       start: Math.max(0, span.start - viewportStart),
       end: Math.min(visibleText.length, span.end - viewportStart),
+      color: theme.command,
+      priority: 2,
     });
   }
 
-  if (regions.length === 0) return visibleText;
+  for (const span of promptMentionSpans(state, buffer)) {
+    if (span.end <= viewportStart || span.start >= viewportEnd) continue;
+    regions.push({
+      start: Math.max(0, span.start - viewportStart),
+      end: Math.min(visibleText.length, span.end - viewportStart),
+      color: span.color,
+      priority: 1,
+    });
+  }
 
-  let out = "";
+  const selected: Array<{ start: number; end: number; color: string }> = [];
+  for (const region of regions.sort((left, right) => left.start - right.start || right.priority - left.priority)) {
+    if (region.end <= region.start) continue;
+    if (selected.some((existing) => region.start < existing.end && region.end > existing.start)) continue;
+    selected.push(region);
+  }
+  selected.sort((left, right) => left.start - right.start);
+
+  if (selected.length === 0) return `${theme.text}${visibleText}${theme.reset}`;
+
+  let out = theme.text;
   let pos = 0;
-  for (const region of regions) {
+  for (const region of selected) {
     if (region.start > pos) out += visibleText.slice(pos, region.start);
-    out += theme.command + visibleText.slice(region.start, region.end) + theme.reset;
+    out += region.color + visibleText.slice(region.start, region.end) + theme.text;
     pos = region.end;
   }
   if (pos < visibleText.length) out += visibleText.slice(pos);
-  return out;
+  return out + theme.reset;
 }

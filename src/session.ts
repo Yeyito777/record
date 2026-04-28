@@ -1372,7 +1372,13 @@ function localAttachmentsForImages(images: ClipboardImageAttachment[]): DiscordM
   }));
 }
 
-export function editCurrentMessage(state: AppState, token: string | null, content: string, effects: SessionEffects): void {
+export function editCurrentMessage(
+  state: AppState,
+  token: string | null,
+  content: string,
+  effects: SessionEffects,
+  options: { sendContent?: string } = {},
+): void {
   const target = state.editTarget;
   if (!target) return;
   if (!token) {
@@ -1422,7 +1428,7 @@ export function editCurrentMessage(state: AppState, token: string | null, conten
 
   void (async () => {
     try {
-      const editedMessage = await editChannelMessage(token, channelId, messageId, content);
+      const editedMessage = await editChannelMessage(token, channelId, messageId, options.sendContent ?? content);
       const message = withMessageGuildId(editedMessage, originalMessage?.guildId ?? state.channelList.activeChannel?.guildId ?? null);
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId, message);
@@ -1449,7 +1455,13 @@ export function editCurrentMessage(state: AppState, token: string | null, conten
   })();
 }
 
-export function sendCurrentChannelMessage(state: AppState, token: string | null, content: string, effects: SessionEffects): void {
+export function sendCurrentChannelMessage(
+  state: AppState,
+  token: string | null,
+  content: string,
+  effects: SessionEffects,
+  options: { sendContent?: string } = {},
+): void {
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
   if (!token) {
     setNotice(state, "Login first with /login <token|username>.", "warning");
@@ -1514,7 +1526,7 @@ export function sendCurrentChannelMessage(state: AppState, token: string | null,
 
   void (async () => {
     try {
-      const sentMessage = await sendChannelMessage(token, channelId, content, { reply: replyOptions, uploads });
+      const sentMessage = await sendChannelMessage(token, channelId, options.sendContent ?? content, { reply: replyOptions, uploads });
       const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, localMessageId, message);
