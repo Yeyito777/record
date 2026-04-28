@@ -54,6 +54,29 @@ describe("editor", () => {
     expect(editor.cursor).toBe(0);
   });
 
+  test("append after an emoji places insert cursor after the whole grapheme", () => {
+    const editor = createEditorState("😭", "normal");
+    editor.cursor = 0;
+
+    handleEditorKey(editor, { type: "char", char: "a" });
+    handleEditorKey(editor, { type: "char", char: "x" });
+
+    expect(editor.mode).toBe("insert");
+    expect(editor.buffer).toBe("😭x");
+    expect(editor.cursor).toBe("😭x".length);
+  });
+
+  test("append after a variation-selector emoji places insert cursor after the whole grapheme", () => {
+    const editor = createEditorState("❤️", "normal");
+    editor.cursor = 0;
+
+    handleEditorKey(editor, { type: "char", char: "a" });
+    handleEditorKey(editor, { type: "char", char: "x" });
+
+    expect(editor.buffer).toBe("❤️x");
+    expect(editor.cursor).toBe("❤️x".length);
+  });
+
   test("dd clears the buffer in normal mode", () => {
     const editor = createEditorState("secret", "normal");
 

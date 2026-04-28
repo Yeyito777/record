@@ -270,7 +270,7 @@ function executeModeChange(editor: EditorState, mode: EditorMode, cursorSpec?: C
   let cursor = editor.cursor;
   switch (cursorSpec) {
     case "after":
-      cursor = Math.min(editor.cursor + 1, lineEndOf(editor.buffer, editor.cursor));
+      cursor = Math.min(nextGraphemeEnd(editor.buffer, editor.cursor), lineEndOf(editor.buffer, editor.cursor));
       break;
     case "bol":
       cursor = lineStartOf(editor.buffer, editor.cursor);
