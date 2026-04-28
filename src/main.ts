@@ -182,7 +182,8 @@ function clearNoticeIfCurrent(text: string): void {
 function openTargetWithNotice(target: string, label: string): boolean {
   const notice = `Opening ${label}…`;
   setNotice(state, notice, "muted", { loading: true });
-  scheduleRender();
+  syncLoadingAnimation();
+  render(state);
   const child = spawnOpenTargetDetached(target);
   if (!child) {
     clearNoticeIfCurrent(notice);
