@@ -650,6 +650,7 @@ describe("session", () => {
   });
 
   test("muting a server updates sidebar state without notice feedback", () => {
+    saveCachedGuildOrder("self", ["guild-2", "guild-1"]);
     globalThis.fetch = (async () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
     const state = createInitialState("token-1", "/tmp/record-config.json");
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
@@ -662,6 +663,7 @@ describe("session", () => {
 
     expect(state.sidebar.guilds[0]?.muted).toBe(true);
     expect(state.notice.text).toBe("");
+    expect(loadCachedGuildOrder("self")).toEqual(["guild-2", "guild-1"]);
   });
 
   test("editing a message patches it optimistically and clears edit state", async () => {

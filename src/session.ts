@@ -473,12 +473,24 @@ export function loadGuildRolesInBackground(state: AppState, token: string, guild
   });
 }
 
-function persistSidebarGuilds(state: AppState): void {
+function currentGuildOrderNeedsSave(currentGuildIds: readonly string[], cachedGuildOrder: readonly string[] | null | undefined): boolean {
+  if (currentGuildIds.length === 0) return false;
+  if (!cachedGuildOrder || cachedGuildOrder.length === 0) return true;
+
+  const currentGuildIdSet = new Set(currentGuildIds);
+  if (cachedGuildOrder.some((guildId) => !currentGuildIdSet.has(guildId))) return true;
+
+  const cachedExistingGuildIds = cachedGuildOrder.filter((guildId) => currentGuildIdSet.has(guildId));
+  return cachedExistingGuildIds.length !== currentGuildIds.length
+    || cachedExistingGuildIds.some((guildId, index) => guildId !== currentGuildIds[index]);
+}
+
+function persistSidebarGuilds(state: AppState, options: { order?: boolean } = {}): void {
   const accountId = currentAccountId(state);
   if (!accountId) return;
   const guilds = sidebarCachedGuilds(state.sidebar);
   saveCachedGuilds(accountId, guilds);
-  saveCachedGuildOrder(accountId, guilds.map((guild) => guild.id));
+  if (options.order ?? true) saveCachedGuildOrder(accountId, guilds.map((guild) => guild.id));
 }
 
 const VIEW_CHANNEL_PERMISSION = 1n << 10n;
@@ -597,6 +609,7 @@ function mergeGatewayGuilds(
   const order = sidebarCachedGuilds(state.sidebar).map((guild) => guild.id);
   const prepended: string[] = [];
   let changed = false;
+  let orderChanged = false;
 
   for (const guild of guilds) {
     if (guild.id === DIRECT_MESSAGES_GUILD_ID) continue;
@@ -606,6 +619,7 @@ function mergeGatewayGuilds(
       if (newGuilds === "top") prepended.push(guild.id);
       else order.push(guild.id);
       changed = true;
+      orderChanged = true;
       continue;
     }
     const merged = { ...existing, name: guild.name, icon: guild.icon };
@@ -616,7 +630,7 @@ function mergeGatewayGuilds(
   if (!changed) return false;
   const nextOrder = [...prepended, ...order.filter((guildId) => !prepended.includes(guildId))];
   setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, nextOrder.map((guildId) => byGuildId.get(guildId)!).filter(Boolean)));
-  persistSidebarGuilds(state);
+  persistSidebarGuilds(state, { order: orderChanged });
   return true;
 }
 
@@ -661,7 +675,7 @@ function applyGuildMuteSettings(state: AppState, mutedByGuildId: Record<string, 
   for (const [guildId, muted] of Object.entries(mutedByGuildId)) {
     if (muted) clearGuildNotifications(state.notifications, guildId);
   }
-  persistSidebarGuilds(state);
+  persistSidebarGuilds(state, { order: false });
   persistNotifications(state);
 }
 
@@ -1073,7 +1087,7 @@ export async function bootstrapReadOnlyClient(
     }
     if (accountId) {
       saveCachedDirectMessages(accountId, directMessages);
-      persistSidebarGuilds(state);
+      persistSidebarGuilds(state, { order: currentGuildOrderNeedsSave(sidebarCachedGuilds(state.sidebar).map((guild) => guild.id), guildOrder) });
     }
     for (const guild of guilds) {
       loadGuildRolesInBackground(state, token, guild.id, effects);
@@ -1624,7 +1638,7 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
     clearGuildNotifications(state.notifications, entry.guildId);
     persistNotifications(state);
   }
-  persistSidebarGuilds(state);
+  persistSidebarGuilds(state, { order: false });
   setNotice(state, "", "muted");
   effects.scheduleRender();
 
@@ -1632,7 +1646,7 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
     setSidebarGuildMuted(state.sidebar, entry.guildId, previousMuted);
     state.notifications.byChannelId = previousNotifications.byChannelId;
     state.notifications.channelGuildIds = previousNotifications.channelGuildIds;
-    persistSidebarGuilds(state);
+    persistSidebarGuilds(state, { order: false });
     persistNotifications(state);
     setNotice(state, `Failed to ${nextMuted ? "mute" : "unmute"} ${guild?.name ?? "server"}: ${error instanceof Error ? error.message : String(error)}`, "error");
     effects.scheduleRender();
