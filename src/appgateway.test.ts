@@ -68,7 +68,7 @@ describe("app gateway helpers", () => {
   test("extracts guilds from READY", () => {
     expect(extractReadyGuilds({
       guilds: [
-        { id: "guild-1", name: "One", icon: "icon-1" },
+        { id: "guild-1", properties: { name: "One", icon: "icon-1" } },
         { id: "guild-2", name: "Two", icon: null },
         { id: "guild-3", unavailable: true },
       ],

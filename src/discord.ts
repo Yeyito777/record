@@ -507,7 +507,7 @@ export function sortGuildsByUserOrder(guilds: DiscordGuild[], guildOrder: readon
   return ordered;
 }
 
-async function fetchGuildOrder(token: string): Promise<string[] | null> {
+export async function fetchGuildOrder(token: string): Promise<string[] | null> {
   const settings = await apiGetJson<DiscordUserSettingsResponse>(token, "/users/@me/settings");
   return extractGuildOrderFromUserSettings(settings);
 }
@@ -564,8 +564,13 @@ export async function fetchDirectMessages(token: string): Promise<DiscordChannel
     .map((channel, index) => mapDirectMessageChannel(channel, index));
 }
 
-export async function fetchGuilds(token: string): Promise<DiscordGuild[]> {
-  const guildOrderPromise = fetchGuildOrder(token).catch(() => null);
+export async function fetchGuilds(
+  token: string,
+  options: { guildOrder?: readonly string[] | null } = {},
+): Promise<DiscordGuild[]> {
+  const guildOrderPromise = Object.prototype.hasOwnProperty.call(options, "guildOrder")
+    ? Promise.resolve(options.guildOrder ?? null)
+    : fetchGuildOrder(token).catch(() => null);
   const guilds: DiscordGuild[] = [];
   let before: string | null = null;
 

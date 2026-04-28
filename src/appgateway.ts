@@ -410,11 +410,19 @@ export function extractCurrentUserId(data: unknown): string | null {
 }
 
 function mapGatewayGuild(data: unknown): DiscordGuild | null {
-  if (!isObject(data) || typeof data.id !== "string" || typeof data.name !== "string") return null;
+  if (!isObject(data)) return null;
+  const properties = isObject(data.properties) ? data.properties : data;
+  const id = typeof data.id === "string"
+    ? data.id
+    : typeof properties.id === "string"
+      ? properties.id
+      : null;
+  const name = typeof properties.name === "string" ? properties.name : null;
+  if (!id || !name) return null;
   return {
-    id: data.id,
-    name: data.name,
-    icon: typeof data.icon === "string" ? data.icon : null,
+    id,
+    name,
+    icon: typeof properties.icon === "string" ? properties.icon : null,
   };
 }
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
-import { clearReadOnlyClient, loadChannelMessages, sendCurrentChannelMessage } from "./session";
+import { bootstrapReadOnlyClient, clearReadOnlyClient, loadChannelMessages, sendCurrentChannelMessage } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -162,7 +162,6 @@ describe("session", () => {
     state.channelList.activeChannelId = "channel-1";
     state.channelList.activeChannel = state.channelList.channels[0]!;
 
-    const { bootstrapReadOnlyClient } = await import("./session");
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
 
     expect(calls).toBeGreaterThanOrEqual(2);
@@ -170,6 +169,43 @@ describe("session", () => {
     expect(state.channelList.guildId).toBe("guild-1");
     expect(state.channelList.channels.map((channel) => channel.id)).toEqual(["channel-1"]);
     expect(state.channelList.activeChannelId).toBe("channel-1");
+  });
+
+  test("bootstrap prepends new unordered guilds without reordering cached guilds", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/channels")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/users/@me/settings")) {
+        return new Response(JSON.stringify({
+          guild_folders: [{ id: null, guild_ids: ["guild-2", "guild-1"] }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/users/@me/guilds")) {
+        return new Response(JSON.stringify([
+          { id: "guild-1", name: "One Fresh", icon: "icon-1" },
+          { id: "guild-new", name: "New", icon: null },
+          { id: "guild-2", name: "Two Fresh", icon: "icon-2" },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/gateway")) {
+        return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "bootstrap-unordered", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [
+      { id: "guild-1", name: "One Cached", icon: null },
+      { id: "guild-2", name: "Two Cached", icon: null },
+    ];
+
+    await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-new", "guild-1", "guild-2"]);
+    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual(["New", "One Fresh", "Two Fresh"]);
   });
 
   test("loading a channel renders fresh cached messages without REST", async () => {

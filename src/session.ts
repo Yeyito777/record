@@ -20,6 +20,7 @@ import {
   fetchChannelMessages,
   fetchDirectMessages,
   fetchGuildChannels,
+  fetchGuildOrder,
   fetchGuildRoles,
   fetchGuilds,
   sendChannelMessage,
@@ -393,10 +394,16 @@ function withCurrentDirectMessagesGuild(state: AppState, guilds: DiscordGuild[])
     : guilds;
 }
 
-function mergeGatewayGuilds(state: AppState, guilds: DiscordGuild[]): boolean {
+function mergeGatewayGuilds(
+  state: AppState,
+  guilds: DiscordGuild[],
+  options: { newGuilds?: "top" | "bottom" } = {},
+): boolean {
   if (guilds.length === 0) return false;
+  const newGuilds = options.newGuilds ?? "bottom";
   const byGuildId = new Map(sidebarCachedGuilds(state.sidebar).map((guild) => [guild.id, guild]));
   const order = sidebarCachedGuilds(state.sidebar).map((guild) => guild.id);
+  const prepended: string[] = [];
   let changed = false;
 
   for (const guild of guilds) {
@@ -404,7 +411,8 @@ function mergeGatewayGuilds(state: AppState, guilds: DiscordGuild[]): boolean {
     const existing = byGuildId.get(guild.id);
     if (!existing) {
       byGuildId.set(guild.id, guild);
-      order.push(guild.id);
+      if (newGuilds === "top") prepended.push(guild.id);
+      else order.push(guild.id);
       changed = true;
       continue;
     }
@@ -414,9 +422,40 @@ function mergeGatewayGuilds(state: AppState, guilds: DiscordGuild[]): boolean {
   }
 
   if (!changed) return false;
-  setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, order.map((guildId) => byGuildId.get(guildId)!).filter(Boolean)));
+  const nextOrder = [...prepended, ...order.filter((guildId) => !prepended.includes(guildId))];
+  setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, nextOrder.map((guildId) => byGuildId.get(guildId)!).filter(Boolean)));
   persistSidebarGuilds(state);
   return true;
+}
+
+function mergeRestGuilds(
+  state: AppState,
+  directMessages: DiscordChannel[],
+  guilds: DiscordGuild[],
+  guildOrder: readonly string[] | null,
+): void {
+  const currentGuilds = sidebarCachedGuilds(state.sidebar);
+  const currentIds = new Set(currentGuilds.map((guild) => guild.id));
+  const restByGuildId = new Map(guilds.map((guild) => [guild.id, guild]));
+  const guildOrderSet = guildOrder ? new Set(guildOrder) : null;
+
+  const newUnorderedGuilds = guildOrderSet
+    ? guilds.filter((guild) => !guildOrderSet.has(guild.id) && !currentIds.has(guild.id))
+    : [];
+  const existingGuilds = currentGuilds
+    .filter((guild) => restByGuildId.has(guild.id))
+    .map((guild) => {
+      const fresh = restByGuildId.get(guild.id)!;
+      return { ...guild, name: fresh.name, icon: fresh.icon };
+    });
+  const included = new Set([...newUnorderedGuilds.map((guild) => guild.id), ...existingGuilds.map((guild) => guild.id)]);
+  const newOrderedGuilds = guilds.filter((guild) => !included.has(guild.id));
+
+  setSidebarGuilds(state.sidebar, cachedSidebarGuilds(directMessages, [
+    ...newUnorderedGuilds,
+    ...existingGuilds,
+    ...newOrderedGuilds,
+  ]));
 }
 
 function removeGatewayGuild(state: AppState, guildId: string): boolean {
@@ -526,7 +565,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       }
     },
     onGuildCreate: (guild) => {
-      if (mergeGatewayGuilds(state, [guild])) {
+      if (mergeGatewayGuilds(state, [guild], { newGuilds: "top" })) {
         loadGuildRolesInBackground(state, token, guild.id, effects);
         effects.scheduleRender();
       }
@@ -812,10 +851,12 @@ export async function bootstrapReadOnlyClient(
   effects.scheduleRender();
 
   try {
-    const [directMessages, guilds] = await Promise.all([
+    const guildOrderPromise = fetchGuildOrder(token).catch(() => null);
+    const [directMessages, guildOrder] = await Promise.all([
       fetchDirectMessages(token),
-      fetchGuilds(token),
+      guildOrderPromise,
     ]);
+    const guilds = await fetchGuilds(token, { guildOrder });
     if (requestId !== state.sidebar.requestId) return;
 
     const liveExpandedGuildId = state.sidebar.expandedGuildId;
@@ -826,7 +867,7 @@ export async function bootstrapReadOnlyClient(
     const liveActiveChannelId = state.channelList.activeChannelId;
 
     state.sidebar.loading = false;
-    setSidebarGuilds(state.sidebar, cachedSidebarGuilds(directMessages, guilds));
+    mergeRestGuilds(state, directMessages, guilds, guildOrder);
     state.sidebar.expandedGuildId = liveExpandedGuildId;
     state.sidebar.activeGuildId = liveActiveGuildId;
     if (liveChannelListGuildId && liveChannels.length > 0) {
