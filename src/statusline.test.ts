@@ -116,6 +116,30 @@ describe("statusline", () => {
     expect(plain).not.toContain("PING");
   });
 
+  test("shows notice feedback in the status line", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.notice = { text: "Downloading image.png… 50% (1 MB / 2 MB)", tone: "muted", loading: true };
+
+    const status = renderStatusLine(state, 120);
+    const plain = stripAnsi(status.lines[0] ?? "");
+
+    expect(status.height).toBe(1);
+    expect(plain).toContain("Downloading image.png… 50% (1 MB / 2 MB)");
+    expect(status.lines[0]).toContain(theme.muted);
+  });
+
+  test("keeps oversized notice feedback visible by truncating it", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.notice = { text: "Downloading extremely-long-record-progress-test-7mb.png… 50% (4 MB / 8 MB)", tone: "muted", loading: true };
+
+    const status = renderStatusLine(state, 32);
+    const plain = stripAnsi(status.lines[0] ?? "");
+
+    expect(status.height).toBe(1);
+    expect(plain).toContain("Downloading");
+    expect(plain).toContain("…");
+  });
+
   test("shows N/A in red while auth is loading", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.status = "loading";

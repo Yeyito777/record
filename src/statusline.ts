@@ -8,8 +8,10 @@
 
 import type { AppState } from "./state";
 import { theme } from "./theme";
+import { truncate } from "./textwidth";
 
 import { accountBlock } from "./statusblocks/account";
+import { noticeBlock } from "./statusblocks/notice";
 import { presenceBlock } from "./statusblocks/presence";
 import { replyBlock } from "./statusblocks/reply";
 
@@ -24,6 +26,7 @@ export interface StatusBlock {
 type BlockBuilder = (state: AppState) => StatusBlock | null;
 
 const BLOCK_BUILDERS: BlockBuilder[] = [
+  noticeBlock,
   accountBlock,
   presenceBlock,
   replyBlock,
@@ -44,9 +47,9 @@ function layoutBlocks(state: AppState, cols: number): StatusBlock[] {
   let used = 0;
   for (const { block, position } of byPriority) {
     const need = selectedPositions.size === 0 ? block.width : DELIMITER_WIDTH + block.width;
-    if (used + need <= cols) {
+    if (used + need <= cols || selectedPositions.size === 0) {
       selectedPositions.add(position);
-      used += need;
+      used += Math.min(need, cols);
     }
   }
 
@@ -55,19 +58,28 @@ function layoutBlocks(state: AppState, cols: number): StatusBlock[] {
     .map((candidate) => candidate.block);
 }
 
+function blockRow(block: StatusBlock, rowIndex: number, width: number): string {
+  const row = rowIndex < block.height ? block.rows[rowIndex] : "";
+  if (width >= block.width) return row + " ".repeat(Math.max(0, width - block.width));
+  return truncate(row, width);
+}
+
 function composeRow(blocks: StatusBlock[], rowIndex: number, cols: number): string {
   let out = "";
-  for (let i = 0; i < blocks.length; i++) {
-    if (i > 0) out += `${theme.accent} │ `;
+  let usedCols = 0;
+  for (let i = 0; i < blocks.length && usedCols < cols; i++) {
+    if (i > 0) {
+      const delimiter = `${theme.accent} │ `;
+      out += delimiter;
+      usedCols += DELIMITER_WIDTH;
+      if (usedCols >= cols) break;
+    }
     const block = blocks[i];
-    out += rowIndex < block.height ? block.rows[rowIndex] : " ".repeat(block.width);
+    const width = Math.min(block.width, cols - usedCols);
+    out += blockRow(block, rowIndex, width);
+    usedCols += width;
   }
 
-  let usedCols = 0;
-  for (let i = 0; i < blocks.length; i++) {
-    usedCols += blocks[i].width;
-    if (i > 0) usedCols += DELIMITER_WIDTH;
-  }
   const remaining = cols - usedCols;
   if (remaining > 0) out += " ".repeat(remaining);
   out += theme.reset;
