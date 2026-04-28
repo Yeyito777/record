@@ -411,13 +411,21 @@ function guildRolesIncludePermissions(roles: readonly DiscordRole[] | undefined)
   return Boolean(roles && roles.length > 0 && roles.every((role) => typeof role.permissions === "string"));
 }
 
-function loadGuildRolesInBackground(state: AppState, token: string, guildId: string, effects: SessionEffects): void {
-  if (guildId === DIRECT_MESSAGES_GUILD_ID || guildRolesIncludePermissions(state.guildRolesByGuildId[guildId])) return;
+function guildRolesIncludeNamesAndPermissions(roles: readonly DiscordRole[] | undefined): boolean {
+  return Boolean(roles
+    && roles.length > 0
+    && roles.every((role) => typeof role.permissions === "string")
+    && roles.some((role) => typeof role.name === "string" && role.name.trim().length > 0));
+}
+
+export function loadGuildRolesInBackground(state: AppState, token: string, guildId: string, effects: SessionEffects): void {
+  if (guildId === DIRECT_MESSAGES_GUILD_ID || guildRolesIncludeNamesAndPermissions(state.guildRolesByGuildId[guildId])) return;
   void fetchGuildRoles(token, guildId).then((roles) => {
     debugLog("guild_roles.fetched", {
       guildId,
       count: roles.length,
       withPermissions: roles.filter((role) => typeof role.permissions === "string").length,
+      withNames: roles.filter((role) => typeof role.name === "string" && role.name.trim().length > 0).length,
     });
     state.guildRolesByGuildId[guildId] = roles;
     refreshHiddenChannelFlags(state, guildId);

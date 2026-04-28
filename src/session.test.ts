@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { saveCachedGuildChannels } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
-import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
+import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -276,6 +276,29 @@ describe("session", () => {
 
     resolveChannels(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
     await load;
+  });
+
+  test("refetches cached guild roles that lack names", async () => {
+    let roleFetches = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/guilds/guild-1/roles")) {
+        roleFetches += 1;
+        return new Response(JSON.stringify([
+          { id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "1024" },
+          { id: "role-1", name: "Block Tales", color: 0x3366ff, position: 1, permissions: "0" },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.guildRolesByGuildId["guild-1"] = [{ id: "role-1", color: 0x3366ff, position: 1, permissions: "0" }];
+
+    loadGuildRolesInBackground(state, "token-1", "guild-1", { scheduleRender: () => {} });
+    await flushTimers();
+
+    expect(roleFetches).toBe(1);
+    expect(state.guildRolesByGuildId["guild-1"]?.find((role) => role.id === "role-1")?.name).toBe("Block Tales");
   });
 
   test("loading a channel renders fresh cached messages without REST", async () => {
