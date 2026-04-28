@@ -26,10 +26,17 @@ export interface OpenersConfig {
   rules?: OpenFileRuleConfig[];
 }
 
+export interface ChannelsConfig {
+  /** Show channels the current user cannot view in the sidebar. */
+  showHidden?: boolean;
+}
+
 export interface RecordConfig {
   token?: string;
   /** Open-on-enter commands for links and file/attachment targets. */
   openers?: OpenersConfig;
+  /** Sidebar/channel display preferences. */
+  channels?: ChannelsConfig;
   /** Preserve unknown future/user keys. */
   [key: string]: unknown;
 }

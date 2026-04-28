@@ -55,6 +55,13 @@ export interface DiscordDMRecipientResponse {
   global_name?: string | null;
 }
 
+export interface DiscordPermissionOverwriteResponse {
+  id: string;
+  type: number;
+  allow?: string;
+  deny?: string;
+}
+
 export interface DiscordChannelResponse {
   id: string;
   guild_id?: string;
@@ -66,6 +73,7 @@ export interface DiscordChannelResponse {
   nsfw?: boolean;
   last_message_id?: string | null;
   recipients?: DiscordDMRecipientResponse[];
+  permission_overwrites?: DiscordPermissionOverwriteResponse[];
 }
 
 export interface DiscordMessageAuthorResponse {
@@ -169,6 +177,13 @@ export interface DiscordGuild {
   muted?: boolean;
 }
 
+export interface DiscordPermissionOverwrite {
+  id: string;
+  type: number;
+  allow: string;
+  deny: string;
+}
+
 export interface DiscordChannel {
   id: string;
   guildId: string;
@@ -180,6 +195,8 @@ export interface DiscordChannel {
   nsfw: boolean;
   lastMessageId?: string | null;
   recipients?: DiscordGuildMember[];
+  permissionOverwrites?: DiscordPermissionOverwrite[];
+  hidden?: boolean;
 }
 
 export interface DiscordMessageAttachment {
@@ -203,6 +220,7 @@ export interface DiscordRole {
   id: string;
   color: number;
   position: number;
+  permissions?: string;
 }
 
 export interface DiscordGuildMember {
@@ -418,6 +436,23 @@ export function mapDirectMessageChannel(channel: DiscordChannelResponse, positio
   };
 }
 
+function mapPermissionOverwrites(overwrites: unknown): DiscordPermissionOverwrite[] | undefined {
+  if (!Array.isArray(overwrites)) return undefined;
+  return overwrites
+    .filter((overwrite): overwrite is DiscordPermissionOverwriteResponse => (
+      typeof overwrite === "object"
+      && overwrite !== null
+      && typeof overwrite.id === "string"
+      && typeof overwrite.type === "number"
+    ))
+    .map((overwrite) => ({
+      id: overwrite.id,
+      type: overwrite.type,
+      allow: typeof overwrite.allow === "string" ? overwrite.allow : "0",
+      deny: typeof overwrite.deny === "string" ? overwrite.deny : "0",
+    }));
+}
+
 export function mapGuildChannel(channel: DiscordChannelResponse, fallbackGuildId: string): DiscordChannel | null {
   if (!SIDEBAR_GUILD_CHANNEL_TYPES.has(channel.type) || !channel.name) return null;
   return {
@@ -429,6 +464,7 @@ export function mapGuildChannel(channel: DiscordChannelResponse, fallbackGuildId
     position: channel.position ?? 0,
     type: channel.type,
     nsfw: Boolean(channel.nsfw),
+    permissionOverwrites: mapPermissionOverwrites(channel.permission_overwrites),
   };
 }
 
@@ -606,6 +642,7 @@ interface DiscordRoleResponse {
   id: string;
   color?: number;
   position?: number;
+  permissions?: string;
 }
 
 export async function fetchGuildRoles(token: string, guildId: string): Promise<DiscordRole[]> {
@@ -614,6 +651,7 @@ export async function fetchGuildRoles(token: string, guildId: string): Promise<D
     id: role.id,
     color: typeof role.color === "number" ? role.color : 0,
     position: typeof role.position === "number" ? role.position : 0,
+    permissions: typeof role.permissions === "string" ? role.permissions : "0",
   }));
 }
 

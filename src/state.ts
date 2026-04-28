@@ -79,13 +79,19 @@ export interface AppState {
   guildRolesByGuildId: Record<string, DiscordRole[]>;
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
   memberRoleCacheVersion: number;
+  showHiddenChannels: boolean;
   auth: AuthState;
   notice: Notice;
   loadingFrameIndex: number;
   configPath: string;
 }
 
-export function createInitialState(initialToken: string | null, path: string, initialSavedLogins: SavedLogins = {}): AppState {
+export function createInitialState(
+  initialToken: string | null,
+  path: string,
+  initialSavedLogins: SavedLogins = {},
+  options: { showHiddenChannels?: boolean } = {},
+): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
     cols: process.stdout.columns || 80,
@@ -114,6 +120,7 @@ export function createInitialState(initialToken: string | null, path: string, in
     guildRolesByGuildId: {},
     memberRoleIdsByGuildId: {},
     memberRoleCacheVersion: 0,
+    showHiddenChannels: options.showHiddenChannels ?? false,
     auth: {
       status: "idle",
       user: null,

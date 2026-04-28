@@ -25,9 +25,14 @@ export interface SidebarEntry {
   channelType?: number;
   notificationCount?: number;
   muted?: boolean;
+  hidden?: boolean;
   selected: boolean;
   active: boolean;
   expanded: boolean;
+}
+
+export interface SidebarVisibilityOptions {
+  showHiddenChannels?: boolean;
 }
 
 export interface SidebarState {
@@ -124,8 +129,9 @@ export function moveSelectedSidebarGuild(
   sidebar: SidebarState,
   channels: DiscordChannel[],
   direction: "up" | "down",
+  options: SidebarVisibilityOptions = {},
 ): SidebarGuildMoveResult | null {
-  const entry = getSelectedSidebarEntry(sidebar, channels);
+  const entry = getSelectedSidebarEntry(sidebar, channels, options);
   if (entry.kind !== "guild" || entry.guildId === DIRECT_MESSAGES_GUILD_ID) return null;
 
   const fromIndex = sidebar.guilds.findIndex((guild) => guild.id === entry.guildId);
@@ -141,7 +147,7 @@ export function moveSelectedSidebarGuild(
   nextGuilds[toIndex] = sidebar.guilds[fromIndex]!;
   sidebar.guilds = nextGuilds;
 
-  const entries = buildSidebarEntries(sidebar, channels);
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   const selectedIndex = entries.findIndex((candidate) => candidate.kind === "guild" && candidate.guildId === entry.guildId);
   if (selectedIndex >= 0) sidebar.selectedIndex = selectedIndex;
 
@@ -173,6 +179,7 @@ export function buildSidebarEntries(
   typingFrame = "⋯",
   channelNotificationCounts: ReadonlyMap<string, number> = new Map(),
   guildNotificationCounts: ReadonlyMap<string, number> = new Map(),
+  options: SidebarVisibilityOptions = {},
 ): SidebarEntry[] {
   const entries: SidebarEntry[] = [];
 
@@ -208,11 +215,13 @@ export function buildSidebarEntries(
       continue;
     }
 
+    const visibleChannelRows = visibleGuildChannels.filter((channel) => channel.type !== 4 && (options.showHiddenChannels || !channel.hidden));
     const guildCategories = visibleGuildChannels
       .filter((channel) => channel.type === 4)
+      .filter((category) => options.showHiddenChannels || visibleChannelRows.some((channel) => channel.parentId === category.id))
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-    const uncategorized = visibleGuildChannels
-      .filter((channel) => channel.type !== 4 && !channel.parentId)
+    const uncategorized = visibleChannelRows
+      .filter((channel) => !channel.parentId)
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
     for (const channel of uncategorized) {
@@ -223,6 +232,7 @@ export function buildSidebarEntries(
         label: channelEntryLabel(channel, typingChannelIds, typingFrame),
         depth: 1,
         notificationCount: channelNotificationCounts.get(channel.id) ?? 0,
+        hidden: Boolean(channel.hidden),
         selected: false,
         active: false,
         expanded: false,
@@ -237,6 +247,7 @@ export function buildSidebarEntries(
         guildId: guild.id,
         label: category.name,
         depth: 1,
+        hidden: Boolean(category.hidden),
         selected: false,
         active: false,
         expanded: !collapsed,
@@ -244,8 +255,8 @@ export function buildSidebarEntries(
 
       if (collapsed) continue;
 
-      const categoryChannels = visibleGuildChannels
-        .filter((channel) => channel.type !== 4 && channel.parentId === category.id)
+      const categoryChannels = visibleChannelRows
+        .filter((channel) => channel.parentId === category.id)
         .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
       for (const channel of categoryChannels) {
@@ -256,6 +267,7 @@ export function buildSidebarEntries(
           label: channelEntryLabel(channel, typingChannelIds, typingFrame),
           depth: 2,
           notificationCount: channelNotificationCounts.get(channel.id) ?? 0,
+          hidden: Boolean(channel.hidden),
           selected: false,
           active: false,
           expanded: false,
@@ -277,11 +289,12 @@ export function buildSidebarEntries(
 }
 
 function channelEntryLabel(channel: DiscordChannel, typingChannelIds: ReadonlySet<string>, typingFrame: string): string {
-  return typingChannelIds.has(channel.id) ? `${channel.name} ${typingFrame}` : channel.name;
+  const name = channel.hidden ? `🔒 ${channel.name}` : channel.name;
+  return typingChannelIds.has(channel.id) ? `${name} ${typingFrame}` : name;
 }
 
-export function getSelectedSidebarEntry(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry {
-  const entries = buildSidebarEntries(sidebar, channels);
+export function getSelectedSidebarEntry(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): SidebarEntry {
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   return entries[Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, entries.length - 1)))] ?? {
     kind: "guild",
     id: "",
@@ -294,8 +307,8 @@ export function getSelectedSidebarEntry(sidebar: SidebarState, channels: Discord
   };
 }
 
-export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordChannel[], delta: number): void {
-  const entries = buildSidebarEntries(sidebar, channels);
+export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordChannel[], delta: number, options: SidebarVisibilityOptions = {}): void {
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   const selectableIndices = entries
     .map((entry, index) => (isSelectableEntry(entry) ? index : -1))
     .filter((index) => index >= 0);
@@ -341,8 +354,9 @@ export function scrollSidebarSelection(
   amount: number,
   totalRows: number,
   mode: "cursor" | "page" = "cursor",
+  options: SidebarVisibilityOptions = {},
 ): void {
-  const entries = buildSidebarEntries(sidebar, channels);
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   if (entries.length === 0) {
     sidebar.selectedIndex = 0;
     sidebar.scrollOffset = 0;
@@ -358,8 +372,8 @@ export function scrollSidebarSelection(
   sidebar.scrollOffset = next.viewStart;
 }
 
-export function scrollSidebarSelectionLine(sidebar: SidebarState, channels: DiscordChannel[], dir: number, totalRows: number): void {
-  const entries = buildSidebarEntries(sidebar, channels);
+export function scrollSidebarSelectionLine(sidebar: SidebarState, channels: DiscordChannel[], dir: number, totalRows: number, options: SidebarVisibilityOptions = {}): void {
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   if (entries.length === 0) {
     sidebar.selectedIndex = 0;
     sidebar.scrollOffset = 0;
@@ -382,8 +396,9 @@ function jumpSidebarSelectionToKind(
   channels: DiscordChannel[],
   kind: Extract<SidebarEntryKind, "guild" | "category">,
   direction: -1 | 1,
+  options: SidebarVisibilityOptions = {},
 ): void {
-  const entries = buildSidebarEntries(sidebar, channels);
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   if (entries.length === 0) {
     sidebar.selectedIndex = 0;
     return;
@@ -398,28 +413,28 @@ function jumpSidebarSelectionToKind(
   }
 }
 
-export function moveSidebarSelectionToPrevGuild(sidebar: SidebarState, channels: DiscordChannel[]): void {
-  jumpSidebarSelectionToKind(sidebar, channels, "guild", -1);
+export function moveSidebarSelectionToPrevGuild(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): void {
+  jumpSidebarSelectionToKind(sidebar, channels, "guild", -1, options);
 }
 
-export function moveSidebarSelectionToNextGuild(sidebar: SidebarState, channels: DiscordChannel[]): void {
-  jumpSidebarSelectionToKind(sidebar, channels, "guild", 1);
+export function moveSidebarSelectionToNextGuild(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): void {
+  jumpSidebarSelectionToKind(sidebar, channels, "guild", 1, options);
 }
 
-export function moveSidebarSelectionToPrevCategory(sidebar: SidebarState, channels: DiscordChannel[]): void {
-  jumpSidebarSelectionToKind(sidebar, channels, "category", -1);
+export function moveSidebarSelectionToPrevCategory(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): void {
+  jumpSidebarSelectionToKind(sidebar, channels, "category", -1, options);
 }
 
-export function moveSidebarSelectionToNextCategory(sidebar: SidebarState, channels: DiscordChannel[]): void {
-  jumpSidebarSelectionToKind(sidebar, channels, "category", 1);
+export function moveSidebarSelectionToNextCategory(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): void {
+  jumpSidebarSelectionToKind(sidebar, channels, "category", 1, options);
 }
 
-export function moveSidebarSelectionToPrevDirectMessage(sidebar: SidebarState, channels: DiscordChannel[]): void {
-  jumpSidebarSelectionToGuildChannel(sidebar, channels, DIRECT_MESSAGES_GUILD_ID, -1);
+export function moveSidebarSelectionToPrevDirectMessage(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): void {
+  jumpSidebarSelectionToGuildChannel(sidebar, channels, DIRECT_MESSAGES_GUILD_ID, -1, options);
 }
 
-export function moveSidebarSelectionToNextDirectMessage(sidebar: SidebarState, channels: DiscordChannel[]): void {
-  jumpSidebarSelectionToGuildChannel(sidebar, channels, DIRECT_MESSAGES_GUILD_ID, 1);
+export function moveSidebarSelectionToNextDirectMessage(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): void {
+  jumpSidebarSelectionToGuildChannel(sidebar, channels, DIRECT_MESSAGES_GUILD_ID, 1, options);
 }
 
 export function moveSidebarSelectionToPrevAnyNotification(
@@ -427,8 +442,9 @@ export function moveSidebarSelectionToPrevAnyNotification(
   channels: DiscordChannel[],
   channelNotificationCounts: ReadonlyMap<string, number>,
   guildNotificationCounts: ReadonlyMap<string, number>,
+  options: SidebarVisibilityOptions = {},
 ): void {
-  jumpSidebarSelectionToAnyNotification(sidebar, channels, channelNotificationCounts, guildNotificationCounts, -1);
+  jumpSidebarSelectionToAnyNotification(sidebar, channels, channelNotificationCounts, guildNotificationCounts, -1, options);
 }
 
 export function moveSidebarSelectionToNextAnyNotification(
@@ -436,8 +452,9 @@ export function moveSidebarSelectionToNextAnyNotification(
   channels: DiscordChannel[],
   channelNotificationCounts: ReadonlyMap<string, number>,
   guildNotificationCounts: ReadonlyMap<string, number>,
+  options: SidebarVisibilityOptions = {},
 ): void {
-  jumpSidebarSelectionToAnyNotification(sidebar, channels, channelNotificationCounts, guildNotificationCounts, 1);
+  jumpSidebarSelectionToAnyNotification(sidebar, channels, channelNotificationCounts, guildNotificationCounts, 1, options);
 }
 
 function jumpSidebarSelectionToGuildChannel(
@@ -445,8 +462,9 @@ function jumpSidebarSelectionToGuildChannel(
   channels: DiscordChannel[],
   guildId: string,
   direction: -1 | 1,
+  options: SidebarVisibilityOptions = {},
 ): void {
-  const entries = buildSidebarEntries(sidebar, channels);
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   if (entries.length === 0) {
     sidebar.selectedIndex = 0;
     return;
@@ -473,6 +491,7 @@ function jumpSidebarSelectionToAnyNotification(
   channelNotificationCounts: ReadonlyMap<string, number>,
   guildNotificationCounts: ReadonlyMap<string, number>,
   direction: -1 | 1,
+  options: SidebarVisibilityOptions = {},
 ): void {
   const entries = buildSidebarEntries(
     sidebar,
@@ -482,6 +501,7 @@ function jumpSidebarSelectionToAnyNotification(
     "⋯",
     channelNotificationCounts,
     guildNotificationCounts,
+    options,
   );
   if (entries.length === 0) {
     sidebar.selectedIndex = 0;
@@ -504,8 +524,8 @@ function jumpSidebarSelectionToAnyNotification(
   }
 }
 
-export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordChannel[]): SidebarEntry | null {
-  const entry = getSelectedSidebarEntry(sidebar, channels);
+export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): SidebarEntry | null {
+  const entry = getSelectedSidebarEntry(sidebar, channels, options);
   if (!entry.id || entry.kind === "loading") return null;
 
   if (entry.kind === "guild") {
@@ -540,6 +560,7 @@ export function renderSidebar(
   typingFrame = "⋯",
   channelNotificationCounts: ReadonlyMap<string, number> = new Map(),
   guildNotificationCounts: ReadonlyMap<string, number> = new Map(),
+  options: SidebarVisibilityOptions = {},
 ): string[] {
   if (!sidebar.open) return [];
 
@@ -565,6 +586,7 @@ export function renderSidebar(
     typingFrame,
     channelNotificationCounts,
     guildNotificationCounts,
+    options,
   );
   const listRows = sidebarViewportRows(totalRows);
   clampSidebarViewportToSelection(sidebar, entries, listRows);

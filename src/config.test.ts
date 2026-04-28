@@ -29,13 +29,18 @@ describe("config", () => {
     saveConfig({
       token: "old-token",
       openers: { url: { command: "browser", args: ["{target}"] }, rules: [] },
+      channels: { showHidden: true },
     });
     saveConfig({ token: "new-token" });
 
     expect(loadConfig().openers).toEqual({ url: { command: "browser", args: ["{target}"] }, rules: [] });
+    expect(loadConfig().channels).toEqual({ showHidden: true });
     expect(loadConfig().token).toBe("new-token");
 
     clearConfig();
-    expect(loadConfig()).toEqual({ openers: { url: { command: "browser", args: ["{target}"] }, rules: [] } });
+    expect(loadConfig()).toEqual({
+      openers: { url: { command: "browser", args: ["{target}"] }, rules: [] },
+      channels: { showHidden: true },
+    });
   });
 });

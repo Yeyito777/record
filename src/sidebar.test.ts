@@ -130,6 +130,28 @@ describe("sidebar state", () => {
     expect(sidebar.selectedIndex).toBe(0);
   });
 
+  test("hides inaccessible channels unless show-hidden is enabled", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+
+    const channels = [
+      { id: "cat-hidden", guildId: "guild-1", parentId: null, name: "Hidden Category", topic: null, position: 0, type: 4, nsfw: false, hidden: true },
+      { id: "hidden", guildId: "guild-1", parentId: "cat-hidden", name: "hidden", topic: null, position: 1, type: 0, nsfw: false, hidden: true },
+      { id: "cat-visible", guildId: "guild-1", parentId: null, name: "Visible Category", topic: null, position: 2, type: 4, nsfw: false, hidden: true },
+      { id: "visible", guildId: "guild-1", parentId: "cat-visible", name: "visible", topic: null, position: 3, type: 0, nsfw: false },
+    ];
+
+    expect(buildSidebarEntries(sidebar, channels).map((entry) => entry.id)).toEqual(["guild-1", "cat-visible", "visible"]);
+    expect(buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), { showHiddenChannels: true }).map((entry) => entry.id)).toEqual([
+      "guild-1",
+      "cat-hidden",
+      "hidden",
+      "cat-visible",
+      "visible",
+    ]);
+  });
+
   test("expanding another guild does not change the active chat guild", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [

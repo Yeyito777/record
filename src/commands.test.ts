@@ -5,6 +5,7 @@ import { join } from "path";
 import { describe, expect, test } from "bun:test";
 
 import { getCommandArgs, tryCommand } from "./commands";
+import { loadConfig } from "./config";
 import { createInitialState } from "./state";
 
 function withTempConfigHome(run: () => void): void {
@@ -42,6 +43,22 @@ describe("commands", () => {
 
     expect(result).toEqual({ type: "refresh" });
     expect(state.editor.buffer).toBe("");
+  });
+
+  test("toggles hidden channel display", () => {
+    withTempConfigHome(() => {
+      const state = createInitialState("token", "/tmp/record-config.json");
+
+      expect(tryCommand("/channels show-hidden", state)).toEqual({ type: "handled" });
+      expect(state.showHiddenChannels).toBe(true);
+      expect(loadConfig().channels).toEqual({ showHidden: true });
+      expect(state.notice.text).toContain("shown");
+
+      expect(tryCommand("/channels show-hidden off", state)).toEqual({ type: "handled" });
+      expect(state.showHiddenChannels).toBe(false);
+      expect(loadConfig().channels).toEqual({ showHidden: false });
+      expect(state.notice.text).toContain("hidden");
+    });
   });
 
   test("rejects /login without a token", () => {

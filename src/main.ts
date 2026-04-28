@@ -92,12 +92,14 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 }
 
 let initialToken: string | null = null;
+let initialShowHiddenChannels = false;
 let initialSavedLogins: Record<string, string> = {};
 const startupWarnings: string[] = [];
 
 try {
   const config = loadConfig();
   initialToken = config.token ? normalizeToken(config.token) : null;
+  initialShowHiddenChannels = config.channels?.showHidden === true;
 } catch (error) {
   const err = error as NodeJS.ErrnoException;
   if (err.code !== "ENOENT") {
@@ -114,7 +116,7 @@ try {
   }
 }
 
-const state = createInitialState(initialToken, configPath(), initialSavedLogins);
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels });
 if (startupWarnings.length > 0) {
   setNotice(state, startupWarnings.join("\n"), "warning");
 }
@@ -284,9 +286,13 @@ function scrollTimeline(delta: number): void {
   scheduleRender();
 }
 
+function sidebarVisibilityOptions(): { showHiddenChannels: boolean } {
+  return { showHiddenChannels: state.showHiddenChannels };
+}
+
 function scrollFocusedPanel(delta: number, visibleRows: number, mode: "cursor" | "page" = "cursor"): void {
   if (state.panelFocus === "sidebar" && state.sidebar.open) {
-    scrollSidebarSelection(state.sidebar, state.channelList.channels, delta < 0 ? 1 : -1, Math.abs(delta), state.rows, mode);
+    scrollSidebarSelection(state.sidebar, state.channelList.channels, delta < 0 ? 1 : -1, Math.abs(delta), state.rows, mode, sidebarVisibilityOptions());
     scheduleRender();
     return;
   }
@@ -314,7 +320,7 @@ function scrollFocusedPanel(delta: number, visibleRows: number, mode: "cursor" |
 
 function scrollFocusedPanelLine(delta: number): void {
   if (state.panelFocus === "sidebar" && state.sidebar.open) {
-    scrollSidebarSelectionLine(state.sidebar, state.channelList.channels, delta < 0 ? 1 : -1, state.rows);
+    scrollSidebarSelectionLine(state.sidebar, state.channelList.channels, delta < 0 ? 1 : -1, state.rows, sidebarVisibilityOptions());
     scheduleRender();
     return;
   }
@@ -341,9 +347,9 @@ function jumpToNotification(direction: -1 | 1): void {
   const channelCounts = channelNotificationCounts(state.notifications);
   const guildCounts = guildNotificationCounts(state.notifications, state.channelList.channels);
   if (direction < 0) {
-    moveSidebarSelectionToPrevAnyNotification(state.sidebar, state.channelList.channels, channelCounts, guildCounts);
+    moveSidebarSelectionToPrevAnyNotification(state.sidebar, state.channelList.channels, channelCounts, guildCounts, sidebarVisibilityOptions());
   } else {
-    moveSidebarSelectionToNextAnyNotification(state.sidebar, state.channelList.channels, channelCounts, guildCounts);
+    moveSidebarSelectionToNextAnyNotification(state.sidebar, state.channelList.channels, channelCounts, guildCounts, sidebarVisibilityOptions());
   }
   scheduleRender();
 }
@@ -573,7 +579,7 @@ function handleGlobalAction(key: KeyEvent): boolean {
       if (isPromptTyping()) return false;
       if (!state.sidebar.open) state.sidebar.open = true;
       focusSidebar(state);
-      moveSidebarSelection(state.sidebar, state.channelList.channels, action === "sidebar_next" ? 1 : -1);
+      moveSidebarSelection(state.sidebar, state.channelList.channels, action === "sidebar_next" ? 1 : -1, sidebarVisibilityOptions());
       syncPromptAutocomplete();
       scheduleRender();
       return true;
@@ -592,34 +598,34 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       focusPromptInsert(key.type === "char" && key.char === "a");
       return true;
     case "nav_up":
-      moveSidebarSelection(state.sidebar, state.channelList.channels, -1);
+      moveSidebarSelection(state.sidebar, state.channelList.channels, -1, sidebarVisibilityOptions());
       scheduleRender();
       return true;
     case "nav_down":
-      moveSidebarSelection(state.sidebar, state.channelList.channels, 1);
+      moveSidebarSelection(state.sidebar, state.channelList.channels, 1, sidebarVisibilityOptions());
       scheduleRender();
       return true;
     case "nav_prev_server":
-      moveSidebarSelectionToPrevGuild(state.sidebar, state.channelList.channels);
+      moveSidebarSelectionToPrevGuild(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       scheduleRender();
       return true;
     case "nav_next_server":
-      moveSidebarSelectionToNextGuild(state.sidebar, state.channelList.channels);
+      moveSidebarSelectionToNextGuild(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       scheduleRender();
       return true;
     case "nav_prev_category":
       if (state.sidebar.expandedGuildId === DIRECT_MESSAGES_GUILD_ID) {
-        moveSidebarSelectionToPrevDirectMessage(state.sidebar, state.channelList.channels);
+        moveSidebarSelectionToPrevDirectMessage(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       } else {
-        moveSidebarSelectionToPrevCategory(state.sidebar, state.channelList.channels);
+        moveSidebarSelectionToPrevCategory(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       }
       scheduleRender();
       return true;
     case "nav_next_category":
       if (state.sidebar.expandedGuildId === DIRECT_MESSAGES_GUILD_ID) {
-        moveSidebarSelectionToNextDirectMessage(state.sidebar, state.channelList.channels);
+        moveSidebarSelectionToNextDirectMessage(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       } else {
-        moveSidebarSelectionToNextCategory(state.sidebar, state.channelList.channels);
+        moveSidebarSelectionToNextCategory(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       }
       scheduleRender();
       return true;
@@ -636,8 +642,8 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       const token = tokenOrWarn();
       if (!token) return true;
 
-      const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels);
-      const entry = activateSelectedEntry(state.sidebar, state.channelList.channels) ?? selectedBefore;
+      const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      const entry = activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()) ?? selectedBefore;
 
       if (entry.kind === "guild") {
         if (state.sidebar.expandedGuildId === entry.guildId) {

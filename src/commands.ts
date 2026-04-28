@@ -4,6 +4,7 @@
  * Structured after the Exocortex TUI command system, but scoped to record.
  */
 
+import { saveConfig } from "./config";
 import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
@@ -32,6 +33,36 @@ export interface SlashCommand {
 function usage(state: AppState, text: string): CommandResult {
   setNotice(state, text, "warning");
   clearPrompt(state);
+  return { type: "handled" };
+}
+
+function parseOnOff(value: string | undefined): boolean | null {
+  if (value === undefined) return null;
+  if (value === "on" || value === "true" || value === "1") return true;
+  if (value === "off" || value === "false" || value === "0") return false;
+  return null;
+}
+
+function handleChannelsCommand(text: string, state: AppState): CommandResult {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2 || parts.length > 3 || parts[1] !== "show-hidden") {
+    return usage(state, "Usage: /channels show-hidden [on|off]");
+  }
+
+  const parsed = parseOnOff(parts[2]);
+  if (parts[2] !== undefined && parsed === null) return usage(state, "Usage: /channels show-hidden [on|off]");
+
+  const next = parsed ?? !state.showHiddenChannels;
+  state.showHiddenChannels = next;
+  clearPrompt(state);
+
+  try {
+    saveConfig({ channels: { showHidden: next } });
+    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}.`, "success");
+  } catch (error) {
+    setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}, but saving failed: ${(error as Error).message}`, "warning");
+  }
+
   return { type: "handled" };
 }
 
@@ -89,6 +120,12 @@ const commands: SlashCommand[] = [
       clearPrompt(state);
       return { type: "refresh" };
     },
+  },
+  {
+    name: "/channels",
+    description: "Configure channel display options",
+    args: [{ name: "show-hidden", desc: "toggle inaccessible channel rows" }],
+    handler: handleChannelsCommand,
   },
   {
     name: "/theme",
