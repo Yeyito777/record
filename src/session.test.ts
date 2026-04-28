@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { saveCachedGuildChannels } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
-import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, sendCurrentChannelMessage } from "./session";
+import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -517,6 +517,21 @@ describe("session", () => {
       message_id: "message-1",
       channel_id: "dm-1",
     });
+  });
+
+  test("muting a server updates sidebar state without notice feedback", () => {
+    globalThis.fetch = (async () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.selectedIndex = 0;
+    state.notice = { text: "old feedback", tone: "muted", loading: false, statusLine: true, chat: true };
+
+    toggleSelectedGuildMute(state, { scheduleRender: () => {} });
+
+    expect(state.sidebar.guilds[0]?.muted).toBe(true);
+    expect(state.notice.text).toBe("");
   });
 
   test("editing a message patches it optimistically and clears edit state", async () => {

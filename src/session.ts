@@ -1538,7 +1538,7 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
     persistNotifications(state);
   }
   persistSidebarGuilds(state);
-  setNotice(state, `${nextMuted ? "Muted" : "Unmuted"} ${guild?.name ?? "server"}.`, "muted");
+  setNotice(state, "", "muted");
   effects.scheduleRender();
 
   void setGuildMuted(token, entry.guildId, nextMuted).catch((error) => {
