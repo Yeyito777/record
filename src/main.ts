@@ -423,14 +423,12 @@ function removeLastPendingImage(): boolean {
 function cancelCurrentAction(): void {
   if (state.pendingImages.length > 0) {
     state.pendingImages = [];
-    setNotice(state, "Image attachments cleared.", "muted");
     scheduleRender();
     return;
   }
 
   if (state.replyTarget) {
     state.replyTarget = null;
-    setNotice(state, "Reply cancelled.", "muted");
     scheduleRender();
     return;
   }
@@ -441,7 +439,6 @@ function cancelCurrentAction(): void {
     return;
   }
 
-  setNotice(state, "No active action to cancel.", "muted");
   scheduleRender();
 }
 
