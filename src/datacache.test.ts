@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -50,16 +50,38 @@ describe("data cache", () => {
     process.env.XDG_CONFIG_HOME = xdg;
 
     saveCachedGuildChannels("account-1", "guild-1", [
-      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false, hidden: true },
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false, hidden: true, permissionOverwrites: [] },
     ]);
 
     expect(loadCachedGuildChannels("account-1", "guild-1")).toEqual([
-      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false },
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false, permissionOverwrites: [] },
     ]);
 
     flushDataCacheSync();
     expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).accounts["account-1"].guildChannels["guild-1"]).toEqual([
-      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false },
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false, permissionOverwrites: [] },
     ]);
+  });
+
+  test("ignores old guild channel caches without permission overwrites", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    const recordDir = join(xdg, "record");
+    mkdirSync(recordDir, { recursive: true });
+    writeFileSync(join(recordDir, "cache.json"), JSON.stringify({
+      version: 1,
+      accounts: {
+        "account-1": {
+          savedAt: Date.now(),
+          guildChannels: {
+            "guild-1": [
+              { id: "channel-1", guildId: "guild-1", parentId: null, name: "stale", topic: null, position: 0, type: 0, nsfw: false },
+            ],
+          },
+        },
+      },
+    }));
+
+    expect(loadCachedGuildChannels("account-1", "guild-1")).toBeNull();
   });
 });

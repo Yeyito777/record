@@ -379,6 +379,11 @@ function guildRolesIncludePermissions(roles: readonly DiscordRole[] | undefined)
 function loadGuildRolesInBackground(state: AppState, token: string, guildId: string, effects: SessionEffects): void {
   if (guildId === DIRECT_MESSAGES_GUILD_ID || guildRolesIncludePermissions(state.guildRolesByGuildId[guildId])) return;
   void fetchGuildRoles(token, guildId).then((roles) => {
+    debugLog("guild_roles.fetched", {
+      guildId,
+      count: roles.length,
+      withPermissions: roles.filter((role) => typeof role.permissions === "string").length,
+    });
     state.guildRolesByGuildId[guildId] = roles;
     refreshHiddenChannelFlags(state, guildId);
     const accountId = currentAccountId(state);
@@ -457,12 +462,15 @@ function refreshHiddenChannelFlags(state: AppState, guildId: string | null | und
   const currentUserId = state.auth.user?.id ?? null;
   const currentUserRoleIds = state.roleIdsByGuildId[guildId]
     ?? (currentUserId ? state.memberRoleIdsByGuildId[guildId]?.[currentUserId] : undefined);
+  const hiddenBefore = state.channelList.channels.filter((channel) => channel.guildId === guildId && channel.hidden).length;
   let changed = false;
+  let evaluated = 0;
 
   state.channelList.channels = state.channelList.channels.map((channel) => {
     if (channel.guildId !== guildId) return channel;
     const canView = canViewGuildChannel(channel, guildId, roles, currentUserRoleIds, currentUserId);
     if (canView === null) return channel;
+    evaluated += 1;
     const hidden = !canView;
     if (channel.hidden === hidden) return channel;
     changed = true;
@@ -474,6 +482,21 @@ function refreshHiddenChannelFlags(state: AppState, guildId: string | null | und
       ? state.channelList.channels.find((channel) => channel.id === state.channelList.activeChannelId) ?? state.channelList.activeChannel
       : state.channelList.activeChannel;
   }
+
+  debugLog("channel_visibility.refresh", {
+    guildId,
+    total: state.channelList.channels.filter((channel) => channel.guildId === guildId).length,
+    evaluated,
+    hiddenBefore,
+    hiddenAfter: state.channelList.channels.filter((channel) => channel.guildId === guildId && channel.hidden).length,
+    changed,
+    hasRoles: guildRolesIncludePermissions(roles),
+    roleCount: roles?.length ?? 0,
+    hasSelfRoles: Boolean(currentUserRoleIds),
+    selfRoleCount: currentUserRoleIds?.length ?? 0,
+    selfRoleSource: state.roleIdsByGuildId[guildId] ? "gateway" : currentUserRoleIds ? "member_cache" : "missing",
+    channelOverwriteCount: state.channelList.channels.filter((channel) => channel.guildId === guildId && Array.isArray(channel.permissionOverwrites)).length,
+  });
 }
 
 function withCurrentDirectMessagesGuild(state: AppState, guilds: DiscordGuild[]): DiscordGuild[] {
@@ -626,6 +649,11 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
   appGatewayToken = token;
   appGateway = new AppGatewayClient(token, {
     onCurrentUserRoleIds: (roleIdsByGuildId) => {
+      debugLog("gateway.self_roles.ready", {
+        guilds: Object.keys(roleIdsByGuildId).length,
+        currentGuildId: state.channelList.guildId,
+        currentGuildRoles: state.channelList.guildId ? (roleIdsByGuildId[state.channelList.guildId]?.length ?? null) : null,
+      });
       state.roleIdsByGuildId = roleIdsByGuildId;
       if (state.auth.user) {
         for (const [guildId, roleIds] of Object.entries(roleIdsByGuildId)) {
@@ -636,6 +664,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       effects.scheduleRender();
     },
     onCurrentUserGuildRoles: (guildId, roleIds) => {
+      debugLog("gateway.self_roles.update", { guildId, count: roleIds.length });
       state.roleIdsByGuildId[guildId] = roleIds;
       if (state.auth.user) recordMemberRoleIds(state, guildId, state.auth.user.id, roleIds);
       refreshHiddenChannelFlags(state, guildId);
@@ -1024,6 +1053,18 @@ export async function loadGuildChannels(
     const cachedChannels = isDirectMessages
       ? loadCachedDirectMessages(accountId)
       : loadCachedGuildChannels(accountId, guildId);
+    debugLog("channel_cache.load", {
+      guildId,
+      accountId,
+      directMessages: isDirectMessages,
+      hit: Boolean(cachedChannels?.length),
+      count: cachedChannels?.length ?? 0,
+      withOverwrites: cachedChannels?.filter((channel) => Array.isArray(channel.permissionOverwrites)).length ?? 0,
+      roles: state.guildRolesByGuildId[guildId]?.length ?? 0,
+      rolesWithPerms: state.guildRolesByGuildId[guildId]?.filter((role) => typeof role.permissions === "string").length ?? 0,
+      cachedSelfRoles: state.auth.user?.id ? (state.memberRoleIdsByGuildId[guildId]?.[state.auth.user.id]?.length ?? null) : null,
+      liveSelfRoles: state.roleIdsByGuildId[guildId]?.length ?? null,
+    });
     if (cachedChannels && cachedChannels.length > 0) {
       showedCachedChannels = true;
       setChannelList(state.channelList, guildId, cachedChannels);
@@ -1055,6 +1096,13 @@ export async function loadGuildChannels(
     }
     setChannelList(state.channelList, guildId, channels);
     refreshHiddenChannelFlags(state, guildId);
+    debugLog("channel_cache.rest", {
+      guildId,
+      directMessages: isDirectMessages,
+      count: channels.length,
+      withOverwrites: channels.filter((channel) => Array.isArray(channel.permissionOverwrites)).length,
+      overwritesNonEmpty: channels.filter((channel) => Array.isArray(channel.permissionOverwrites) && channel.permissionOverwrites.length > 0).length,
+    });
     if (accountId) {
       if (isDirectMessages) {
         saveCachedDirectMessages(accountId, channels);

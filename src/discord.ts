@@ -436,21 +436,27 @@ export function mapDirectMessageChannel(channel: DiscordChannelResponse, positio
   };
 }
 
+function mapPermissionOverwriteType(type: unknown): number | null {
+  if (typeof type === "number") return type;
+  if (typeof type === "string" && /^\d+$/.test(type)) return Number(type);
+  return null;
+}
+
 function mapPermissionOverwrites(overwrites: unknown): DiscordPermissionOverwrite[] | undefined {
   if (!Array.isArray(overwrites)) return undefined;
   return overwrites
-    .filter((overwrite): overwrite is DiscordPermissionOverwriteResponse => (
-      typeof overwrite === "object"
-      && overwrite !== null
-      && typeof overwrite.id === "string"
-      && typeof overwrite.type === "number"
-    ))
-    .map((overwrite) => ({
-      id: overwrite.id,
-      type: overwrite.type,
-      allow: typeof overwrite.allow === "string" ? overwrite.allow : "0",
-      deny: typeof overwrite.deny === "string" ? overwrite.deny : "0",
-    }));
+    .map((overwrite): DiscordPermissionOverwrite | null => {
+      if (typeof overwrite !== "object" || overwrite === null || typeof overwrite.id !== "string") return null;
+      const type = mapPermissionOverwriteType(overwrite.type);
+      if (type === null) return null;
+      return {
+        id: overwrite.id,
+        type,
+        allow: typeof overwrite.allow === "string" ? overwrite.allow : "0",
+        deny: typeof overwrite.deny === "string" ? overwrite.deny : "0",
+      };
+    })
+    .filter((overwrite): overwrite is DiscordPermissionOverwrite => overwrite !== null);
 }
 
 export function mapGuildChannel(channel: DiscordChannelResponse, fallbackGuildId: string): DiscordChannel | null {

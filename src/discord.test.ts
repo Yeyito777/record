@@ -9,6 +9,7 @@ import {
   extractGuildOrderFromUserSettings,
   fetchDirectMessages,
   fetchGuilds,
+  fetchGuildChannels,
   formatChannelName,
   isDirectMessageChannel,
   mapDiscordMessagePatch,
@@ -24,6 +25,28 @@ afterEach(() => {
 });
 
 describe("discord helpers", () => {
+  test("maps guild channel permission overwrite string types", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/guilds/guild-1/channels")) {
+        return new Response(JSON.stringify([{
+          id: "channel-1",
+          guild_id: "guild-1",
+          parent_id: null,
+          name: "secret",
+          position: 0,
+          type: 0,
+          permission_overwrites: [{ id: "guild-1", type: "0", allow: "0", deny: "1024" }],
+        }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const channels = await fetchGuildChannels("token", "guild-1");
+
+    expect(channels[0]?.permissionOverwrites).toEqual([{ id: "guild-1", type: 0, allow: "0", deny: "1024" }]);
+  });
+
   test("formats direct messages without a hash prefix", () => {
     const dm = {
       id: "dm-1",

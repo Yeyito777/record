@@ -230,6 +230,7 @@ describe("session", () => {
         position: 0,
         type: 0,
         nsfw: false,
+        permissionOverwrites: [],
       },
       {
         id: "hidden",

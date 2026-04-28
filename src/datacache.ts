@@ -7,7 +7,7 @@ import { writeFile } from "fs/promises";
 import { dirname, join } from "path";
 
 import { configDir } from "./config";
-import type { DiscordChannel, DiscordGuild, DiscordGuildMember, DiscordRole } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild, type DiscordGuildMember, type DiscordRole } from "./discord";
 import type { ChannelMessageCache, CachedChannelMessages } from "./messagecache";
 import type { NotificationState } from "./notifications";
 
@@ -194,8 +194,24 @@ export function saveCachedGuilds(accountId: string, guilds: DiscordGuild[]): voi
   saveCacheFile(cache);
 }
 
+function normalizeCachedPermissionOverwrites(channel: DiscordChannel): DiscordChannel {
+  if (!Array.isArray(channel.permissionOverwrites)) return channel;
+  return {
+    ...channel,
+    permissionOverwrites: channel.permissionOverwrites
+      .map((overwrite) => {
+        const rawType = (overwrite as { type: unknown }).type;
+        return {
+          ...overwrite,
+          type: typeof rawType === "string" ? Number(rawType) : overwrite.type,
+        };
+      })
+      .filter((overwrite) => Number.isFinite(overwrite.type)),
+  };
+}
+
 function stripChannelDisplayState(channel: DiscordChannel): DiscordChannel {
-  const { hidden: _hidden, ...cachedChannel } = channel;
+  const { hidden: _hidden, ...cachedChannel } = normalizeCachedPermissionOverwrites(channel);
   return { ...cachedChannel };
 }
 
@@ -216,9 +232,14 @@ export function saveCachedDirectMessages(accountId: string, directMessages: Disc
   saveCacheFile(cache);
 }
 
+function cachedChannelsHavePermissionOverwrites(channels: DiscordChannel[]): boolean {
+  return channels.every((channel) => channel.guildId === DIRECT_MESSAGES_GUILD_ID || Array.isArray(channel.permissionOverwrites));
+}
+
 export function loadCachedGuildChannels(accountId: string, guildId: string): DiscordChannel[] | null {
   const cached = loadCacheFile().accounts[accountId]?.guildChannels?.[guildId] ?? null;
-  return cached ? stripChannelsDisplayState(cached) : null;
+  if (!cached || !cachedChannelsHavePermissionOverwrites(cached)) return null;
+  return stripChannelsDisplayState(cached);
 }
 
 export function saveCachedGuildChannels(accountId: string, guildId: string, channels: DiscordChannel[]): void {
