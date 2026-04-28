@@ -727,10 +727,10 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       }
       if (!openTargetDetached(target)) {
         setNotice(state, `No opener configured for ${target}.`, "warning");
+        scheduleRender();
       } else {
-        setNotice(state, "", "muted");
+        showTransientNotice(`Opening ${target}…`);
       }
-      scheduleRender();
       return true;
     }
     default:
