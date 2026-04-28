@@ -124,6 +124,7 @@ if (startupWarnings.length > 0) {
 
 const LOADING_INTERVAL_MS = 80;
 const OPEN_NOTICE_MS = 1200;
+const CLIPBOARD_NOTICE_MS = 1500;
 
 let running = true;
 let terminalReady = false;
@@ -400,8 +401,10 @@ function summarizeReplyMessage(message: DiscordMessage): string {
 function pasteImageFromClipboard(): void {
   const image = readClipboardImage();
   if (!image) {
-    setNotice(state, "No image found in clipboard.", "warning");
+    const text = "No image found in clipboard.";
+    setNotice(state, text, "warning", { chat: false });
     scheduleRender();
+    clearNoticeLater(text, CLIPBOARD_NOTICE_MS);
     return;
   }
 
