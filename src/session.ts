@@ -21,13 +21,12 @@ import {
   editChannelMessage,
   fetchDirectMessages,
   fetchGuildChannels,
-  fetchGuildOrder,
   fetchCurrentUserGuildRoleIds,
   fetchGuildRoles,
   fetchGuilds,
   sendChannelMessage,
   setGuildMuted,
-  updateGuildSidebarOrder,
+  sortGuildsByOrder,
   type DiscordMessageAttachment,
   type DiscordMessageReply,
   type SendMessageReplyOptions,
@@ -45,6 +44,7 @@ import {
   loadCachedDirectMessages,
   loadCachedGuildChannels,
   loadCachedGuilds,
+  loadCachedGuildOrder,
   loadCachedGuildRoles,
   loadCachedMemberList,
   loadCachedMemberRoles,
@@ -52,11 +52,13 @@ import {
   saveCachedChannelMessages,
   saveCachedDirectMessages,
   saveCachedGuildChannels,
+  saveCachedGuildOrder,
   saveCachedGuildRoles,
   saveCachedGuilds,
   saveCachedMemberList,
   saveCachedMemberRoles,
   saveCachedNotifications,
+  watchCachedGuildOrder,
 } from "./datacache";
 import { AppGatewayClient } from "./appgateway";
 import {
@@ -134,7 +136,7 @@ let memberListGateway: MemberListGatewayClient | null = null;
 let memberListGatewayToken: string | null = null;
 let appGateway: AppGatewayClient | null = null;
 let appGatewayToken: string | null = null;
-let guildOrderMutationId = 0;
+let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | null = null;
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
   const members: DiscordGuildMember[] = [];
@@ -358,6 +360,39 @@ function currentAccountId(state: AppState): string | null {
   return state.auth.user?.id ?? null;
 }
 
+function applyLocalGuildOrder(state: AppState, guildOrder: readonly string[] | null | undefined): boolean {
+  if (!guildOrder || guildOrder.length === 0) return false;
+  const currentGuilds = sidebarCachedGuilds(state.sidebar);
+  const nextGuilds = sortGuildsByOrder(currentGuilds, guildOrder);
+  if (nextGuilds.length === currentGuilds.length && nextGuilds.every((guild, index) => guild.id === currentGuilds[index]?.id)) return false;
+  setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, nextGuilds));
+  return true;
+}
+
+function disconnectGuildOrderSync(): void {
+  guildOrderSync?.stop();
+  guildOrderSync = null;
+}
+
+function ensureGuildOrderSync(state: AppState, effects: SessionEffects): void {
+  const accountId = currentAccountId(state);
+  if (!accountId) {
+    disconnectGuildOrderSync();
+    return;
+  }
+
+  if (guildOrderSync?.accountId === accountId && guildOrderSync.state === state) return;
+  disconnectGuildOrderSync();
+  guildOrderSync = {
+    accountId,
+    state,
+    stop: watchCachedGuildOrder(accountId, (guildOrder) => {
+      if (currentAccountId(state) !== accountId) return;
+      if (applyLocalGuildOrder(state, guildOrder)) effects.scheduleRender();
+    }),
+  };
+}
+
 function persistNotifications(state: AppState): void {
   const accountId = currentAccountId(state);
   if (accountId) {
@@ -440,7 +475,10 @@ export function loadGuildRolesInBackground(state: AppState, token: string, guild
 
 function persistSidebarGuilds(state: AppState): void {
   const accountId = currentAccountId(state);
-  if (accountId) saveCachedGuilds(accountId, sidebarCachedGuilds(state.sidebar));
+  if (!accountId) return;
+  const guilds = sidebarCachedGuilds(state.sidebar);
+  saveCachedGuilds(accountId, guilds);
+  saveCachedGuildOrder(accountId, guilds.map((guild) => guild.id));
 }
 
 const VIEW_CHANNEL_PERMISSION = 1n << 10n;
@@ -589,27 +627,19 @@ function mergeRestGuilds(
   guildOrder: readonly string[] | null,
 ): void {
   const currentGuilds = sidebarCachedGuilds(state.sidebar);
-  const currentIds = new Set(currentGuilds.map((guild) => guild.id));
   const restByGuildId = new Map(guilds.map((guild) => [guild.id, guild]));
-  const guildOrderSet = guildOrder ? new Set(guildOrder) : null;
 
-  const newUnorderedGuilds = guildOrderSet
-    ? guilds.filter((guild) => !guildOrderSet.has(guild.id) && !currentIds.has(guild.id))
-    : [];
   const existingGuilds = currentGuilds
     .filter((guild) => restByGuildId.has(guild.id))
     .map((guild) => {
       const fresh = restByGuildId.get(guild.id)!;
       return { ...guild, name: fresh.name, icon: fresh.icon };
     });
-  const included = new Set([...newUnorderedGuilds.map((guild) => guild.id), ...existingGuilds.map((guild) => guild.id)]);
-  const newOrderedGuilds = guilds.filter((guild) => !included.has(guild.id));
+  const included = new Set(existingGuilds.map((guild) => guild.id));
+  const newGuilds = guilds.filter((guild) => !included.has(guild.id));
+  const orderedGuilds = sortGuildsByOrder([...existingGuilds, ...newGuilds], guildOrder);
 
-  setSidebarGuilds(state.sidebar, cachedSidebarGuilds(directMessages, [
-    ...newUnorderedGuilds,
-    ...existingGuilds,
-    ...newOrderedGuilds,
-  ]));
+  setSidebarGuilds(state.sidebar, cachedSidebarGuilds(directMessages, orderedGuilds));
 }
 
 function removeGatewayGuild(state: AppState, guildId: string): boolean {
@@ -728,7 +758,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       }
     },
     onGuildCreate: (guild) => {
-      if (mergeGatewayGuilds(state, [guild], { newGuilds: "top" })) {
+      if (mergeGatewayGuilds(state, [guild])) {
         loadGuildRolesInBackground(state, token, guild.id, effects);
         effects.scheduleRender();
       }
@@ -791,6 +821,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
 export function clearReadOnlyClient(state: AppState): void {
   disconnectMemberListGateway();
   disconnectAppGateway();
+  disconnectGuildOrderSync();
   state.sidebar.requestId += 1;
   state.channelList.requestId += 1;
   state.timeline.requestId += 1;
@@ -996,8 +1027,10 @@ export async function bootstrapReadOnlyClient(
   setNotice(state, "", "muted");
 
   if (accountId) {
+    ensureGuildOrderSync(state, effects);
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
-    const cachedGuilds = loadCachedGuilds(accountId) ?? [];
+    const cachedGuildOrder = loadCachedGuildOrder(accountId);
+    const cachedGuilds = sortGuildsByOrder(loadCachedGuilds(accountId) ?? [], cachedGuildOrder);
     state.guildRolesByGuildId = loadCachedGuildRoles(accountId);
     state.memberRoleIdsByGuildId = loadCachedMemberRoles(accountId);
     state.messageCacheByChannelId = loadCachedChannelMessages(accountId);
@@ -1017,12 +1050,9 @@ export async function bootstrapReadOnlyClient(
   effects.scheduleRender();
 
   try {
-    const guildOrderPromise = fetchGuildOrder(token).catch(() => null);
-    const [directMessages, guildOrder] = await Promise.all([
-      fetchDirectMessages(token),
-      guildOrderPromise,
-    ]);
-    const guilds = await fetchGuilds(token, { guildOrder });
+    const directMessages = await fetchDirectMessages(token);
+    const guilds = await fetchGuilds(token);
+    const guildOrder = accountId ? loadCachedGuildOrder(accountId) : null;
     if (requestId !== state.sidebar.requestId) return;
 
     const liveExpandedGuildId = state.sidebar.expandedGuildId;
@@ -1043,7 +1073,7 @@ export async function bootstrapReadOnlyClient(
     }
     if (accountId) {
       saveCachedDirectMessages(accountId, directMessages);
-      saveCachedGuilds(accountId, sidebarCachedGuilds(state.sidebar));
+      persistSidebarGuilds(state);
     }
     for (const guild of guilds) {
       loadGuildRolesInBackground(state, token, guild.id, effects);
@@ -1610,14 +1640,12 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
 }
 
 export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects, direction: "up" | "down"): void {
-  const token = state.auth.savedToken;
-  if (!token) {
+  if (!currentAccountId(state)) {
     setNotice(state, "Login required to reorder servers.", "warning");
     effects.scheduleRender();
     return;
   }
 
-  const previousSelectedIndex = state.sidebar.selectedIndex;
   const move = moveSelectedSidebarGuild(state.sidebar, state.channelList.channels, direction, { showHiddenChannels: state.showHiddenChannels });
   if (!move) {
     setNotice(state, "Select a server row that can move.", "muted");
@@ -1626,22 +1654,8 @@ export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects,
   }
 
   persistSidebarGuilds(state);
+  setNotice(state, "", "muted");
   effects.scheduleRender();
-
-  const mutationId = ++guildOrderMutationId;
-  const guildOrder = sidebarCachedGuilds(state.sidebar).map((guild) => guild.id);
-  void updateGuildSidebarOrder(token, guildOrder).catch((error) => {
-    if (mutationId !== guildOrderMutationId) return;
-    state.sidebar.guilds = move.previousGuilds;
-    state.sidebar.selectedIndex = previousSelectedIndex;
-    persistSidebarGuilds(state);
-    setNotice(
-      state,
-      `Failed to move ${move.guild.name || "server"}: ${error instanceof Error ? error.message : String(error)}`,
-      "error",
-    );
-    effects.scheduleRender();
-  });
 }
 
 export function ackCurrentChannelIfAtBottom(state: AppState): void {

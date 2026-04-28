@@ -2,18 +2,40 @@ import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { saveCachedGuildChannels } from "./datacache";
+import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
-import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
+import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
 const originalXdg = process.env.XDG_CONFIG_HOME;
 
+beforeEach(() => {
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-session-test-"));
+});
+
 function flushTimers(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function waitForCondition(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (predicate()) {
+        resolve();
+        return;
+      }
+      if (Date.now() - start > timeoutMs) {
+        reject(new Error("condition timed out"));
+        return;
+      }
+      setTimeout(check, 10);
+    };
+    check();
+  });
 }
 
 function message(id: string, content: string, channelId = "channel-1"): DiscordMessage {
@@ -179,16 +201,16 @@ describe("session", () => {
     expect(state.channelList.activeChannelId).toBe("channel-1");
   });
 
-  test("bootstrap prepends new unordered guilds without reordering cached guilds", async () => {
+  test("bootstrap appends new guilds without touching Discord sidebar settings", async () => {
+    const requests: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
+      requests.push(url);
       if (url.endsWith("/users/@me/channels")) {
         return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url.endsWith("/users/@me/settings")) {
-        return new Response(JSON.stringify({
-          guild_folders: [{ id: null, guild_ids: ["guild-2", "guild-1"] }],
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+        throw new Error("guild order should be local-only");
       }
       if (url.includes("/users/@me/guilds")) {
         return new Response(JSON.stringify([
@@ -212,12 +234,43 @@ describe("session", () => {
 
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
 
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-new", "guild-1", "guild-2"]);
-    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual(["New", "One Fresh", "Two Fresh"]);
+    expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-1", "guild-2", "guild-new"]);
+    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual(["One Fresh", "Two Fresh", "New"]);
+  });
+
+  test("bootstrap applies the local account-scoped guild order", async () => {
+    saveCachedGuildOrder("self", ["guild-2", "guild-1"]);
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/users/@me/channels")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/users/@me/guilds")) {
+        return new Response(JSON.stringify([
+          { id: "guild-1", name: "One", icon: null },
+          { id: "guild-2", name: "Two", icon: null },
+          { id: "guild-3", name: "Three", icon: null },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/gateway")) {
+        return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+
+    await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+
+    expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-2", "guild-1", "guild-3"]);
   });
 
   test("cached channels fetch missing current-user roles before immediate visibility filtering", async () => {
-    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-session-test-"));
     const viewChannel = String(1 << 10);
 
     saveCachedGuildChannels("self", "guild-1", [
@@ -540,6 +593,60 @@ describe("session", () => {
       message_id: "message-1",
       channel_id: "dm-1",
     });
+  });
+
+  test("syncs server order from the account-scoped file when another client changes it", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/channels")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/users/@me/guilds")) {
+        return new Response(JSON.stringify([
+          { id: "guild-1", name: "One", icon: null },
+          { id: "guild-2", name: "Two", icon: null },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/gateway")) {
+        return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+
+    await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+    try {
+      expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-1", "guild-2"]);
+
+      saveCachedGuildOrder("self", ["guild-2", "guild-1"]);
+      await waitForCondition(() => state.sidebar.guilds.map((guild) => guild.id).join(",") === "guild-2,guild-1");
+    } finally {
+      clearReadOnlyClient(state);
+    }
+  });
+
+  test("moving a server order is local-only and persists the account-scoped order", () => {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      throw new Error("server ordering should not call Discord");
+    }) as unknown as typeof fetch;
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [
+      { id: "guild-1", name: "One", icon: null },
+      { id: "guild-2", name: "Two", icon: null },
+    ];
+    state.sidebar.selectedIndex = 1;
+
+    moveSelectedGuildOrder(state, { scheduleRender: () => {} }, "up");
+
+    expect(fetchCalls).toBe(0);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-2", "guild-1"]);
+    expect(loadCachedGuildOrder("self")).toEqual(["guild-2", "guild-1"]);
+    expect(state.notice.text).toBe("");
   });
 
   test("muting a server updates sidebar state without notice feedback", () => {

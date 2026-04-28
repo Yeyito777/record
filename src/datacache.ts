@@ -2,7 +2,7 @@
  * Per-account stale-while-revalidate cache for read-only Discord data.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from "fs";
 import { writeFile } from "fs/promises";
 import { dirname, join } from "path";
 
@@ -28,6 +28,13 @@ interface DataCacheFile {
   accounts: Record<string, AccountDataCache>;
 }
 
+interface GuildOrderCacheFile {
+  version: 1;
+  accountId: string;
+  guildIds: string[];
+  savedAt: number;
+}
+
 const CACHE_VERSION = 1;
 const CACHE_SAVE_DEBOUNCE_MS = 2_500;
 const MAX_PERSISTED_MESSAGE_CHANNELS = 30;
@@ -43,6 +50,25 @@ let beforeExitFlushRegistered = false;
 
 function cachePath(): string {
   return join(configDir(), "cache.json");
+}
+
+function accountScopedCacheDir(accountId: string): string {
+  return join(configDir(), "accounts", encodeURIComponent(accountId));
+}
+
+function guildOrderPath(accountId: string): string {
+  return join(accountScopedCacheDir(accountId), "guild-order.json");
+}
+
+function uniqueStringList(values: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string" || !value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
 }
 
 function emptyCache(): DataCacheFile {
@@ -192,6 +218,68 @@ export function saveCachedGuilds(accountId: string, guilds: DiscordGuild[]): voi
   account.guilds = guilds;
   account.savedAt = Date.now();
   saveCacheFile(cache);
+}
+
+function writeJsonFileAtomic(path: string, contents: string): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tempPath, contents, { mode: 0o600 });
+  renameSync(tempPath, path);
+}
+
+export function loadCachedGuildOrder(accountId: string): string[] | null {
+  try {
+    const parsed = JSON.parse(readFileSync(guildOrderPath(accountId), "utf8")) as Partial<GuildOrderCacheFile>;
+    if (parsed.version !== CACHE_VERSION || parsed.accountId !== accountId || !Array.isArray(parsed.guildIds)) return null;
+    const guildIds = uniqueStringList(parsed.guildIds);
+    return guildIds.length > 0 ? guildIds : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedGuildOrder(accountId: string, guildIds: readonly string[]): void {
+  const file: GuildOrderCacheFile = {
+    version: CACHE_VERSION,
+    accountId,
+    guildIds: uniqueStringList(guildIds),
+    savedAt: Date.now(),
+  };
+  writeJsonFileAtomic(guildOrderPath(accountId), `${JSON.stringify(file)}\n`);
+}
+
+export function watchCachedGuildOrder(accountId: string, onChange: (guildOrder: string[] | null) => void): () => void {
+  const dir = accountScopedCacheDir(accountId);
+  let watcher: FSWatcher | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let closed = false;
+
+  function emitChange(): void {
+    if (closed) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      if (!closed) onChange(loadCachedGuildOrder(accountId));
+    }, 50);
+    timer.unref?.();
+  }
+
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    watcher = watch(dir, { persistent: false }, emitChange);
+    watcher.unref?.();
+  } catch {
+    return () => {};
+  }
+
+  return () => {
+    closed = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    watcher?.close();
+  };
 }
 
 function normalizeCachedPermissionOverwrites(channel: DiscordChannel): DiscordChannel {
