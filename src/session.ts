@@ -1359,6 +1359,7 @@ function localReplyPreview(state: AppState, channelId: string): DiscordMessageRe
     authorDisplayName: target.authorDisplayName,
     timestamp: target.timestamp,
     summary: target.summary,
+    ...(target.mentionRoleIds ? { mentionRoleIds: target.mentionRoleIds } : {}),
     ...(target.mentionUsers ? { mentionUsers: target.mentionUsers } : {}),
   };
 }

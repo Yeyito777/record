@@ -901,7 +901,7 @@ function wrapReplyPreview(
   if (!message.reply || width <= 0) return [];
 
   const prefix = "↪ ";
-  const preview = formatReplyPreview(message.reply);
+  const preview = formatReplyPreview(message.reply, rolesByGuildId, message.guildId ?? activeGuildId);
   const colorize = (line: string) => colorizeReplyPreviewMentions(
     line,
     message,
@@ -930,12 +930,19 @@ function wrapReplyPreview(
   }));
 }
 
-function formatReplyPreview(reply: NonNullable<DiscordMessage["reply"]>): string {
+function formatReplyPreview(
+  reply: NonNullable<DiscordMessage["reply"]>,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  guildId: string | null,
+): string {
   const parts: string[] = [];
   if (reply.authorDisplayName) {
     parts.push(reply.authorDisplayName);
   }
-  parts.push(formatReplySummaryMentions(reply));
+  parts.push(formatReplySummaryMentions({
+    ...reply,
+    summary: formatReplySummaryRoleMentions(reply, rolesByGuildId, guildId),
+  }));
   return parts.join(" · ");
 }
 
@@ -949,6 +956,19 @@ function formatReplySummaryMentions(reply: NonNullable<DiscordMessage["reply"]>)
   });
 }
 
+function formatReplySummaryRoleMentions(
+  reply: NonNullable<DiscordMessage["reply"]>,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  guildId: string | null,
+): string {
+  if (!guildId || !reply.mentionRoleIds || reply.mentionRoleIds.length === 0) return reply.summary;
+  const rolesById = new Map((rolesByGuildId[guildId] ?? []).map((role) => [role.id, role]));
+  return reply.summary.replace(/<@&([^>]+)>/g, (raw, roleId: string) => {
+    const role = rolesById.get(roleId);
+    return role ? `@${role.name?.trim() || role.id}` : raw;
+  });
+}
+
 function colorizeReplyPreviewMentions(
   line: string,
   message: DiscordMessage,
@@ -958,10 +978,10 @@ function colorizeReplyPreviewMentions(
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
   activeGuildId: string | null,
 ): string {
+  let colorized = colorizeReplyPreviewRoleMentions(line, message, rolesByGuildId, activeGuildId);
   const mentionUsers = new Map((message.reply?.mentionUsers ?? []).map((user) => [user.id, user]));
-  if (mentionUsers.size === 0) return line;
+  if (mentionUsers.size === 0) return colorized;
 
-  let colorized = line;
   for (const user of mentionUsers.values()) {
     const label = `@${user.displayName}`;
     const mentionColor = mentionColorForUser(
@@ -975,6 +995,28 @@ function colorizeReplyPreviewMentions(
     );
     if (!mentionColor) continue;
     colorized = colorized.replaceAll(label, `${mentionColor}${label}${theme.muted}`);
+  }
+  return colorized;
+}
+
+function colorizeReplyPreviewRoleMentions(
+  line: string,
+  message: DiscordMessage,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  activeGuildId: string | null,
+): string {
+  const reply = message.reply;
+  const guildId = message.guildId ?? activeGuildId;
+  if (!reply || !guildId || !reply.mentionRoleIds || reply.mentionRoleIds.length === 0) return line;
+
+  const rolesById = new Map((rolesByGuildId[guildId] ?? []).map((role) => [role.id, role]));
+  let colorized = line;
+  for (const roleId of reply.mentionRoleIds) {
+    const role = rolesById.get(roleId);
+    if (!role) continue;
+    const label = `@${role.name?.trim() || role.id}`;
+    const color = role.color > 0 ? ansiTrueColor(role.color) : theme.accent;
+    colorized = colorized.replaceAll(label, `${color}${label}${theme.muted}`);
   }
   return colorized;
 }
@@ -1112,6 +1154,7 @@ function messageRenderFingerprint(
       message.reply.authorDisplayName ?? "",
       String(message.reply.timestamp ?? ""),
       message.reply.summary,
+      (message.reply.mentionRoleIds ?? []).join(","),
       (message.reply.mentionUsers ?? []).map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002")).join("\u0000"),
     ].join("\u0000")
     : "";

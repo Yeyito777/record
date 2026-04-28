@@ -52,6 +52,7 @@ export interface ReplyTarget {
   authorDisplayName: string;
   authorColor: string;
   summary: string;
+  mentionRoleIds?: string[];
   mentionUsers?: DiscordGuildMember[];
   timestamp: number | null;
   mention: boolean;

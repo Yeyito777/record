@@ -207,6 +207,7 @@ describe("discord helpers", () => {
             timestamp: "2026-01-01T11:59:00.000Z",
             author: { id: "user-2", username: "alice", global_name: "Alice" },
             member: { nick: "Alicia" },
+            mention_roles: ["role-1"],
             attachments: [{ id: "a-1", filename: "cat.png", content_type: "image/png", size: 123, url: "https://example.com/cat.png" }],
             embeds: [{ provider: { name: "Example" }, title: "Cat story", url: "https://example.com/cat" }],
           },
@@ -224,6 +225,7 @@ describe("discord helpers", () => {
       authorDisplayName: "Alice",
       timestamp: Date.parse("2026-01-01T11:59:00.000Z"),
       summary: "hello there · 📎 cat.png • 123 B · ↳ Example: Cat story",
+      mentionRoleIds: ["role-1"],
     });
   });
 
