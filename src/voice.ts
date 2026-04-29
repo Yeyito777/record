@@ -20,6 +20,8 @@ const VOICE_GATEWAY_VERSION = 8;
 const VOICE_FLAGS = 3; // CLIPS_ENABLED | ALLOW_VOICE_RECORDING, matches Discord desktop/endcord.
 const VOICE_READY_TIMEOUT_MS = 10_000;
 const VOICE_CONNECT_TIMEOUT_MS = 10_000;
+const VOICE_SIGNALING_READY_TIMEOUT_MS = 20_000;
+const VOICE_SIGNALING_READY_RETRY_MS = 100;
 const VOICE_GATEWAY_REJOIN_ATTEMPTS = 3;
 const VOICE_GATEWAY_REJOIN_DELAY_MS = 250;
 const VOICE_GATEWAY_INVALID_SESSION_CODE = 4006;
@@ -61,6 +63,7 @@ export interface VoiceStateRequest {
 }
 
 export interface VoiceSignalingClient {
+  isReady(): boolean;
   requestVoiceState(request: VoiceStateRequest): boolean;
   leaveVoice(): boolean;
 }
@@ -615,13 +618,28 @@ export class VoiceCallController {
     return false;
   }
 
+  private async requestGatewayDataWhenSignalingReady(session: VoiceCallSession, request: VoiceStateRequest): Promise<VoiceGatewayJoinData> {
+    const deadline = Date.now() + VOICE_SIGNALING_READY_TIMEOUT_MS;
+    const retryDelay = Math.max(0, this.options.retryDelayMs ?? VOICE_SIGNALING_READY_RETRY_MS);
+    while (true) {
+      if (this.active !== session) throw new Error("Call cancelled.");
+      if (this.options.signaling.isReady()) {
+        const gatewayDataPromise = this.waitForGatewayData(session.target);
+        if (this.options.signaling.requestVoiceState(request)) return gatewayDataPromise;
+        void gatewayDataPromise.catch(() => {});
+        this.clearPending(new Error("Retrying Discord gateway voice-state request."));
+      }
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for Discord gateway to become ready.");
+      await sleep(retryDelay);
+    }
+  }
+
   private async connectSessionGateway(session: VoiceCallSession): Promise<void> {
     if (this.active !== session) throw new Error("Call cancelled.");
     session.state = "signaling";
     this.emitState();
 
-    const gatewayDataPromise = this.waitForGatewayData(session.target);
-    const requested = this.options.signaling.requestVoiceState({
+    const gatewayData = await this.requestGatewayDataWhenSignalingReady(session, {
       guildId: session.target.guildId,
       channelId: session.target.channelId,
       selfMute: session.selfMute,
@@ -629,15 +647,6 @@ export class VoiceCallController {
       selfVideo: false,
       preferredRegions: session.target.preferredRegions,
     });
-
-    if (!requested) {
-      const error = new Error("Discord gateway is not ready yet.");
-      void gatewayDataPromise.catch(() => {});
-      this.clearPending(error);
-      throw error;
-    }
-
-    const gatewayData = await gatewayDataPromise;
     if (this.active !== session) throw new Error("Call cancelled.");
     session.state = "connecting";
     this.emitState();

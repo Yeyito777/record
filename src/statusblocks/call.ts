@@ -2,6 +2,7 @@
  * Voice call status block — persistent in-call HUD.
  */
 
+import { loadingLabel } from "../loading";
 import type { AppState, VoiceCallStatus } from "../state";
 import type { StatusBlock } from "../statusline";
 import { theme } from "../theme";
@@ -26,9 +27,28 @@ function callPlainText(call: VoiceCallStatus, now = Date.now()): string {
   return `  ▎ ☎ ${name} ${elapsed}  ${mic}  ${speaker}`;
 }
 
+function pendingCallPlainText(call: VoiceCallStatus, frameIndex: number): string {
+  const name = truncate(call.displayName || "call", MAX_CALL_NAME_WIDTH);
+  const action = call.state === "connecting" ? "Connecting voice to" : "Calling";
+  return `  ${loadingLabel(`${action} ${name}…`, frameIndex)}`;
+}
+
 export function callBlock(state: AppState): StatusBlock | null {
   const call = state.voiceCall;
   if (!call || call.state === "ended" || call.state === "error") return null;
+
+  if (call.state !== "ready") {
+    const text = pendingCallPlainText(call, state.loadingFrameIndex);
+    return {
+      id: "call",
+      priority: 9,
+      width: termWidth(text),
+      height: 1,
+      rows: [
+        `${theme.muted}${text}${theme.reset}`,
+      ],
+    };
+  }
 
   const text = callPlainText(call);
   return {

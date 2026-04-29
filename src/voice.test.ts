@@ -7,6 +7,10 @@ class FakeSignaling {
   leaves = 0;
   ready = true;
 
+  isReady(): boolean {
+    return this.ready;
+  }
+
   requestVoiceState(request: VoiceStateRequest): boolean {
     if (!this.ready) return false;
     this.requests.push(request);
@@ -191,6 +195,41 @@ describe("voice backend", () => {
     controller.leave();
     expect(gateway.disconnected).toBe(true);
     expect(signaling.leaves).toBe(1);
+  });
+
+  test("waits for the app gateway before requesting voice state", async () => {
+    const signaling = new FakeSignaling();
+    signaling.ready = false;
+    const gateway = new FakeGateway();
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      retryDelayMs: 0,
+      createGatewayConnection: () => gateway,
+    });
+
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signaling.requests).toEqual([]);
+
+    signaling.ready = true;
+    await waitFor(() => signaling.requests.length === 1);
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token", endpoint: "voice.example", guildId: null });
+
+    const result = await started;
+    expect(result.session.state).toBe("ready");
+    expect(gateway.connected).toBe(true);
   });
 
   test("recovers invalid voice gateway sessions without surfacing an error", async () => {

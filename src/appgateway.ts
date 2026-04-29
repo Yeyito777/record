@@ -105,6 +105,10 @@ export class AppGatewayClient implements VoiceSignalingClient {
     void this.connect();
   }
 
+  isReady(): boolean {
+    return this.ready && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
   subscribeToGuildChannel(guildId: string | null | undefined, channelId: string | null | undefined): void {
     if (!guildId || !channelId || guildId === DIRECT_MESSAGES_GUILD_ID) {
       this.guildChannelSubscription = null;
@@ -116,7 +120,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
   }
 
   requestVoiceState(request: VoiceStateRequest): boolean {
-    if (!this.ready || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (!this.isReady()) return false;
     this.send(buildVoiceStatePayload(request));
     return true;
   }

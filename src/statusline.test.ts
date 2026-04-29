@@ -155,6 +155,24 @@ describe("statusline", () => {
     expect(line).toContain(theme.accent);
   });
 
+  test("shows pending voice calls as muted spinner progress", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.loadingFrameIndex = 0;
+    state.voiceCall = {
+      displayName: "Alice",
+      state: "signaling",
+      startedAt: Date.now(),
+      selfMute: false,
+      selfDeaf: false,
+    };
+
+    const line = renderStatusLine(state, 120).lines[0] ?? "";
+    const plain = stripAnsi(line);
+
+    expect(plain).toContain("⠋ Calling Alice…");
+    expect(line).toContain(theme.muted);
+  });
+
   test("shows muted and deafened call icons", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.voiceCall = {

@@ -1141,6 +1141,8 @@ export async function bootstrapReadOnlyClient(
   }
   effects.scheduleRender();
 
+  startAppGateway(state, token, effects);
+
   try {
     const directMessages = await fetchDirectMessages(token);
     const guilds = await fetchGuilds(token);
@@ -1714,6 +1716,7 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     return;
   }
 
+  if (!appGateway || appGatewayToken !== token) startAppGateway(state, token, effects);
   const controller = ensureVoiceCallController(state, token, effects);
   if (!controller) {
     setNotice(state, "Discord gateway is still connecting; try again in a moment.", "warning");
