@@ -151,8 +151,39 @@ describe("statusline", () => {
     const plain = stripAnsi(line);
 
     expect(plain).toContain("▎ ☎ Alice 03:42  🎙 on  🔈 on");
-    expect(plain.indexOf("▎ ☎ Alice")).toBeLessThan(plain.indexOf("Logged In As:"));
+    expect(plain.indexOf("Logged In As:")).toBeLessThan(plain.indexOf("Status:"));
+    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("▎ ☎ Alice"));
     expect(line).toContain(theme.accent);
+  });
+
+  test("keeps call status after account and presence but before transient blocks", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.voiceCall = {
+      displayName: "Alice",
+      state: "ready",
+      startedAt: Date.now(),
+      selfMute: false,
+      selfDeaf: false,
+    };
+    state.notice = { text: "notice", tone: "muted", loading: false };
+    state.replyTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: null,
+      authorId: "user-2",
+      authorDisplayName: "Other",
+      authorColor: theme.accent,
+      summary: "reply",
+      timestamp: null,
+      mention: false,
+    };
+
+    const plain = stripAnsi(renderStatusLine(state, 160).lines[0] ?? "");
+
+    expect(plain.indexOf("Logged In As:")).toBeLessThan(plain.indexOf("Status:"));
+    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("▎ ☎ Alice"));
+    expect(plain.indexOf("▎ ☎ Alice")).toBeLessThan(plain.indexOf("Replying:"));
+    expect(plain.indexOf("Replying:")).toBeLessThan(plain.indexOf("notice"));
   });
 
   test("shows pending voice calls as muted spinner progress", () => {
@@ -169,7 +200,9 @@ describe("statusline", () => {
     const line = renderStatusLine(state, 120).lines[0] ?? "";
     const plain = stripAnsi(line);
 
-    expect(plain).toContain("⠋ Calling Alice…");
+    expect(plain).toContain("▎ ☎ Alice 00:00  ⠋ Calling…  🎙 on  🔈 on");
+    expect(plain.indexOf("Logged In As:")).toBeLessThan(plain.indexOf("Status:"));
+    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("▎ ☎ Alice"));
     expect(line).toContain(theme.muted);
   });
 

@@ -19,45 +19,48 @@ function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}:${two(minutes)}:${two(seconds)}` : `${two(minutes)}:${two(seconds)}`;
 }
 
-function callPlainText(call: VoiceCallStatus, now = Date.now()): string {
-  const name = truncate(call.displayName || "call", MAX_CALL_NAME_WIDTH);
-  const elapsed = formatElapsed(now - call.startedAt);
-  const mic = call.selfMute ? "🔇 muted" : "🎙 on";
-  const speaker = call.selfDeaf ? "🔇 off" : "🔈 on";
+function callParts(call: VoiceCallStatus, now = Date.now()): { name: string; elapsed: string; mic: string; speaker: string } {
+  return {
+    name: truncate(call.displayName || "call", MAX_CALL_NAME_WIDTH),
+    elapsed: formatElapsed(now - call.startedAt),
+    mic: call.selfMute ? "🔇 muted" : "🎙 on",
+    speaker: call.selfDeaf ? "🔇 off" : "🔈 on",
+  };
+}
+
+function readyCallText(call: VoiceCallStatus, now = Date.now()): string {
+  const { name, elapsed, mic, speaker } = callParts(call, now);
   return `  ▎ ☎ ${name} ${elapsed}  ${mic}  ${speaker}`;
 }
 
-function pendingCallPlainText(call: VoiceCallStatus, frameIndex: number): string {
-  const name = truncate(call.displayName || "call", MAX_CALL_NAME_WIDTH);
-  const action = call.state === "connecting" ? "Connecting voice to" : "Calling";
-  return `  ${loadingLabel(`${action} ${name}…`, frameIndex)}`;
+function pendingCallText(call: VoiceCallStatus, frameIndex: number, now = Date.now()): string {
+  const { name, elapsed, mic, speaker } = callParts(call, now);
+  const action = call.state === "connecting" ? "Connecting…" : "Calling…";
+  return `  ▎ ☎ ${name} ${elapsed}  ${loadingLabel(action, frameIndex)}  ${mic}  ${speaker}`;
+}
+
+function stableCallWidth(call: VoiceCallStatus, frameIndex: number, now = Date.now()): number {
+  return Math.max(
+    termWidth(readyCallText(call, now)),
+    termWidth(pendingCallText({ ...call, state: "signaling" }, frameIndex, now)),
+    termWidth(pendingCallText({ ...call, state: "connecting" }, frameIndex, now)),
+  );
 }
 
 export function callBlock(state: AppState): StatusBlock | null {
   const call = state.voiceCall;
   if (!call || call.state === "ended" || call.state === "error") return null;
 
-  if (call.state !== "ready") {
-    const text = pendingCallPlainText(call, state.loadingFrameIndex);
-    return {
-      id: "call",
-      priority: 9,
-      width: termWidth(text),
-      height: 1,
-      rows: [
-        `${theme.muted}${text}${theme.reset}`,
-      ],
-    };
-  }
-
-  const text = callPlainText(call);
+  const now = Date.now();
+  const ready = call.state === "ready";
+  const text = ready ? readyCallText(call, now) : pendingCallText(call, state.loadingFrameIndex, now);
   return {
     id: "call",
-    priority: 9,
-    width: termWidth(text),
+    priority: 98,
+    width: stableCallWidth(call, state.loadingFrameIndex, now),
     height: 1,
     rows: [
-      `${theme.accent}${text}${theme.reset}`,
+      `${ready ? theme.accent : theme.muted}${text}${theme.reset}`,
     ],
   };
 }

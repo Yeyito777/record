@@ -28,9 +28,9 @@ export interface StatusBlock {
 type BlockBuilder = (state: AppState) => StatusBlock | null;
 
 const BLOCK_BUILDERS: BlockBuilder[] = [
-  callBlock,
   accountBlock,
   presenceBlock,
+  callBlock,
   editBlock,
   replyBlock,
   noticeBlock,
