@@ -145,6 +145,7 @@ describe("statusline", () => {
       startedAt: Date.now() - 222_000,
       selfMute: false,
       selfDeaf: false,
+      participantUserIds: [],
     };
 
     const line = renderStatusLine(state, 120).lines[0] ?? "";
@@ -165,6 +166,7 @@ describe("statusline", () => {
       startedAt: Date.now(),
       selfMute: false,
       selfDeaf: false,
+      participantUserIds: [],
     };
     state.notice = { text: "notice", tone: "muted", loading: false };
     state.replyTarget = {
@@ -196,6 +198,7 @@ describe("statusline", () => {
       startedAt: Date.now(),
       selfMute: false,
       selfDeaf: false,
+      participantUserIds: [],
     };
 
     const line = renderStatusLine(state, 120).lines[0] ?? "";
@@ -217,6 +220,7 @@ describe("statusline", () => {
       startedAt: Date.now(),
       selfMute: false,
       selfDeaf: false,
+      participantUserIds: [],
     };
     state.notice = { text: "Calling Alice…", tone: "muted", loading: true };
 
@@ -234,6 +238,7 @@ describe("statusline", () => {
       startedAt: Date.now(),
       selfMute: true,
       selfDeaf: true,
+      participantUserIds: [],
     };
 
     const plain = stripAnsi(renderStatusLine(state, 120).lines[0] ?? "");

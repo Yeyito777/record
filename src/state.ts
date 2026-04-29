@@ -75,6 +75,7 @@ export interface VoiceCallStatus {
   startedAt: number;
   selfMute: boolean;
   selfDeaf: boolean;
+  participantUserIds: string[];
 }
 
 export interface AppState {

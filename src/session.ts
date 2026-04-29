@@ -144,6 +144,7 @@ let appGatewayToken: string | null = null;
 let voiceCallController: VoiceCallController | null = null;
 let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | null = null;
 const recentIncomingCallRingtones = new Map<string, number>();
+const knownCallParticipantsByChannelId = new Map<string, Set<string>>();
 const INCOMING_CALL_RINGTONE_DEDUPE_MS = 15_000;
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
@@ -301,6 +302,42 @@ function handleCallGatewayEvent(state: AppState, channelId: string, ringingUserI
   const selfUserId = state.auth.user?.id;
   if (!selfUserId || !ringingUserIds.includes(selfUserId)) return;
   maybePlayIncomingCallRingtone(state, channelId);
+}
+
+function syncCallParticipantSounds(state: AppState, channelId: string, voiceStateUserIds: readonly string[]): boolean {
+  const activeSession = voiceCallController?.activeSession;
+  if (!activeSession || activeSession.target.channelId !== channelId || activeSession.state === "ended" || activeSession.state === "error") {
+    knownCallParticipantsByChannelId.set(channelId, new Set(voiceStateUserIds));
+    return false;
+  }
+
+  const selfUserId = state.auth.user?.id;
+  const next = new Set(voiceStateUserIds.filter((userId) => userId && userId !== selfUserId));
+  const previous = knownCallParticipantsByChannelId.get(channelId);
+  knownCallParticipantsByChannelId.set(channelId, next);
+  if (!previous) return false;
+
+  let changed = false;
+  for (const userId of next) {
+    if (!previous.has(userId)) {
+      playSoundEffect("callJoin");
+      changed = true;
+    }
+  }
+  for (const userId of previous) {
+    if (!next.has(userId)) {
+      playSoundEffect("callUserLeave");
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function handleActiveCallGatewayEvent(state: AppState, channelId: string, voiceStateUserIds: readonly string[]): boolean {
+  const changed = syncCallParticipantSounds(state, channelId, voiceStateUserIds);
+  const session = voiceCallController?.activeSession;
+  if (session?.target.channelId === channelId) syncVoiceCallStatus(state, session);
+  return changed;
 }
 
 function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
@@ -794,6 +831,7 @@ function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null):
     startedAt: session.startedAt,
     selfMute: session.selfMute,
     selfDeaf: session.selfDeaf,
+    participantUserIds: Array.from(knownCallParticipantsByChannelId.get(session.target.channelId) ?? []),
   };
 }
 
@@ -808,6 +846,9 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
     ringRecipients: (channelId, recipientIds) => ringDirectMessageCall(token, channelId, recipientIds),
     onStateChange: (session) => {
       debugLog("voice.state", { state: session?.state ?? "idle", channelId: session?.target.channelId ?? null });
+      if (session && session.state !== "ended" && session.state !== "error" && !knownCallParticipantsByChannelId.has(session.target.channelId)) {
+        knownCallParticipantsByChannelId.set(session.target.channelId, new Set());
+      }
       syncVoiceCallStatus(state, session);
       effects.scheduleRender();
     },
@@ -894,12 +935,17 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onCallCreate: (event) => {
       handleCallGatewayEvent(state, event.channelId, event.ringingUserIds);
+      handleActiveCallGatewayEvent(state, event.channelId, event.voiceStateUserIds);
+      effects.scheduleRender();
     },
     onCallUpdate: (event) => {
       handleCallGatewayEvent(state, event.channelId, event.ringingUserIds);
+      handleActiveCallGatewayEvent(state, event.channelId, event.voiceStateUserIds);
+      effects.scheduleRender();
     },
     onCallDelete: (channelId) => {
       recentIncomingCallRingtones.delete(channelId);
+      knownCallParticipantsByChannelId.delete(channelId);
       markActiveCallEnded(state, channelId);
       effects.scheduleRender();
     },

@@ -18,6 +18,7 @@ describe("sound effects", () => {
     expect(soundEffectPath("deafen")).toEndWith("/assets/sounds/discord-deafen.mp3");
     expect(soundEffectPath("ringtone")).toEndWith("/assets/sounds/discord-call-ringing.mp3");
     expect(soundEffectPath("callJoin")).toEndWith("/assets/sounds/discord-user-join.mp3");
+    expect(soundEffectPath("callUserLeave")).toEndWith("/assets/sounds/discord-user-leave.mp3");
     expect(soundEffectPath("callLeave")).toEndWith("/assets/sounds/discord-disconnect.mp3");
   });
 });

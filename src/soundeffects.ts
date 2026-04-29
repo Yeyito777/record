@@ -16,6 +16,7 @@ export type SoundEffect =
   | "ringtone"
   | "callCalling"
   | "callJoin"
+  | "callUserLeave"
   | "callLeave";
 
 const SOUND_FILES: Record<SoundEffect, string> = {
@@ -26,6 +27,7 @@ const SOUND_FILES: Record<SoundEffect, string> = {
   ringtone: "discord-call-ringing.mp3",
   callCalling: "discord-call-calling.mp3",
   callJoin: "discord-user-join.mp3",
+  callUserLeave: "discord-user-leave.mp3",
   callLeave: "discord-disconnect.mp3",
 };
 
