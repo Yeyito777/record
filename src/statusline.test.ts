@@ -150,9 +150,10 @@ describe("statusline", () => {
     const line = renderStatusLine(state, 120).lines[0] ?? "";
     const plain = stripAnsi(line);
 
-    expect(plain).toContain("▎ ☎ Alice 03:42  🎙 on  🔈 on");
+    expect(plain).toContain("☎ Alice 03:42  🎙 on  🔈 on");
+    expect(plain).not.toContain("▎");
     expect(plain.indexOf("Logged In As:")).toBeLessThan(plain.indexOf("Status:"));
-    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("▎ ☎ Alice"));
+    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("☎ Alice"));
     expect(line).toContain(theme.accent);
   });
 
@@ -181,8 +182,8 @@ describe("statusline", () => {
     const plain = stripAnsi(renderStatusLine(state, 160).lines[0] ?? "");
 
     expect(plain.indexOf("Logged In As:")).toBeLessThan(plain.indexOf("Status:"));
-    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("▎ ☎ Alice"));
-    expect(plain.indexOf("▎ ☎ Alice")).toBeLessThan(plain.indexOf("Replying:"));
+    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("☎ Alice"));
+    expect(plain.indexOf("☎ Alice")).toBeLessThan(plain.indexOf("Replying:"));
     expect(plain.indexOf("Replying:")).toBeLessThan(plain.indexOf("notice"));
   });
 
@@ -200,10 +201,29 @@ describe("statusline", () => {
     const line = renderStatusLine(state, 120).lines[0] ?? "";
     const plain = stripAnsi(line);
 
-    expect(plain).toContain("▎ ☎ Alice 00:00  ⠋ Calling…  🎙 on  🔈 on");
+    expect(plain).toContain("☎ Alice 00:00  ⠋ Calling…  🎙 on  🔈 on");
+    expect(plain).not.toContain("▎");
     expect(plain.indexOf("Logged In As:")).toBeLessThan(plain.indexOf("Status:"));
-    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("▎ ☎ Alice"));
+    expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("☎ Alice"));
     expect(line).toContain(theme.muted);
+  });
+
+  test("does not show a transient calling notice next to the canonical call block", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.loadingFrameIndex = 0;
+    state.voiceCall = {
+      displayName: "Alice",
+      state: "signaling",
+      startedAt: Date.now(),
+      selfMute: false,
+      selfDeaf: false,
+    };
+    state.notice = { text: "Calling Alice…", tone: "muted", loading: true };
+
+    const plain = stripAnsi(renderStatusLine(state, 140).lines[0] ?? "");
+
+    expect(plain.match(/Calling/g)?.length).toBe(1);
+    expect(plain).toContain("☎ Alice");
   });
 
   test("shows muted and deafened call icons", () => {

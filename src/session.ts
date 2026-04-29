@@ -1725,7 +1725,7 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
   }
 
   const displayName = channel.name || "DM";
-  setNotice(state, `Calling ${displayName}…`, "muted", { loading: true, chat: false });
+  setNotice(state, "", "muted");
   effects.scheduleRender();
 
   void controller.startCall({

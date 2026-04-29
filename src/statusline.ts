@@ -42,7 +42,9 @@ function layoutBlocks(state: AppState, cols: number): StatusBlock[] {
   const candidates: { block: StatusBlock; position: number }[] = [];
   for (let i = 0; i < BLOCK_BUILDERS.length; i++) {
     const block = BLOCK_BUILDERS[i](state);
-    if (block) candidates.push({ block, position: i });
+    if (block && !(state.voiceCall && block.id === "notice" && state.notice.loading)) {
+      candidates.push({ block, position: i });
+    }
   }
 
   const byPriority = [...candidates].sort((a, b) => b.block.priority - a.block.priority);

@@ -30,13 +30,13 @@ function callParts(call: VoiceCallStatus, now = Date.now()): { name: string; ela
 
 function readyCallText(call: VoiceCallStatus, now = Date.now()): string {
   const { name, elapsed, mic, speaker } = callParts(call, now);
-  return `  ▎ ☎ ${name} ${elapsed}  ${mic}  ${speaker}`;
+  return ` ☎ ${name} ${elapsed}  ${mic}  ${speaker}`;
 }
 
 function pendingCallText(call: VoiceCallStatus, frameIndex: number, now = Date.now()): string {
   const { name, elapsed, mic, speaker } = callParts(call, now);
   const action = call.state === "connecting" ? "Connecting…" : "Calling…";
-  return `  ▎ ☎ ${name} ${elapsed}  ${loadingLabel(action, frameIndex)}  ${mic}  ${speaker}`;
+  return ` ☎ ${name} ${elapsed}  ${loadingLabel(action, frameIndex)}  ${mic}  ${speaker}`;
 }
 
 function stableCallWidth(call: VoiceCallStatus, frameIndex: number, now = Date.now()): number {
