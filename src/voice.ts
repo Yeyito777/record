@@ -1024,15 +1024,15 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       "",
     ].join("\n"));
 
-    this.playbackProcess = spawn("ffplay", [
-      "-nostdin",
-      "-nodisp",
-      "-loglevel", "error",
-      "-protocol_whitelist", "file,udp,rtp",
-      "-i", sdpPath,
-    ]);
-    drainChildOutput(this.playbackProcess);
+    this.playbackProcess = spawn("ffplay", buildFfplayPlaybackArgs(sdpPath));
+    this.playbackProcess.stdin.end();
+    const playbackErrorOutput = drainChildOutput(this.playbackProcess);
     this.playbackProcess.on("error", (error) => context.onError(new Error(`Failed to start voice playback: ${error.message}`)));
+    this.playbackProcess.on("exit", (code, signal) => {
+      if (this.context !== context || code === 0 || signal === "SIGTERM") return;
+      const details = playbackErrorOutput().trim();
+      context.onError(new Error(`Voice playback stopped${details ? `: ${details}` : "."}`));
+    });
   }
 
   private async startCapture(context: VoiceAudioContext): Promise<void> {
@@ -1122,9 +1122,25 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   }
 }
 
-function drainChildOutput(child: ChildProcessWithoutNullStreams): void {
+export function buildFfplayPlaybackArgs(sdpPath: string): string[] {
+  return [
+    "-nodisp",
+    "-loglevel", "error",
+    "-protocol_whitelist", "file,udp,rtp",
+    "-i", sdpPath,
+  ];
+}
+
+function drainChildOutput(child: ChildProcessWithoutNullStreams): () => string {
+  const stderrChunks: Buffer[] = [];
   child.stdout.resume();
+  child.stderr.on("data", (chunk: Buffer | string) => {
+    stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const totalLength = stderrChunks.reduce((total, item) => total + item.length, 0);
+    while (totalLength > 8_192 && stderrChunks.length > 1) stderrChunks.shift();
+  });
   child.stderr.resume();
+  return () => Buffer.concat(stderrChunks).toString("utf8");
 }
 
 function selectEncryptionMode(modes: string[]): string {

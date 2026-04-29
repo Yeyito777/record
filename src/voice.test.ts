@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, NoopVoiceAudioBackend, VoiceCallController, type VoiceGatewayConnection, type VoiceStateRequest } from "./voice";
+import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, NoopVoiceAudioBackend, VoiceCallController, type VoiceGatewayConnection, type VoiceStateRequest } from "./voice";
 
 class FakeSignaling {
   requests: VoiceStateRequest[] = [];
@@ -59,6 +59,16 @@ describe("voice backend", () => {
 
     const defaultPayload = buildVoiceIdentifyPayload(joinData) as { d: { max_dave_protocol_version: number } };
     expect(defaultPayload.d.max_dave_protocol_version).toBeGreaterThan(0);
+  });
+
+  test("builds ffplay playback args accepted by ffplay", () => {
+    expect(buildFfplayPlaybackArgs("/tmp/voice.sdp")).toEqual([
+      "-nodisp",
+      "-loglevel", "error",
+      "-protocol_whitelist", "file,udp,rtp",
+      "-i", "/tmp/voice.sdp",
+    ]);
+    expect(buildFfplayPlaybackArgs("/tmp/voice.sdp")).not.toContain("-nostdin");
   });
 
   test("builds Discord gateway voice-state payloads", () => {
