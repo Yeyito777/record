@@ -95,7 +95,7 @@ import {
 } from "./notifications";
 import { clearPrompt } from "./promptstate";
 import type { ClipboardImageAttachment } from "./imageclipboard";
-import { playSoundEffect } from "./soundeffects";
+import { playLoopingSoundEffect, playSoundEffect, type SoundEffectPlaybackHandle } from "./soundeffects";
 import { focusPrompt, setNotice } from "./state";
 import {
   applySidebarGuildMuteSettings,
@@ -145,7 +145,10 @@ let voiceCallController: VoiceCallController | null = null;
 let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | null = null;
 const recentIncomingCallRingtones = new Map<string, number>();
 const knownCallParticipantsByChannelId = new Map<string, Set<string>>();
+const outboundCallRingtonesByChannelId = new Map<string, SoundEffectPlaybackHandle>();
 const INCOMING_CALL_RINGTONE_DEDUPE_MS = 15_000;
+const OUTBOUND_CALL_RINGTONE_MAX_MS = 15_000;
+const OUTBOUND_CALL_RINGTONE_REPEAT_MS = 2_500;
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
   const members: DiscordGuildMember[] = [];
@@ -304,6 +307,44 @@ function handleCallGatewayEvent(state: AppState, channelId: string, ringingUserI
   maybePlayIncomingCallRingtone(state, channelId);
 }
 
+function startOutboundCallRingtone(channelId: string): void {
+  stopOutboundCallRingtone(channelId, "restart");
+  if ((knownCallParticipantsByChannelId.get(channelId)?.size ?? 0) > 0) {
+    debugLog("call.outbound_ringtone.skipped", { channelId, reason: "participant_already_present" });
+    return;
+  }
+  const handle = playLoopingSoundEffect("callCalling", {
+    intervalMs: OUTBOUND_CALL_RINGTONE_REPEAT_MS,
+    maxDurationMs: OUTBOUND_CALL_RINGTONE_MAX_MS,
+  });
+  outboundCallRingtonesByChannelId.set(channelId, handle);
+  debugLog("call.outbound_ringtone.start", {
+    channelId,
+    intervalMs: OUTBOUND_CALL_RINGTONE_REPEAT_MS,
+    maxDurationMs: OUTBOUND_CALL_RINGTONE_MAX_MS,
+  });
+  setTimeout(() => {
+    if (outboundCallRingtonesByChannelId.get(channelId) === handle) {
+      outboundCallRingtonesByChannelId.delete(channelId);
+      debugLog("call.outbound_ringtone.expired", { channelId });
+    }
+  }, OUTBOUND_CALL_RINGTONE_MAX_MS + 50);
+}
+
+function stopOutboundCallRingtone(channelId: string, reason: string): void {
+  const handle = outboundCallRingtonesByChannelId.get(channelId);
+  if (!handle) return;
+  outboundCallRingtonesByChannelId.delete(channelId);
+  handle.stop();
+  debugLog("call.outbound_ringtone.stop", { channelId, reason });
+}
+
+function stopAllOutboundCallRingtones(reason: string): void {
+  for (const channelId of Array.from(outboundCallRingtonesByChannelId.keys())) {
+    stopOutboundCallRingtone(channelId, reason);
+  }
+}
+
 function syncCallParticipantSounds(state: AppState, channelId: string, voiceStateUserIds: readonly string[]): boolean {
   const activeSession = voiceCallController?.activeSession;
   const selfUserId = state.auth.user?.id;
@@ -347,6 +388,7 @@ function syncCallParticipantSounds(state: AppState, channelId: string, voiceStat
   for (const userId of next) {
     if (!previous.has(userId)) {
       after.add(userId);
+      stopOutboundCallRingtone(channelId, "participant_join_call_gateway");
       debugLog("call.participants.sound", { source: "call_gateway", channelId, userId, action: "join", effect: "callJoin" });
       playSoundEffect("callJoin");
       changed = true;
@@ -403,6 +445,7 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
   if (update.channelId === channelId) {
     if (!participants.has(update.userId)) {
       participants.add(update.userId);
+      stopOutboundCallRingtone(channelId, "participant_join_voice_state");
       debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "join", effect: "callJoin" });
       playSoundEffect("callJoin");
       changed = true;
@@ -904,6 +947,8 @@ function callDisplayName(session: VoiceCallSession | null): string {
 function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null): void {
   const hadActiveCall = Boolean(state.voiceCall);
   if (!session || session.state === "ended" || session.state === "error") {
+    if (session?.target.channelId) stopOutboundCallRingtone(session.target.channelId, session.state);
+    else stopAllOutboundCallRingtones("idle");
     state.voiceCall = null;
     if (hadActiveCall && session?.state === "ended") playSoundEffect("callLeave");
     return;
@@ -1031,6 +1076,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onCallDelete: (channelId) => {
       recentIncomingCallRingtones.delete(channelId);
       knownCallParticipantsByChannelId.delete(channelId);
+      stopOutboundCallRingtone(channelId, "call_delete");
       markActiveCallEnded(state, channelId);
       effects.scheduleRender();
     },
@@ -1886,8 +1932,8 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
   }
 
   const displayName = channel.name || "DM";
+  knownCallParticipantsByChannelId.set(channel.id, new Set());
   setNotice(state, "", "muted");
-  playSoundEffect("callCalling");
   effects.scheduleRender();
 
   void controller.startCall({
@@ -1896,7 +1942,7 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     recipientIds: recipients,
     displayName,
   }).then(({ warnings }) => {
-    playSoundEffect("callJoin");
+    startOutboundCallRingtone(channel.id);
     if (warnings.length > 0) {
       setNotice(state, `Call connected, but ${warnings[0]}`, "warning", { chat: false });
     } else {
@@ -1904,6 +1950,7 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     }
     effects.scheduleRender();
   }).catch((error) => {
+    stopOutboundCallRingtone(channel.id, "start_failed");
     const message = error instanceof Error ? error.message : String(error);
     if (message === "Call cancelled.") return;
     setNotice(state, `Failed to start call: ${message}`, "error", { chat: false });
@@ -1918,6 +1965,7 @@ export function hangUpCurrentCall(state: AppState, effects: SessionEffects): voi
     return;
   }
 
+  stopOutboundCallRingtone(voiceCallController.activeSession.target.channelId, "hangup");
   voiceCallController.leave();
   state.voiceCall = null;
   setNotice(state, "", "muted");

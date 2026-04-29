@@ -27,6 +27,15 @@ export interface SoundEffectPlaybackCommand {
   args: string[];
 }
 
+export interface SoundEffectPlaybackHandle {
+  stop(): void;
+}
+
+export interface LoopingSoundEffectOptions {
+  intervalMs: number;
+  maxDurationMs?: number;
+}
+
 const SOUND_FILES: Record<SoundEffect, string> = {
   mute: "discord-mute.mp3",
   unmute: "discord-unmute.mp3",
@@ -84,15 +93,15 @@ export function buildSoundEffectPlaybackCommands(path: string): SoundEffectPlayb
   ];
 }
 
-export function playSoundEffect(effect: SoundEffect): void {
+export function playSoundEffect(effect: SoundEffect): SoundEffectPlaybackHandle | null {
   if (process.env.RECORD_DISABLE_SOUND_EFFECTS === "1") {
     debugLog("sound.effect.skipped", { effect, reason: "disabled" });
-    return;
+    return null;
   }
   const path = soundEffectPath(effect);
   if (!existsSync(path)) {
     debugLog("sound.effect.skipped", { effect, path, reason: "missing_file" });
-    return;
+    return null;
   }
 
   for (const { command, args } of buildSoundEffectPlaybackCommands(path)) {
@@ -108,7 +117,15 @@ export function playSoundEffect(effect: SoundEffect): void {
       });
       proc.unref?.();
       debugLog("sound.effect.play", { effect, command, path });
-      return;
+      return {
+        stop: () => {
+          try {
+            proc.kill("SIGTERM");
+          } catch {
+            // Best-effort stop for short-lived sound effect players.
+          }
+        },
+      };
     } catch (error) {
       COMMAND_AVAILABILITY.set(command, false);
       debugLog("sound.effect.spawn_failed", { effect, command, error: error instanceof Error ? error.message : String(error) });
@@ -116,6 +133,39 @@ export function playSoundEffect(effect: SoundEffect): void {
   }
   debugLog("sound.effect.skipped", { effect, path, reason: "no_player" });
   // Sound effects should never interfere with chat/call behavior.
+  return null;
+}
+
+export function playLoopingSoundEffect(effect: SoundEffect, options: LoopingSoundEffectOptions): SoundEffectPlaybackHandle {
+  let stopped = false;
+  let current: SoundEffectPlaybackHandle | null = null;
+  let interval: ReturnType<typeof setInterval> | null = null;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+
+  const play = (): void => {
+    if (stopped) return;
+    current?.stop();
+    current = playSoundEffect(effect);
+  };
+
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    if (interval) clearInterval(interval);
+    if (timeout) clearTimeout(timeout);
+    interval = null;
+    timeout = null;
+    current?.stop();
+    current = null;
+    debugLog("sound.effect.loop.stop", { effect });
+  };
+
+  debugLog("sound.effect.loop.start", { effect, intervalMs: options.intervalMs, maxDurationMs: options.maxDurationMs ?? null });
+  play();
+  interval = setInterval(play, options.intervalMs);
+  if (options.maxDurationMs !== undefined) timeout = setTimeout(stop, options.maxDurationMs);
+
+  return { stop };
 }
 
 function commandAvailable(command: string): boolean {
