@@ -63,6 +63,7 @@ import {
   watchCachedGuildOrder,
 } from "./datacache";
 import { AppGatewayClient } from "./appgateway";
+import { CallWidgetController, discordAvatarUrl, type CallWidgetParticipant } from "./callwidget";
 import {
   cachedChannelMessages,
   cachedChannelMessagesAreFresh,
@@ -143,8 +144,10 @@ let appGateway: AppGatewayClient | null = null;
 let appGatewayToken: string | null = null;
 let voiceCallController: VoiceCallController | null = null;
 let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | null = null;
+const callWidget = new CallWidgetController();
 const recentIncomingCallRingtones = new Map<string, number>();
 const knownCallParticipantsByChannelId = new Map<string, Set<string>>();
+const speakingCallUserIds = new Set<string>();
 const outboundCallRingtonesByChannelId = new Map<string, SoundEffectPlaybackHandle>();
 const INCOMING_CALL_RINGTONE_DEDUPE_MS = 15_000;
 const OUTBOUND_CALL_RINGTONE_MAX_MS = 15_000;
@@ -182,6 +185,8 @@ export function disconnectMemberListGateway(): void {
 export function disconnectAppGateway(): void {
   voiceCallController?.disconnect();
   voiceCallController = null;
+  speakingCallUserIds.clear();
+  callWidget.stop();
   appGateway?.disconnect();
   appGateway = null;
   appGatewayToken = null;
@@ -254,6 +259,26 @@ function displayNameForUser(state: AppState, channelId: string, userId: string, 
 function isRawUserIdDisplayName(displayName: string, userId: string): boolean {
   const trimmed = displayName.trim();
   return trimmed === userId || /^\d{15,25}$/.test(trimmed);
+}
+
+function avatarHashForUser(state: AppState, channelId: string, userId: string): string | null {
+  if (state.auth.user?.id === userId) return state.auth.user.avatar;
+  const activeChannel = state.channelList.channels.find((channel) => channel.id === channelId);
+  const fromRecipients = activeChannel?.recipients?.find((recipient) => recipient.id === userId)?.avatar;
+  if (fromRecipients) return fromRecipients;
+  const fromAnyDirectMessageRecipient = state.channelList.channels
+    .flatMap((channel) => channel.recipients ?? [])
+    .find((recipient) => recipient.id === userId)?.avatar;
+  if (fromAnyDirectMessageRecipient) return fromAnyDirectMessageRecipient;
+  const fromActiveMemberList = state.memberList.channelId === channelId
+    ? state.memberList.members.find((member) => member.id === userId)?.avatar
+    : null;
+  if (fromActiveMemberList) return fromActiveMemberList;
+  for (const members of state.memberList.cache.values()) {
+    const cached = members.find((member) => member.id === userId)?.avatar;
+    if (cached) return cached;
+  }
+  return null;
 }
 
 function maybeResortDirectMessages(state: AppState, channelId: string, messageId?: string): void {
@@ -451,6 +476,7 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
       changed = true;
     }
   } else if (participants.delete(update.userId)) {
+    speakingCallUserIds.delete(update.userId);
     debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave" });
     playSoundEffect("callUserLeave");
     changed = true;
@@ -944,12 +970,52 @@ function callDisplayName(session: VoiceCallSession | null): string {
   return session?.target.displayName || "call";
 }
 
+function buildCallWidgetParticipants(state: AppState, session: VoiceCallSession): CallWidgetParticipant[] {
+  const channelId = session.target.channelId;
+  const participants: CallWidgetParticipant[] = [];
+  const seen = new Set<string>();
+  const self = state.auth.user;
+  if (self) {
+    seen.add(self.id);
+    participants.push({
+      id: self.id,
+      name: self.globalName ?? self.username,
+      avatarUrl: discordAvatarUrl(self.id, self.avatar, self.discriminator),
+      speaking: speakingCallUserIds.has(self.id),
+      self: true,
+    });
+  }
+
+  for (const userId of knownCallParticipantsByChannelId.get(channelId) ?? []) {
+    if (!userId || seen.has(userId)) continue;
+    seen.add(userId);
+    participants.push({
+      id: userId,
+      name: displayNameForUser(state, channelId, userId, userId),
+      avatarUrl: discordAvatarUrl(userId, avatarHashForUser(state, channelId, userId), null),
+      speaking: speakingCallUserIds.has(userId),
+      self: false,
+    });
+  }
+  return participants;
+}
+
+function syncCallWidget(state: AppState, session: VoiceCallSession | null): void {
+  if (!session || session.state !== "ready") {
+    if (!session || session.state === "ended" || session.state === "error") speakingCallUserIds.clear();
+    callWidget.stop();
+    return;
+  }
+  callWidget.update(buildCallWidgetParticipants(state, session));
+}
+
 function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null): void {
   const hadActiveCall = Boolean(state.voiceCall);
   if (!session || session.state === "ended" || session.state === "error") {
     if (session?.target.channelId) stopOutboundCallRingtone(session.target.channelId, session.state);
     else stopAllOutboundCallRingtones("idle");
     state.voiceCall = null;
+    syncCallWidget(state, session);
     if (hadActiveCall && session?.state === "ended") playSoundEffect("callLeave");
     return;
   }
@@ -962,6 +1028,7 @@ function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null):
     selfDeaf: session.selfDeaf,
     participantUserIds: Array.from(knownCallParticipantsByChannelId.get(session.target.channelId) ?? []),
   };
+  syncCallWidget(state, session);
 }
 
 function ensureVoiceCallController(state: AppState, token: string, effects: SessionEffects): VoiceCallController | null {
@@ -980,6 +1047,18 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
       }
       syncVoiceCallStatus(state, session);
       effects.scheduleRender();
+    },
+    onSpeakingChange: (userId, speaking) => {
+      const activeSession = voiceCallController?.activeSession;
+      if (!activeSession || activeSession.state === "ended" || activeSession.state === "error") return;
+      if (speaking) speakingCallUserIds.add(userId);
+      else speakingCallUserIds.delete(userId);
+      debugLog("call.widget.speaking", {
+        channelId: activeSession.target.channelId,
+        userId,
+        speaking,
+      });
+      syncVoiceCallStatus(state, activeSession);
     },
     onError: (error) => {
       setNotice(state, `Voice call: ${error.message}`, "warning", { chat: false });
@@ -1076,8 +1155,10 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onCallDelete: (channelId) => {
       recentIncomingCallRingtones.delete(channelId);
       knownCallParticipantsByChannelId.delete(channelId);
+      speakingCallUserIds.clear();
       stopOutboundCallRingtone(channelId, "call_delete");
       markActiveCallEnded(state, channelId);
+      syncCallWidget(state, null);
       effects.scheduleRender();
     },
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),

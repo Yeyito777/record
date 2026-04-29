@@ -507,6 +507,7 @@ function gatewayMemberFromPayload(payload: unknown): DiscordGuildMember | null {
     username: payload.user.username,
     displayName: globalName ?? displayName ?? payload.user.username,
     bot: Boolean(payload.user.bot),
+    ...(typeof payload.user.avatar === "string" ? { avatar: payload.user.avatar } : {}),
     roleIds: Array.isArray(payload.roles) ? payload.roles.filter((roleId): roleId is string => typeof roleId === "string") : undefined,
   };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, NoopVoiceAudioBackend, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 
 class FakeSignaling {
   requests: VoiceStateRequest[] = [];
@@ -88,6 +88,11 @@ describe("voice backend", () => {
       "-i", "/tmp/voice.sdp",
     ]);
     expect(buildFfplayPlaybackArgs("/tmp/voice.sdp")).not.toContain("-nostdin");
+  });
+
+  test("detects Opus silence frames", () => {
+    expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff, 0xfe]))).toBe(true);
+    expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff]))).toBe(false);
   });
 
   test("builds Discord gateway voice-state payloads", () => {
@@ -195,6 +200,45 @@ describe("voice backend", () => {
     controller.leave();
     expect(gateway.disconnected).toBe(true);
     expect(signaling.leaves).toBe(1);
+  });
+
+  test("forwards speaking callbacks to voice gateway connections", async () => {
+    const signaling = new FakeSignaling();
+    const speakingEvents: Array<{ userId: string; speaking: boolean }> = [];
+    const gateways: FakeGateway[] = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      createGatewayConnection: (_data, callbacks) => {
+        const gateway = new FakeGateway(callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+      onSpeakingChange: (userId, speaking) => speakingEvents.push({ userId, speaking }),
+    });
+
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token", endpoint: "voice.example", guildId: null });
+    await started;
+
+    gateways[0]?.callbacks.onSpeakingChange?.("friend", true);
+    gateways[0]?.callbacks.onSpeakingChange?.("friend", false);
+    expect(speakingEvents).toEqual([
+      { userId: "friend", speaking: true },
+      { userId: "friend", speaking: false },
+    ]);
   });
 
   test("waits for the app gateway before requesting voice state", async () => {

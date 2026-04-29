@@ -46,6 +46,7 @@ export interface DiscordDMRecipientResponse {
   id: string;
   username: string;
   global_name?: string | null;
+  avatar?: string | null;
 }
 
 export interface DiscordPermissionOverwriteResponse {
@@ -224,6 +225,7 @@ export interface DiscordGuildMember {
   username: string;
   displayName: string;
   bot: boolean;
+  avatar?: string | null;
   roleIds?: string[];
 }
 
@@ -438,6 +440,7 @@ export function mapDirectMessageChannel(channel: DiscordChannelResponse, positio
       username: recipient.username,
       displayName: displayNameFromRecipient(recipient),
       bot: false,
+      ...(recipient.avatar ? { avatar: recipient.avatar } : {}),
     })),
   };
 }
@@ -591,6 +594,7 @@ function mapMentionedUser(mention: DiscordMessageMentionResponse): DiscordGuildM
     username: mention.username,
     displayName: userDisplayName(mention),
     bot: Boolean(mention.bot),
+    ...(mention.avatar ? { avatar: mention.avatar } : {}),
     roleIds: mention.member?.roles?.filter((roleId): roleId is string => typeof roleId === "string"),
   };
 }

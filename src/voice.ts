@@ -102,6 +102,7 @@ export class VoiceGatewayCloseError extends Error {
 export interface VoiceGatewayConnectionCallbacks {
   onError?: (error: Error) => void;
   onClose?: (error: VoiceGatewayCloseError) => void;
+  onSpeakingChange?: (userId: string, speaking: boolean) => void;
 }
 
 export interface VoiceCallSession {
@@ -126,6 +127,7 @@ export interface VoiceCallControllerOptions {
   ringRecipients?: (channelId: string, recipientIds: string[]) => Promise<void>;
   retryDelayMs?: number;
   onStateChange?: (session: VoiceCallSession | null) => void;
+  onSpeakingChange?: (userId: string, speaking: boolean) => void;
   onError?: (error: Error) => void;
 }
 
@@ -663,6 +665,7 @@ export class VoiceCallController {
     return {
       onError: this.options.onError,
       onClose: (error) => this.handleGatewayClose(session, error),
+      onSpeakingChange: this.options.onSpeakingChange,
     };
   }
 
@@ -949,6 +952,8 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     if (!userId) return;
     const ssrc = typeof data.ssrc === "number" ? data.ssrc : null;
     if (ssrc !== null) this.ssrcToUserId.set(ssrc, userId);
+    const speaking = typeof data.speaking === "number" ? data.speaking !== 0 : Boolean(data.speaking);
+    this.callbacks.onSpeakingChange?.(userId, speaking);
     this.dave.addKnownUsers([userId]);
   }
 
@@ -1064,6 +1069,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private sendSpeaking(speaking: boolean): void {
     if (this.ssrc === null) return;
     this.speaking = speaking;
+    this.callbacks.onSpeakingChange?.(this.data.userId, speaking);
     this.send({
       op: 5,
       d: {
@@ -1176,6 +1182,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private sendTimestamp = 0;
   private sendCounter = 0;
   private speaking = false;
+  private speakingIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly handleDiscordPacket = (packet: Buffer): void => this.forwardDiscordPacket(packet);
   private readonly handleCapturePacket = (packet: Buffer): void => this.forwardCapturePacket(packet);
 
@@ -1200,6 +1207,10 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     }
     this.context = null;
     this.speaking = false;
+    if (this.speakingIdleTimer) {
+      clearTimeout(this.speakingIdleTimer);
+      this.speakingIdleTimer = null;
+    }
 
     if (this.captureSocket) {
       this.captureSocket.off("message", this.handleCapturePacket);
@@ -1303,10 +1314,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const context = this.context;
     if (!context) return;
     if (context.selfMute) {
-      if (this.speaking) {
-        this.speaking = false;
-        context.sendSpeaking(false);
-      }
+      this.setCaptureSpeaking(context, false);
       return;
     }
     const parsed = parsePlainRtpPacket(packet);
@@ -1316,10 +1324,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const encodedPayload = context.encodeOutgoingOpus ? context.encodeOutgoingOpus(opusPayload) : opusPayload;
     if (!encodedPayload || encodedPayload.length === 0) return;
 
-    if (!this.speaking) {
-      this.speaking = true;
-      context.sendSpeaking(true);
-    }
+    if (isOpusSilenceFrame(opusPayload)) this.setCaptureSpeaking(context, false);
+    else this.markCaptureSpeaking(context);
 
     const header = Buffer.alloc(RTP_HEADER_LENGTH);
     header[0] = 0x80;
@@ -1334,12 +1340,35 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     context.udp.send(encrypted);
   }
 
+  private markCaptureSpeaking(context: VoiceAudioContext): void {
+    this.setCaptureSpeaking(context, true);
+    if (this.speakingIdleTimer) clearTimeout(this.speakingIdleTimer);
+    this.speakingIdleTimer = setTimeout(() => {
+      if (this.context === context) this.setCaptureSpeaking(context, false);
+    }, 450);
+    this.speakingIdleTimer.unref?.();
+  }
+
+  private setCaptureSpeaking(context: VoiceAudioContext, speaking: boolean): void {
+    if (this.speakingIdleTimer && !speaking) {
+      clearTimeout(this.speakingIdleTimer);
+      this.speakingIdleTimer = null;
+    }
+    if (this.speaking === speaking) return;
+    this.speaking = speaking;
+    context.sendSpeaking(speaking);
+  }
+
   private nextCounter(): Buffer {
     this.sendCounter = (this.sendCounter + 1) >>> 0;
     const counter = Buffer.alloc(4);
     counter.writeUInt32BE(this.sendCounter, 0);
     return counter;
   }
+}
+
+export function isOpusSilenceFrame(payload: Buffer): boolean {
+  return payload.equals(OPUS_SILENCE_FRAME);
 }
 
 export function buildFfplayPlaybackArgs(sdpPath: string): string[] {
