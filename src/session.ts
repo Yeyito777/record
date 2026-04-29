@@ -122,7 +122,7 @@ import {
   setTimelineMessages,
 } from "./timeline";
 import { clearTypingUser, recordTypingStart } from "./typing";
-import { VoiceCallController, type VoiceCallSession } from "./voice";
+import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -337,6 +337,29 @@ function handleActiveCallGatewayEvent(state: AppState, channelId: string, voiceS
   const changed = syncCallParticipantSounds(state, channelId, voiceStateUserIds);
   const session = voiceCallController?.activeSession;
   if (session?.target.channelId === channelId) syncVoiceCallStatus(state, session);
+  return changed;
+}
+
+function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): boolean {
+  const activeSession = voiceCallController?.activeSession;
+  const channelId = activeSession?.target.channelId;
+  if (!activeSession || !channelId || activeSession.state === "ended" || activeSession.state === "error") return false;
+  if (update.userId === state.auth.user?.id) return false;
+
+  const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  let changed = false;
+  if (update.channelId === channelId) {
+    if (!participants.has(update.userId)) {
+      participants.add(update.userId);
+      playSoundEffect("callJoin");
+      changed = true;
+    }
+  } else if (participants.delete(update.userId)) {
+    playSoundEffect("callUserLeave");
+    changed = true;
+  }
+  knownCallParticipantsByChannelId.set(channelId, participants);
+  if (changed) syncVoiceCallStatus(state, activeSession);
   return changed;
 }
 
@@ -929,6 +952,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onVoiceStateUpdate: (update) => {
       voiceCallController?.handleVoiceStateUpdate(update);
+      if (handleCallVoiceStateUpdate(state, update)) effects.scheduleRender();
     },
     onVoiceServerUpdate: (update) => {
       voiceCallController?.handleVoiceServerUpdate(update);
