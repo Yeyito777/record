@@ -24,6 +24,8 @@ export type CommandResult =
   | { type: "refresh" }
   | { type: "call" }
   | { type: "hangup" }
+  | { type: "mute"; muted: boolean | null }
+  | { type: "deafen"; deafened: boolean | null }
   | { type: "theme_changed" };
 
 export interface SlashCommand {
@@ -48,6 +50,11 @@ const CHANNELS_ARGS: CompletionItem[] = [
 const SHOW_HIDDEN_ARGS: CompletionItem[] = [
   { name: "on", desc: "Show inaccessible channel rows" },
   { name: "off", desc: "Hide inaccessible channel rows" },
+];
+
+const VOICE_TOGGLE_ARGS: CompletionItem[] = [
+  { name: "on", desc: "Turn this voice setting on" },
+  { name: "off", desc: "Turn this voice setting off" },
 ];
 
 function parseOnOff(value: string | undefined): boolean | null {
@@ -153,6 +160,32 @@ const commands: SlashCommand[] = [
       if (parts.length !== 1) return usage(state, "Usage: /hangup");
       clearPrompt(state);
       return { type: "hangup" };
+    },
+  },
+  {
+    name: "/mute",
+    description: "Toggle or set voice call microphone mute",
+    args: VOICE_TOGGLE_ARGS,
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length > 2) return usage(state, "Usage: /mute [on|off]");
+      const parsed = parseOnOff(parts[1]);
+      if (parts[1] !== undefined && parsed === null) return usage(state, "Usage: /mute [on|off]");
+      clearPrompt(state);
+      return { type: "mute", muted: parsed };
+    },
+  },
+  {
+    name: "/deafen",
+    description: "Toggle or set voice call speaker deafen",
+    args: VOICE_TOGGLE_ARGS,
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length > 2) return usage(state, "Usage: /deafen [on|off]");
+      const parsed = parseOnOff(parts[1]);
+      if (parts[1] !== undefined && parsed === null) return usage(state, "Usage: /deafen [on|off]");
+      clearPrompt(state);
+      return { type: "deafen", deafened: parsed };
     },
   },
   {

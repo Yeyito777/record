@@ -23,8 +23,13 @@ class FakeGateway implements VoiceGatewayConnection {
   mediaSessionId = "media-1";
   connected = false;
   disconnected = false;
+  selfVoiceStates: Array<{ selfMute: boolean; selfDeaf: boolean }> = [];
 
   constructor(readonly callbacks: VoiceGatewayConnectionCallbacks = {}) {}
+
+  setSelfVoiceState(state: { selfMute: boolean; selfDeaf: boolean }): void {
+    this.selfVoiceStates.push({ ...state });
+  }
 
   async connect(): Promise<void> {
     this.connected = true;
@@ -172,6 +177,16 @@ describe("voice backend", () => {
     expect(result.session.state).toBe("ready");
     expect(controller.activeSession?.target.channelId).toBe("dm-1");
     expect(rings).toEqual([{ channelId: "dm-1", recipientIds: ["friend"] }]);
+
+    expect(controller.setSelfMute(true)).toBe(true);
+    expect(controller.activeSession?.selfMute).toBe(true);
+    expect(signaling.requests.at(-1)).toEqual({ guildId: null, channelId: "dm-1", selfMute: true, selfDeaf: false, selfVideo: false, preferredRegions: ["iad", "atl"] });
+    expect(gateway.selfVoiceStates.at(-1)).toEqual({ selfMute: true, selfDeaf: false });
+
+    expect(controller.setSelfDeaf(true)).toBe(true);
+    expect(controller.activeSession?.selfDeaf).toBe(true);
+    expect(signaling.requests.at(-1)).toEqual({ guildId: null, channelId: "dm-1", selfMute: true, selfDeaf: true, selfVideo: false, preferredRegions: ["iad", "atl"] });
+    expect(gateway.selfVoiceStates.at(-1)).toEqual({ selfMute: true, selfDeaf: true });
 
     controller.leave();
     expect(gateway.disconnected).toBe(true);

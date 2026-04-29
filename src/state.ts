@@ -17,6 +17,7 @@ import { createTypingState, type TypingState } from "./typing";
 import { normalizeToken } from "./token";
 import type { ClipboardImageAttachment } from "./imageclipboard";
 import type { NoticeTone } from "./theme";
+import type { VoiceConnectionState } from "./voice";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
@@ -68,6 +69,14 @@ export interface EditTarget {
   timestamp: number | null;
 }
 
+export interface VoiceCallStatus {
+  displayName: string;
+  state: VoiceConnectionState;
+  startedAt: number;
+  selfMute: boolean;
+  selfDeaf: boolean;
+}
+
 export interface AppState {
   cols: number;
   rows: number;
@@ -92,6 +101,7 @@ export interface AppState {
   notifications: NotificationState;
   replyTarget: ReplyTarget | null;
   editTarget: EditTarget | null;
+  voiceCall: VoiceCallStatus | null;
   roleIdsByGuildId: Record<string, string[]>;
   guildRolesByGuildId: Record<string, DiscordRole[]>;
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
@@ -134,6 +144,7 @@ export function createInitialState(
     notifications: createNotificationState(),
     replyTarget: null,
     editTarget: null,
+    voiceCall: null,
     roleIdsByGuildId: {},
     guildRolesByGuildId: {},
     memberRoleIdsByGuildId: {},

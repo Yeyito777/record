@@ -50,6 +50,12 @@ describe("commands", () => {
 
     expect(tryCommand("/call", state)).toEqual({ type: "call" });
     expect(tryCommand("/hangup", state)).toEqual({ type: "hangup" });
+    expect(tryCommand("/mute", state)).toEqual({ type: "mute", muted: null });
+    expect(tryCommand("/mute on", state)).toEqual({ type: "mute", muted: true });
+    expect(tryCommand("/mute off", state)).toEqual({ type: "mute", muted: false });
+    expect(tryCommand("/deafen", state)).toEqual({ type: "deafen", deafened: null });
+    expect(tryCommand("/deafen on", state)).toEqual({ type: "deafen", deafened: true });
+    expect(tryCommand("/deafen off", state)).toEqual({ type: "deafen", deafened: false });
   });
 
   test("toggles hidden channel display", () => {

@@ -759,6 +759,21 @@ function callDisplayName(session: VoiceCallSession | null): string {
   return session?.target.displayName || "call";
 }
 
+function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null): void {
+  if (!session || session.state === "ended" || session.state === "error") {
+    state.voiceCall = null;
+    return;
+  }
+
+  state.voiceCall = {
+    displayName: callDisplayName(session),
+    state: session.state,
+    startedAt: session.startedAt,
+    selfMute: session.selfMute,
+    selfDeaf: session.selfDeaf,
+  };
+}
+
 function ensureVoiceCallController(state: AppState, token: string, effects: SessionEffects): VoiceCallController | null {
   const selfUserId = state.auth.user?.id;
   if (!selfUserId || !appGateway || appGatewayToken !== token) return null;
@@ -770,6 +785,8 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
     ringRecipients: (channelId, recipientIds) => ringDirectMessageCall(token, channelId, recipientIds),
     onStateChange: (session) => {
       debugLog("voice.state", { state: session?.state ?? "idle", channelId: session?.target.channelId ?? null });
+      syncVoiceCallStatus(state, session);
+      effects.scheduleRender();
     },
     onError: (error) => {
       setNotice(state, `Voice call: ${error.message}`, "warning", { chat: false });
@@ -781,6 +798,7 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
 
 function startAppGateway(state: AppState, token: string, effects: SessionEffects): void {
   if (appGateway && appGatewayToken === token) return;
+  state.voiceCall = null;
   disconnectAppGateway();
   appGatewayToken = token;
   appGateway = new AppGatewayClient(token, {
@@ -909,6 +927,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.messageCacheByChannelId = {};
   state.replyTarget = null;
   state.editTarget = null;
+  state.voiceCall = null;
   state.memberRoleCacheVersion += 1;
   focusPrompt(state);
 }
@@ -1711,9 +1730,12 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     channelId: channel.id,
     recipientIds: recipients,
     displayName,
-  }).then(({ session, warnings }) => {
-    const suffix = warnings.length > 0 ? ` (${warnings[0]})` : "";
-    setNotice(state, `Connected to ${callDisplayName(session)}.${suffix}`, warnings.length > 0 ? "warning" : "success", { chat: false });
+  }).then(({ warnings }) => {
+    if (warnings.length > 0) {
+      setNotice(state, `Call connected, but ${warnings[0]}`, "warning", { chat: false });
+    } else {
+      setNotice(state, "", "muted");
+    }
     effects.scheduleRender();
   }).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -1730,9 +1752,43 @@ export function hangUpCurrentCall(state: AppState, effects: SessionEffects): voi
     return;
   }
 
-  const name = callDisplayName(voiceCallController.activeSession);
   voiceCallController.leave();
-  setNotice(state, `Left ${name}.`, "muted", { chat: false });
+  state.voiceCall = null;
+  setNotice(state, "", "muted");
+  effects.scheduleRender();
+}
+
+export function setCurrentCallMute(state: AppState, effects: SessionEffects, muted: boolean | null): void {
+  const session = voiceCallController?.activeSession;
+  if (!voiceCallController || !session) {
+    setNotice(state, "No active call.", "muted", { chat: false });
+    effects.scheduleRender();
+    return;
+  }
+
+  const target = muted ?? !session.selfMute;
+  if (!voiceCallController.setSelfMute(target)) {
+    setNotice(state, "Discord gateway is not ready to update voice mute.", "warning", { chat: false });
+  } else {
+    setNotice(state, "", "muted");
+  }
+  effects.scheduleRender();
+}
+
+export function setCurrentCallDeaf(state: AppState, effects: SessionEffects, deafened: boolean | null): void {
+  const session = voiceCallController?.activeSession;
+  if (!voiceCallController || !session) {
+    setNotice(state, "No active call.", "muted", { chat: false });
+    effects.scheduleRender();
+    return;
+  }
+
+  const target = deafened ?? !session.selfDeaf;
+  if (!voiceCallController.setSelfDeaf(target)) {
+    setNotice(state, "Discord gateway is not ready to update voice deafen.", "warning", { chat: false });
+  } else {
+    setNotice(state, "", "muted");
+  }
   effects.scheduleRender();
 }
 

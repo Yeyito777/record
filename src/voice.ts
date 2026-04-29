@@ -85,6 +85,7 @@ export interface VoiceGatewayJoinData {
 export interface VoiceGatewayConnection {
   connect(): Promise<void>;
   disconnect(): void;
+  setSelfVoiceState?(state: { selfMute: boolean; selfDeaf: boolean }): void;
   readonly mediaSessionId: string | null;
 }
 
@@ -105,6 +106,8 @@ export interface VoiceCallSession {
   state: VoiceConnectionState;
   gateway: VoiceGatewayConnection | null;
   startedAt: number;
+  selfMute: boolean;
+  selfDeaf: boolean;
 }
 
 export interface VoiceCallStartResult {
@@ -137,6 +140,8 @@ export interface VoiceAudioContext {
   mode: string;
   secretKey: Buffer;
   ssrc: number;
+  selfMute: boolean;
+  selfDeaf: boolean;
   sendSpeaking: (speaking: boolean) => void;
   encodeOutgoingOpus?: (payload: Buffer) => Buffer | null;
   decodeIncomingOpus?: (ssrc: number, payload: Buffer) => Buffer | null;
@@ -463,6 +468,8 @@ export class VoiceCallController {
       state: "signaling",
       gateway: null,
       startedAt: Date.now(),
+      selfMute: false,
+      selfDeaf: false,
     };
     this.active = session;
     this.emitState();
@@ -526,8 +533,38 @@ export class VoiceCallController {
     this.leave();
   }
 
+  setSelfMute(selfMute: boolean): boolean {
+    return this.updateSelfVoiceState({ selfMute });
+  }
+
+  toggleSelfMute(): boolean | null {
+    const session = this.active;
+    if (!session || session.state === "ended" || session.state === "error") return null;
+    return this.setSelfMute(!session.selfMute);
+  }
+
+  setSelfDeaf(selfDeaf: boolean): boolean {
+    return this.updateSelfVoiceState({ selfDeaf });
+  }
+
+  toggleSelfDeaf(): boolean | null {
+    const session = this.active;
+    if (!session || session.state === "ended" || session.state === "error") return null;
+    return this.setSelfDeaf(!session.selfDeaf);
+  }
+
   handleVoiceStateUpdate(update: VoiceStateUpdate): void {
     if (update.userId !== this.options.selfUserId) return;
+    const active = this.active;
+    if (active && update.channelId === active.target.channelId) {
+      const changed = active.selfMute !== update.selfMute || active.selfDeaf !== update.selfDeaf;
+      active.selfMute = update.selfMute;
+      active.selfDeaf = update.selfDeaf;
+      if (changed) {
+        active.gateway?.setSelfVoiceState?.({ selfMute: active.selfMute, selfDeaf: active.selfDeaf });
+        this.emitState();
+      }
+    }
     if (!this.pending) return;
     if (update.channelId !== this.pending.target.channelId) return;
     this.pending.state = update;
@@ -551,6 +588,33 @@ export class VoiceCallController {
     }
   }
 
+  private updateSelfVoiceState(update: { selfMute?: boolean; selfDeaf?: boolean }): boolean {
+    const session = this.active;
+    if (!session || session.state === "ended" || session.state === "error") return false;
+    const previousMute = session.selfMute;
+    const previousDeaf = session.selfDeaf;
+    session.selfMute = update.selfMute ?? session.selfMute;
+    session.selfDeaf = update.selfDeaf ?? session.selfDeaf;
+    session.gateway?.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
+    this.emitState();
+
+    const requested = this.options.signaling.requestVoiceState({
+      guildId: session.target.guildId,
+      channelId: session.target.channelId,
+      selfMute: session.selfMute,
+      selfDeaf: session.selfDeaf,
+      selfVideo: false,
+      preferredRegions: session.target.preferredRegions,
+    });
+    if (requested) return true;
+
+    session.selfMute = previousMute;
+    session.selfDeaf = previousDeaf;
+    session.gateway?.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
+    this.emitState();
+    return false;
+  }
+
   private async connectSessionGateway(session: VoiceCallSession): Promise<void> {
     if (this.active !== session) throw new Error("Call cancelled.");
     session.state = "signaling";
@@ -560,8 +624,8 @@ export class VoiceCallController {
     const requested = this.options.signaling.requestVoiceState({
       guildId: session.target.guildId,
       channelId: session.target.channelId,
-      selfMute: false,
-      selfDeaf: false,
+      selfMute: session.selfMute,
+      selfDeaf: session.selfDeaf,
       selfVideo: false,
       preferredRegions: session.target.preferredRegions,
     });
@@ -582,6 +646,7 @@ export class VoiceCallController {
     const gateway = this.options.createGatewayConnection?.(gatewayData, callbacks)
       ?? new DiscordVoiceGatewayConnection(gatewayData, createDefaultVoiceAudioBackend(), callbacks);
     session.gateway = gateway;
+    gateway.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
     await gateway.connect();
   }
 
@@ -725,6 +790,10 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private readyReject: ((error: Error) => void) | null = null;
   private disconnected = false;
   private audioStarted = false;
+  private speaking = false;
+  private audioContext: VoiceAudioContext | null = null;
+  private selfMute = false;
+  private selfDeaf = false;
   private readonly ssrcToUserId = new Map<number, string>();
   private readonly dave: DaveVoiceEncryption;
   mediaSessionId: string | null = null;
@@ -763,6 +832,16 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     });
   }
 
+  setSelfVoiceState(state: { selfMute: boolean; selfDeaf: boolean }): void {
+    this.selfMute = state.selfMute;
+    this.selfDeaf = state.selfDeaf;
+    if (this.audioContext) {
+      this.audioContext.selfMute = this.selfMute;
+      this.audioContext.selfDeaf = this.selfDeaf;
+    }
+    if (this.selfMute) this.sendSpeaking(false);
+  }
+
   disconnect(): void {
     this.disconnected = true;
     if (this.connectTimer) {
@@ -775,6 +854,8 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     }
     this.audio.stop();
     this.audioStarted = false;
+    this.speaking = false;
+    this.audioContext = null;
     if (this.udp) {
       try {
         this.udp.close();
@@ -931,17 +1012,21 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
 
     if (!this.audioStarted) {
       this.audioStarted = true;
+      const audioContext: VoiceAudioContext = {
+        udp: this.udp,
+        mode: this.selectedMode,
+        secretKey: this.secretKey,
+        ssrc: this.ssrc,
+        selfMute: this.selfMute,
+        selfDeaf: this.selfDeaf,
+        sendSpeaking: (speaking) => this.sendSpeaking(speaking),
+        encodeOutgoingOpus: (payload) => this.dave.encodeOutgoingOpus(payload),
+        decodeIncomingOpus: (ssrc, payload) => this.dave.decodeIncomingOpus(this.ssrcToUserId.get(ssrc) ?? null, payload),
+        onError: (error) => this.reportError(error),
+      };
+      this.audioContext = audioContext;
       try {
-        await this.audio.start({
-          udp: this.udp,
-          mode: this.selectedMode,
-          secretKey: this.secretKey,
-          ssrc: this.ssrc,
-          sendSpeaking: (speaking) => this.sendSpeaking(speaking),
-          encodeOutgoingOpus: (payload) => this.dave.encodeOutgoingOpus(payload),
-          decodeIncomingOpus: (ssrc, payload) => this.dave.decodeIncomingOpus(this.ssrcToUserId.get(ssrc) ?? null, payload),
-          onError: (error) => this.reportError(error),
-        });
+        await this.audio.start(audioContext);
       } catch (error) {
         this.reportError(asError(error, "Voice audio backend failed to start."));
       }
@@ -969,6 +1054,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
 
   private sendSpeaking(speaking: boolean): void {
     if (this.ssrc === null) return;
+    this.speaking = speaking;
     this.send({
       op: 5,
       d: {
@@ -1183,7 +1269,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
 
   private forwardDiscordPacket(packet: Buffer): void {
     const context = this.context;
-    if (!context || !this.playbackSocket || this.localPlaybackPort === null) return;
+    if (!context || !this.playbackSocket || this.localPlaybackPort === null || context.selfDeaf) return;
     const parsed = parseDiscordRtpPacket(packet);
     if (!parsed || parsed.payloadType !== OPUS_PAYLOAD_TYPE) return;
 
@@ -1207,6 +1293,13 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private forwardCapturePacket(packet: Buffer): void {
     const context = this.context;
     if (!context) return;
+    if (context.selfMute) {
+      if (this.speaking) {
+        this.speaking = false;
+        context.sendSpeaking(false);
+      }
+      return;
+    }
     const parsed = parsePlainRtpPacket(packet);
     if (!parsed || parsed.payloadType !== OPUS_PAYLOAD_TYPE) return;
     const opusPayload = parsed.payload;

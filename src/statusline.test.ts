@@ -137,6 +137,39 @@ describe("statusline", () => {
     expect(plain).not.toContain("PING");
   });
 
+  test("shows active voice call info with elapsed time and audio state", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.voiceCall = {
+      displayName: "Alice",
+      state: "ready",
+      startedAt: Date.now() - 222_000,
+      selfMute: false,
+      selfDeaf: false,
+    };
+
+    const line = renderStatusLine(state, 120).lines[0] ?? "";
+    const plain = stripAnsi(line);
+
+    expect(plain).toContain("▎ ☎ Alice 03:42  🎙 on  🔈 on");
+    expect(plain.indexOf("▎ ☎ Alice")).toBeLessThan(plain.indexOf("Logged In As:"));
+    expect(line).toContain(theme.accent);
+  });
+
+  test("shows muted and deafened call icons", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.voiceCall = {
+      displayName: "Alice",
+      state: "ready",
+      startedAt: Date.now(),
+      selfMute: true,
+      selfDeaf: true,
+    };
+
+    const plain = stripAnsi(renderStatusLine(state, 120).lines[0] ?? "");
+
+    expect(plain).toContain("🔇 muted  🔇 off");
+  });
+
   test("shows notice feedback in the status line", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.notice = { text: "Downloading image.png… 50% (1 MB / 2 MB)", tone: "muted", loading: true };

@@ -11,6 +11,7 @@ import { theme } from "./theme";
 import { truncate } from "./textwidth";
 
 import { accountBlock } from "./statusblocks/account";
+import { callBlock } from "./statusblocks/call";
 import { editBlock } from "./statusblocks/edit";
 import { noticeBlock } from "./statusblocks/notice";
 import { presenceBlock } from "./statusblocks/presence";
@@ -27,6 +28,7 @@ export interface StatusBlock {
 type BlockBuilder = (state: AppState) => StatusBlock | null;
 
 const BLOCK_BUILDERS: BlockBuilder[] = [
+  callBlock,
   accountBlock,
   presenceBlock,
   editBlock,

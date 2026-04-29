@@ -146,6 +146,7 @@ function hasActiveLoadingIndicator(): boolean {
     || state.timeline.loading
     || state.timeline.loadingOlder
     || hasActiveTimelineCall(state.timeline)
+    || Boolean(state.voiceCall)
     || Object.keys(state.typing.byChannelId).length > 0;
 }
 

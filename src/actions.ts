@@ -9,7 +9,7 @@ import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
-import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, startCurrentDirectMessageCall, type SessionEffects } from "./session";
+import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, startCurrentDirectMessageCall, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
@@ -174,6 +174,12 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       return true;
     case "hangup":
       hangUpCurrentCall(state, effects);
+      return true;
+    case "mute":
+      setCurrentCallMute(state, effects, result.muted);
+      return true;
+    case "deafen":
+      setCurrentCallDeaf(state, effects, result.deafened);
       return true;
   }
 }
