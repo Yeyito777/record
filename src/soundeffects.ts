@@ -15,7 +15,8 @@ export type SoundEffect =
   | "undeafen"
   | "ringtone"
   | "callCalling"
-  | "callJoin";
+  | "callJoin"
+  | "callLeave";
 
 const SOUND_FILES: Record<SoundEffect, string> = {
   mute: "discord-mute.mp3",
@@ -25,6 +26,7 @@ const SOUND_FILES: Record<SoundEffect, string> = {
   ringtone: "discord-call-ringing.mp3",
   callCalling: "discord-call-calling.mp3",
   callJoin: "discord-user-join.mp3",
+  callLeave: "discord-disconnect.mp3",
 };
 
 const SOUND_DIR = fileURLToPath(new URL("../assets/sounds/", import.meta.url));

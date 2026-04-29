@@ -781,8 +781,10 @@ function callDisplayName(session: VoiceCallSession | null): string {
 }
 
 function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null): void {
+  const hadActiveCall = Boolean(state.voiceCall);
   if (!session || session.state === "ended" || session.state === "error") {
     state.voiceCall = null;
+    if (hadActiveCall && session?.state === "ended") playSoundEffect("callLeave");
     return;
   }
 
