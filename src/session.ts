@@ -323,32 +323,47 @@ function syncCallParticipantSounds(state: AppState, channelId: string, voiceStat
 
   const next = new Set(voiceStateUserIds.filter((userId) => userId && userId !== selfUserId));
   const previous = knownCallParticipantsByChannelId.get(channelId);
-  knownCallParticipantsByChannelId.set(channelId, next);
-  debugLog("call.participants.snapshot", {
-    source: "call_gateway",
-    channelId,
-    activeState: activeSession.state,
-    previous: previous ? Array.from(previous) : null,
-    next: Array.from(next),
-    rawVoiceStateUserIds: voiceStateUserIds,
-  });
-  if (!previous) return false;
+  if (!previous) {
+    knownCallParticipantsByChannelId.set(channelId, next);
+    debugLog("call.participants.snapshot", {
+      source: "call_gateway",
+      channelId,
+      activeState: activeSession.state,
+      previous: null,
+      next: Array.from(next),
+      after: Array.from(next),
+      rawVoiceStateUserIds: voiceStateUserIds,
+      baseline: true,
+    });
+    return false;
+  }
 
+  // DM call CALL_UPDATE voice-state snapshots can be partial/empty during
+  // startup. Use them to discover new participants, but do not infer leaves
+  // from users missing in a snapshot; VOICE_STATE_UPDATE is the authoritative
+  // path for join/leave removals.
+  const after = new Set(previous);
   let changed = false;
   for (const userId of next) {
     if (!previous.has(userId)) {
+      after.add(userId);
       debugLog("call.participants.sound", { source: "call_gateway", channelId, userId, action: "join", effect: "callJoin" });
       playSoundEffect("callJoin");
       changed = true;
     }
   }
-  for (const userId of previous) {
-    if (!next.has(userId)) {
-      debugLog("call.participants.sound", { source: "call_gateway", channelId, userId, action: "leave", effect: "callUserLeave" });
-      playSoundEffect("callUserLeave");
-      changed = true;
-    }
-  }
+  knownCallParticipantsByChannelId.set(channelId, after);
+  debugLog("call.participants.snapshot", {
+    source: "call_gateway",
+    channelId,
+    activeState: activeSession.state,
+    previous: Array.from(previous),
+    next: Array.from(next),
+    after: Array.from(after),
+    retainedMissing: Array.from(previous).filter((userId) => !next.has(userId)),
+    rawVoiceStateUserIds: voiceStateUserIds,
+    changed,
+  });
   return changed;
 }
 
