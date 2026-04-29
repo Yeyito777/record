@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
+import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { createInitialState } from "./state";
 
 describe("autocomplete", () => {
@@ -131,6 +132,47 @@ describe("autocomplete", () => {
 
     expect(state.autocomplete?.matches.map((match) => match.name)).toEqual(["@Alice", "@everyone", "@here", "@artist"]);
     expect(state.autocomplete?.matches.map((match) => match.desc)).toEqual(["Alice", "broadcast", "broadcast", "role"]);
+  });
+
+  test("limits direct message mention suggestions to the active direct message", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = DIRECT_MESSAGES_GUILD_ID;
+    state.channelList.channels = [
+      {
+        id: "dm-1",
+        guildId: DIRECT_MESSAGES_GUILD_ID,
+        parentId: null,
+        name: "Alice",
+        topic: null,
+        position: 0,
+        type: 1,
+        nsfw: false,
+        recipients: [{ id: "alice", username: "alice", displayName: "Alice", bot: false }],
+      },
+    ];
+    state.channelList.activeChannelId = "dm-1";
+    state.channelList.activeChannel = state.channelList.channels[0] ?? null;
+    state.memberList.guildId = DIRECT_MESSAGES_GUILD_ID;
+    state.memberList.channelId = "dm-1";
+    state.memberList.members = [
+      { id: "self", username: "self", displayName: "Self", bot: false },
+      { id: "alice", username: "alice", displayName: "Alice", bot: false },
+    ];
+    state.memberList.cache.set(`${DIRECT_MESSAGES_GUILD_ID}:dm-1`, [
+      { id: "self", username: "self", displayName: "Self", bot: false },
+      { id: "alice", username: "alice", displayName: "Alice", bot: false },
+    ]);
+    state.memberList.cache.set("guild-1:channel-1", [
+      { id: "bob", username: "bob", displayName: "Bob", bot: false },
+      { id: "carol", username: "carol", displayName: "Carol", bot: false },
+    ]);
+    state.editor.buffer = "@";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.matches.map((match) => match.name)).toEqual(["@Alice"]);
   });
 
   test("shows nested command args after completing a subcommand", () => {

@@ -179,12 +179,20 @@ export function loadedMentionCandidates(state: AppState): MentionCandidate[] {
 
   for (const recipient of state.channelList.activeChannel?.recipients ?? []) addCandidate(state, byId, recipient);
 
-  if (!guildId || state.memberList.guildId === guildId) {
+  if (guildId === DIRECT_MESSAGES_GUILD_ID) {
+    if (state.memberList.guildId === guildId && state.memberList.channelId === channelId) {
+      for (const member of state.memberList.members) addCandidate(state, byId, member);
+    }
+  } else if (!guildId || state.memberList.guildId === guildId) {
     for (const member of state.memberList.members) addCandidate(state, byId, member);
   }
 
   for (const [key, members] of state.memberList.cache.entries()) {
-    if (guildId && guildId !== DIRECT_MESSAGES_GUILD_ID && !key.startsWith(`${guildId}:`)) continue;
+    if (guildId === DIRECT_MESSAGES_GUILD_ID) {
+      if (!channelId || key !== `${DIRECT_MESSAGES_GUILD_ID}:${channelId}`) continue;
+    } else if (guildId && !key.startsWith(`${guildId}:`)) {
+      continue;
+    }
     for (const member of members) addCandidate(state, byId, member);
   }
 
