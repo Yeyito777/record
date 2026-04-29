@@ -5,7 +5,8 @@
  * call feedback. Playback is best-effort and intentionally silent on failure.
  */
 
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type SoundEffect =
@@ -18,6 +19,11 @@ export type SoundEffect =
   | "callJoin"
   | "callUserLeave"
   | "callLeave";
+
+export interface SoundEffectPlaybackCommand {
+  command: string;
+  args: string[];
+}
 
 const SOUND_FILES: Record<SoundEffect, string> = {
   mute: "discord-mute.mp3",
@@ -32,12 +38,30 @@ const SOUND_FILES: Record<SoundEffect, string> = {
 };
 
 const SOUND_DIR = fileURLToPath(new URL("../assets/sounds/", import.meta.url));
+const COMMAND_AVAILABILITY = new Map<string, boolean>();
 
 export function soundEffectPath(effect: SoundEffect): string {
   return `${SOUND_DIR}${SOUND_FILES[effect]}`;
 }
 
-export function buildSoundEffectPlaybackArgs(path: string): string[] {
+export function buildPwPlaySoundEffectPlaybackArgs(path: string): string[] {
+  return [
+    "--media-role", "event",
+    "--latency", "20ms",
+    path,
+  ];
+}
+
+export function buildPaplaySoundEffectPlaybackArgs(path: string): string[] {
+  return [
+    "--client-name=Record",
+    "--stream-name=Record sound effect",
+    "--latency-msec=20",
+    path,
+  ];
+}
+
+export function buildFfplaySoundEffectPlaybackArgs(path: string): string[] {
   return [
     "-nodisp",
     "-autoexit",
@@ -46,19 +70,63 @@ export function buildSoundEffectPlaybackArgs(path: string): string[] {
   ];
 }
 
+export function buildSoundEffectPlaybackArgs(path: string): string[] {
+  return buildFfplaySoundEffectPlaybackArgs(path);
+}
+
+export function buildSoundEffectPlaybackCommands(path: string): SoundEffectPlaybackCommand[] {
+  return [
+    { command: "pw-play", args: buildPwPlaySoundEffectPlaybackArgs(path) },
+    { command: "paplay", args: buildPaplaySoundEffectPlaybackArgs(path) },
+    { command: "ffplay", args: buildFfplaySoundEffectPlaybackArgs(path) },
+  ];
+}
+
 export function playSoundEffect(effect: SoundEffect): void {
   if (process.env.RECORD_DISABLE_SOUND_EFFECTS === "1") return;
   const path = soundEffectPath(effect);
   if (!existsSync(path)) return;
 
+  for (const { command, args } of buildSoundEffectPlaybackCommands(path)) {
+    if (!commandAvailable(command)) continue;
+    try {
+      const proc = Bun.spawn([command, ...args], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      proc.unref?.();
+      return;
+    } catch {
+      COMMAND_AVAILABILITY.set(command, false);
+    }
+  }
+  // Sound effects should never interfere with chat/call behavior.
+}
+
+function commandAvailable(command: string): boolean {
+  const cached = COMMAND_AVAILABILITY.get(command);
+  if (cached !== undefined) return cached;
+  const available = findExecutable(command) !== null;
+  COMMAND_AVAILABILITY.set(command, available);
+  return available;
+}
+
+function findExecutable(command: string): string | null {
+  if (command.includes("/")) return isExecutable(command) ? command : null;
+  const pathEntries = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  for (const dir of pathEntries) {
+    const candidate = join(dir, command);
+    if (isExecutable(candidate)) return candidate;
+  }
+  return null;
+}
+
+function isExecutable(path: string): boolean {
   try {
-    const proc = Bun.spawn(["ffplay", ...buildSoundEffectPlaybackArgs(path)], {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    proc.unref?.();
+    accessSync(path, constants.X_OK);
+    return true;
   } catch {
-    // Sound effects should never interfere with chat/call behavior.
+    return false;
   }
 }

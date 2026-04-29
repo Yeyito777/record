@@ -1,16 +1,46 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildSoundEffectPlaybackArgs, soundEffectPath } from "./soundeffects";
+import {
+  buildFfplaySoundEffectPlaybackArgs,
+  buildPaplaySoundEffectPlaybackArgs,
+  buildPwPlaySoundEffectPlaybackArgs,
+  buildSoundEffectPlaybackArgs,
+  buildSoundEffectPlaybackCommands,
+  soundEffectPath,
+} from "./soundeffects";
 
 describe("sound effects", () => {
-  test("uses ffplay-compatible detached playback args", () => {
-    expect(buildSoundEffectPlaybackArgs("/tmp/sound.mp3")).toEqual([
+  test("prefers lightweight event players before ffplay fallback", () => {
+    expect(buildSoundEffectPlaybackCommands("/tmp/sound.mp3")).toEqual([
+      { command: "pw-play", args: ["--media-role", "event", "--latency", "20ms", "/tmp/sound.mp3"] },
+      { command: "paplay", args: ["--client-name=Record", "--stream-name=Record sound effect", "--latency-msec=20", "/tmp/sound.mp3"] },
+      { command: "ffplay", args: ["-nodisp", "-autoexit", "-loglevel", "quiet", "/tmp/sound.mp3"] },
+    ]);
+  });
+
+  test("keeps ffplay fallback compatible with detached playback", () => {
+    expect(buildFfplaySoundEffectPlaybackArgs("/tmp/sound.mp3")).toEqual([
       "-nodisp",
       "-autoexit",
       "-loglevel", "quiet",
       "/tmp/sound.mp3",
     ]);
-    expect(buildSoundEffectPlaybackArgs("/tmp/sound.mp3")).not.toContain("-nostdin");
+    expect(buildSoundEffectPlaybackArgs("/tmp/sound.mp3")).toEqual(buildFfplaySoundEffectPlaybackArgs("/tmp/sound.mp3"));
+    expect(buildFfplaySoundEffectPlaybackArgs("/tmp/sound.mp3")).not.toContain("-nostdin");
+  });
+
+  test("builds PipeWire and PulseAudio event playback args", () => {
+    expect(buildPwPlaySoundEffectPlaybackArgs("/tmp/sound.mp3")).toEqual([
+      "--media-role", "event",
+      "--latency", "20ms",
+      "/tmp/sound.mp3",
+    ]);
+    expect(buildPaplaySoundEffectPlaybackArgs("/tmp/sound.mp3")).toEqual([
+      "--client-name=Record",
+      "--stream-name=Record sound effect",
+      "--latency-msec=20",
+      "/tmp/sound.mp3",
+    ]);
   });
 
   test("resolves bundled Discord voice sounds", () => {
