@@ -349,10 +349,13 @@ export function loadCachedMemberList(accountId: string, guildId: string, channel
 
 export function loadCachedChannelMessages(accountId: string): ChannelMessageCache {
   const cached = loadCacheFile().accounts[accountId]?.channelMessages ?? {};
-  return Object.fromEntries(Object.entries(cached).map(([channelId, entry]) => [
-    channelId,
-    { ...cloneCachedChannelMessages(entry), latestFetchedAt: 0 },
-  ]));
+  return Object.fromEntries(Object.entries(cached).map(([channelId, entry]) => {
+    const cloned = cloneCachedChannelMessages(entry);
+    return [
+      channelId,
+      { ...cloned, latestFetchedAt: cloned.latestFetchedAt === null ? null : 0 },
+    ];
+  }));
 }
 
 export function saveCachedChannelMessages(accountId: string, channelId: string, entry: CachedChannelMessages): void {
@@ -365,12 +368,13 @@ export function saveCachedChannelMessages(accountId: string, channelId: string, 
 }
 
 function cloneCachedChannelMessages(entry: CachedChannelMessages, maxMessages = Number.POSITIVE_INFINITY): CachedChannelMessages {
+  const stored = entry as CachedChannelMessages & { latestFetchedAt?: number | null };
   return {
     channelId: entry.channelId,
     messages: entry.messages.slice(-maxMessages).map((message) => ({ ...message })),
     hasOlder: entry.hasOlder,
     updatedAt: entry.updatedAt,
-    latestFetchedAt: entry.latestFetchedAt ?? entry.updatedAt ?? null,
+    latestFetchedAt: stored.latestFetchedAt ?? (stored.latestFetchedAt === null ? null : entry.updatedAt ?? 0),
   };
 }
 

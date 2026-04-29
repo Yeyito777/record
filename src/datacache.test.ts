@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { flushDataCacheSync, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, watchCachedGuildOrder } from "./datacache";
+import { flushDataCacheSync, loadCachedChannelMessages, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, saveCachedChannelMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, watchCachedGuildOrder } from "./datacache";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -88,6 +88,56 @@ describe("data cache", () => {
     expect(JSON.parse(readFileSync(cachePath, "utf8")).accounts["account-1"].guilds).toEqual([
       { id: "guild-new", name: "New Guild", icon: null },
     ]);
+  });
+
+  test("preserves gateway-only message cache markers across persistence", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    saveCachedChannelMessages("account-1", "dm-1", {
+      channelId: "dm-1",
+      messages: [{
+        id: "message-1",
+        channelId: "dm-1",
+        guildId: null,
+        type: 0,
+        content: "from gateway",
+        mentionEveryone: false,
+        mentionRoleIds: [],
+        mentionUserIds: [],
+        mentionUsers: [],
+        timestamp: Date.UTC(2026, 0, 1, 12, 0, 0),
+        editedTimestamp: null,
+        author: { id: "user-1", username: "alice", displayName: "Alice", bot: false },
+        reply: null,
+        call: null,
+        attachments: [],
+        stickerNames: [],
+        embedsCount: 0,
+      }],
+      hasOlder: true,
+      updatedAt: 1234,
+      latestFetchedAt: null,
+    });
+
+    expect(loadCachedChannelMessages("account-1")["dm-1"]?.latestFetchedAt).toBeNull();
+    flushDataCacheSync();
+    expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).accounts["account-1"].channelMessages["dm-1"].latestFetchedAt).toBeNull();
+  });
+
+  test("loads persisted REST-seeded message caches as stale instead of fresh", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    saveCachedChannelMessages("account-1", "channel-1", {
+      channelId: "channel-1",
+      messages: [],
+      hasOlder: false,
+      updatedAt: 1234,
+      latestFetchedAt: 1234,
+    });
+
+    expect(loadCachedChannelMessages("account-1")["channel-1"]?.latestFetchedAt).toBe(0);
   });
 
   test("does not persist derived channel display flags", () => {
