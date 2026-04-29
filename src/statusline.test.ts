@@ -201,7 +201,7 @@ describe("statusline", () => {
     const line = renderStatusLine(state, 120).lines[0] ?? "";
     const plain = stripAnsi(line);
 
-    expect(plain).toContain("☎ Alice 00:00  ⠋ Calling…  🎙 on  🔈 on");
+    expect(plain).toContain("☎ Alice 00:00  🎙 on  🔈 on  ⠋ Calling…");
     expect(plain).not.toContain("▎");
     expect(plain.indexOf("Logged In As:")).toBeLessThan(plain.indexOf("Status:"));
     expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("☎ Alice"));

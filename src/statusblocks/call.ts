@@ -36,7 +36,7 @@ function readyCallText(call: VoiceCallStatus, now = Date.now()): string {
 function pendingCallText(call: VoiceCallStatus, frameIndex: number, now = Date.now()): string {
   const { name, elapsed, mic, speaker } = callParts(call, now);
   const action = call.state === "connecting" ? "Connecting…" : "Calling…";
-  return ` ☎ ${name} ${elapsed}  ${loadingLabel(action, frameIndex)}  ${mic}  ${speaker}`;
+  return ` ☎ ${name} ${elapsed}  ${mic}  ${speaker}  ${loadingLabel(action, frameIndex)}`;
 }
 
 function stableCallWidth(call: VoiceCallStatus, frameIndex: number, now = Date.now()): number {
