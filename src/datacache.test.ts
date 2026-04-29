@@ -140,6 +140,31 @@ describe("data cache", () => {
     expect(loadCachedChannelMessages("account-1")["channel-1"]?.latestFetchedAt).toBe(0);
   });
 
+  test("treats message caches without latest fetch metadata as unseeded", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    const recordDir = join(xdg, "record");
+    mkdirSync(recordDir, { recursive: true });
+    writeFileSync(join(recordDir, "cache.json"), JSON.stringify({
+      version: 1,
+      accounts: {
+        "account-1": {
+          savedAt: Date.now(),
+          channelMessages: {
+            "dm-1": {
+              channelId: "dm-1",
+              messages: [],
+              hasOlder: true,
+              updatedAt: 1234,
+            },
+          },
+        },
+      },
+    }));
+
+    expect(loadCachedChannelMessages("account-1")["dm-1"]?.latestFetchedAt).toBeNull();
+  });
+
   test("does not persist derived channel display flags", () => {
     const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
     process.env.XDG_CONFIG_HOME = xdg;

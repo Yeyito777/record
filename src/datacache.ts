@@ -374,7 +374,7 @@ function cloneCachedChannelMessages(entry: CachedChannelMessages, maxMessages = 
     messages: entry.messages.slice(-maxMessages).map((message) => ({ ...message })),
     hasOlder: entry.hasOlder,
     updatedAt: entry.updatedAt,
-    latestFetchedAt: stored.latestFetchedAt ?? (stored.latestFetchedAt === null ? null : entry.updatedAt ?? 0),
+    latestFetchedAt: stored.latestFetchedAt ?? null,
   };
 }
 
