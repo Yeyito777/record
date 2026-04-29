@@ -306,26 +306,45 @@ function handleCallGatewayEvent(state: AppState, channelId: string, ringingUserI
 
 function syncCallParticipantSounds(state: AppState, channelId: string, voiceStateUserIds: readonly string[]): boolean {
   const activeSession = voiceCallController?.activeSession;
+  const selfUserId = state.auth.user?.id;
   if (!activeSession || activeSession.target.channelId !== channelId || activeSession.state === "ended" || activeSession.state === "error") {
-    knownCallParticipantsByChannelId.set(channelId, new Set(voiceStateUserIds));
+    const baseline = new Set(voiceStateUserIds.filter((userId) => userId && userId !== selfUserId));
+    knownCallParticipantsByChannelId.set(channelId, baseline);
+    debugLog("call.participants.baseline", {
+      source: "call_gateway_inactive",
+      channelId,
+      activeChannelId: activeSession?.target.channelId ?? null,
+      activeState: activeSession?.state ?? null,
+      participants: Array.from(baseline),
+      rawVoiceStateUserIds: voiceStateUserIds,
+    });
     return false;
   }
 
-  const selfUserId = state.auth.user?.id;
   const next = new Set(voiceStateUserIds.filter((userId) => userId && userId !== selfUserId));
   const previous = knownCallParticipantsByChannelId.get(channelId);
   knownCallParticipantsByChannelId.set(channelId, next);
+  debugLog("call.participants.snapshot", {
+    source: "call_gateway",
+    channelId,
+    activeState: activeSession.state,
+    previous: previous ? Array.from(previous) : null,
+    next: Array.from(next),
+    rawVoiceStateUserIds: voiceStateUserIds,
+  });
   if (!previous) return false;
 
   let changed = false;
   for (const userId of next) {
     if (!previous.has(userId)) {
+      debugLog("call.participants.sound", { source: "call_gateway", channelId, userId, action: "join", effect: "callJoin" });
       playSoundEffect("callJoin");
       changed = true;
     }
   }
   for (const userId of previous) {
     if (!next.has(userId)) {
+      debugLog("call.participants.sound", { source: "call_gateway", channelId, userId, action: "leave", effect: "callUserLeave" });
       playSoundEffect("callUserLeave");
       changed = true;
     }
@@ -343,22 +362,49 @@ function handleActiveCallGatewayEvent(state: AppState, channelId: string, voiceS
 function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): boolean {
   const activeSession = voiceCallController?.activeSession;
   const channelId = activeSession?.target.channelId;
-  if (!activeSession || !channelId || activeSession.state === "ended" || activeSession.state === "error") return false;
-  if (update.userId === state.auth.user?.id) return false;
+  if (!activeSession || !channelId || activeSession.state === "ended" || activeSession.state === "error") {
+    debugLog("call.participants.voice_state_ignored", {
+      reason: "no_active_call",
+      activeChannelId: channelId ?? null,
+      activeState: activeSession?.state ?? null,
+      update,
+    });
+    return false;
+  }
+  if (update.userId === state.auth.user?.id) {
+    debugLog("call.participants.voice_state_ignored", { reason: "self", channelId, update });
+    return false;
+  }
 
   const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  debugLog("call.participants.voice_state", {
+    channelId,
+    activeState: activeSession.state,
+    userId: update.userId,
+    updateChannelId: update.channelId,
+    before: Array.from(participants),
+  });
   let changed = false;
   if (update.channelId === channelId) {
     if (!participants.has(update.userId)) {
       participants.add(update.userId);
+      debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "join", effect: "callJoin" });
       playSoundEffect("callJoin");
       changed = true;
     }
   } else if (participants.delete(update.userId)) {
+    debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave" });
     playSoundEffect("callUserLeave");
     changed = true;
   }
   knownCallParticipantsByChannelId.set(channelId, participants);
+  debugLog("call.participants.voice_state_after", {
+    channelId,
+    userId: update.userId,
+    updateChannelId: update.channelId,
+    after: Array.from(participants),
+    changed,
+  });
   if (changed) syncVoiceCallStatus(state, activeSession);
   return changed;
 }

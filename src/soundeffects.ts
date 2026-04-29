@@ -9,6 +9,8 @@ import { accessSync, constants, existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { debugLog } from "./debuglog";
+
 export type SoundEffect =
   | "mute"
   | "unmute"
@@ -83,12 +85,21 @@ export function buildSoundEffectPlaybackCommands(path: string): SoundEffectPlayb
 }
 
 export function playSoundEffect(effect: SoundEffect): void {
-  if (process.env.RECORD_DISABLE_SOUND_EFFECTS === "1") return;
+  if (process.env.RECORD_DISABLE_SOUND_EFFECTS === "1") {
+    debugLog("sound.effect.skipped", { effect, reason: "disabled" });
+    return;
+  }
   const path = soundEffectPath(effect);
-  if (!existsSync(path)) return;
+  if (!existsSync(path)) {
+    debugLog("sound.effect.skipped", { effect, path, reason: "missing_file" });
+    return;
+  }
 
   for (const { command, args } of buildSoundEffectPlaybackCommands(path)) {
-    if (!commandAvailable(command)) continue;
+    if (!commandAvailable(command)) {
+      debugLog("sound.effect.player_unavailable", { effect, command });
+      continue;
+    }
     try {
       const proc = Bun.spawn([command, ...args], {
         stdin: "ignore",
@@ -96,11 +107,14 @@ export function playSoundEffect(effect: SoundEffect): void {
         stderr: "ignore",
       });
       proc.unref?.();
+      debugLog("sound.effect.play", { effect, command, path });
       return;
-    } catch {
+    } catch (error) {
       COMMAND_AVAILABILITY.set(command, false);
+      debugLog("sound.effect.spawn_failed", { effect, command, error: error instanceof Error ? error.message : String(error) });
     }
   }
+  debugLog("sound.effect.skipped", { effect, path, reason: "no_player" });
   // Sound effects should never interfere with chat/call behavior.
 }
 
