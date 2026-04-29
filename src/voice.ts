@@ -20,6 +20,9 @@ const VOICE_GATEWAY_VERSION = 8;
 const VOICE_FLAGS = 3; // CLIPS_ENABLED | ALLOW_VOICE_RECORDING, matches Discord desktop/endcord.
 const VOICE_READY_TIMEOUT_MS = 10_000;
 const VOICE_CONNECT_TIMEOUT_MS = 10_000;
+const VOICE_GATEWAY_REJOIN_ATTEMPTS = 3;
+const VOICE_GATEWAY_REJOIN_DELAY_MS = 250;
+const VOICE_GATEWAY_INVALID_SESSION_CODE = 4006;
 const UDP_DISCOVERY_TIMEOUT_MS = 5_000;
 const VOICE_REGION_TIMEOUT_MS = 3_000;
 const OPUS_PAYLOAD_TYPE = 120;
@@ -85,6 +88,18 @@ export interface VoiceGatewayConnection {
   readonly mediaSessionId: string | null;
 }
 
+export class VoiceGatewayCloseError extends Error {
+  constructor(readonly code: number, readonly closeReason: string) {
+    super(`Discord voice gateway closed (${code || "unknown"}: ${closeReason}).`);
+    this.name = "VoiceGatewayCloseError";
+  }
+}
+
+export interface VoiceGatewayConnectionCallbacks {
+  onError?: (error: Error) => void;
+  onClose?: (error: VoiceGatewayCloseError) => void;
+}
+
 export interface VoiceCallSession {
   target: VoiceCallTarget;
   state: VoiceConnectionState;
@@ -100,9 +115,10 @@ export interface VoiceCallStartResult {
 export interface VoiceCallControllerOptions {
   selfUserId: string;
   signaling: VoiceSignalingClient;
-  createGatewayConnection?: (data: VoiceGatewayJoinData) => VoiceGatewayConnection;
+  createGatewayConnection?: (data: VoiceGatewayJoinData, callbacks: VoiceGatewayConnectionCallbacks) => VoiceGatewayConnection;
   fetchPreferredRegions?: () => Promise<string[]>;
   ringRecipients?: (channelId: string, recipientIds: string[]) => Promise<void>;
+  retryDelayMs?: number;
   onStateChange?: (session: VoiceCallSession | null) => void;
   onError?: (error: Error) => void;
 }
@@ -428,6 +444,7 @@ class DaveVoiceEncryption {
 export class VoiceCallController {
   private pending: PendingVoiceJoin | null = null;
   private active: VoiceCallSession | null = null;
+  private recoveringSession: VoiceCallSession | null = null;
 
   constructor(private readonly options: VoiceCallControllerOptions) {}
 
@@ -454,52 +471,41 @@ export class VoiceCallController {
     if (this.active !== session) throw new Error("Call cancelled.");
     session.target = { ...target, preferredRegions };
 
-    const gatewayDataPromise = this.waitForGatewayData(session.target);
-    const requested = this.options.signaling.requestVoiceState({
-      guildId: target.guildId,
-      channelId: target.channelId,
-      selfMute: false,
-      selfDeaf: false,
-      selfVideo: false,
-      preferredRegions,
-    });
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= VOICE_GATEWAY_REJOIN_ATTEMPTS; attempt++) {
+      try {
+        if (attempt > 0) await this.prepareVoiceGatewayRejoin(session);
+        await this.connectSessionGateway(session);
 
-    if (!requested) {
-      const error = new Error("Discord gateway is not ready yet.");
-      void gatewayDataPromise.catch(() => {});
-      this.clearPending(error);
-      this.failSession(session, error);
-      throw error;
-    }
-
-    try {
-      const gatewayData = await gatewayDataPromise;
-      session.state = "connecting";
-      this.emitState();
-
-      const gateway = this.options.createGatewayConnection?.(gatewayData)
-        ?? new DiscordVoiceGatewayConnection(gatewayData, createDefaultVoiceAudioBackend(), { onError: this.options.onError });
-      session.gateway = gateway;
-      await gateway.connect();
-
-      const warnings: string[] = [];
-      const recipients = target.recipientIds ?? [];
-      if (recipients.length > 0 && this.options.ringRecipients) {
-        try {
-          await this.options.ringRecipients(target.channelId, recipients);
-        } catch (error) {
-          warnings.push(error instanceof Error ? error.message : String(error));
+        const warnings: string[] = [];
+        const recipients = target.recipientIds ?? [];
+        if (recipients.length > 0 && this.options.ringRecipients) {
+          try {
+            await this.options.ringRecipients(target.channelId, recipients);
+          } catch (error) {
+            warnings.push(error instanceof Error ? error.message : String(error));
+          }
         }
-      }
 
-      session.state = "ready";
-      this.emitState();
-      return { session, warnings };
-    } catch (error) {
-      const asErr = error instanceof Error ? error : new Error(String(error));
-      this.failSession(session, asErr);
-      throw asErr;
+        if (this.active !== session) throw new Error("Call cancelled.");
+        session.state = "ready";
+        this.emitState();
+        return { session, warnings };
+      } catch (error) {
+        const asErr = error instanceof Error ? error : new Error(String(error));
+        lastError = asErr;
+        session.gateway?.disconnect();
+        session.gateway = null;
+        if (this.active !== session) throw asErr;
+        if (attempt < VOICE_GATEWAY_REJOIN_ATTEMPTS && isRecoverableVoiceGatewayClose(asErr)) continue;
+        this.failSession(session, asErr);
+        throw asErr;
+      }
     }
+
+    const error = lastError ?? new Error("Failed to join Discord voice gateway.");
+    this.failSession(session, error);
+    throw error;
   }
 
   leave(): void {
@@ -511,6 +517,7 @@ export class VoiceCallController {
       this.emitState();
     }
     this.active = null;
+    this.recoveringSession = null;
     this.options.signaling.leaveVoice();
     this.emitState();
   }
@@ -531,6 +538,7 @@ export class VoiceCallController {
     if (!this.pending) return;
     const targetGuildId = this.pending.target.guildId ?? this.pending.target.channelId;
     if (update.guildId && update.guildId !== targetGuildId && update.guildId !== this.pending.target.guildId) return;
+    if (!update.endpoint) return;
     this.pending.server = update;
     this.maybeResolvePending();
   }
@@ -541,6 +549,95 @@ export class VoiceCallController {
     } catch {
       return [];
     }
+  }
+
+  private async connectSessionGateway(session: VoiceCallSession): Promise<void> {
+    if (this.active !== session) throw new Error("Call cancelled.");
+    session.state = "signaling";
+    this.emitState();
+
+    const gatewayDataPromise = this.waitForGatewayData(session.target);
+    const requested = this.options.signaling.requestVoiceState({
+      guildId: session.target.guildId,
+      channelId: session.target.channelId,
+      selfMute: false,
+      selfDeaf: false,
+      selfVideo: false,
+      preferredRegions: session.target.preferredRegions,
+    });
+
+    if (!requested) {
+      const error = new Error("Discord gateway is not ready yet.");
+      void gatewayDataPromise.catch(() => {});
+      this.clearPending(error);
+      throw error;
+    }
+
+    const gatewayData = await gatewayDataPromise;
+    if (this.active !== session) throw new Error("Call cancelled.");
+    session.state = "connecting";
+    this.emitState();
+
+    const callbacks = this.gatewayCallbacks(session);
+    const gateway = this.options.createGatewayConnection?.(gatewayData, callbacks)
+      ?? new DiscordVoiceGatewayConnection(gatewayData, createDefaultVoiceAudioBackend(), callbacks);
+    session.gateway = gateway;
+    await gateway.connect();
+  }
+
+  private gatewayCallbacks(session: VoiceCallSession): VoiceGatewayConnectionCallbacks {
+    return {
+      onError: this.options.onError,
+      onClose: (error) => this.handleGatewayClose(session, error),
+    };
+  }
+
+  private handleGatewayClose(session: VoiceCallSession, error: VoiceGatewayCloseError): void {
+    if (this.active !== session || session.state === "ended" || session.state === "error") return;
+    session.gateway = null;
+    if (!isRecoverableVoiceGatewayClose(error)) {
+      this.failSession(session, error);
+      return;
+    }
+    if (this.recoveringSession === session) return;
+    this.recoveringSession = session;
+    void this.recoverVoiceGateway(session, error).finally(() => {
+      if (this.recoveringSession === session) this.recoveringSession = null;
+    });
+  }
+
+  private async recoverVoiceGateway(session: VoiceCallSession, cause: VoiceGatewayCloseError): Promise<void> {
+    let lastError: Error = cause;
+    for (let attempt = 0; attempt < VOICE_GATEWAY_REJOIN_ATTEMPTS; attempt++) {
+      if (this.active !== session) return;
+      try {
+        await this.prepareVoiceGatewayRejoin(session);
+        await this.connectSessionGateway(session);
+        if (this.active !== session) return;
+        session.state = "ready";
+        this.emitState();
+        return;
+      } catch (error) {
+        const asErr = error instanceof Error ? error : new Error(String(error));
+        lastError = asErr;
+        session.gateway?.disconnect();
+        session.gateway = null;
+        if (!isRecoverableVoiceGatewayClose(asErr)) break;
+      }
+    }
+
+    if (this.active === session) this.failSession(session, lastError);
+  }
+
+  private async prepareVoiceGatewayRejoin(session: VoiceCallSession): Promise<void> {
+    if (this.pending) this.clearPending(new Error("Retrying Discord voice gateway."));
+    session.gateway?.disconnect();
+    session.gateway = null;
+    session.state = "signaling";
+    this.emitState();
+    this.options.signaling.leaveVoice();
+    const delay = Math.max(0, this.options.retryDelayMs ?? VOICE_GATEWAY_REJOIN_DELAY_MS);
+    if (delay > 0) await sleep(delay);
   }
 
   private waitForGatewayData(target: VoiceCallTarget): Promise<VoiceGatewayJoinData> {
@@ -600,6 +697,21 @@ export class VoiceCallController {
   }
 }
 
+function isRecoverableVoiceGatewayClose(error: Error): boolean {
+  return error instanceof VoiceGatewayCloseError && error.code === VOICE_GATEWAY_INVALID_SESSION_CODE;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function voiceGatewayCloseError(event: CloseEvent): VoiceGatewayCloseError {
+  const reason = event.code === 4017
+    ? "DAVE/E2EE protocol required"
+    : event.reason || (event.code === VOICE_GATEWAY_INVALID_SESSION_CODE ? "Session is no longer valid." : "unknown reason");
+  return new VoiceGatewayCloseError(event.code, reason);
+}
+
 export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private ws: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -620,7 +732,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   constructor(
     private readonly data: VoiceGatewayJoinData,
     private readonly audio: VoiceAudioBackend = new NoopVoiceAudioBackend(),
-    private readonly callbacks: { onError?: (error: Error) => void } = {},
+    private readonly callbacks: VoiceGatewayConnectionCallbacks = {},
   ) {
     this.dave = new DaveVoiceEncryption({
       userId: data.userId,
@@ -883,16 +995,22 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
 
   private handleClose = (event: CloseEvent): void => {
     if (this.disconnected) return;
-    const reason = event.code === 4017
-      ? "DAVE/E2EE protocol required"
-      : event.reason || "unknown reason";
-    this.rejectReady(new Error(`Discord voice gateway closed (${event.code || "unknown"}: ${reason}).`));
+    const error = voiceGatewayCloseError(event);
+    if (this.readyReject) {
+      this.rejectReady(error, { report: false });
+    } else if (this.callbacks.onClose) {
+      this.callbacks.onClose(error);
+    } else {
+      this.reportError(error);
+    }
     this.disconnect();
   };
 
   private handleError = (): void => {
     if (this.disconnected) return;
-    this.rejectReady(new Error("Discord voice gateway connection error."));
+    const error = new Error("Discord voice gateway connection error.");
+    if (this.readyReject) this.rejectReady(error, { report: false });
+    else this.reportError(error);
   };
 
   private resolveReady(): void {
@@ -905,7 +1023,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.readyReject = null;
   }
 
-  private rejectReady(error: Error): void {
+  private rejectReady(error: Error, options: { report?: boolean } = {}): void {
     if (this.connectTimer) {
       clearTimeout(this.connectTimer);
       this.connectTimer = null;
@@ -913,7 +1031,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.readyReject?.(error);
     this.readyResolve = null;
     this.readyReject = null;
-    this.reportError(error);
+    if (options.report ?? true) this.reportError(error);
   }
 
   private reportError(error: Error): void {

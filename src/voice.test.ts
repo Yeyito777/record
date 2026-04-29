@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, NoopVoiceAudioBackend, VoiceCallController, type VoiceGatewayConnection, type VoiceStateRequest } from "./voice";
+import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, NoopVoiceAudioBackend, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 
 class FakeSignaling {
   requests: VoiceStateRequest[] = [];
@@ -24,6 +24,8 @@ class FakeGateway implements VoiceGatewayConnection {
   connected = false;
   disconnected = false;
 
+  constructor(readonly callbacks: VoiceGatewayConnectionCallbacks = {}) {}
+
   async connect(): Promise<void> {
     this.connected = true;
   }
@@ -31,6 +33,14 @@ class FakeGateway implements VoiceGatewayConnection {
   disconnect(): void {
     this.disconnected = true;
   }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Timed out waiting for condition.");
 }
 
 describe("voice backend", () => {
@@ -166,6 +176,117 @@ describe("voice backend", () => {
     controller.leave();
     expect(gateway.disconnected).toBe(true);
     expect(signaling.leaves).toBe(1);
+  });
+
+  test("recovers invalid voice gateway sessions without surfacing an error", async () => {
+    const signaling = new FakeSignaling();
+    const gateways: FakeGateway[] = [];
+    const errors: string[] = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      retryDelayMs: 0,
+      createGatewayConnection: (_data, callbacks) => {
+        const gateway = new FakeGateway(callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+      onError: (error) => errors.push(error.message),
+    });
+
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session-1",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-1", endpoint: "voice1.example", guildId: null });
+    await started;
+
+    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4006, "Session is no longer valid."));
+    await waitFor(() => signaling.requests.length === 2);
+
+    expect(signaling.leaves).toBe(1);
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session-2",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-2", endpoint: "voice2.example", guildId: null });
+
+    await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true && controller.activeSession?.state === "ready");
+    expect(errors).toEqual([]);
+  });
+
+  test("retries a stale session during initial voice gateway connect", async () => {
+    const signaling = new FakeSignaling();
+    const gateways: FakeGateway[] = [];
+    const errors: string[] = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      retryDelayMs: 0,
+      createGatewayConnection: (_data, callbacks) => {
+        const gateway = new FakeGateway(callbacks);
+        gateways.push(gateway);
+        if (gateways.length === 1) {
+          gateway.connect = async () => {
+            gateway.connected = true;
+            throw new VoiceGatewayCloseError(4006, "Session is no longer valid.");
+          };
+        }
+        return gateway;
+      },
+      onError: (error) => errors.push(error.message),
+    });
+
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session-1",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-1", endpoint: "voice1.example", guildId: null });
+
+    await waitFor(() => signaling.requests.length === 2);
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session-2",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-2", endpoint: "voice2.example", guildId: null });
+
+    const result = await started;
+    expect(result.session.state).toBe("ready");
+    expect(gateways).toHaveLength(2);
+    expect(gateways[0]?.disconnected).toBe(true);
+    expect(gateways[1]?.connected).toBe(true);
+    expect(signaling.leaves).toBe(1);
+    expect(errors).toEqual([]);
   });
 
   test("uses no-op audio backend as a reusable test backend", () => {
