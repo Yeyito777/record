@@ -61,7 +61,9 @@ export function formatStickerSummary(stickerNames: readonly string[], style?: Me
 }
 
 function normalizeEmbeds(embeds: readonly DisplayEmbed[] | number): readonly DisplayEmbed[] {
-  return typeof embeds === "number" ? Array.from({ length: Math.max(0, embeds) }, () => ({})) : embeds;
+  return typeof embeds === "number"
+    ? Array.from({ length: Math.max(0, embeds) }, () => ({}))
+    : embeds.filter(shouldRenderEmbedPreview);
 }
 
 function providerName(embed: DisplayEmbed): string {
@@ -78,6 +80,23 @@ function embedTitle(embed: DisplayEmbed): string {
 
 function embedDescription(embed: DisplayEmbed): string {
   return (embed.description ?? "").replace(/\s+/g, " ").trim();
+}
+
+function isTenorUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "tenor.com" || host.endsWith(".tenor.com");
+  } catch {
+    return /(?:^|\.)tenor\.com$/i.test(url.split(/[/?#]/, 1)[0] ?? "");
+  }
+}
+
+function shouldRenderEmbedPreview(embed: DisplayEmbed): boolean {
+  const provider = providerName(embed).toLowerCase();
+  if (provider !== "tenor" && !isTenorUrl(embed.url)) return true;
+  if (embedTitle(embed) || embedDescription(embed) || authorName(embed)) return true;
+  return false;
 }
 
 function embedLabel(embed: DisplayEmbed): string {
