@@ -34,7 +34,7 @@ const OPUS_RTP_CLOCK_INCREMENT = 960; // 20 ms at 48 kHz.
 const RTP_HEADER_LENGTH = 12;
 const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
 const DEFAULT_SPEAKING_THRESHOLD_DB = -40;
-const DEFAULT_SPEAKING_IDLE_MS = 900;
+const DEFAULT_SPEAKING_IDLE_MS = 700;
 
 let cachedPreferredVoiceRegions: string[] | null = null;
 
