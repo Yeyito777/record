@@ -2,6 +2,7 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/Xrandr.h>
 #include <X11/extensions/Xrender.h>
 #include <cairo/cairo-xlib.h>
 #include <curl/curl.h>
@@ -301,6 +302,56 @@ static void destroy_cairo(void) {
   overlay.surface = NULL;
 }
 
+static void primary_monitor_geometry(int *out_x, int *out_y, int *out_w, int *out_h) {
+  Display *d = overlay.display;
+  Window root = RootWindow(d, overlay.screen);
+  Screen *screen = ScreenOfDisplay(d, overlay.screen);
+  *out_x = 0;
+  *out_y = 0;
+  *out_w = WidthOfScreen(screen);
+  *out_h = HeightOfScreen(screen);
+
+  int event_base = 0, error_base = 0;
+  if (!XRRQueryExtension(d, &event_base, &error_base)) return;
+
+  int monitor_count = 0;
+  XRRMonitorInfo *monitors = XRRGetMonitors(d, root, True, &monitor_count);
+  if (!monitors || monitor_count <= 0) {
+    if (monitors) XRRFreeMonitors(monitors);
+    return;
+  }
+
+  int selected = -1;
+  for (int i = 0; i < monitor_count; i++) {
+    if (monitors[i].primary) {
+      selected = i;
+      break;
+    }
+  }
+
+  if (selected < 0) {
+    Window child = 0, root_return = 0;
+    int root_x = 0, root_y = 0, win_x = 0, win_y = 0;
+    unsigned int mask = 0;
+    if (XQueryPointer(d, root, &root_return, &child, &root_x, &root_y, &win_x, &win_y, &mask)) {
+      for (int i = 0; i < monitor_count; i++) {
+        if (root_x >= monitors[i].x && root_x < monitors[i].x + monitors[i].width
+            && root_y >= monitors[i].y && root_y < monitors[i].y + monitors[i].height) {
+          selected = i;
+          break;
+        }
+      }
+    }
+  }
+
+  if (selected < 0) selected = 0;
+  *out_x = monitors[selected].x;
+  *out_y = monitors[selected].y;
+  *out_w = monitors[selected].width;
+  *out_h = monitors[selected].height;
+  XRRFreeMonitors(monitors);
+}
+
 static bool ensure_window(int width, int height) {
   if (!overlay.display) {
     overlay.display = XOpenDisplay(NULL);
@@ -337,11 +388,12 @@ static bool ensure_window(int width, int height) {
     overlay.cr = cairo_create(overlay.surface);
   }
 
-  Screen *screen = ScreenOfDisplay(overlay.display, overlay.screen);
-  int x = WidthOfScreen(screen) - width - RIGHT_MARGIN;
-  int y = (HeightOfScreen(screen) - height) / 2;
-  if (x < 0) x = 0;
-  if (y < 0) y = 0;
+  int monitor_x = 0, monitor_y = 0, monitor_w = 0, monitor_h = 0;
+  primary_monitor_geometry(&monitor_x, &monitor_y, &monitor_w, &monitor_h);
+  int x = monitor_x + monitor_w - width - RIGHT_MARGIN;
+  int y = monitor_y + (monitor_h - height) / 2;
+  if (x < monitor_x) x = monitor_x;
+  if (y < monitor_y) y = monitor_y;
   XMoveWindow(overlay.display, overlay.window, x, y);
   XRaiseWindow(overlay.display, overlay.window);
   return true;
