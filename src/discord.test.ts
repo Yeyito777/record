@@ -677,10 +677,50 @@ describe("discord helpers", () => {
 
     expect(messages[0]?.reply).toEqual({
       messageId: "message-0",
+      channelId: "channel-1",
       authorId: null,
       authorDisplayName: null,
       timestamp: null,
       summary: "Deleted message",
+    });
+  });
+
+  test("hydrates missing reply previews from messages returned in the same page", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "message-2",
+          channel_id: "channel-1",
+          content: "reply body",
+          timestamp: "2026-01-01T12:01:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          message_reference: { message_id: "message-1", channel_id: "channel-1" },
+          referenced_message: null,
+          attachments: [],
+          embeds: [],
+        },
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "original body",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-2", username: "alice", global_name: "Alice" },
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[1]?.reply).toEqual({
+      messageId: "message-1",
+      authorId: "user-2",
+      authorDisplayName: "Alice",
+      timestamp: Date.parse("2026-01-01T12:00:00.000Z"),
+      summary: "original body",
     });
   });
 });
