@@ -62,6 +62,10 @@ typedef struct {
   cairo_t *cr;
   int width;
   int height;
+  int x;
+  int y;
+  bool positioned;
+  bool mapped;
 } Overlay;
 
 static Participant participants[MAX_PARTICIPANTS];
@@ -323,7 +327,16 @@ static bool ensure_window(int width, int height) {
     overlay.depth = DefaultDepth(overlay.display, overlay.screen);
     overlay.visual = find_argb_visual(overlay.display, overlay.screen, &overlay.depth);
     overlay.colormap = XCreateColormap(overlay.display, RootWindow(overlay.display, overlay.screen), overlay.visual, AllocNone);
+  }
 
+  int monitor_x = 0, monitor_y = 0, monitor_w = 0, monitor_h = 0;
+  primary_monitor_geometry(&monitor_x, &monitor_y, &monitor_w, &monitor_h);
+  int x = monitor_x + monitor_w - width - RIGHT_MARGIN;
+  int y = monitor_y + (monitor_h - height) / 2;
+  if (x < monitor_x) x = monitor_x;
+  if (y < monitor_y) y = monitor_y;
+
+  if (!overlay.window) {
     XSetWindowAttributes attrs = {0};
     attrs.colormap = overlay.colormap;
     attrs.border_pixel = 0;
@@ -333,13 +346,15 @@ static bool ensure_window(int width, int height) {
     overlay.window = XCreateWindow(
       overlay.display,
       RootWindow(overlay.display, overlay.screen),
-      0, 0, (unsigned int)width, (unsigned int)height,
+      x, y, (unsigned int)width, (unsigned int)height,
       0, overlay.depth, InputOutput, overlay.visual,
       CWColormap | CWBorderPixel | CWBackPixel | CWEventMask | CWOverrideRedirect,
       &attrs
     );
+    overlay.x = x;
+    overlay.y = y;
+    overlay.positioned = true;
     set_window_atoms();
-    XMapRaised(overlay.display, overlay.window);
   }
 
   if (overlay.width != width || overlay.height != height || !overlay.surface) {
@@ -351,15 +366,33 @@ static bool ensure_window(int width, int height) {
     overlay.cr = cairo_create(overlay.surface);
   }
 
-  int monitor_x = 0, monitor_y = 0, monitor_w = 0, monitor_h = 0;
-  primary_monitor_geometry(&monitor_x, &monitor_y, &monitor_w, &monitor_h);
-  int x = monitor_x + monitor_w - width - RIGHT_MARGIN;
-  int y = monitor_y + (monitor_h - height) / 2;
-  if (x < monitor_x) x = monitor_x;
-  if (y < monitor_y) y = monitor_y;
-  XMoveWindow(overlay.display, overlay.window, x, y);
-  XRaiseWindow(overlay.display, overlay.window);
+  if (!overlay.positioned || overlay.x != x || overlay.y != y) {
+    XMoveWindow(overlay.display, overlay.window, x, y);
+    overlay.x = x;
+    overlay.y = y;
+    overlay.positioned = true;
+  }
   return true;
+}
+
+static void paint_target(cairo_surface_t *source) {
+  cairo_save(overlay.cr);
+  cairo_set_operator(overlay.cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_surface(overlay.cr, source, 0, 0);
+  cairo_paint(overlay.cr);
+  cairo_restore(overlay.cr);
+  cairo_surface_flush(overlay.surface);
+}
+
+static void present_surface(cairo_surface_t *source) {
+  if (!overlay.cr || !overlay.surface || !overlay.display || !overlay.window) return;
+  paint_target(source);
+  if (!overlay.mapped) {
+    XMapRaised(overlay.display, overlay.window);
+    overlay.mapped = true;
+    paint_target(source);
+  }
+  XFlush(overlay.display);
 }
 
 static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
@@ -501,12 +534,21 @@ static void render(void) {
   int width = 0, height = 0;
   desired_size(&width, &height);
   if (participant_count == 0) {
-    if (overlay.display && overlay.window) XUnmapWindow(overlay.display, overlay.window);
+    if (overlay.display && overlay.window && overlay.mapped) {
+      XUnmapWindow(overlay.display, overlay.window);
+      overlay.mapped = false;
+      XFlush(overlay.display);
+    }
     return;
   }
   if (!ensure_window(width, height)) return;
 
-  cairo_t *cr = overlay.cr;
+  cairo_surface_t *frame = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+  if (cairo_surface_status(frame) != CAIRO_STATUS_SUCCESS) {
+    cairo_surface_destroy(frame);
+    return;
+  }
+  cairo_t *cr = cairo_create(frame);
   cairo_save(cr);
   cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
   cairo_paint(cr);
@@ -554,8 +596,9 @@ static void render(void) {
     }
   }
 
-  cairo_surface_flush(overlay.surface);
-  XFlush(overlay.display);
+  cairo_destroy(cr);
+  present_surface(frame);
+  cairo_surface_destroy(frame);
 }
 
 static const char *json_string_or_null(json_object *obj, const char *key) {
