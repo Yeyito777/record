@@ -20,15 +20,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define AVATAR_SIZE 44
+#define WIDGET_WIDTH 202
+#define AVATAR_SIZE 38
 #define BORDER_WIDTH 2
 #define ROW_PADDING_X 5
 #define ROW_PADDING_Y 4
 #define NAME_GAP 8
 #define ROW_GAP 5
-#define NAME_MIN_WIDTH 52
-#define NAME_MAX_WIDTH 142
-#define NAME_CHAR_WIDTH 9
 #define STATUS_GAP 6
 #define STATUS_ICON_SIZE 16
 #define STATUS_ICON_GAP 4
@@ -200,11 +198,6 @@ static char *status_icon_path(const char *name) {
   return out;
 }
 
-static int utf8_len(const char *s) {
-  if (!s) return 0;
-  return (int)g_utf8_strlen(s, -1);
-}
-
 static int participant_status_count(const Participant *p) {
   return (p->muted ? 1 : 0) + (p->deafened ? 1 : 0);
 }
@@ -213,18 +206,6 @@ static int participant_status_width(const Participant *p) {
   int count = participant_status_count(p);
   if (count == 0) return 0;
   return count * STATUS_ICON_SIZE + (count - 1) * STATUS_ICON_GAP;
-}
-
-static int name_width(void) {
-  int longest = 0;
-  for (size_t i = 0; i < participant_count; i++) {
-    int len = utf8_len(participants[i].name);
-    if (len > longest) longest = len;
-  }
-  int width = longest * NAME_CHAR_WIDTH + 8;
-  if (width < NAME_MIN_WIDTH) width = NAME_MIN_WIDTH;
-  if (width > NAME_MAX_WIDTH) width = NAME_MAX_WIDTH;
-  return width;
 }
 
 static int max_status_width(void) {
@@ -239,11 +220,8 @@ static int max_status_width(void) {
 static void desired_size(int *out_w, int *out_h) {
   int rows = participant_count > 0 ? (int)participant_count : 1;
   int diameter = AVATAR_SIZE + BORDER_WIDTH * 2;
-  int status = max_status_width();
-  int row_w = ROW_PADDING_X * 2 + diameter + NAME_GAP + name_width();
-  if (status > 0) row_w += STATUS_GAP + status + ROW_PADDING_X;
   int row_h = diameter + ROW_PADDING_Y * 2;
-  *out_w = row_w;
+  *out_w = WIDGET_WIDTH;
   *out_h = rows * row_h + (rows - 1) * ROW_GAP;
 }
 
@@ -495,7 +473,7 @@ static void draw_avatar(cairo_t *cr, const Participant *p, double x, double y) {
 
 static void draw_text(cairo_t *cr, const Participant *p, double x, double y, int width, int row_h) {
   PangoLayout *layout = pango_cairo_create_layout(cr);
-  PangoFontDescription *font = pango_font_description_from_string("sans 16");
+  PangoFontDescription *font = pango_font_description_from_string("sans 15");
   pango_layout_set_font_description(layout, font);
   pango_layout_set_width(layout, width * PANGO_SCALE);
   pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
@@ -549,8 +527,10 @@ static void render(void) {
 
   int diameter = AVATAR_SIZE + BORDER_WIDTH * 2;
   int row_h = diameter + ROW_PADDING_Y * 2;
-  int nwidth = name_width();
   int swidth = max_status_width();
+  int nwidth = width - ROW_PADDING_X * 2 - diameter - NAME_GAP;
+  if (swidth > 0) nwidth -= STATUS_GAP + swidth + ROW_PADDING_X;
+  if (nwidth < 24) nwidth = 24;
   int row_w = width;
 
   for (size_t i = 0; i < participant_count; i++) {
