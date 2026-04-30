@@ -5,6 +5,7 @@
  */
 
 import { saveConfig } from "./config";
+import { DISCORD_PRESENCE_STATUSES, type DiscordPresenceStatus } from "./discord";
 import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
@@ -26,6 +27,7 @@ export type CommandResult =
   | { type: "hangup" }
   | { type: "mute"; muted: boolean | null }
   | { type: "deafen"; deafened: boolean | null }
+  | { type: "status"; status: DiscordPresenceStatus }
   | { type: "theme_changed" };
 
 export interface SlashCommand {
@@ -57,11 +59,39 @@ const VOICE_TOGGLE_ARGS: CompletionItem[] = [
   { name: "off", desc: "Turn this voice setting off" },
 ];
 
+const STATUS_ARGS: CompletionItem[] = [
+  { name: "online", desc: "Show as online" },
+  { name: "idle", desc: "Show as idle" },
+  { name: "dnd", desc: "Show as Do Not Disturb" },
+  { name: "invisible", desc: "Show as offline" },
+];
+
 function parseOnOff(value: string | undefined): boolean | null {
   if (value === undefined) return null;
   if (value === "on" || value === "true" || value === "1") return true;
   if (value === "off" || value === "false" || value === "0") return false;
   return null;
+}
+
+function parsePresenceStatus(value: string | undefined): DiscordPresenceStatus | null {
+  switch (value) {
+    case "1":
+    case "online":
+      return "online";
+    case "2":
+    case "idle":
+      return "idle";
+    case "3":
+    case "dnd":
+    case "disturb":
+      return "dnd";
+    case "4":
+    case "invisible":
+    case "offline":
+      return "invisible";
+    default:
+      return null;
+  }
 }
 
 function handleChannelsCommand(text: string, state: AppState): CommandResult {
@@ -186,6 +216,19 @@ const commands: SlashCommand[] = [
       if (parts[1] !== undefined && parsed === null) return usage(state, "Usage: /deafen [on|off]");
       clearPrompt(state);
       return { type: "deafen", deafened: parsed };
+    },
+  },
+  {
+    name: "/status",
+    description: "Set your Discord presence",
+    args: STATUS_ARGS,
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length !== 2) return usage(state, `Usage: /status <${DISCORD_PRESENCE_STATUSES.join("|")}>`);
+      const status = parsePresenceStatus(parts[1]?.toLowerCase());
+      if (!status) return usage(state, `Usage: /status <${DISCORD_PRESENCE_STATUSES.join("|")}>`);
+      clearPrompt(state);
+      return { type: "status", status };
     },
   },
   {
