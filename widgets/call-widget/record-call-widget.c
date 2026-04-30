@@ -516,8 +516,7 @@ static void render(void) {
   int diameter = AVATAR_SIZE + BORDER_WIDTH * 2;
   int row_h = diameter + ROW_PADDING_Y * 2;
   int swidth = reserved_status_width();
-  int text_right = width - ROW_PADDING_X;
-  int nwidth = text_right - (ROW_PADDING_X + diameter + NAME_GAP);
+  int nwidth = width - ROW_PADDING_X * 2 - diameter - NAME_GAP - STATUS_GAP - swidth - ROW_PADDING_X;
   if (nwidth < 24) nwidth = 24;
   int row_w = width;
 
@@ -547,18 +546,6 @@ static void render(void) {
 
     double icon_x = width - ROW_PADDING_X - swidth;
     double icon_y = y + (row_h - STATUS_ICON_SIZE) / 2.0;
-    if (p->muted || p->deafened) {
-      double mask_x = icon_x - STATUS_GAP;
-      double mask_w = width - mask_x;
-      cairo_save(cr);
-      rounded_rect(cr, 0.5, y + 0.5, row_w - 1.0, row_h - 1.0, ROW_RADIUS);
-      cairo_clip(cr);
-      cairo_rectangle(cr, mask_x, y, mask_w, row_h);
-      if (p->speaking) cairo_set_source_rgba(cr, 0.078, 0.325, 0.176, 1.0);
-      else cairo_set_source_rgba(cr, 0.059, 0.090, 0.165, 1.0);
-      cairo_fill(cr);
-      cairo_restore(cr);
-    }
     if (p->muted) {
       draw_icon(cr, "muted", icon_x, icon_y);
     }
