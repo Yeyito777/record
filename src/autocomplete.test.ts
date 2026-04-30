@@ -175,6 +175,72 @@ describe("autocomplete", () => {
     expect(state.autocomplete?.matches.map((match) => match.name)).toEqual(["@Alice"]);
   });
 
+  test("shows macros alongside slash commands at the prompt start", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "/k";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.type).toBe("command");
+    expect(state.autocomplete?.matches).toEqual([{ name: "/kao", desc: "Kaomoji" }]);
+    cycleAutocomplete(state, 1);
+    expect(state.editor.buffer).toBe("/kao");
+  });
+
+  test("shows /kao emotion args at the prompt start", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "/kao f";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.type).toBe("command");
+    expect(state.autocomplete?.matches).toEqual([{ name: "flustered", desc: "(⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)" }]);
+    cycleAutocomplete(state, 1);
+    expect(state.editor.buffer).toBe("/kao flustered");
+  });
+
+  test("shows macro completions for slash tokens mid-message", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "hello /k";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.type).toBe("macro");
+    expect(state.autocomplete?.matches).toEqual([{ name: "/kao", desc: "Kaomoji" }]);
+    cycleAutocomplete(state, 1);
+    expect(state.editor.buffer).toBe("hello /kao");
+  });
+
+  test("shows macro arg completions for slash tokens mid-message", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "hello /kao h";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.type).toBe("macro");
+    expect(state.autocomplete?.matches).toEqual([{ name: "happy", desc: "ヽ(・∀・)ﾉ" }]);
+    cycleAutocomplete(state, 1);
+    expect(state.editor.buffer).toBe("hello /kao happy");
+  });
+
+  test("dismissing mid-message macro autocomplete restores only the macro token", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "hello /k friend";
+    state.editor.cursor = "hello /k".length;
+
+    updateAutocomplete(state);
+    cycleAutocomplete(state, 1);
+    dismissAutocomplete(state);
+
+    expect(state.autocomplete).toBeNull();
+    expect(state.editor.buffer).toBe("hello /k friend");
+    expect(state.editor.cursor).toBe("hello /k".length);
+  });
+
   test("shows nested command args after completing a subcommand", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editor.buffer = "/channels show-hidden ";

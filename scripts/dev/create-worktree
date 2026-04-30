@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# create-worktree — create a record worktree.
+# create-worktree — create a record worktree and seed isolated local config.
 #
 # Usage:
 #   create-worktree <name>
@@ -23,6 +23,8 @@ fi
 
 mkdir -p "$RECORD_ROOT/.worktrees"
 git -C "$RECORD_ROOT" worktree add "$WORKTREE_DIR" -b "$NAME" HEAD
+
+sync_shared_config "$WORKTREE_DIR"
 
 cat <<EOF
 

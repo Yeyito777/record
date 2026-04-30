@@ -8,6 +8,7 @@
 import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, validateToken } from "./discord";
+import { expandMacros } from "./macros";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
 import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, startCurrentDirectMessageCall, type SessionEffects } from "./session";
 import type { AppState } from "./state";
@@ -191,15 +192,20 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   state.autocomplete = null;
 
   if (state.editTarget) {
-    editCurrentMessage(state, state.auth.savedToken, rawText, effects, { sendContent: resolvePromptMentionsForSend(state, rawText) });
+    const expandedRawText = expandMacros(rawText);
+    editCurrentMessage(state, state.auth.savedToken, expandedRawText, effects, {
+      sendContent: resolvePromptMentionsForSend(state, expandedRawText),
+    });
     return;
   }
 
   if (!text && !hasImages) return;
-  if (text && !hasImages && handleCommandSubmit(state, text, effects)) return;
 
-  sendCurrentChannelMessage(state, state.auth.savedToken, text, effects, {
-    sendContent: resolvePromptMentionsForSend(state, text),
-    localMentionUsers: promptMentionUsers(state, text),
+  const expandedText = expandMacros(text);
+  if (text && !hasImages && expandedText === text && handleCommandSubmit(state, text, effects)) return;
+
+  sendCurrentChannelMessage(state, state.auth.savedToken, expandedText, effects, {
+    sendContent: resolvePromptMentionsForSend(state, expandedText),
+    localMentionUsers: promptMentionUsers(state, expandedText),
   });
 }

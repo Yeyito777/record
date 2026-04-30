@@ -953,7 +953,10 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const ssrc = typeof data.ssrc === "number" ? data.ssrc : null;
     if (ssrc !== null) this.ssrcToUserId.set(ssrc, userId);
     const speaking = typeof data.speaking === "number" ? data.speaking !== 0 : Boolean(data.speaking);
-    this.callbacks.onSpeakingChange?.(userId, speaking);
+    // Our local capture path is the authoritative source for the current user.
+    // Discord may echo stale SPEAKING frames for self, which made the call
+    // widget clear the green speaking ring immediately after we set it locally.
+    if (userId !== this.data.userId) this.callbacks.onSpeakingChange?.(userId, speaking);
     this.dave.addKnownUsers([userId]);
   }
 

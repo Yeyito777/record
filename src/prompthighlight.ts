@@ -5,6 +5,7 @@
  */
 
 import { COMMAND_LIST, getCommandArgs } from "./commands";
+import { MACRO_LIST, getMacroArgs } from "./macros";
 import { promptMentionSpans } from "./mentions";
 import type { AppState } from "./state";
 import { theme } from "./theme";
@@ -16,6 +17,7 @@ interface Span {
 
 const VALID_NAMES = new Set([
   ...COMMAND_LIST.map((command) => command.name),
+  ...MACRO_LIST.map((macro) => macro.name),
   "/exit",
 ]);
 
@@ -23,7 +25,7 @@ const COMMAND_SPAN_RE = /(^|[ \t\n])(\/\S+(?:[ \t]+\S+)*)/gm;
 
 function findCommandSpans(buffer: string, state: AppState): Span[] {
   const spans: Span[] = [];
-  const validArgs = getCommandArgs(state);
+  const validArgs = { ...getCommandArgs(state), ...getMacroArgs() };
   COMMAND_SPAN_RE.lastIndex = 0;
 
   let match: RegExpExecArray | null;

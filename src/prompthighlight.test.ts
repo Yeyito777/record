@@ -9,6 +9,15 @@ function stripAnsi(line: string): string {
 }
 
 describe("prompt highlighting", () => {
+  test("colors macros and macro args like slash commands", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+
+    const highlighted = highlightPromptViewport("hi /kao happy", "hi /kao happy", 0, state);
+
+    expect(stripAnsi(highlighted)).toBe("hi /kao happy");
+    expect(highlighted).toContain(`${theme.command}/kao happy${theme.text}`);
+  });
+
   test("colors role and broadcast mentions", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.channelList.guildId = "guild-1";
