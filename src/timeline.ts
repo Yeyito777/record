@@ -575,6 +575,13 @@ function renderMessageCached(
   return rendered;
 }
 
+export function formatLocalMessageTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
 function renderMessage(
   message: DiscordMessage,
   width: number,
@@ -587,7 +594,7 @@ function renderMessage(
   nowMs: number,
   groupedWithPrevious = false,
 ): RenderedMessage {
-  const time = new Date(message.timestamp).toISOString().slice(11, 16);
+  const time = formatLocalMessageTime(message.timestamp);
   const author = message.author.bot
     ? `${message.author.displayName} [bot]`
     : message.author.displayName;
