@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import sys
 import threading
@@ -26,8 +25,9 @@ try:
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
     gi.require_version("GdkPixbuf", "2.0")
+    gi.require_version("Pango", "1.0")
     warnings.filterwarnings("ignore", category=DeprecationWarning)
-    from gi.repository import Gdk, GLib, Gtk
+    from gi.repository import Gdk, GLib, Gtk, Pango
 except Exception as exc:  # pragma: no cover - surfaced in Record debug log via stderr
     print(f"record-call-widget: failed to import GTK: {exc}", file=sys.stderr, flush=True)
     raise
@@ -42,8 +42,9 @@ except Exception:
 AVATAR_SIZE = 64
 BORDER_WIDTH = 4
 PADDING = 10
-GAP = 12
-MAX_PER_ROW = 4
+NAME_GAP = 12
+ROW_GAP = 12
+NAME_WIDTH = 190
 IDLE_ALPHA = 0.42
 SPEAKING_ALPHA = 1.0
 SPEAKING_BORDER = (0x4D, 0xDB, 0xB7, 0xFF)
@@ -201,7 +202,12 @@ class CallWidget(Gtk.Window):
             return
         provider = Gtk.CssProvider()
         provider.load_from_data(b"""
-            window, grid, image { background-color: transparent; }
+            window, grid, box, image, label { background-color: transparent; }
+            label.record-call-widget-name {
+                color: #f1faee;
+                font: 13px sans-serif;
+                text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+            }
         """)
         Gtk.StyleContext.add_provider_for_screen(screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
@@ -221,37 +227,44 @@ class CallWidget(Gtk.Window):
         self.show_all()
         return False
 
-    def rows_cols(self) -> tuple[int, int]:
-        count = max(1, len(self.participants))
-        cols = min(MAX_PER_ROW, count)
-        rows = int(math.ceil(count / cols))
-        return rows, cols
-
     def desired_size(self) -> tuple[int, int]:
-        rows, cols = self.rows_cols()
+        rows = max(1, len(self.participants))
         diameter = AVATAR_SIZE + BORDER_WIDTH * 2
-        width = PADDING * 2 + cols * diameter + max(0, cols - 1) * GAP
-        height = PADDING * 2 + rows * diameter + max(0, rows - 1) * GAP
+        width = PADDING * 2 + diameter + NAME_GAP + NAME_WIDTH
+        height = PADDING * 2 + rows * diameter + max(0, rows - 1) * ROW_GAP
         return width, height
 
     def rebuild_grid(self) -> None:
         if self.grid is not None:
             self.remove(self.grid)
         grid = Gtk.Grid()
-        grid.set_row_spacing(GAP)
-        grid.set_column_spacing(GAP)
+        grid.set_row_spacing(ROW_GAP)
+        grid.set_column_spacing(NAME_GAP)
         grid.set_margin_top(PADDING)
         grid.set_margin_bottom(PADDING)
         grid.set_margin_start(PADDING)
         grid.set_margin_end(PADDING)
-        _rows, cols = self.rows_cols()
         diameter = AVATAR_SIZE + BORDER_WIDTH * 2
-        for index, participant in enumerate(self.participants):
+        for row, participant in enumerate(self.participants):
             image = Gtk.Image.new_from_file(str(render_avatar_path(participant)))
             image.set_size_request(diameter, diameter)
-            row = index // cols
-            col = index % cols
-            grid.attach(image, col, row, 1, 1)
+            image.set_halign(Gtk.Align.CENTER)
+            image.set_valign(Gtk.Align.CENTER)
+
+            label = Gtk.Label(label=participant.name)
+            label.set_name("record-call-widget-name")
+            label.get_style_context().add_class("record-call-widget-name")
+            label.set_halign(Gtk.Align.START)
+            label.set_valign(Gtk.Align.CENTER)
+            label.set_xalign(0.0)
+            label.set_width_chars(1)
+            label.set_max_width_chars(22)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_size_request(NAME_WIDTH, -1)
+            label.set_opacity(1.0 if participant.speaking else 0.82)
+
+            grid.attach(image, 0, row, 1, 1)
+            grid.attach(label, 1, row, 1, 1)
         self.grid = grid
         self.add(grid)
 
@@ -267,7 +280,7 @@ class CallWidget(Gtk.Window):
             monitor = 0
         geometry = screen.get_monitor_geometry(monitor)
         x = geometry.x + geometry.width - width - 24
-        y = geometry.y + 64
+        y = geometry.y + (geometry.height - height) // 2
         self.move(max(geometry.x, x), max(geometry.y, y))
 
 
