@@ -458,7 +458,7 @@ static void draw_avatar(cairo_t *cr, const Participant *p, double x, double y) {
 
 static void draw_text(cairo_t *cr, const Participant *p, double x, double y, int width, int row_h) {
   PangoLayout *layout = pango_cairo_create_layout(cr);
-  PangoFontDescription *font = pango_font_description_from_string("sans 15");
+  PangoFontDescription *font = pango_font_description_from_string("sans 14");
   pango_layout_set_font_description(layout, font);
   pango_layout_set_width(layout, width * PANGO_SCALE);
   pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
