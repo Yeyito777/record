@@ -36,11 +36,13 @@ export const cerberus: Theme = {
   sidebarSelBg: `${ESC}48;2;51;51;51m`,
   cursorBg: `${ESC}48;2;211;47;47m`,
   historyLineBg: `${ESC}48;2;37;37;37m`,
+  messageDeleteFg: `${ESC}38;2;244;67;54m`,
   selectionBg: `${ESC}48;2;74;74;74m`,
   searchBg: `${ESC}48;2;252;224;148m`,
   searchFg: `${ESC}38;2;20;20;20m`,
   notificationBg: `${ESC}48;2;183;28;28m`,
   notificationFg: `${ESC}38;2;255;255;255m`,
+  pingBg: `${ESC}48;2;9;13;53m`,
   appBg: `${ESC}48;2;20;20;20m`,
   cursorColor: "#d32f2f",
 

@@ -77,8 +77,7 @@ cleanup_worktree_config() {
   local worktree_dir="$1"
   local wt_name="$(basename "$worktree_dir")"
 
-  rm -rf "$worktree_dir/config/record"
-  rmdir "$worktree_dir/config" 2>/dev/null || true
+  rm -rf "$worktree_dir/config"
 
   if [[ -n "${HOME:-}" ]]; then
     rm -rf "$HOME/.config/record/runtime/$wt_name"

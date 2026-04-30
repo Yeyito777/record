@@ -27,7 +27,7 @@ import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { highlightPromptViewport } from "./prompthighlight";
-import { SIDEBAR_WIDTH, renderSidebar } from "./sidebar";
+import { SIDEBAR_WIDTH, getSidebarSearchBarViewport, renderSidebar } from "./sidebar";
 import { renderStatusLine } from "./statusline";
 import { padRight, termWidth, truncate } from "./textwidth";
 import { formatSize, imageLabel } from "./imageclipboard";
@@ -162,6 +162,18 @@ function isHistoryLineHighlighted(state: AppState, lineIndex: number, historyFoc
   }
   const { first, last } = logicalLineRange(state.historyCursor.row, state.historyWrapContinuation);
   return lineIndex >= first && lineIndex <= last;
+}
+
+function isHistoryLinePendingDelete(state: AppState, lineIndex: number): boolean {
+  const pending = state.messageDeletePending;
+  if (!pending || state.timeline.channelId !== pending.channelId) return false;
+  const bound = state.historyMessageBounds.find((entry) => entry.messageId === pending.messageId);
+  return Boolean(bound && lineIndex >= bound.start && lineIndex < bound.end);
+}
+
+function renderLineWithDeleteForeground(line: string): string {
+  const plain = stripAnsi(line);
+  return plain.length > 0 ? `${theme.messageDeleteFg}${plain}${theme.reset}` : line;
 }
 
 function renderHistoryViewportLine(
@@ -366,6 +378,7 @@ export function render(state: AppState): void {
 
   state.historyLineAnchors = timeline.lineAnchors;
   state.historyLines = timeline.allLines;
+  state.historyLineBackgrounds = timeline.lineBackgrounds;
   state.historyWrapContinuation = timeline.wrapContinuation;
   state.historyMessageBounds = timeline.messageBounds;
   if (state.chatFocus === "history" && state.historyCursorPendingVisibleBottom && state.historyLines.length > 0) {
@@ -386,13 +399,20 @@ export function render(state: AppState): void {
     emitSidebarCol(row);
 
     const lineIndex = state.timeline.scrollOffset + i;
-    const line = useTimeline && lineIndex < state.historyLines.length
-      ? renderHistoryViewportLine(state, state.historyLines[lineIndex] ?? "", lineIndex, historyFocused)
+    const pendingDeleteLine = useTimeline && isHistoryLinePendingDelete(state, lineIndex);
+    const rawLine = useTimeline && lineIndex < state.historyLines.length
+      ? (state.historyLines[lineIndex] ?? "")
       : (timelineLines[i] ?? "");
+    const line = useTimeline && lineIndex < state.historyLines.length
+      ? renderHistoryViewportLine(state, pendingDeleteLine ? renderLineWithDeleteForeground(rawLine) : rawLine, lineIndex, historyFocused)
+      : rawLine;
 
-    const renderedLine = useTimeline && isHistoryLineHighlighted(state, lineIndex, historyFocused)
+    const lineBackground = useTimeline ? (state.historyLineBackgrounds[lineIndex] ?? "") : "";
+    const renderedLine = useTimeline && !pendingDeleteLine && isHistoryLineHighlighted(state, lineIndex, historyFocused)
       ? applyLineBg(` ${line}`, theme.historyLineBg)
-      : bgLine(` ${line}`);
+      : lineBackground
+        ? applyLineBg(` ${line}`, lineBackground)
+        : bgLine(` ${line}`);
 
     out.push(moveTo(row, mainCol) + renderedLine);
     emitMemberListCol(row);
@@ -472,7 +492,12 @@ export function render(state: AppState): void {
     }
   }
 
-  if (historyFocused && state.historyLines.length > 0) {
+  if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
+    const { cursorCol } = getSidebarSearchBarViewport(state.sidebar.search, SIDEBAR_WIDTH - 1);
+    out.push(moveTo(rows, 1 + cursorCol));
+    out.push(cursorBar);
+    out.push(showCursor);
+  } else if (historyFocused && state.historyLines.length > 0) {
     const visibleRow = state.historyCursor.row - state.timeline.scrollOffset;
     if (visibleRow >= 0 && visibleRow < bodyRows) {
       const cursorRow = bodyTop + visibleRow;

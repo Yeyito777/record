@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   appendTimelineMessage,
   createTimelineState,
+  formatLocalMessageTime,
   markTimelineCallEnded,
   prependTimelineMessages,
   renderTimelineLines,
@@ -61,6 +62,13 @@ function stripAnsi(line: string): string {
   return line.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+function expectedLocalTime(timestamp = Date.UTC(2026, 0, 1, 12, 0, 0)): string {
+  const date = new Date(timestamp);
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
 describe("timeline rendering", () => {
   test("loading notices use the shared spinner label", () => {
     const timeline = createTimelineState();
@@ -86,6 +94,30 @@ describe("timeline rendering", () => {
     );
 
     expect(rendered.lines.join("\n")).not.toContain("Downloading image.png");
+  });
+
+  test("formats message timestamps in local system time", () => {
+    const previousTimezone = process.env.TZ;
+    try {
+      process.env.TZ = "Etc/GMT+5";
+      const timestamp = Date.UTC(2026, 0, 1, 12, 34, 0);
+      expect(formatLocalMessageTime(timestamp)).toBe("07:34");
+
+      const timeline = createTimelineState();
+      setTimelineMessages(timeline, "channel-1", [message("message-1", "local clock", { timestamp })]);
+      const rendered = renderTimelineLines(
+        timeline,
+        80,
+        10,
+        { text: "", tone: "muted", loading: false },
+        0,
+      );
+
+      expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Tester 07:34");
+    } finally {
+      if (previousTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTimezone;
+    }
   });
 
   test("message loading uses the shared spinner label", () => {
@@ -298,7 +330,7 @@ describe("timeline rendering", () => {
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines[0]).toContain("↪ Alice · hello there");
     expect(plainLines[1]).toContain("[attachments] cat.png");
-    expect(plainLines.some((line) => line.includes("Tester 12:00"))).toBe(true);
+    expect(plainLines.some((line) => line.includes(`Tester ${expectedLocalTime()}`))).toBe(true);
     expect(plainLines.some((line) => line.includes("reply body"))).toBe(true);
   });
 
@@ -412,7 +444,7 @@ describe("timeline rendering", () => {
     );
 
     expect(rendered.lines[0]).toContain(theme.accent);
-    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00");
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain(`Paramount ${expectedLocalTime()}`);
   });
 
   test("renders pending local messages muted", () => {
@@ -430,7 +462,7 @@ describe("timeline rendering", () => {
       0,
     );
 
-    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00");
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain(`Paramount ${expectedLocalTime()}`);
     expect(stripAnsi(rendered.lines[0] ?? "")).not.toContain("sending");
     expect(rendered.lines[1]).toContain(theme.muted);
     expect(stripAnsi(rendered.lines[1] ?? "")).toBe("sending now");
@@ -534,7 +566,7 @@ describe("timeline rendering", () => {
     );
 
     const plainLines = rendered.lines.map(stripAnsi);
-    expect(plainLines.filter((line) => line.includes("Paramount 12:00"))).toHaveLength(1);
+    expect(plainLines.filter((line) => line.includes(`Paramount ${expectedLocalTime()}`))).toHaveLength(1);
     expect(plainLines).not.toContain("");
     expect(plainLines[1]).toBe("first");
     expect(plainLines[2]).toBe("second");
@@ -557,7 +589,7 @@ describe("timeline rendering", () => {
       0,
     );
 
-    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Paramount 12:00 failed");
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain(`Paramount ${expectedLocalTime()} failed`);
     expect(rendered.lines[0]).toContain(theme.error);
     expect(rendered.lines[1]).toContain(theme.muted);
     expect(stripAnsi(rendered.lines[1] ?? "")).toBe("try again");
@@ -589,7 +621,7 @@ describe("timeline rendering", () => {
     );
 
     const plainLines = rendered.lines.map(stripAnsi);
-    expect(plainLines.filter((line) => line.includes("Paramount 12:00"))).toHaveLength(1);
+    expect(plainLines.filter((line) => line.includes(`Paramount ${expectedLocalTime()}`))).toHaveLength(1);
     expect(plainLines).not.toContain("");
     expect(plainLines[1]).toBe("first");
     expect(plainLines[2]).toBe("second");
@@ -620,8 +652,8 @@ describe("timeline rendering", () => {
     );
 
     const plainLines = rendered.lines.map(stripAnsi);
-    expect(plainLines.some((line) => line.includes("Paramount 12:00"))).toBe(true);
-    expect(plainLines.some((line) => line.includes("Paramount 12:07"))).toBe(true);
+    expect(plainLines.some((line) => line.includes(`Paramount ${expectedLocalTime()}`))).toBe(true);
+    expect(plainLines.some((line) => line.includes(`Paramount ${expectedLocalTime(Date.UTC(2026, 0, 1, 12, 7, 0))}`))).toBe(true);
     expect(plainLines).toContain("");
   });
 
@@ -905,6 +937,72 @@ describe("timeline rendering", () => {
     expect(rendered.lines[1]).toContain(theme.accent);
   });
 
+  test("marks messages that mention the viewer with the ping background", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hi <@viewer>", {
+      authorId: "other-user",
+      mentionUsers: [{ id: "viewer", username: "paramount", displayName: "Paramount", bot: false }],
+    })]);
+    setTimelineRenderContext(timeline, "viewer", false);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lineBackgrounds.slice(0, 2)).toEqual([theme.pingBg, theme.pingBg]);
+  });
+
+  test("marks role mentions for the viewer with the ping background", () => {
+    const timeline = createTimelineState();
+    setTimelineRenderContext(
+      timeline,
+      "viewer",
+      false,
+      { "guild-1": [{ id: "role-1", name: "artist", color: 0x3366ff, position: 1 }] },
+      { "guild-1": { viewer: ["role-1"] } },
+      1,
+      "guild-1",
+    );
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "ping <@&role-1>", {
+      guildId: "guild-1",
+      authorId: "other-user",
+    })]);
+    timeline.messages[0]!.mentionRoleIds = ["role-1"];
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lineBackgrounds.slice(0, 2)).toEqual([theme.pingBg, theme.pingBg]);
+  });
+
+  test("does not mark the viewer's own mentions with the ping background", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hi <@viewer>", {
+      authorId: "viewer",
+      mentionUsers: [{ id: "viewer", username: "paramount", displayName: "Paramount", bot: false }],
+    })]);
+    setTimelineRenderContext(timeline, "viewer", false);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lineBackgrounds.slice(0, 2)).toEqual(["", ""]);
+  });
+
   test("renders other DM authors with deterministic colors", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("message-1", "hello", { authorId: "other-user", authorName: "Alice" })]);
@@ -920,7 +1018,7 @@ describe("timeline rendering", () => {
 
     expect(rendered.lines[0]).toContain(dmAuthorColor("other-user"));
     expect(rendered.lines[0]).not.toContain(theme.accent);
-    expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Alice 12:00");
+    expect(stripAnsi(rendered.lines[0] ?? "")).toContain(`Alice ${expectedLocalTime()}`);
   });
 
   test("renders call message types even when the call payload is missing", () => {

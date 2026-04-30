@@ -14,7 +14,8 @@ const DIRECT_MESSAGE_CHANNEL_TYPES = new Set([1, 3]);
 export const DIRECT_MESSAGES_GUILD_ID = "@me::dms";
 export const DIRECT_MESSAGES_GUILD_NAME = "Direct Messages";
 
-export type DiscordPresenceStatus = "online" | "idle" | "dnd" | "offline";
+export const DISCORD_PRESENCE_STATUSES = ["online", "idle", "dnd", "invisible"] as const;
+export type DiscordPresenceStatus = typeof DISCORD_PRESENCE_STATUSES[number];
 
 interface DiscordErrorResponse {
   message?: string;
@@ -40,6 +41,15 @@ interface DiscordGuildResponse {
 
 interface DiscordUserSettingsResponse {
   status?: string | null;
+}
+
+interface DiscordSettingsProtoResponse {
+  settings?: string | null;
+}
+
+interface DecodedUserSettingsStatus {
+  status: DiscordPresenceStatus | null;
+  customStatusBytes: Uint8Array | null;
 }
 
 export interface DiscordDMRecipientResponse {
@@ -334,15 +344,47 @@ export async function validateToken(token: string): Promise<DiscordIdentity> {
 }
 
 export async function fetchCurrentUserPresenceStatus(token: string): Promise<DiscordPresenceStatus | null> {
+  const protoStatus = await fetchCurrentUserSettingsProtoStatus(token).catch(() => null);
+  if (protoStatus) return protoStatus;
+
   const settings = await apiGetJson<DiscordUserSettingsResponse>(token, "/users/@me/settings");
-  switch (settings.status) {
+  return normalizePresenceStatus(settings.status);
+}
+
+export async function setCurrentUserSettingsProtoStatus(token: string, status: DiscordPresenceStatus): Promise<void> {
+  const current = await fetchCurrentUserSettingsProto(token).catch(() => null);
+  const decoded = current ? decodeUserSettingsStatus(current) : null;
+  const settings = encodeUserSettingsStatus({
+    status,
+    customStatusBytes: decoded?.customStatusBytes ?? null,
+  });
+
+  await requestJson<unknown>(token, "/users/@me/settings-proto/1", {
+    method: "PATCH",
+    body: JSON.stringify({ settings: Buffer.from(settings).toString("base64") }),
+  });
+}
+
+async function fetchCurrentUserSettingsProtoStatus(token: string): Promise<DiscordPresenceStatus | null> {
+  const settings = await fetchCurrentUserSettingsProto(token);
+  return decodeUserSettingsStatus(settings).status;
+}
+
+async function fetchCurrentUserSettingsProto(token: string): Promise<Uint8Array> {
+  const response = await apiGetJson<DiscordSettingsProtoResponse>(token, "/users/@me/settings-proto/1");
+  if (!response.settings) throw new Error("Discord settings proto response was empty.");
+  return Buffer.from(response.settings, "base64");
+}
+
+function normalizePresenceStatus(status: string | null | undefined): DiscordPresenceStatus | null {
+  switch (status) {
     case "online":
     case "idle":
     case "dnd":
-    case "offline":
-      return settings.status;
     case "invisible":
-      return "offline";
+      return status;
+    case "offline":
+      return "invisible";
     default:
       return null;
   }
@@ -353,6 +395,132 @@ export function compareSnowflakesDesc(left: string | null | undefined, right: st
   const rightValue = right ? BigInt(right) : 0n;
   if (leftValue === rightValue) return 0;
   return leftValue > rightValue ? -1 : 1;
+}
+
+function encodeUserSettingsStatus(status: DecodedUserSettingsStatus): Uint8Array {
+  const statusFields = [
+    encodeField(1, 2, encodeStringValue(status.status ?? "online")),
+    ...(status.customStatusBytes ? [encodeField(2, 2, status.customStatusBytes)] : []),
+    encodeField(3, 2, encodeBoolValue(true)),
+  ];
+  return encodeField(11, 2, concatBytes(statusFields));
+}
+
+function decodeUserSettingsStatus(bytes: Uint8Array): DecodedUserSettingsStatus {
+  const out: DecodedUserSettingsStatus = { status: null, customStatusBytes: null };
+  for (const field of readProtoFields(bytes)) {
+    if (field.fieldNumber !== 11 || field.wireType !== 2 || !(field.value instanceof Uint8Array)) continue;
+    for (const statusField of readProtoFields(field.value)) {
+      if (statusField.fieldNumber === 1 && statusField.wireType === 2 && statusField.value instanceof Uint8Array) {
+        out.status = normalizePresenceStatus(decodeStringValue(statusField.value));
+      } else if (statusField.fieldNumber === 2 && statusField.wireType === 2 && statusField.value instanceof Uint8Array) {
+        out.customStatusBytes = statusField.value;
+      }
+    }
+  }
+  return out;
+}
+
+interface ProtoField {
+  fieldNumber: number;
+  wireType: number;
+  value: bigint | Uint8Array;
+}
+
+function readProtoFields(bytes: Uint8Array): ProtoField[] {
+  const fields: ProtoField[] = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    const key = readVarint(bytes, offset);
+    offset = key.next;
+    const fieldNumber = Number(key.value >> 3n);
+    const wireType = Number(key.value & 7n);
+    switch (wireType) {
+      case 0: {
+        const value = readVarint(bytes, offset);
+        offset = value.next;
+        fields.push({ fieldNumber, wireType, value: value.value });
+        break;
+      }
+      case 1:
+        fields.push({ fieldNumber, wireType, value: bytes.subarray(offset, offset + 8) });
+        offset += 8;
+        break;
+      case 2: {
+        const length = readVarint(bytes, offset);
+        offset = length.next;
+        const end = offset + Number(length.value);
+        fields.push({ fieldNumber, wireType, value: bytes.subarray(offset, end) });
+        offset = end;
+        break;
+      }
+      case 5:
+        fields.push({ fieldNumber, wireType, value: bytes.subarray(offset, offset + 4) });
+        offset += 4;
+        break;
+      default:
+        throw new Error(`Unsupported protobuf wire type: ${wireType}`);
+    }
+  }
+  return fields;
+}
+
+function decodeStringValue(bytes: Uint8Array): string | null {
+  for (const field of readProtoFields(bytes)) {
+    if (field.fieldNumber === 1 && field.wireType === 2 && field.value instanceof Uint8Array) {
+      return new TextDecoder().decode(field.value);
+    }
+  }
+  return null;
+}
+
+function encodeStringValue(value: string): Uint8Array {
+  return encodeField(1, 2, new TextEncoder().encode(value));
+}
+
+function encodeBoolValue(value: boolean): Uint8Array {
+  return encodeField(1, 0, encodeVarint(value ? 1n : 0n));
+}
+
+function encodeField(fieldNumber: number, wireType: number, value: Uint8Array): Uint8Array {
+  const key = encodeVarint(BigInt((fieldNumber << 3) | wireType));
+  if (wireType === 2) return concatBytes([key, encodeVarint(BigInt(value.length)), value]);
+  return concatBytes([key, value]);
+}
+
+function readVarint(bytes: Uint8Array, offset: number): { value: bigint; next: number } {
+  let value = 0n;
+  let shift = 0n;
+  let cursor = offset;
+  while (cursor < bytes.length) {
+    const byte = bytes[cursor++];
+    value |= BigInt(byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) return { value, next: cursor };
+    shift += 7n;
+  }
+  throw new Error("Truncated protobuf varint.");
+}
+
+function encodeVarint(value: bigint): Uint8Array {
+  const out: number[] = [];
+  let remaining = value;
+  while (remaining >= 0x80n) {
+    out.push(Number((remaining & 0x7fn) | 0x80n));
+    remaining >>= 7n;
+  }
+  out.push(Number(remaining));
+  return Uint8Array.from(out);
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
 }
 
 function userDisplayName(user: { username: string; global_name?: string | null }): string {
@@ -778,6 +946,12 @@ export async function editChannelMessage(
     body: JSON.stringify({ content }),
   });
   return mapDiscordMessage(message);
+}
+
+export async function deleteChannelMessage(token: string, channelId: string, messageId: string): Promise<void> {
+  await requestJson<unknown>(token, `/channels/${channelId}/messages/${messageId}`, {
+    method: "DELETE",
+  });
 }
 
 function buildSendMessagePayload(content: string, options: SendMessageOptions): Record<string, unknown> {

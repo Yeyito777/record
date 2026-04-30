@@ -202,6 +202,68 @@ describe("voice backend", () => {
     expect(signaling.leaves).toBe(1);
   });
 
+  test("can replace an active DM call with another DM call", async () => {
+    const signaling = new FakeSignaling();
+    const gateways: FakeGateway[] = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      createGatewayConnection: () => {
+        const gateway = new FakeGateway();
+        gateways.push(gateway);
+        return gateway;
+      },
+    });
+
+    const firstStarted = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "One" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session-1",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-1", endpoint: "voice1.example", guildId: null });
+    const first = await firstStarted;
+    expect(first.session.state).toBe("ready");
+
+    const secondStarted = controller.startCall(
+      { guildId: null, channelId: "dm-2", recipientIds: [], displayName: "Two" },
+      { replaceActive: true },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(first.session.state).toBe("ended");
+    expect(gateways[0]?.disconnected).toBe(true);
+    expect(signaling.leaves).toBe(1);
+    expect(signaling.requests).toEqual([
+      { guildId: null, channelId: "dm-1", selfMute: false, selfDeaf: false, selfVideo: false, preferredRegions: [] },
+      { guildId: null, channelId: "dm-2", selfMute: false, selfDeaf: false, selfVideo: false, preferredRegions: [] },
+    ]);
+
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-2",
+      guildId: null,
+      sessionId: "voice-session-2",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-2", endpoint: "voice2.example", guildId: null });
+    const second = await secondStarted;
+
+    expect(second.session.state).toBe("ready");
+    expect(controller.activeSession?.target.channelId).toBe("dm-2");
+    expect(gateways[1]?.connected).toBe(true);
+  });
+
   test("can join an existing DM call without ringing recipients", async () => {
     const signaling = new FakeSignaling();
     const gateway = new FakeGateway();

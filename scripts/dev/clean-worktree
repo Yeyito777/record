@@ -14,13 +14,67 @@ INPUT="${1:-}"
 WORKTREE_DIR="$(resolve_worktree_dir "$INPUT")"
 WT_NAME="$(basename "$WORKTREE_DIR")"
 BRANCH=""
+REGISTERED=0
 
-if [[ -d "$WORKTREE_DIR" ]]; then
-  BRANCH="$(git -C "$WORKTREE_DIR" branch --show-current 2>/dev/null || true)"
+registered_worktree_branch() {
+  local worktree_dir="$1"
+  git -C "$RECORD_ROOT" worktree list --porcelain | awk -v target="$worktree_dir" '
+    $1 == "worktree" { in_target = ($2 == target); next }
+    in_target && $1 == "branch" {
+      sub(/^refs\/heads\//, "", $2)
+      print $2
+      exit
+    }
+  '
+}
+
+processes_using_worktree() {
+  local worktree_dir="$1"
+  local proc pid cwd cmd env_line found
+
+  for proc in /proc/[0-9]*; do
+    [[ -d "$proc" ]] || continue
+    pid="${proc##*/}"
+    found=0
+
+    cwd="$(readlink "$proc/cwd" 2>/dev/null || true)"
+    if [[ "$cwd" == "$worktree_dir" || "$cwd" == "$worktree_dir"/* ]]; then
+      found=1
+    fi
+
+    if [[ $found -eq 0 && -r "$proc/environ" ]]; then
+      while IFS= read -r env_line; do
+        case "$env_line" in
+          "PWD=$worktree_dir"|"PWD=$worktree_dir"/*|"XDG_CONFIG_HOME=$worktree_dir/config"|"XDG_CONFIG_HOME=$worktree_dir/config"/*)
+            found=1
+            break
+            ;;
+        esac
+      done < <({ tr '\0' '\n' < "$proc/environ"; } 2>/dev/null || true)
+    fi
+
+    if [[ $found -eq 1 ]]; then
+      cmd="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+      printf '    %s %s\n' "$pid" "${cmd:-?}"
+    fi
+  done
+}
+
+LIVE_PROCESSES="$(processes_using_worktree "$WORKTREE_DIR")"
+if [[ -n "$LIVE_PROCESSES" ]]; then
+  worktree_die "Worktree is still in use by running process(es):
+$LIVE_PROCESSES
+Close them, then rerun clean-worktree."
 fi
 
 if git -C "$RECORD_ROOT" worktree list --porcelain | grep -Fqx "worktree $WORKTREE_DIR"; then
+  REGISTERED=1
+  BRANCH="$(registered_worktree_branch "$WORKTREE_DIR")"
   git -C "$RECORD_ROOT" worktree remove "$WORKTREE_DIR"
+fi
+
+if [[ -z "$BRANCH" && "$WT_NAME" != "main" ]] && git -C "$RECORD_ROOT" show-ref --verify --quiet "refs/heads/$WT_NAME"; then
+  BRANCH="$WT_NAME"
 fi
 
 if [[ -n "$BRANCH" ]] && git -C "$RECORD_ROOT" show-ref --verify --quiet "refs/heads/$BRANCH"; then
@@ -28,6 +82,10 @@ if [[ -n "$BRANCH" ]] && git -C "$RECORD_ROOT" show-ref --verify --quiet "refs/h
 fi
 
 cleanup_worktree_config "$WORKTREE_DIR"
+
+if [[ $REGISTERED -eq 0 || ! -e "$WORKTREE_DIR/.git" ]]; then
+  rmdir "$WORKTREE_DIR" 2>/dev/null || true
+fi
 
 cat <<EOF
 

@@ -154,6 +154,52 @@ export function scrollMemberListSelectionLine(memberList: MemberListState, dir: 
   memberList.scrollOffset = next.viewStart;
 }
 
+export function jumpMemberListSelectionToVisibleEdge(
+  memberList: MemberListState,
+  totalRows: number,
+  edge: "top" | "bottom",
+): void {
+  if (memberList.members.length === 0) return;
+
+  const viewportRows = memberListViewportRows(totalRows);
+  if (viewportRows <= 0) return;
+
+  const maxScroll = Math.max(0, memberList.members.length - viewportRows);
+  memberList.scrollOffset = Math.max(0, Math.min(memberList.scrollOffset, maxScroll));
+  memberList.selectedIndex = Math.max(0, Math.min(memberList.selectedIndex, memberList.members.length - 1));
+
+  const visibleStart = memberList.scrollOffset;
+  const visibleEnd = Math.min(visibleStart + viewportRows - 1, memberList.members.length - 1);
+  let targetIndex = edge === "top" ? visibleStart : visibleEnd;
+
+  if (targetIndex === memberList.selectedIndex) {
+    const halfPage = Math.floor(viewportRows / 2);
+    memberList.scrollOffset = edge === "top"
+      ? Math.max(0, memberList.scrollOffset - halfPage)
+      : Math.min(maxScroll, memberList.scrollOffset + halfPage);
+    const nextVisibleStart = memberList.scrollOffset;
+    const nextVisibleEnd = Math.min(nextVisibleStart + viewportRows - 1, memberList.members.length - 1);
+    targetIndex = edge === "top" ? nextVisibleStart : nextVisibleEnd;
+  }
+
+  memberList.selectedIndex = targetIndex;
+}
+
+export function jumpMemberListSelectionToVisibleMiddle(memberList: MemberListState, totalRows: number): void {
+  if (memberList.members.length === 0) return;
+
+  const viewportRows = memberListViewportRows(totalRows);
+  if (viewportRows <= 0) return;
+
+  const maxScroll = Math.max(0, memberList.members.length - viewportRows);
+  memberList.scrollOffset = Math.max(0, Math.min(memberList.scrollOffset, maxScroll));
+  memberList.selectedIndex = Math.max(0, Math.min(memberList.selectedIndex, memberList.members.length - 1));
+
+  const visibleStart = memberList.scrollOffset;
+  const visibleEnd = Math.min(visibleStart + viewportRows - 1, memberList.members.length - 1);
+  memberList.selectedIndex = Math.floor((visibleStart + visibleEnd) / 2);
+}
+
 function memberListCacheKey(guildId: string, channelId: string): string {
   return `${guildId}:${channelId}`;
 }

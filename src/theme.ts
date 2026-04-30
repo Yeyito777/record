@@ -40,11 +40,13 @@ export interface Theme {
   sidebarSelBg: string;
   cursorBg: string;
   historyLineBg: string;
+  messageDeleteFg: string;
   selectionBg: string;
   searchBg: string;
   searchFg: string;
   notificationBg: string;
   notificationFg: string;
+  pingBg: string;
   appBg?: string;
   cursorColor?: string;
 

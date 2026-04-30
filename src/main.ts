@@ -23,11 +23,19 @@ import {
   scrollHistoryViewportSticky,
   scrollHistoryWithCursor,
 } from "./historycursor";
+import { setChannelList } from "./channels";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
 import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
-import { MEMBER_LIST_WIDTH, moveMemberListSelection, scrollMemberListSelection, scrollMemberListSelectionLine } from "./memberlist";
+import {
+  jumpMemberListSelectionToVisibleEdge,
+  jumpMemberListSelectionToVisibleMiddle,
+  MEMBER_LIST_WIDTH,
+  moveMemberListSelection,
+  scrollMemberListSelection,
+  scrollMemberListSelectionLine,
+} from "./memberlist";
 import { formatByteSize, summarizeInlineMessageParts } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { render } from "./render";
@@ -36,6 +44,7 @@ import {
   bootstrapReadOnlyClient,
   disconnectAppGateway,
   disconnectMemberListGateway,
+  deleteMessage,
   loadChannelMessages,
   loadGuildChannels,
   loadOlderChannelMessages,
@@ -47,9 +56,16 @@ import { renderStatusLine } from "./statusline";
 import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
+  jumpSidebarSelectionToVisibleEdge,
+  handleSidebarSearchBarKey,
+  jumpSidebarSelectionToVisibleMiddle,
+  jumpToSidebarSearchMatch,
   moveSidebarSelection,
+  openSidebarCommandBar,
+  openSidebarSearchBar,
   scrollSidebarSelection,
   scrollSidebarSelectionLine,
+  sidebarChannelsForGuild,
   moveSidebarSelectionToNextAnyNotification,
   moveSidebarSelectionToNextCategory,
   moveSidebarSelectionToNextDirectMessage,
@@ -419,6 +435,11 @@ function removeLastPendingImage(): boolean {
 }
 
 function cancelCurrentAction(): void {
+  if (clearPendingMessageDelete()) {
+    scheduleRender();
+    return;
+  }
+
   if (state.pendingImages.length > 0) {
     state.pendingImages = [];
     scheduleRender();
@@ -463,6 +484,38 @@ function selectedMessageCanBeEdited(message: DiscordMessage | null): message is 
   return true;
 }
 
+function clearPendingMessageDelete(): boolean {
+  if (!state.messageDeletePending) return false;
+  state.messageDeletePending = null;
+  return true;
+}
+
+function selectedMessageMatchesPendingDelete(message: DiscordMessage): boolean {
+  return state.messageDeletePending?.channelId === message.channelId
+    && state.messageDeletePending.messageId === message.id;
+}
+
+function deleteSelectedHistoryMessage(): void {
+  if (state.panelFocus !== "chat" || state.chatFocus !== "history") {
+    scheduleRender();
+    return;
+  }
+
+  const message = selectedHistoryMessage();
+  if (!message) {
+    scheduleRender();
+    return;
+  }
+
+  if (!selectedMessageMatchesPendingDelete(message)) {
+    state.messageDeletePending = { channelId: message.channelId, messageId: message.id };
+    scheduleRender();
+    return;
+  }
+
+  deleteMessage(state, state.auth.savedToken, message, effects);
+}
+
 function startEditSelectedHistoryMessage(): void {
   const message = selectedHistoryMessage();
   if (!selectedMessageCanBeEdited(message)) return;
@@ -477,6 +530,7 @@ function startEditSelectedHistoryMessage(): void {
     timestamp: message.timestamp,
   };
   state.replyTarget = null;
+  state.messageDeletePending = null;
   state.pendingImages = [];
   setNotice(state, "", "muted");
   resetEditor(state.editor, message.content, "insert");
@@ -517,6 +571,7 @@ function startReplyToSelectedHistoryMessage(mention = false): void {
     timestamp: message.timestamp,
     mention: mention && message.author.id !== state.auth.user?.id,
   };
+  state.messageDeletePending = null;
   setNotice(state, "", "muted");
   focusPrompt(state);
   syncPromptAutocomplete();
@@ -549,6 +604,9 @@ function handleGlobalAction(key: KeyEvent): boolean {
     ? "navigation"
     : "prompt";
   const action = resolveAction(key, context);
+  if (action && action !== "cancel_action" && !action.startsWith("nav_") && action !== "focus_prompt") {
+    clearPendingMessageDelete();
+  }
 
   switch (action) {
     case "cancel_action":
@@ -621,7 +679,47 @@ function handleGlobalAction(key: KeyEvent): boolean {
   }
 }
 
+function ensureSidebarEntryGuildLoaded(guildId: string): void {
+  if (state.channelList.guildId === guildId && state.channelList.channels.length > 0) return;
+  const channels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
+  if (channels.length > 0) setChannelList(state.channelList, guildId, channels);
+}
+
 function handleSidebarFocused(key: KeyEvent): boolean {
+  if (state.sidebar.search?.barOpen) {
+    handleSidebarSearchBarKey(state.sidebar, state.channelList.channels, key, sidebarVisibilityOptions());
+    scheduleRender();
+    return true;
+  }
+
+  if (key.type === "char" && key.char) {
+    if (key.char === "/" || key.char === "?") {
+      openSidebarSearchBar(state.sidebar, state.channelList.channels, key.char === "/" ? "forward" : "backward", sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === ":") {
+      openSidebarCommandBar(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "n" && state.sidebar.search?.query) {
+      jumpToSidebarSearchMatch(state.sidebar, state.channelList.channels, state.sidebar.search.direction, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "N" && state.sidebar.search?.query) {
+      jumpToSidebarSearchMatch(
+        state.sidebar,
+        state.channelList.channels,
+        state.sidebar.search.direction === "forward" ? "backward" : "forward",
+        sidebarVisibilityOptions(),
+      );
+      scheduleRender();
+      return true;
+    }
+  }
+
   const action = resolveAction(key, "navigation");
   if (!action) return false;
 
@@ -670,6 +768,18 @@ function handleSidebarFocused(key: KeyEvent): boolean {
     case "nav_move_guild_down":
       moveSelectedGuildOrder(state, { scheduleRender }, "down");
       return true;
+    case "nav_visible_top":
+      jumpSidebarSelectionToVisibleEdge(state.sidebar, state.channelList.channels, state.rows, "top", sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    case "nav_visible_middle":
+      jumpSidebarSelectionToVisibleMiddle(state.sidebar, state.channelList.channels, state.rows, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    case "nav_visible_bottom":
+      jumpSidebarSelectionToVisibleEdge(state.sidebar, state.channelList.channels, state.rows, "bottom", sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
     case "nav_select": {
       const token = tokenOrWarn();
       if (!token) return true;
@@ -687,6 +797,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       }
 
       if (entry.kind === "channel") {
+        ensureSidebarEntryGuildLoaded(entry.guildId);
         void loadChannelMessages(state, token, entry.id, { scheduleRender });
         return true;
       }
@@ -700,6 +811,13 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
+  if (state.editor.mode === "normal" && key.type === "char" && key.char === "d") {
+    deleteSelectedHistoryMessage();
+    return true;
+  }
+
+  const clearedPendingDelete = clearPendingMessageDelete();
+
   if (state.editor.mode === "normal" && key.type === "char" && (key.char === "r" || key.char === "R")) {
     startReplyToSelectedHistoryMessage(key.char === "R");
     return true;
@@ -717,7 +835,13 @@ function handleHistoryFocused(key: KeyEvent): boolean {
   }
 
   const action = resolveAction(key, "navigation");
-  if (!action) return false;
+  if (!action) {
+    if (clearedPendingDelete) {
+      scheduleRender();
+      return true;
+    }
+    return false;
+  }
 
   switch (action) {
     case "focus_prompt":
@@ -797,6 +921,18 @@ function handleMemberListFocused(key: KeyEvent): boolean {
       );
       scheduleRender();
       return true;
+    case "nav_visible_top":
+      jumpMemberListSelectionToVisibleEdge(state.memberList, state.rows, "top");
+      scheduleRender();
+      return true;
+    case "nav_visible_middle":
+      jumpMemberListSelectionToVisibleMiddle(state.memberList, state.rows);
+      scheduleRender();
+      return true;
+    case "nav_visible_bottom":
+      jumpMemberListSelectionToVisibleEdge(state.memberList, state.rows, "bottom");
+      scheduleRender();
+      return true;
     default:
       return false;
   }
@@ -862,6 +998,11 @@ function handlePromptFocused(key: KeyEvent): void {
 }
 
 function handleKey(key: KeyEvent): void {
+  if (state.panelFocus === "sidebar" && state.sidebar.open && state.sidebar.search?.barOpen) {
+    handleSidebarFocused(key);
+    return;
+  }
+
   if (handleGlobalAction(key)) return;
 
   if (state.panelFocus === "sidebar" && state.sidebar.open) {

@@ -12,10 +12,13 @@ import {
   formatChannelName,
   isDirectMessageChannel,
   mapDiscordMessagePatch,
+  deleteChannelMessage,
   editChannelMessage,
   sendChannelMessage,
   setGuildMuted,
   ringDirectMessageCall,
+  setCurrentUserSettingsProtoStatus,
+  fetchCurrentUserPresenceStatus,
 } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -25,6 +28,59 @@ afterEach(() => {
 });
 
 describe("discord helpers", () => {
+  test("deletes a channel message through Discord REST", async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, method: init?.method ?? "GET" });
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await deleteChannelMessage("token", "channel-1", "message-1");
+
+    expect(requests).toEqual([{
+      url: "https://discord.com/api/v9/channels/channel-1/messages/message-1",
+      method: "DELETE",
+    }]);
+  });
+
+  test("persists presence status through Discord settings-proto", async () => {
+    const requests: Array<{ url: string; method: string; body: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, method: init?.method ?? "GET", body: String(init?.body ?? "") });
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "GET") {
+        return new Response(JSON.stringify({ settings: "WgsKAgoEaWRsZRoCCAE=" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "PATCH") {
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    await setCurrentUserSettingsProtoStatus("token", "dnd");
+
+    expect(requests.map((request) => request.method)).toEqual(["GET", "PATCH"]);
+    const patchBody = JSON.parse(requests[1]?.body ?? "{}");
+    expect(typeof patchBody.settings).toBe("string");
+    expect(patchBody.settings).not.toBe("WgsKAgoEaWRsZRoCCAE=");
+  });
+
+  test("fetches presence status from Discord settings-proto before legacy settings", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "GET") {
+        return new Response(JSON.stringify({ settings: "Wg4KBQoDZG5kGgUo5gEYARoCCAE=" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    expect(await fetchCurrentUserPresenceStatus("token")).toBe("dnd");
+    expect(requests).toHaveLength(1);
+  });
+
   test("maps guild channel permission overwrite string types", async () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
