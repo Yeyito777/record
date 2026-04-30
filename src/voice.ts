@@ -33,8 +33,24 @@ const OPUS_PAYLOAD_TYPE = 120;
 const OPUS_RTP_CLOCK_INCREMENT = 960; // 20 ms at 48 kHz.
 const RTP_HEADER_LENGTH = 12;
 const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
+const DEFAULT_SPEAKING_THRESHOLD_DB = -40;
 
 let cachedPreferredVoiceRegions: string[] | null = null;
+
+function speakingThresholdDb(): number {
+  const raw = process.env.RECORD_VOICE_SPEAKING_THRESHOLD_DB;
+  if (!raw) return DEFAULT_SPEAKING_THRESHOLD_DB;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : DEFAULT_SPEAKING_THRESHOLD_DB;
+}
+
+function dbToLinear(db: number): number {
+  return 10 ** (db / 20);
+}
+
+function linearToDb(value: number): number {
+  return value > 0 ? 20 * Math.log10(value) : -Infinity;
+}
 
 export type VoiceConnectionState = "idle" | "signaling" | "connecting" | "ready" | "ended" | "error";
 
@@ -1193,9 +1209,14 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private droppedPacketCount = 0;
   private nonSilencePacketCount = 0;
   private captureDropLogged = false;
+  private pcmRemainder = Buffer.alloc(0);
+  private lastInputLevelDb = -Infinity;
+  private readonly speakingThresholdDb = speakingThresholdDb();
+  private readonly speakingThreshold = dbToLinear(this.speakingThresholdDb);
   private speakingIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly handleDiscordPacket = (packet: Buffer): void => this.forwardDiscordPacket(packet);
   private readonly handleCapturePacket = (packet: Buffer): void => this.forwardCapturePacket(packet);
+  private readonly handleCapturePcm = (chunk: Buffer | string): void => this.updateCaptureLevel(chunk);
 
   async start(context: VoiceAudioContext): Promise<void> {
     this.context = context;
@@ -1228,6 +1249,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       try { this.captureSocket.close(); } catch {}
       this.captureSocket = null;
     }
+    this.captureProcess?.stdout.off("data", this.handleCapturePcm);
+    this.pcmRemainder = Buffer.alloc(0);
     if (this.playbackSocket) {
       try { this.playbackSocket.close(); } catch {}
       this.playbackSocket = null;
@@ -1276,13 +1299,15 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     socket.on("message", this.handleCapturePacket);
     const port = await bindUdp(socket, "127.0.0.1", 0);
 
-    debugLog("voice.capture.start", { input: "default" });
+    debugLog("voice.capture.start", { input: "default", speakingThresholdDb: this.speakingThresholdDb });
     this.captureProcess = spawn("ffmpeg", [
       "-nostdin",
       "-hide_banner",
       "-loglevel", "error",
       "-f", "pulse",
       "-i", "default",
+      "-filter_complex", "[0:a]asplit=2[aout][meter]",
+      "-map", "[aout]",
       "-ac", "2",
       "-ar", "48000",
       "-c:a", "libopus",
@@ -1291,8 +1316,14 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       "-payload_type", String(OPUS_PAYLOAD_TYPE),
       "-f", "rtp",
       `rtp://127.0.0.1:${port}`,
+      "-map", "[meter]",
+      "-ac", "1",
+      "-ar", "16000",
+      "-f", "s16le",
+      "pipe:1",
     ]);
-    const captureErrorOutput = drainChildOutput(this.captureProcess);
+    this.captureProcess.stdout.on("data", this.handleCapturePcm);
+    const captureErrorOutput = drainChildStderr(this.captureProcess);
     this.captureProcess.on("error", (error) => {
       debugLog("voice.capture.spawn_error", { error: error.message });
       context.onError(new Error(`Failed to start voice capture: ${error.message}`));
@@ -1342,14 +1373,6 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const silence = isOpusSilenceFrame(opusPayload);
     if (!silence) this.nonSilencePacketCount += 1;
 
-    // The local speaking indicator should reflect microphone activity, not the
-    // later media-encryption/transport outcome. In DAVE calls, encodeOutgoingOpus
-    // can temporarily return null while the MLS group is not established; waiting
-    // until after that point made the widget stay idle even though capture was
-    // receiving non-silent mic frames.
-    if (silence) this.setCaptureSpeaking(context, false);
-    else this.markCaptureSpeaking(context);
-
     const encodedPayload = context.encodeOutgoingOpus ? context.encodeOutgoingOpus(opusPayload) : opusPayload;
     if (!encodedPayload || encodedPayload.length === 0) {
       this.droppedPacketCount += 1;
@@ -1380,6 +1403,31 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     context.udp.send(encrypted);
   }
 
+  private updateCaptureLevel(chunk: Buffer | string): void {
+    const context = this.context;
+    if (!context) return;
+    if (context.selfMute) {
+      this.setCaptureSpeaking(context, false);
+      return;
+    }
+
+    const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const data = this.pcmRemainder.length > 0 ? Buffer.concat([this.pcmRemainder, incoming]) : incoming;
+    const byteLength = data.length - (data.length % 2);
+    this.pcmRemainder = byteLength === data.length ? Buffer.alloc(0) : Buffer.from(data.subarray(byteLength));
+    if (byteLength <= 0) return;
+
+    let sumSquares = 0;
+    const sampleCount = byteLength / 2;
+    for (let offset = 0; offset < byteLength; offset += 2) {
+      const sample = data.readInt16LE(offset) / 32768;
+      sumSquares += sample * sample;
+    }
+    const rms = Math.sqrt(sumSquares / sampleCount);
+    this.lastInputLevelDb = linearToDb(rms);
+    if (rms >= this.speakingThreshold) this.markCaptureSpeaking(context);
+  }
+
   private markCaptureSpeaking(context: VoiceAudioContext): void {
     this.setCaptureSpeaking(context, true);
     if (this.speakingIdleTimer) clearTimeout(this.speakingIdleTimer);
@@ -1403,6 +1451,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       forwardedPackets: this.forwardedPacketCount,
       droppedPackets: this.droppedPacketCount,
       selfMute: context.selfMute,
+      inputLevelDb: Number.isFinite(this.lastInputLevelDb) ? Math.round(this.lastInputLevelDb * 10) / 10 : null,
+      speakingThresholdDb: this.speakingThresholdDb,
     });
     context.sendSpeaking(speaking);
   }
@@ -1429,12 +1479,19 @@ export function buildFfplayPlaybackArgs(sdpPath: string): string[] {
 }
 
 function drainChildOutput(child: ChildProcessWithoutNullStreams): () => string {
-  const stderrChunks: Buffer[] = [];
   child.stdout.resume();
+  return drainChildStderr(child);
+}
+
+function drainChildStderr(child: ChildProcessWithoutNullStreams): () => string {
+  const stderrChunks: Buffer[] = [];
   child.stderr.on("data", (chunk: Buffer | string) => {
     stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    const totalLength = stderrChunks.reduce((total, item) => total + item.length, 0);
-    while (totalLength > 8_192 && stderrChunks.length > 1) stderrChunks.shift();
+    let totalLength = stderrChunks.reduce((total, item) => total + item.length, 0);
+    while (totalLength > 8_192 && stderrChunks.length > 1) {
+      const removed = stderrChunks.shift();
+      totalLength -= removed?.length ?? 0;
+    }
   });
   child.stderr.resume();
   return () => Buffer.concat(stderrChunks).toString("utf8");
