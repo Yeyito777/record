@@ -36,6 +36,7 @@ export const cerberus: Theme = {
   sidebarSelBg: `${ESC}48;2;51;51;51m`,
   cursorBg: `${ESC}48;2;211;47;47m`,
   historyLineBg: `${ESC}48;2;37;37;37m`,
+  messageDeleteFg: `${ESC}38;2;244;67;54m`,
   selectionBg: `${ESC}48;2;74;74;74m`,
   searchBg: `${ESC}48;2;252;224;148m`,
   searchFg: `${ESC}38;2;20;20;20m`,

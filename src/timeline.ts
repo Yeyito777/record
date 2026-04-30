@@ -247,6 +247,18 @@ export function removeTimelineMessage(timeline: TimelineState, messageId: string
   }
 }
 
+export function insertTimelineMessageAt(timeline: TimelineState, message: DiscordMessage, index: number, channelId?: string): void {
+  if (channelId && timeline.channelId !== channelId) return;
+  if (timeline.channelId !== message.channelId) return;
+  const existingIndex = timeline.messages.findIndex((existing) => existing.id === message.id);
+  if (existingIndex >= 0) {
+    timeline.messages[existingIndex] = message;
+  } else {
+    timeline.messages.splice(Math.max(0, Math.min(index, timeline.messages.length)), 0, message);
+  }
+  invalidateTimelineContentCache(timeline);
+}
+
 export function removeTimelineMessages(timeline: TimelineState, messageIds: string[], channelId?: string): void {
   if (channelId && timeline.channelId !== channelId) return;
   const ids = new Set(messageIds);

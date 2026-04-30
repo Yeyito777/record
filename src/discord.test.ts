@@ -12,6 +12,7 @@ import {
   formatChannelName,
   isDirectMessageChannel,
   mapDiscordMessagePatch,
+  deleteChannelMessage,
   editChannelMessage,
   sendChannelMessage,
   setGuildMuted,
@@ -27,6 +28,22 @@ afterEach(() => {
 });
 
 describe("discord helpers", () => {
+  test("deletes a channel message through Discord REST", async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, method: init?.method ?? "GET" });
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await deleteChannelMessage("token", "channel-1", "message-1");
+
+    expect(requests).toEqual([{
+      url: "https://discord.com/api/v9/channels/channel-1/messages/message-1",
+      method: "DELETE",
+    }]);
+  });
+
   test("persists presence status through Discord settings-proto", async () => {
     const requests: Array<{ url: string; method: string; body: string }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

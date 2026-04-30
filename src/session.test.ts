@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
+import { bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -776,6 +776,54 @@ describe("session", () => {
     expect(state.editor.buffer).toBe("edited");
     expect(state.timeline.messages[0]?.content).toBe("original");
     expect(state.notice.text).toContain("Edit failed");
+  });
+
+  test("deleting a message removes it optimistically", async () => {
+    let requested = false;
+    globalThis.fetch = (async () => {
+      requested = true;
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+    const first = message("1", "first");
+    const second = message("2", "second");
+    state.timeline.messages = [first, second];
+    state.messageCacheByChannelId["channel-1"] = { channelId: "channel-1", messages: [first, second], hasOlder: false, updatedAt: 0, latestFetchedAt: null };
+
+    deleteMessage(state, "token-1", first, { scheduleRender: () => {} });
+
+    expect(state.timeline.messages.map((entry) => entry.id)).toEqual(["2"]);
+    expect(state.messageCacheByChannelId["channel-1"]?.messages.map((entry) => entry.id)).toEqual(["2"]);
+
+    await flushTimers();
+
+    expect(requested).toBe(true);
+    expect(state.timeline.messages.map((entry) => entry.id)).toEqual(["2"]);
+  });
+
+  test("failed deletes restore the optimistically removed message", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ message: "Missing Access" }), { status: 403 })) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+    const first = message("1", "first");
+    const second = message("2", "second");
+    state.timeline.messages = [first, second];
+    state.messageCacheByChannelId["channel-1"] = { channelId: "channel-1", messages: [first, second], hasOlder: false, updatedAt: 0, latestFetchedAt: null };
+
+    deleteMessage(state, "token-1", first, { scheduleRender: () => {} });
+    expect(state.timeline.messages.map((entry) => entry.id)).toEqual(["2"]);
+
+    await flushTimers();
+
+    expect(state.timeline.messages.map((entry) => entry.id)).toEqual(["1", "2"]);
+    expect(state.messageCacheByChannelId["channel-1"]?.messages.map((entry) => entry.id)).toEqual(["1", "2"]);
   });
 
   test("failed sends restore the prompt and leave a failure in history", async () => {

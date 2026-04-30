@@ -69,6 +69,11 @@ export interface EditTarget {
   timestamp: number | null;
 }
 
+export interface MessageDeletePending {
+  messageId: string;
+  channelId: string;
+}
+
 export interface VoiceCallStatus {
   displayName: string;
   state: VoiceConnectionState;
@@ -103,6 +108,7 @@ export interface AppState {
   notifications: NotificationState;
   replyTarget: ReplyTarget | null;
   editTarget: EditTarget | null;
+  messageDeletePending: MessageDeletePending | null;
   voiceCall: VoiceCallStatus | null;
   roleIdsByGuildId: Record<string, string[]>;
   guildRolesByGuildId: Record<string, DiscordRole[]>;
@@ -147,6 +153,7 @@ export function createInitialState(
     notifications: createNotificationState(),
     replyTarget: null,
     editTarget: null,
+    messageDeletePending: null,
     voiceCall: null,
     roleIdsByGuildId: {},
     guildRolesByGuildId: {},

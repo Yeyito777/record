@@ -948,6 +948,12 @@ export async function editChannelMessage(
   return mapDiscordMessage(message);
 }
 
+export async function deleteChannelMessage(token: string, channelId: string, messageId: string): Promise<void> {
+  await requestJson<unknown>(token, `/channels/${channelId}/messages/${messageId}`, {
+    method: "DELETE",
+  });
+}
+
 function buildSendMessagePayload(content: string, options: SendMessageOptions): Record<string, unknown> {
   const body: Record<string, unknown> = { content, tts: false };
   const reply = options.reply;

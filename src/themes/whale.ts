@@ -36,6 +36,7 @@ export const whale: Theme = {
   sidebarSelBg: `${ESC}48;2;15;25;60m`,
   cursorBg: `${ESC}48;2;72;202;228m`,
   historyLineBg: `${ESC}48;2;9;13;53m`,
+  messageDeleteFg: `${ESC}31m`,
   selectionBg: `${ESC}48;2;79;82;88m`,
   searchBg: `${ESC}48;2;252;224;148m`,
   searchFg: `${ESC}38;2;0;5;15m`,

@@ -44,6 +44,7 @@ import {
   bootstrapReadOnlyClient,
   disconnectAppGateway,
   disconnectMemberListGateway,
+  deleteMessage,
   loadChannelMessages,
   loadGuildChannels,
   loadOlderChannelMessages,
@@ -434,6 +435,11 @@ function removeLastPendingImage(): boolean {
 }
 
 function cancelCurrentAction(): void {
+  if (clearPendingMessageDelete()) {
+    scheduleRender();
+    return;
+  }
+
   if (state.pendingImages.length > 0) {
     state.pendingImages = [];
     scheduleRender();
@@ -478,6 +484,38 @@ function selectedMessageCanBeEdited(message: DiscordMessage | null): message is 
   return true;
 }
 
+function clearPendingMessageDelete(): boolean {
+  if (!state.messageDeletePending) return false;
+  state.messageDeletePending = null;
+  return true;
+}
+
+function selectedMessageMatchesPendingDelete(message: DiscordMessage): boolean {
+  return state.messageDeletePending?.channelId === message.channelId
+    && state.messageDeletePending.messageId === message.id;
+}
+
+function deleteSelectedHistoryMessage(): void {
+  if (state.panelFocus !== "chat" || state.chatFocus !== "history") {
+    scheduleRender();
+    return;
+  }
+
+  const message = selectedHistoryMessage();
+  if (!message) {
+    scheduleRender();
+    return;
+  }
+
+  if (!selectedMessageMatchesPendingDelete(message)) {
+    state.messageDeletePending = { channelId: message.channelId, messageId: message.id };
+    scheduleRender();
+    return;
+  }
+
+  deleteMessage(state, state.auth.savedToken, message, effects);
+}
+
 function startEditSelectedHistoryMessage(): void {
   const message = selectedHistoryMessage();
   if (!selectedMessageCanBeEdited(message)) return;
@@ -492,6 +530,7 @@ function startEditSelectedHistoryMessage(): void {
     timestamp: message.timestamp,
   };
   state.replyTarget = null;
+  state.messageDeletePending = null;
   state.pendingImages = [];
   setNotice(state, "", "muted");
   resetEditor(state.editor, message.content, "insert");
@@ -532,6 +571,7 @@ function startReplyToSelectedHistoryMessage(mention = false): void {
     timestamp: message.timestamp,
     mention: mention && message.author.id !== state.auth.user?.id,
   };
+  state.messageDeletePending = null;
   setNotice(state, "", "muted");
   focusPrompt(state);
   syncPromptAutocomplete();
@@ -564,6 +604,9 @@ function handleGlobalAction(key: KeyEvent): boolean {
     ? "navigation"
     : "prompt";
   const action = resolveAction(key, context);
+  if (action && action !== "cancel_action" && !action.startsWith("nav_") && action !== "focus_prompt") {
+    clearPendingMessageDelete();
+  }
 
   switch (action) {
     case "cancel_action":
@@ -768,6 +811,13 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
+  if (state.editor.mode === "normal" && key.type === "char" && key.char === "d") {
+    deleteSelectedHistoryMessage();
+    return true;
+  }
+
+  const clearedPendingDelete = clearPendingMessageDelete();
+
   if (state.editor.mode === "normal" && key.type === "char" && (key.char === "r" || key.char === "R")) {
     startReplyToSelectedHistoryMessage(key.char === "R");
     return true;
@@ -785,7 +835,13 @@ function handleHistoryFocused(key: KeyEvent): boolean {
   }
 
   const action = resolveAction(key, "navigation");
-  if (!action) return false;
+  if (!action) {
+    if (clearedPendingDelete) {
+      scheduleRender();
+      return true;
+    }
+    return false;
+  }
 
   switch (action) {
     case "focus_prompt":

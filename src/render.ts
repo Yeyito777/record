@@ -164,6 +164,18 @@ function isHistoryLineHighlighted(state: AppState, lineIndex: number, historyFoc
   return lineIndex >= first && lineIndex <= last;
 }
 
+function isHistoryLinePendingDelete(state: AppState, lineIndex: number): boolean {
+  const pending = state.messageDeletePending;
+  if (!pending || state.timeline.channelId !== pending.channelId) return false;
+  const bound = state.historyMessageBounds.find((entry) => entry.messageId === pending.messageId);
+  return Boolean(bound && lineIndex >= bound.start && lineIndex < bound.end);
+}
+
+function renderLineWithDeleteForeground(line: string): string {
+  const plain = stripAnsi(line);
+  return plain.length > 0 ? `${theme.messageDeleteFg}${plain}${theme.reset}` : line;
+}
+
 function renderHistoryViewportLine(
   state: AppState,
   rawLine: string,
@@ -387,12 +399,16 @@ export function render(state: AppState): void {
     emitSidebarCol(row);
 
     const lineIndex = state.timeline.scrollOffset + i;
-    const line = useTimeline && lineIndex < state.historyLines.length
-      ? renderHistoryViewportLine(state, state.historyLines[lineIndex] ?? "", lineIndex, historyFocused)
+    const pendingDeleteLine = useTimeline && isHistoryLinePendingDelete(state, lineIndex);
+    const rawLine = useTimeline && lineIndex < state.historyLines.length
+      ? (state.historyLines[lineIndex] ?? "")
       : (timelineLines[i] ?? "");
+    const line = useTimeline && lineIndex < state.historyLines.length
+      ? renderHistoryViewportLine(state, pendingDeleteLine ? renderLineWithDeleteForeground(rawLine) : rawLine, lineIndex, historyFocused)
+      : rawLine;
 
     const lineBackground = useTimeline ? (state.historyLineBackgrounds[lineIndex] ?? "") : "";
-    const renderedLine = useTimeline && isHistoryLineHighlighted(state, lineIndex, historyFocused)
+    const renderedLine = useTimeline && !pendingDeleteLine && isHistoryLineHighlighted(state, lineIndex, historyFocused)
       ? applyLineBg(` ${line}`, theme.historyLineBg)
       : lineBackground
         ? applyLineBg(` ${line}`, lineBackground)

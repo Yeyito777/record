@@ -19,6 +19,7 @@ import {
   ackChannelMessage,
   fetchChannelMessages,
   editChannelMessage,
+  deleteChannelMessage,
   fetchDirectMessages,
   fetchGuildChannels,
   fetchCurrentUserGuildRoleIds,
@@ -114,6 +115,7 @@ import {
   appendTimelineMessage,
   clearTimeline,
   finishLoadingOlderMessages,
+  insertTimelineMessageAt,
   isTimelineNearBottom,
   markTimelineMessageFailed,
   markTimelineCallEnded,
@@ -1247,12 +1249,22 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       if (removeCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId)) {
         persistChannelMessageCache(state, channelId);
       }
+      if (state.messageDeletePending?.channelId === channelId && state.messageDeletePending.messageId === messageId) {
+        state.messageDeletePending = null;
+      }
+      clearMessageTargetsForDeletedMessage(state, channelId, messageId);
       removeTimelineMessage(state.timeline, messageId, channelId);
       effects.scheduleRender();
     },
     onMessageDeleteBulk: (channelId, messageIds) => {
       if (removeCachedChannelMessages(state.messageCacheByChannelId, channelId, messageIds)) {
         persistChannelMessageCache(state, channelId);
+      }
+      if (state.messageDeletePending?.channelId === channelId && messageIds.includes(state.messageDeletePending.messageId)) {
+        state.messageDeletePending = null;
+      }
+      for (const messageId of messageIds) {
+        clearMessageTargetsForDeletedMessage(state, channelId, messageId);
       }
       removeTimelineMessages(state.timeline, messageIds, channelId);
       effects.scheduleRender();
@@ -1295,6 +1307,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.messageCacheByChannelId = {};
   state.replyTarget = null;
   state.editTarget = null;
+  state.messageDeletePending = null;
   state.voiceCall = null;
   state.memberRoleCacheVersion += 1;
   focusPrompt(state);
@@ -1726,6 +1739,9 @@ export async function loadChannelMessages(
   if (state.editTarget && state.editTarget.channelId !== channelId) {
     state.editTarget = null;
   }
+  if (state.messageDeletePending && state.messageDeletePending.channelId !== channelId) {
+    state.messageDeletePending = null;
+  }
   state.sidebar.activeGuildId = channel.guildId;
   subscribeAppGatewayToActiveChannel(state);
   state.timeline.loadingOlder = false;
@@ -1965,6 +1981,72 @@ export function editCurrentMessage(
       effects.scheduleRender();
     }
   })();
+}
+
+export function deleteMessage(
+  state: AppState,
+  token: string | null,
+  message: DiscordMessage,
+  effects: SessionEffects,
+): void {
+  const channelId = message.channelId;
+  const messageId = message.id;
+  const timelineIndex = state.timeline.channelId === channelId
+    ? state.timeline.messages.findIndex((entry) => entry.id === messageId)
+    : -1;
+
+  if (message.localStatus === "pending") {
+    state.messageDeletePending = null;
+    effects.scheduleRender();
+    return;
+  }
+
+  if (messageId.startsWith("local:")) {
+    state.messageDeletePending = null;
+    if (removeCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId)) {
+      persistChannelMessageCache(state, channelId);
+    }
+    removeTimelineMessage(state.timeline, messageId, channelId);
+    clearMessageTargetsForDeletedMessage(state, channelId, messageId);
+    effects.scheduleRender();
+    return;
+  }
+
+  if (!token) {
+    state.messageDeletePending = null;
+    effects.scheduleRender();
+    return;
+  }
+
+  state.messageDeletePending = null;
+  if (removeCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId)) {
+    persistChannelMessageCache(state, channelId);
+  }
+  removeTimelineMessage(state.timeline, messageId, channelId);
+  clearMessageTargetsForDeletedMessage(state, channelId, messageId);
+  effects.scheduleRender();
+
+  void (async () => {
+    try {
+      await deleteChannelMessage(token, channelId, messageId);
+    } catch {
+      upsertCachedChannelMessage(state.messageCacheByChannelId, message);
+      persistChannelMessageCache(state, channelId);
+      if (timelineIndex >= 0) {
+        insertTimelineMessageAt(state.timeline, message, timelineIndex, channelId);
+      }
+      effects.scheduleRender();
+    }
+  })();
+}
+
+function clearMessageTargetsForDeletedMessage(state: AppState, channelId: string, messageId: string): void {
+  if (state.replyTarget?.channelId === channelId && state.replyTarget.messageId === messageId) {
+    state.replyTarget = null;
+  }
+  if (state.editTarget?.channelId === channelId && state.editTarget.messageId === messageId) {
+    state.editTarget = null;
+  }
 }
 
 export function sendCurrentChannelMessage(
