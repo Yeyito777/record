@@ -40,15 +40,17 @@ except Exception:
     ImageDraw = None
     ImageFont = None
 
-AVATAR_SIZE = 58
-BORDER_WIDTH = 5
-CARD_PADDING = 12
-ROW_PADDING_X = 8
-ROW_PADDING_Y = 6
-NAME_GAP = 12
-ROW_GAP = 8
-NAME_WIDTH = 180
-IDLE_ALPHA = 0.74
+AVATAR_SIZE = 44
+BORDER_WIDTH = 4
+CARD_PADDING = 6
+ROW_PADDING_X = 5
+ROW_PADDING_Y = 4
+NAME_GAP = 8
+ROW_GAP = 5
+NAME_MIN_WIDTH = 52
+NAME_MAX_WIDTH = 142
+NAME_CHAR_WIDTH = 9
+IDLE_ALPHA = 0.82
 SPEAKING_ALPHA = 1.0
 SPEAKING_BORDER = (0x23, 0xA5, 0x5A, 0xFF)
 IDLE_BORDER = (0x30, 0x3A, 0x4A, 0xDD)
@@ -63,7 +65,7 @@ class Participant:
         self.id = str(data.get("id") or "")
         self.name = str(data.get("name") or self.id or "?")
         self.avatar_url = data.get("avatarUrl") if isinstance(data.get("avatarUrl"), str) else None
-        self.role_color = normalize_role_color(data.get("roleColor"))
+        self.role_color = normalize_role_color(data.get("textColor")) or normalize_role_color(data.get("roleColor"))
         self.speaking = bool(data.get("speaking"))
         self.self = bool(data.get("self"))
 
@@ -148,6 +150,9 @@ def render_avatar_path(participant: Participant) -> Path:
         "name": participant.name,
         "avatar": participant.avatar_url,
         "speaking": participant.speaking,
+        "avatarSize": AVATAR_SIZE,
+        "borderWidth": BORDER_WIDTH,
+        "idleAlpha": IDLE_ALPHA,
     }, sort_keys=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     output = CACHE_DIR / f"rendered-{safe_cache_name(key)}.png"
@@ -230,20 +235,20 @@ class CallWidget(Gtk.Window):
             window, grid, image, label { background-color: transparent; }
             box.record-call-widget-card {
                 background-color: rgba(7, 12, 22, 0.94);
-                border: 1px solid rgba(148, 163, 184, 0.20);
-                border-radius: 16px;
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                border-radius: 14px;
             }
             box.record-call-widget-row {
-                background-color: rgba(15, 23, 42, 0.55);
-                border: 1px solid rgba(148, 163, 184, 0.10);
-                border-radius: 13px;
+                background-color: rgba(15, 23, 42, 0.42);
+                border: 1px solid rgba(148, 163, 184, 0.08);
+                border-radius: 11px;
             }
             box.record-call-widget-row-speaking {
-                background-color: rgba(20, 83, 45, 0.26);
-                border-color: rgba(35, 165, 90, 0.42);
+                background-color: rgba(20, 83, 45, 0.22);
+                border-color: rgba(35, 165, 90, 0.38);
             }
             label.record-call-widget-name {
-                font: 13px sans-serif;
+                font: 16px sans-serif;
                 text-shadow: 0 1px 2px rgba(0, 0, 0, 0.82);
             }
             label.record-call-widget-status {
@@ -272,11 +277,15 @@ class CallWidget(Gtk.Window):
         self.show_all()
         return False
 
+    def name_width(self) -> int:
+        longest = max((len(participant.name) for participant in self.participants), default=0)
+        return max(NAME_MIN_WIDTH, min(NAME_MAX_WIDTH, longest * NAME_CHAR_WIDTH + 8))
+
     def desired_size(self) -> tuple[int, int]:
         rows = max(1, len(self.participants))
         diameter = AVATAR_SIZE + BORDER_WIDTH * 2
-        row_height = max(diameter, 44) + ROW_PADDING_Y * 2
-        row_width = ROW_PADDING_X * 2 + diameter + NAME_GAP + NAME_WIDTH
+        row_height = diameter + ROW_PADDING_Y * 2
+        row_width = ROW_PADDING_X * 2 + diameter + NAME_GAP + self.name_width()
         width = CARD_PADDING * 2 + row_width
         height = CARD_PADDING * 2 + rows * row_height + max(0, rows - 1) * ROW_GAP
         return width, height
@@ -285,8 +294,9 @@ class CallWidget(Gtk.Window):
         if self.grid is not None:
             self.remove(self.grid)
         diameter = AVATAR_SIZE + BORDER_WIDTH * 2
-        row_height = max(diameter, 44) + ROW_PADDING_Y * 2
-        row_width = ROW_PADDING_X * 2 + diameter + NAME_GAP + NAME_WIDTH
+        name_width = self.name_width()
+        row_height = diameter + ROW_PADDING_Y * 2
+        row_width = ROW_PADDING_X * 2 + diameter + NAME_GAP + name_width
 
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         card.set_name("record-call-widget-card")
@@ -325,9 +335,9 @@ class CallWidget(Gtk.Window):
             label.set_valign(Gtk.Align.CENTER)
             label.set_xalign(0.0)
             label.set_width_chars(1)
-            label.set_max_width_chars(22)
+            label.set_max_width_chars(max(1, NAME_MAX_WIDTH // NAME_CHAR_WIDTH))
             label.set_ellipsize(Pango.EllipsizeMode.END)
-            label.set_size_request(NAME_WIDTH, -1)
+            label.set_size_request(name_width, -1)
             label.set_opacity(1.0 if participant.speaking else 0.9)
             row_box.pack_start(label, True, True, 0)
 

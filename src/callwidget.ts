@@ -14,8 +14,8 @@ export interface CallWidgetParticipant {
   id: string;
   name: string;
   avatarUrl: string;
-  /** CSS hex color for this participant's highest colored guild role, when known. */
-  roleColor?: string | null;
+  /** CSS hex text color for this participant (role color in guilds, deterministic user color in DMs). */
+  textColor?: string | null;
   speaking: boolean;
   self: boolean;
 }

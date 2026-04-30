@@ -124,6 +124,7 @@ import {
   setTimelineMessages,
 } from "./timeline";
 import { clearTypingUser, recordTypingStart } from "./typing";
+import { dmAuthorColor, theme } from "./theme";
 import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
 
 export interface SessionEffects {
@@ -282,12 +283,22 @@ function avatarHashForUser(state: AppState, channelId: string, userId: string): 
   return null;
 }
 
-function callWidgetRoleColorForUser(state: AppState, sessionGuildId: string | null, channelId: string, userId: string): string | null {
+function callWidgetTextColorForUser(state: AppState, sessionGuildId: string | null, channelId: string, userId: string): string | null {
   const guildId = sessionGuildId ?? state.channelList.channels.find((channel) => channel.id === channelId)?.guildId ?? null;
-  if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return null;
+  if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) {
+    return ansiTextColorToHex(userId === state.auth.user?.id ? theme.accent : dmAuthorColor(userId));
+  }
   const roleIds = roleIdsForUser(state, guildId, channelId, userId);
   const color = resolvePrimaryRoleColor(state.guildRolesByGuildId[guildId] ?? [], roleIds);
   return color === null ? null : `#${color.toString(16).padStart(6, "0")}`;
+}
+
+function ansiTextColorToHex(color: string): string | null {
+  const match = /\x1b\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m/.exec(color);
+  if (!match) return null;
+  const channels = match.slice(1).map((value) => Number(value));
+  if (channels.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)) return null;
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function roleIdsForUser(state: AppState, guildId: string, channelId: string, userId: string): readonly string[] {
@@ -1024,7 +1035,7 @@ function buildCallWidgetParticipants(state: AppState, session: VoiceCallSession)
       id: self.id,
       name: self.globalName ?? self.username,
       avatarUrl: discordAvatarUrl(self.id, self.avatar, self.discriminator),
-      roleColor: callWidgetRoleColorForUser(state, session.target.guildId, channelId, self.id),
+      textColor: callWidgetTextColorForUser(state, session.target.guildId, channelId, self.id),
       speaking: speakingCallUserIds.has(self.id),
       self: true,
     });
@@ -1037,7 +1048,7 @@ function buildCallWidgetParticipants(state: AppState, session: VoiceCallSession)
       id: userId,
       name: displayNameForUser(state, channelId, userId, userId),
       avatarUrl: discordAvatarUrl(userId, avatarHashForUser(state, channelId, userId), null),
-      roleColor: callWidgetRoleColorForUser(state, session.target.guildId, channelId, userId),
+      textColor: callWidgetTextColorForUser(state, session.target.guildId, channelId, userId),
       speaking: speakingCallUserIds.has(userId),
       self: false,
     });
