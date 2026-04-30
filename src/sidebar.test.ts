@@ -132,6 +132,19 @@ describe("sidebar state", () => {
     expect(sidebar.selectedIndex).toBe(0);
   });
 
+  test("shows a loading row under direct messages while their list is still fetching", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    sidebar.loading = true;
+
+    const entries = buildSidebarEntries(sidebar, [], 0);
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["guild", "loading"]);
+    expect(entries[1]?.guildId).toBe(DIRECT_MESSAGES_GUILD_ID);
+    expect(entries[1]?.label).toContain("Loading");
+  });
+
   test("hides inaccessible channels unless show-hidden is enabled", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);

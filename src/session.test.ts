@@ -5,7 +5,7 @@ import { join } from "path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
-import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { bootstrapReadOnlyClient, clearReadOnlyClient, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
@@ -124,6 +124,40 @@ describe("session", () => {
     expect(state.memberList.requestId).toBe(14);
   });
 
+  test("bootstrap shows direct messages before DM channel data has loaded", async () => {
+    let resolveDms: (response: Response) => void = () => {};
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/channels")) {
+        return await new Promise<Response>((resolve) => {
+          resolveDms = resolve;
+        });
+      }
+      if (url.includes("/users/@me/guilds")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/gateway")) {
+        return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+
+    const bootstrap = bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+    await flushTimers();
+
+    expect(state.sidebar.loading).toBe(true);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID]);
+
+    resolveDms(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await bootstrap;
+
+    expect(state.sidebar.loading).toBe(false);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID]);
+  });
+
   test("bootstrap revalidation preserves a channel list opened while REST is in flight", async () => {
     let resolveDms: (response: Response) => void = () => {};
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -235,8 +269,8 @@ describe("session", () => {
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
 
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-1", "guild-2", "guild-new"]);
-    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual(["One Fresh", "Two Fresh", "New"]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", "guild-2", "guild-new"]);
+    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual([DIRECT_MESSAGES_GUILD_NAME, "One Fresh", "Two Fresh", "New"]);
   });
 
   test("bootstrap applies the local account-scoped guild order", async () => {
@@ -267,7 +301,7 @@ describe("session", () => {
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
 
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-2", "guild-1", "guild-3"]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-2", "guild-1", "guild-3"]);
   });
 
   test("cached channels fetch missing current-user roles before immediate visibility filtering", async () => {
@@ -617,10 +651,10 @@ describe("session", () => {
 
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
     try {
-      expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-1", "guild-2"]);
+      expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", "guild-2"]);
 
       saveCachedGuildOrder("self", ["guild-2", "guild-1"]);
-      await waitForCondition(() => state.sidebar.guilds.map((guild) => guild.id).join(",") === "guild-2,guild-1");
+      await waitForCondition(() => state.sidebar.guilds.map((guild) => guild.id).join(",") === `${DIRECT_MESSAGES_GUILD_ID},guild-2,guild-1`);
     } finally {
       clearReadOnlyClient(state);
     }

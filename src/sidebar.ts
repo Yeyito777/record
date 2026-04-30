@@ -209,7 +209,9 @@ export function buildSidebarEntries(
     if (!isExpanded) continue;
 
     const visibleGuildChannels = channels.filter((channel) => channel.guildId === guild.id);
-    if (sidebar.loadingGuildId === guild.id && visibleGuildChannels.length === 0) {
+    const loadingExpandedGuild = sidebar.loadingGuildId === guild.id
+      || (guild.id === DIRECT_MESSAGES_GUILD_ID && sidebar.loading);
+    if (loadingExpandedGuild && visibleGuildChannels.length === 0) {
       entries.push({
         kind: "loading",
         id: `${guild.id}::loading`,

@@ -203,9 +203,17 @@ function getMemberListGateway(token: string): MemberListGatewayClient {
   return memberListGateway;
 }
 
+function directMessagesGuild(): DiscordGuild {
+  return { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null };
+}
+
+function withDirectMessagesGuild(guilds: DiscordGuild[]): DiscordGuild[] {
+  return [directMessagesGuild(), ...guilds.filter((guild) => guild.id !== DIRECT_MESSAGES_GUILD_ID)];
+}
+
 function ensureDirectMessagesGuild(state: AppState): void {
   if (state.sidebar.guilds.some((guild) => guild.id === DIRECT_MESSAGES_GUILD_ID)) return;
-  state.sidebar.guilds = [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, ...state.sidebar.guilds];
+  state.sidebar.guilds = withDirectMessagesGuild(state.sidebar.guilds);
 }
 
 function activeTimelineWasPinned(state: AppState): boolean {
@@ -653,10 +661,8 @@ function handleGatewayChannelDelete(state: AppState, effects: SessionEffects, ch
   if (removed || wasActive) effects.scheduleRender();
 }
 
-function cachedSidebarGuilds(directMessages: DiscordChannel[], guilds: DiscordGuild[]): DiscordGuild[] {
-  return directMessages.length > 0
-    ? [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, ...guilds]
-    : guilds;
+function cachedSidebarGuilds(_directMessages: DiscordChannel[], guilds: DiscordGuild[]): DiscordGuild[] {
+  return withDirectMessagesGuild(guilds);
 }
 
 function currentAccountId(state: AppState): string | null {
@@ -895,10 +901,8 @@ function refreshHiddenChannelFlags(state: AppState, guildId: string | null | und
   });
 }
 
-function withCurrentDirectMessagesGuild(state: AppState, guilds: DiscordGuild[]): DiscordGuild[] {
-  return state.sidebar.guilds.some((guild) => guild.id === DIRECT_MESSAGES_GUILD_ID)
-    ? [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, ...guilds]
-    : guilds;
+function withCurrentDirectMessagesGuild(_state: AppState, guilds: DiscordGuild[]): DiscordGuild[] {
+  return withDirectMessagesGuild(guilds);
 }
 
 function mergeGatewayGuilds(
@@ -1472,6 +1476,7 @@ export async function bootstrapReadOnlyClient(
   const previousActiveChannelId = state.channelList.activeChannelId;
   state.sidebar.loading = true;
   state.sidebar.loadingGuildId = null;
+  ensureDirectMessagesGuild(state);
   disconnectMemberListGateway();
   clearMemberListData(state.memberList);
   clearTimeline(state.timeline);
