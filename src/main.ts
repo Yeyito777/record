@@ -27,7 +27,14 @@ import { imageExtension, readClipboardImage } from "./imageclipboard";
 import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction } from "./keybinds";
-import { MEMBER_LIST_WIDTH, moveMemberListSelection, scrollMemberListSelection, scrollMemberListSelectionLine } from "./memberlist";
+import {
+  jumpMemberListSelectionToVisibleEdge,
+  jumpMemberListSelectionToVisibleMiddle,
+  MEMBER_LIST_WIDTH,
+  moveMemberListSelection,
+  scrollMemberListSelection,
+  scrollMemberListSelectionLine,
+} from "./memberlist";
 import { formatByteSize, summarizeInlineMessageParts } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { render } from "./render";
@@ -47,6 +54,8 @@ import { renderStatusLine } from "./statusline";
 import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
+  jumpSidebarSelectionToVisibleEdge,
+  jumpSidebarSelectionToVisibleMiddle,
   moveSidebarSelection,
   scrollSidebarSelection,
   scrollSidebarSelectionLine,
@@ -670,6 +679,18 @@ function handleSidebarFocused(key: KeyEvent): boolean {
     case "nav_move_guild_down":
       moveSelectedGuildOrder(state, { scheduleRender }, "down");
       return true;
+    case "nav_visible_top":
+      jumpSidebarSelectionToVisibleEdge(state.sidebar, state.channelList.channels, state.rows, "top", sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    case "nav_visible_middle":
+      jumpSidebarSelectionToVisibleMiddle(state.sidebar, state.channelList.channels, state.rows, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    case "nav_visible_bottom":
+      jumpSidebarSelectionToVisibleEdge(state.sidebar, state.channelList.channels, state.rows, "bottom", sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
     case "nav_select": {
       const token = tokenOrWarn();
       if (!token) return true;
@@ -795,6 +816,18 @@ function handleMemberListFocused(key: KeyEvent): boolean {
         Math.max(0, state.memberList.members.length - 1),
         state.memberList.selectedIndex + 1,
       );
+      scheduleRender();
+      return true;
+    case "nav_visible_top":
+      jumpMemberListSelectionToVisibleEdge(state.memberList, state.rows, "top");
+      scheduleRender();
+      return true;
+    case "nav_visible_middle":
+      jumpMemberListSelectionToVisibleMiddle(state.memberList, state.rows);
+      scheduleRender();
+      return true;
+    case "nav_visible_bottom":
+      jumpMemberListSelectionToVisibleEdge(state.memberList, state.rows, "bottom");
       scheduleRender();
       return true;
     default:

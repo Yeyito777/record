@@ -33,6 +33,9 @@ export type Action =
   | "nav_toggle_guild_mute"
   | "nav_move_guild_up"
   | "nav_move_guild_down"
+  | "nav_visible_top"
+  | "nav_visible_middle"
+  | "nav_visible_bottom"
   | "notification_prev"
   | "notification_next"
   | "paste_image"
@@ -82,6 +85,9 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
   "char:m": "nav_toggle_guild_mute",
   "char:e": "nav_move_guild_up",
   "char:E": "nav_move_guild_down",
+  "char:H": "nav_visible_top",
+  "char:M": "nav_visible_middle",
+  "char:L": "nav_visible_bottom",
 };
 
 export type KeyContext = "prompt" | "navigation";

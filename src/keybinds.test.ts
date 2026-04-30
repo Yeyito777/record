@@ -67,6 +67,12 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "char", char: "E" }, "navigation")).toBe("nav_move_guild_down");
   });
 
+  test("navigation Shift+H/M/L jumps within the visible menu like Exocortex conversations", () => {
+    expect(resolveAction({ type: "char", char: "H" }, "navigation")).toBe("nav_visible_top");
+    expect(resolveAction({ type: "char", char: "M" }, "navigation")).toBe("nav_visible_middle");
+    expect(resolveAction({ type: "char", char: "L" }, "navigation")).toBe("nav_visible_bottom");
+  });
+
   test("ctrl brackets jump between notifications globally", () => {
     expect(resolveAction({ type: "ctrl-left-bracket" })).toBe("notification_prev");
     expect(resolveAction({ type: "ctrl-right-bracket" })).toBe("notification_next");

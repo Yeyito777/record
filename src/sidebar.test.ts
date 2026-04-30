@@ -5,6 +5,8 @@ import {
   activateSelectedEntry,
   buildSidebarEntries,
   createSidebarState,
+  jumpSidebarSelectionToVisibleEdge,
+  jumpSidebarSelectionToVisibleMiddle,
   moveSidebarSelection,
   scrollSidebarSelection,
   scrollSidebarSelectionLine,
@@ -234,6 +236,37 @@ describe("sidebar state", () => {
     scrollSidebarSelection(sidebar, [], 1, 5, 7, "page");
     expect(sidebar.scrollOffset).toBe(5);
     expect(sidebar.selectedIndex).toBe(9);
+  });
+
+  test("Shift+H/M/L jump within the visible servers menu", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, Array.from({ length: 8 }, (_unused, index) => ({
+      id: `guild-${index}`,
+      name: `Guild ${index}`,
+      icon: null,
+    })));
+    sidebar.selectedIndex = 4;
+    sidebar.scrollOffset = 2;
+
+    jumpSidebarSelectionToVisibleEdge(sidebar, [], 7, "top");
+    expect(sidebar.selectedIndex).toBe(2);
+    expect(sidebar.scrollOffset).toBe(2);
+
+    jumpSidebarSelectionToVisibleEdge(sidebar, [], 7, "top");
+    expect(sidebar.selectedIndex).toBe(0);
+    expect(sidebar.scrollOffset).toBe(0);
+
+    jumpSidebarSelectionToVisibleMiddle(sidebar, [], 7);
+    expect(sidebar.selectedIndex).toBe(2);
+    expect(sidebar.scrollOffset).toBe(0);
+
+    jumpSidebarSelectionToVisibleEdge(sidebar, [], 7, "bottom");
+    expect(sidebar.selectedIndex).toBe(4);
+    expect(sidebar.scrollOffset).toBe(0);
+
+    jumpSidebarSelectionToVisibleEdge(sidebar, [], 7, "bottom");
+    expect(sidebar.selectedIndex).toBe(6);
+    expect(sidebar.scrollOffset).toBe(2);
   });
 
   test("jumps between guilds with brace motions", () => {

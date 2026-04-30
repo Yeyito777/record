@@ -4,6 +4,8 @@ import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import {
   cacheMemberList,
   createMemberListState,
+  jumpMemberListSelectionToVisibleEdge,
+  jumpMemberListSelectionToVisibleMiddle,
   moveMemberListSelection,
   scrollMemberListSelection,
   scrollMemberListSelectionLine,
@@ -145,6 +147,39 @@ describe("member list", () => {
     scrollMemberListSelection(memberList, 1, 5, 7, "page");
     expect(memberList.scrollOffset).toBe(5);
     expect(memberList.selectedIndex).toBe(9);
+  });
+
+  test("Shift+H/M/L jump within the visible members menu", () => {
+    const memberList = createMemberListState();
+    memberList.open = true;
+    setMemberListMembers(memberList, "guild-1", "channel-1", Array.from({ length: 8 }, (_unused, index) => ({
+      id: String(index),
+      username: `user-${index}`,
+      displayName: `User ${index}`,
+      bot: false,
+    })));
+    memberList.selectedIndex = 4;
+    memberList.scrollOffset = 2;
+
+    jumpMemberListSelectionToVisibleEdge(memberList, 7, "top");
+    expect(memberList.selectedIndex).toBe(2);
+    expect(memberList.scrollOffset).toBe(2);
+
+    jumpMemberListSelectionToVisibleEdge(memberList, 7, "top");
+    expect(memberList.selectedIndex).toBe(0);
+    expect(memberList.scrollOffset).toBe(0);
+
+    jumpMemberListSelectionToVisibleMiddle(memberList, 7);
+    expect(memberList.selectedIndex).toBe(2);
+    expect(memberList.scrollOffset).toBe(0);
+
+    jumpMemberListSelectionToVisibleEdge(memberList, 7, "bottom");
+    expect(memberList.selectedIndex).toBe(4);
+    expect(memberList.scrollOffset).toBe(0);
+
+    jumpMemberListSelectionToVisibleEdge(memberList, 7, "bottom");
+    expect(memberList.selectedIndex).toBe(6);
+    expect(memberList.scrollOffset).toBe(2);
   });
 
   test("highlights the viewer row and keeps all rows inside the panel width", () => {

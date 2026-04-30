@@ -84,6 +84,14 @@ function clampSelectedIndex(sidebar: SidebarState, entries: SidebarEntry[]): num
   return 0;
 }
 
+function findSelectableEntryIndex(entries: SidebarEntry[], start: number, end: number, step: -1 | 1): number | null {
+  for (let index = start; step > 0 ? index <= end : index >= end; index += step) {
+    const entry = entries[index];
+    if (entry && isSelectableEntry(entry)) return index;
+  }
+  return null;
+}
+
 export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.guilds = [];
   sidebar.selectedIndex = 0;
@@ -389,6 +397,79 @@ export function scrollSidebarSelectionLine(sidebar: SidebarState, channels: Disc
   }, dir);
   sidebar.selectedIndex = clampSelectedIndex({ ...sidebar, selectedIndex: next.cursorRow }, entries);
   sidebar.scrollOffset = next.viewStart;
+}
+
+export function jumpSidebarSelectionToVisibleEdge(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  totalRows: number,
+  edge: "top" | "bottom",
+  options: SidebarVisibilityOptions = {},
+): void {
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    sidebar.scrollOffset = 0;
+    return;
+  }
+
+  const viewportRows = sidebarViewportRows(totalRows);
+  if (viewportRows <= 0) return;
+
+  const maxScroll = Math.max(0, entries.length - viewportRows);
+  sidebar.scrollOffset = Math.max(0, Math.min(sidebar.scrollOffset, maxScroll));
+  sidebar.selectedIndex = clampSelectedIndex(sidebar, entries);
+
+  const selectVisibleEdge = (): number | null => {
+    const viewStart = sidebar.scrollOffset;
+    const viewEnd = Math.min(viewStart + viewportRows - 1, entries.length - 1);
+    return edge === "top"
+      ? findSelectableEntryIndex(entries, viewStart, viewEnd, 1)
+      : findSelectableEntryIndex(entries, viewEnd, viewStart, -1);
+  };
+
+  let targetIndex = selectVisibleEdge();
+  if (targetIndex == null) return;
+
+  if (targetIndex === sidebar.selectedIndex) {
+    const halfPage = Math.floor(viewportRows / 2);
+    sidebar.scrollOffset = edge === "top"
+      ? Math.max(0, sidebar.scrollOffset - halfPage)
+      : Math.min(maxScroll, sidebar.scrollOffset + halfPage);
+    targetIndex = selectVisibleEdge();
+    if (targetIndex == null) return;
+  }
+
+  sidebar.selectedIndex = targetIndex;
+}
+
+export function jumpSidebarSelectionToVisibleMiddle(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  totalRows: number,
+  options: SidebarVisibilityOptions = {},
+): void {
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    sidebar.scrollOffset = 0;
+    return;
+  }
+
+  const viewportRows = sidebarViewportRows(totalRows);
+  if (viewportRows <= 0) return;
+
+  const maxScroll = Math.max(0, entries.length - viewportRows);
+  sidebar.scrollOffset = Math.max(0, Math.min(sidebar.scrollOffset, maxScroll));
+  sidebar.selectedIndex = clampSelectedIndex(sidebar, entries);
+
+  const viewStart = sidebar.scrollOffset;
+  const viewEnd = Math.min(viewStart + viewportRows - 1, entries.length - 1);
+  const middleRow = Math.floor((viewStart + viewEnd) / 2);
+  const targetIndex = findSelectableEntryIndex(entries, middleRow, viewEnd, 1)
+    ?? findSelectableEntryIndex(entries, middleRow - 1, viewStart, -1);
+
+  if (targetIndex != null) sidebar.selectedIndex = targetIndex;
 }
 
 function jumpSidebarSelectionToKind(
