@@ -97,21 +97,27 @@ describe("timeline rendering", () => {
   });
 
   test("formats message timestamps in local system time", () => {
-    const timestamp = Date.UTC(2026, 0, 1, 12, 34, 0);
-    const expectedTime = expectedLocalTime(timestamp);
-    expect(formatLocalMessageTime(timestamp)).toBe(expectedTime);
+    const previousTimezone = process.env.TZ;
+    try {
+      process.env.TZ = "Etc/GMT+5";
+      const timestamp = Date.UTC(2026, 0, 1, 12, 34, 0);
+      expect(formatLocalMessageTime(timestamp)).toBe("07:34");
 
-    const timeline = createTimelineState();
-    setTimelineMessages(timeline, "channel-1", [message("message-1", "local clock", { timestamp })]);
-    const rendered = renderTimelineLines(
-      timeline,
-      80,
-      10,
-      { text: "", tone: "muted", loading: false },
-      0,
-    );
+      const timeline = createTimelineState();
+      setTimelineMessages(timeline, "channel-1", [message("message-1", "local clock", { timestamp })]);
+      const rendered = renderTimelineLines(
+        timeline,
+        80,
+        10,
+        { text: "", tone: "muted", loading: false },
+        0,
+      );
 
-    expect(stripAnsi(rendered.lines[0] ?? "")).toContain(`Tester ${expectedTime}`);
+      expect(stripAnsi(rendered.lines[0] ?? "")).toContain("Tester 07:34");
+    } finally {
+      if (previousTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTimezone;
+    }
   });
 
   test("message loading uses the shared spinner label", () => {
