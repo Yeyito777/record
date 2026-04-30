@@ -366,6 +366,7 @@ export function render(state: AppState): void {
 
   state.historyLineAnchors = timeline.lineAnchors;
   state.historyLines = timeline.allLines;
+  state.historyLineBackgrounds = timeline.lineBackgrounds;
   state.historyWrapContinuation = timeline.wrapContinuation;
   state.historyMessageBounds = timeline.messageBounds;
   if (state.chatFocus === "history" && state.historyCursorPendingVisibleBottom && state.historyLines.length > 0) {
@@ -390,9 +391,12 @@ export function render(state: AppState): void {
       ? renderHistoryViewportLine(state, state.historyLines[lineIndex] ?? "", lineIndex, historyFocused)
       : (timelineLines[i] ?? "");
 
+    const lineBackground = useTimeline ? (state.historyLineBackgrounds[lineIndex] ?? "") : "";
     const renderedLine = useTimeline && isHistoryLineHighlighted(state, lineIndex, historyFocused)
       ? applyLineBg(` ${line}`, theme.historyLineBg)
-      : bgLine(` ${line}`);
+      : lineBackground
+        ? applyLineBg(` ${line}`, lineBackground)
+        : bgLine(` ${line}`);
 
     out.push(moveTo(row, mainCol) + renderedLine);
     emitMemberListCol(row);

@@ -41,6 +41,7 @@ export const whale: Theme = {
   searchFg: `${ESC}38;2;0;5;15m`,
   notificationBg: `${ESC}41m`,
   notificationFg: `${ESC}38;2;255;255;255m`,
+  pingBg: `${ESC}48;2;9;13;53m`,
   appBg: `${ESC}48;2;0;5;15m`,
   cursorColor: "#48cae4",
 

@@ -45,6 +45,7 @@ export interface Theme {
   searchFg: string;
   notificationBg: string;
   notificationFg: string;
+  pingBg: string;
   appBg?: string;
   cursorColor?: string;
 

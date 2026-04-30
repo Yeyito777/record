@@ -39,6 +39,7 @@ export interface RenderedTimeline {
   lines: string[];
   allLines: string[];
   lineAnchors: string[];
+  lineBackgrounds: string[];
   wrapContinuation: boolean[];
   messageBounds: TimelineMessageBound[];
   maxScroll: number;
@@ -53,6 +54,7 @@ interface WrappedLine {
 interface RenderedMessage {
   lines: string[];
   lineAnchors: string[];
+  lineBackgrounds: string[];
   wrapContinuation: boolean[];
 }
 
@@ -68,6 +70,7 @@ interface CachedTimelineContent {
   liveKey: string;
   lines: string[];
   lineAnchors: string[];
+  lineBackgrounds: string[];
   wrapContinuation: boolean[];
   messageBounds: TimelineMessageBound[];
 }
@@ -334,6 +337,7 @@ export function renderTimelineLines(
 ): RenderedTimeline {
   let allLines: string[] = [];
   let lineAnchors: string[] = [];
+  let lineBackgrounds: string[] = [];
   let wrapContinuation: boolean[] = [];
   let messageBounds: TimelineMessageBound[] = [];
 
@@ -344,11 +348,13 @@ export function renderTimelineLines(
       const renderedLine = notice.loading ? loadingLabel(line, loadingFrameIndex) : line;
       allLines.push(`${toneColor(notice.tone)}${truncate(renderedLine, width)}${theme.reset}`);
       lineAnchors.push(`notice:${index}:${notice.loading ? "loading" : "static"}:${line}`);
+      lineBackgrounds.push("");
       wrapContinuation.push(false);
     }
     if (allLines.length > 0) {
       allLines.push("");
       lineAnchors.push("notice:gap");
+      lineBackgrounds.push("");
       wrapContinuation.push(false);
     }
   }
@@ -356,11 +362,12 @@ export function renderTimelineLines(
   if (timeline.loading) {
     allLines.push(`${theme.muted}${truncate(loadingLabel("Loading messages…", loadingFrameIndex), width)}${theme.reset}`);
     lineAnchors.push("timeline:loading");
+    lineBackgrounds.push("");
     wrapContinuation.push(false);
 
     if (timeline.messages.length > 0) {
       const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
-      appendRenderedTimelineContent(allLines, lineAnchors, wrapContinuation, messageBounds, content);
+      appendRenderedTimelineContent(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, content);
     }
   } else {
     const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
@@ -368,19 +375,21 @@ export function renderTimelineLines(
       if (timeline.loadingOlder) {
         allLines.push(`${theme.muted}${truncate(loadingLabel("Loading older messages…", loadingFrameIndex), width)}${theme.reset}`);
         lineAnchors.push("timeline:loading-older");
+        lineBackgrounds.push("");
         wrapContinuation.push(false);
       }
-      appendRenderedTimelineContent(allLines, lineAnchors, wrapContinuation, messageBounds, content);
+      appendRenderedTimelineContent(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, content);
     } else {
       allLines = content.lines;
       lineAnchors = content.lineAnchors;
+      lineBackgrounds = content.lineBackgrounds;
       wrapContinuation = content.wrapContinuation;
       messageBounds = content.messageBounds;
     }
   }
 
   if (!(showNoticeInTimeline && notice.text) && timeline.loading && timeline.messages.length > 0) {
-    prependBlankTimelineRows(allLines, lineAnchors, wrapContinuation, messageBounds, Math.max(0, height - allLines.length));
+    prependBlankTimelineRows(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, Math.max(0, height - allLines.length));
   }
 
   const maxScroll = Math.max(0, allLines.length - Math.max(0, height));
@@ -392,6 +401,7 @@ export function renderTimelineLines(
     lines: allLines.slice(scrollOffset, scrollOffset + Math.max(0, height)),
     allLines,
     lineAnchors,
+    lineBackgrounds,
     wrapContinuation,
     messageBounds,
     maxScroll,
@@ -424,6 +434,7 @@ function countRenderedInsertedRows(
 function prependBlankTimelineRows(
   allLines: string[],
   lineAnchors: string[],
+  lineBackgrounds: string[],
   wrapContinuation: boolean[],
   messageBounds: TimelineMessageBound[],
   count: number,
@@ -431,6 +442,7 @@ function prependBlankTimelineRows(
   if (count <= 0) return;
   allLines.unshift(...Array.from({ length: count }, () => ""));
   lineAnchors.unshift(...Array.from({ length: count }, (_unused, index) => `timeline:loading-pad:${index}`));
+  lineBackgrounds.unshift(...Array.from({ length: count }, () => ""));
   wrapContinuation.unshift(...Array.from({ length: count }, () => false));
   for (const bound of messageBounds) {
     bound.start += count;
@@ -443,6 +455,7 @@ function prependBlankTimelineRows(
 function appendRenderedTimelineContent(
   allLines: string[],
   lineAnchors: string[],
+  lineBackgrounds: string[],
   wrapContinuation: boolean[],
   messageBounds: TimelineMessageBound[],
   content: CachedTimelineContent,
@@ -450,6 +463,7 @@ function appendRenderedTimelineContent(
   const offset = allLines.length;
   allLines.push(...content.lines);
   lineAnchors.push(...content.lineAnchors);
+  lineBackgrounds.push(...content.lineBackgrounds);
   wrapContinuation.push(...content.wrapContinuation);
   if (offset === 0) {
     messageBounds.push(...content.messageBounds);
@@ -484,6 +498,7 @@ function getRenderedTimelineContent(
 
   const lines: string[] = [];
   const lineAnchors: string[] = [];
+  const lineBackgrounds: string[] = [];
   const wrapContinuation: boolean[] = [];
   const messageBounds: TimelineMessageBound[] = [];
 
@@ -492,6 +507,7 @@ function getRenderedTimelineContent(
   } else if (timeline.messages.length === 0) {
     lines.push(`${theme.muted}No messages yet.${theme.reset}`);
     lineAnchors.push("timeline:empty");
+    lineBackgrounds.push("");
     wrapContinuation.push(false);
   } else {
     let previousMessage: DiscordMessage | null = null;
@@ -501,6 +517,7 @@ function getRenderedTimelineContent(
       if (previousMessage && !groupedWithPrevious) {
         lines.push("");
         lineAnchors.push(`msg:${previousMessage.id}:gap`);
+        lineBackgrounds.push("");
         wrapContinuation.push(false);
       }
       if (!groupedWithPrevious) currentMessageGroupId = message.id;
@@ -509,6 +526,7 @@ function getRenderedTimelineContent(
       const start = lines.length;
       lines.push(...renderedMessage.lines);
       lineAnchors.push(...renderedMessage.lineAnchors);
+      lineBackgrounds.push(...renderedMessage.lineBackgrounds);
       wrapContinuation.push(...renderedMessage.wrapContinuation);
       messageBounds.push({
         messageId: message.id,
@@ -528,6 +546,7 @@ function getRenderedTimelineContent(
     liveKey,
     lines,
     lineAnchors,
+    lineBackgrounds,
     wrapContinuation,
     messageBounds,
   };
@@ -595,6 +614,7 @@ function renderMessage(
   const headerLines = groupedWithPrevious ? [] : [header];
   const headerAnchors = groupedWithPrevious ? [] : [`msg:${message.id}:header`];
   const headerWrapContinuation = groupedWithPrevious ? [] : [false];
+  const messageBackground = messagePingsViewer(message, viewerId, memberRoleIdsByGuildId, activeGuildId) ? theme.pingBg : "";
 
   const contentColor = message.localStatus ? theme.muted : theme.text;
   const content = summarizeMessage(
@@ -609,36 +629,41 @@ function renderMessage(
     contentColor,
   );
   if (content === "") {
+    const lines = [
+      ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
+      ...headerLines,
+      `${theme.dim}(empty message)${theme.reset}`,
+    ];
     return {
-      lines: [
-        ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
-        ...headerLines,
-        `${theme.dim}(empty message)${theme.reset}`,
-      ],
+      lines,
       lineAnchors: [
         ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
         ...headerAnchors,
         `msg:${message.id}:empty`,
       ],
+      lineBackgrounds: messageLineBackgrounds(lines, messageBackground),
       wrapContinuation: [...replyPreview.map((line) => line.wrapContinuation), ...headerWrapContinuation, false],
     };
   }
 
-  const wrappedContent = wrapMarkdownText(content, width, contentColor);
+  const contentRestoreStyle = `${messageBackground}${contentColor}`;
+  const wrappedContent = wrapMarkdownText(content, width, contentRestoreStyle);
   const failureLines = wrapFailureMessage(message, width);
+  const lines = [
+    ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
+    ...headerLines,
+    ...wrappedContent.map((line) => `${contentColor}${line.text}${theme.reset}`),
+    ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
+  ];
   return {
-    lines: [
-      ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
-      ...headerLines,
-      ...wrappedContent.map((line) => `${contentColor}${line.text}${theme.reset}`),
-      ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
-    ],
+    lines,
     lineAnchors: [
       ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
       ...headerAnchors,
       ...wrappedContent.map((line) => `msg:${message.id}:content:${line.visualIndex}`),
       ...failureLines.map((line) => `msg:${message.id}:failure:${line.visualIndex}`),
     ],
+    lineBackgrounds: messageLineBackgrounds(lines, messageBackground),
     wrapContinuation: [
       ...replyPreview.map((line) => line.wrapContinuation),
       ...headerWrapContinuation,
@@ -646,6 +671,28 @@ function renderMessage(
       ...failureLines.map((line) => line.wrapContinuation),
     ],
   };
+}
+
+function messageLineBackgrounds(lines: readonly string[], background: string): string[] {
+  return background ? lines.map(() => background) : lines.map(() => "");
+}
+
+function messagePingsViewer(
+  message: DiscordMessage,
+  viewerId: string | null,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
+): boolean {
+  if (!viewerId || message.author.id === viewerId) return false;
+  if (message.mentionEveryone) return true;
+  if (message.mentionUserIds.includes(viewerId)) return true;
+  if (message.content.includes(`<@${viewerId}>`) || message.content.includes(`<@!${viewerId}>`)) return true;
+  if (message.reply?.authorId === viewerId) return true;
+
+  const guildId = message.guildId ?? activeGuildId;
+  if (!guildId || message.mentionRoleIds.length === 0) return false;
+  const viewerRoles = new Set(memberRoleIdsByGuildId[guildId]?.[viewerId] ?? []);
+  return message.mentionRoleIds.some((roleId) => viewerRoles.has(roleId));
 }
 
 function authorColorForMessage(
@@ -1185,6 +1232,9 @@ function messageRenderFingerprint(
     message.author.bot ? "1" : "0",
     String(message.type),
     message.content,
+    message.mentionEveryone ? "1" : "0",
+    message.mentionUserIds.join(","),
+    message.mentionRoleIds.join(","),
     mentionKey,
     replyKey,
     callKey,

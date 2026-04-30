@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { render } from "./render";
 import { createInitialState } from "./state";
 import { setTimelineMessages } from "./timeline";
+import { theme } from "./theme";
 import type { DiscordMessage } from "./discord";
 
 function message(id: string, content: string): DiscordMessage {
@@ -108,5 +109,30 @@ describe("render", () => {
     expect(output).toContain("Hidden channels shown.");
     expect(output.indexOf("Hidden channels shown.")).toBeGreaterThan(output.indexOf("N "));
     expect(state.historyLines.join("\n")).not.toContain("Hidden channels shown.");
+  });
+
+  test("renders pinged message rows with the ping background", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 80;
+    state.rows = 10;
+    state.auth.user = {
+      id: "viewer",
+      username: "viewer",
+      globalName: null,
+      discriminator: "0",
+      avatar: null,
+      bot: false,
+      email: null,
+      verified: null,
+    };
+    const ping = message("1", "hi <@viewer>");
+    ping.author.id = "other-user";
+    ping.mentionUserIds = ["viewer"];
+    setTimelineMessages(state.timeline, "channel-1", [ping]);
+
+    const output = captureRender(state);
+
+    expect(state.historyLineBackgrounds.slice(0, 2)).toEqual([theme.pingBg, theme.pingBg]);
+    expect(output).toContain(theme.pingBg);
   });
 });

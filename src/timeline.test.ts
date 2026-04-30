@@ -905,6 +905,72 @@ describe("timeline rendering", () => {
     expect(rendered.lines[1]).toContain(theme.accent);
   });
 
+  test("marks messages that mention the viewer with the ping background", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hi <@viewer>", {
+      authorId: "other-user",
+      mentionUsers: [{ id: "viewer", username: "paramount", displayName: "Paramount", bot: false }],
+    })]);
+    setTimelineRenderContext(timeline, "viewer", false);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lineBackgrounds.slice(0, 2)).toEqual([theme.pingBg, theme.pingBg]);
+  });
+
+  test("marks role mentions for the viewer with the ping background", () => {
+    const timeline = createTimelineState();
+    setTimelineRenderContext(
+      timeline,
+      "viewer",
+      false,
+      { "guild-1": [{ id: "role-1", name: "artist", color: 0x3366ff, position: 1 }] },
+      { "guild-1": { viewer: ["role-1"] } },
+      1,
+      "guild-1",
+    );
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "ping <@&role-1>", {
+      guildId: "guild-1",
+      authorId: "other-user",
+    })]);
+    timeline.messages[0]!.mentionRoleIds = ["role-1"];
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lineBackgrounds.slice(0, 2)).toEqual([theme.pingBg, theme.pingBg]);
+  });
+
+  test("does not mark the viewer's own mentions with the ping background", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "hi <@viewer>", {
+      authorId: "viewer",
+      mentionUsers: [{ id: "viewer", username: "paramount", displayName: "Paramount", bot: false }],
+    })]);
+    setTimelineRenderContext(timeline, "viewer", false);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lineBackgrounds.slice(0, 2)).toEqual(["", ""]);
+  });
+
   test("renders other DM authors with deterministic colors", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("message-1", "hello", { authorId: "other-user", authorName: "Alice" })]);

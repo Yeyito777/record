@@ -89,6 +89,7 @@ export interface AppState {
   historyCursorPendingVisibleBottom: boolean;
   historyLineAnchors: string[];
   historyLines: string[];
+  historyLineBackgrounds: string[];
   historyWrapContinuation: boolean[];
   historyMessageBounds: TimelineMessageBound[];
   autocomplete: AutocompleteState | null;
@@ -132,6 +133,7 @@ export function createInitialState(
     historyCursorPendingVisibleBottom: false,
     historyLineAnchors: [],
     historyLines: [],
+    historyLineBackgrounds: [],
     historyWrapContinuation: [],
     historyMessageBounds: [],
     autocomplete: null,
