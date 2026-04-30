@@ -16,6 +16,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { debugLog } from "./debuglog";
+
 const VOICE_GATEWAY_VERSION = 8;
 const VOICE_FLAGS = 3; // CLIPS_ENABLED | ALLOW_VOICE_RECORDING, matches Discord desktop/endcord.
 const VOICE_READY_TIMEOUT_MS = 10_000;
@@ -1186,6 +1188,11 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private sendTimestamp = 0;
   private sendCounter = 0;
   private speaking = false;
+  private capturePacketCount = 0;
+  private forwardedPacketCount = 0;
+  private droppedPacketCount = 0;
+  private nonSilencePacketCount = 0;
+  private captureDropLogged = false;
   private speakingIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly handleDiscordPacket = (packet: Buffer): void => this.forwardDiscordPacket(packet);
   private readonly handleCapturePacket = (packet: Buffer): void => this.forwardCapturePacket(packet);
@@ -1269,6 +1276,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     socket.on("message", this.handleCapturePacket);
     const port = await bindUdp(socket, "127.0.0.1", 0);
 
+    debugLog("voice.capture.start", { input: "default" });
     this.captureProcess = spawn("ffmpeg", [
       "-nostdin",
       "-hide_banner",
@@ -1284,9 +1292,14 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       "-f", "rtp",
       `rtp://127.0.0.1:${port}`,
     ]);
-    drainChildOutput(this.captureProcess);
-    this.captureProcess.on("error", (error) => context.onError(new Error(`Failed to start voice capture: ${error.message}`)));
-    this.captureProcess.on("exit", (code) => {
+    const captureErrorOutput = drainChildOutput(this.captureProcess);
+    this.captureProcess.on("error", (error) => {
+      debugLog("voice.capture.spawn_error", { error: error.message });
+      context.onError(new Error(`Failed to start voice capture: ${error.message}`));
+    });
+    this.captureProcess.on("exit", (code, signal) => {
+      const details = captureErrorOutput().trim();
+      debugLog("voice.capture.exit", { code, signal, details });
       if (code !== 0 && this.context === context) context.onError(new Error("Voice capture stopped; microphone audio is not being sent."));
     });
   }
@@ -1325,11 +1338,34 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     if (!parsed || parsed.payloadType !== OPUS_PAYLOAD_TYPE) return;
     const opusPayload = parsed.payload;
     if (opusPayload.length === 0) return;
-    const encodedPayload = context.encodeOutgoingOpus ? context.encodeOutgoingOpus(opusPayload) : opusPayload;
-    if (!encodedPayload || encodedPayload.length === 0) return;
+    this.capturePacketCount += 1;
+    const silence = isOpusSilenceFrame(opusPayload);
+    if (!silence) this.nonSilencePacketCount += 1;
 
-    if (isOpusSilenceFrame(opusPayload)) this.setCaptureSpeaking(context, false);
+    // The local speaking indicator should reflect microphone activity, not the
+    // later media-encryption/transport outcome. In DAVE calls, encodeOutgoingOpus
+    // can temporarily return null while the MLS group is not established; waiting
+    // until after that point made the widget stay idle even though capture was
+    // receiving non-silent mic frames.
+    if (silence) this.setCaptureSpeaking(context, false);
     else this.markCaptureSpeaking(context);
+
+    const encodedPayload = context.encodeOutgoingOpus ? context.encodeOutgoingOpus(opusPayload) : opusPayload;
+    if (!encodedPayload || encodedPayload.length === 0) {
+      this.droppedPacketCount += 1;
+      if (!this.captureDropLogged) {
+        this.captureDropLogged = true;
+        debugLog("voice.capture.drop", {
+          packets: this.capturePacketCount,
+          nonSilencePackets: this.nonSilencePacketCount,
+          forwardedPackets: this.forwardedPacketCount,
+          droppedPackets: this.droppedPacketCount,
+          speaking: this.speaking,
+        });
+      }
+      return;
+    }
+    this.forwardedPacketCount += 1;
 
     const header = Buffer.alloc(RTP_HEADER_LENGTH);
     header[0] = 0x80;
@@ -1360,6 +1396,14 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     }
     if (this.speaking === speaking) return;
     this.speaking = speaking;
+    debugLog("voice.capture.speaking", {
+      speaking,
+      packets: this.capturePacketCount,
+      nonSilencePackets: this.nonSilencePacketCount,
+      forwardedPackets: this.forwardedPacketCount,
+      droppedPackets: this.droppedPacketCount,
+      selfMute: context.selfMute,
+    });
     context.sendSpeaking(speaking);
   }
 

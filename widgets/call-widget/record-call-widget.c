@@ -482,7 +482,7 @@ static void draw_avatar(cairo_t *cr, const Participant *p, double x, double y) {
   }
   cairo_restore(cr);
 
-  if (p->speaking) cairo_set_source_rgba(cr, 0.137, 0.647, 0.353, 1.0);
+  if (p->speaking) cairo_set_source_rgba(cr, 0.302, 0.859, 0.718, 1.0);
   else cairo_set_source_rgba(cr, 0.188, 0.227, 0.290, 0.86);
   cairo_set_line_width(cr, BORDER_WIDTH);
   cairo_arc(cr, cx, cy, diameter / 2.0 - BORDER_WIDTH / 2.0, 0, 2 * M_PI);
@@ -567,10 +567,10 @@ static void render(void) {
     double y = i * (row_h + ROW_GAP);
 
     rounded_rect(cr, 0.5, y + 0.5, row_w - 1.0, row_h - 1.0, ROW_RADIUS);
-    if (p->speaking) cairo_set_source_rgba(cr, 0.078, 0.325, 0.176, 0.22);
+    if (p->speaking) cairo_set_source_rgba(cr, 0.060, 0.300, 0.270, 0.24);
     else cairo_set_source_rgba(cr, 0.059, 0.090, 0.165, 0.42);
     cairo_fill_preserve(cr);
-    if (p->speaking) cairo_set_source_rgba(cr, 0.137, 0.647, 0.353, 0.38);
+    if (p->speaking) cairo_set_source_rgba(cr, 0.302, 0.859, 0.718, 0.45);
     else cairo_set_source_rgba(cr, 0.580, 0.639, 0.722, 0.08);
     cairo_set_line_width(cr, 1.0);
     cairo_stroke(cr);

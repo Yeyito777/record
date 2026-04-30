@@ -128,10 +128,16 @@ export class CallWidgetController {
     if (!proc) return;
     try {
       writeProcessStdin(proc, `${JSON.stringify(payload)}\n`);
+      const participants = Array.isArray((payload as { participants?: unknown }).participants)
+        ? ((payload as { participants: unknown[] }).participants)
+        : null;
       debugLog("call.widget.update", {
-        participants: Array.isArray((payload as { participants?: unknown }).participants)
-          ? ((payload as { participants: unknown[] }).participants.length)
-          : null,
+        participants: participants ? participants.length : null,
+        speaking: participants
+          ? participants
+              .filter((participant): participant is { id?: unknown; name?: unknown; speaking?: unknown } => Boolean(participant) && typeof participant === "object" && Boolean((participant as { speaking?: unknown }).speaking))
+              .map((participant) => ({ id: String(participant.id ?? ""), name: String(participant.name ?? "") }))
+          : [],
       });
     } catch (error) {
       debugLog("call.widget.write_failed", { error: error instanceof Error ? error.message : String(error) });
