@@ -42,7 +42,7 @@ except Exception:
 
 AVATAR_SIZE = 44
 BORDER_WIDTH = 4
-CARD_PADDING = 6
+CARD_PADDING = 0
 ROW_PADDING_X = 5
 ROW_PADDING_Y = 4
 NAME_GAP = 8
@@ -234,9 +234,9 @@ class CallWidget(Gtk.Window):
         provider.load_from_data(b"""
             window, grid, image, label { background-color: transparent; }
             box.record-call-widget-card {
-                background-color: rgba(7, 12, 22, 0.94);
-                border: 1px solid rgba(148, 163, 184, 0.18);
-                border-radius: 14px;
+                background-color: transparent;
+                border: none;
+                border-radius: 0;
             }
             box.record-call-widget-row {
                 background-color: rgba(15, 23, 42, 0.42);
