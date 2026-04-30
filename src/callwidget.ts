@@ -33,7 +33,7 @@ const RUN_WIDGET_PATH = fileURLToPath(new URL("../scripts/run-call-widget", impo
 const DEFAULT_WIDGET_COMMAND = buildCallWidgetCommand(RUN_WIDGET_PATH);
 
 export function buildCallWidgetCommand(widgetPath = RUN_WIDGET_PATH): string[] {
-  return widgetPath.endsWith(".py") ? ["python3", widgetPath] : [widgetPath];
+  return [widgetPath];
 }
 
 export function defaultDiscordAvatarIndex(userId: string, discriminator?: string | null): number {
@@ -94,7 +94,7 @@ export class CallWidgetController {
   private ensureProcess(): WidgetProcess | null {
     if (this.proc) return this.proc;
     const command = this.options.command ?? DEFAULT_WIDGET_COMMAND;
-    const executablePath = command[0] === "python3" ? command[1] : command[0];
+    const executablePath = command[0];
     if (command.length === 0 || !executablePath || !existsSync(executablePath)) {
       debugLog("call.widget.skipped", { reason: "missing_widget", command });
       return null;
