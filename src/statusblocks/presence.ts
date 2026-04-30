@@ -15,7 +15,7 @@ function presenceColor(status: PresenceStatus | null): string {
       return theme.warning;
     case "dnd":
       return theme.error;
-    case "offline":
+    case "invisible":
       return `${theme.dim}${theme.muted}`;
     default:
       return theme.error;
@@ -26,9 +26,10 @@ function presenceLabel(status: PresenceStatus | null): string {
   switch (status) {
     case "dnd":
       return "Do Not Disturb";
+    case "invisible":
+      return "Invisible";
     case "online":
     case "idle":
-    case "offline":
       return status;
     default:
       return "N/A";

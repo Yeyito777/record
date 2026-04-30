@@ -40,6 +40,7 @@ import {
   type DiscordRole,
   type DiscordMessage,
   type DiscordMessagePatch,
+  type DiscordPresenceStatus,
 } from "./discord";
 import {
   loadCachedChannelMessages,
@@ -1263,7 +1264,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       setNotice(state, error.message, "warning");
       effects.scheduleRender();
     },
-  });
+  }, state.auth.presenceStatus ?? "online");
   appGateway.start();
   subscribeAppGatewayToActiveChannel(state);
 }
@@ -2250,6 +2251,34 @@ export function ackCurrentChannelIfAtBottom(state: AppState): void {
   const latestMessageId = latestTimelineMessageId(state, channelId);
   if (!latestMessageId) return;
   markChannelRead(state, state.auth.savedToken, channelId, latestMessageId);
+}
+
+export function setCurrentUserPresenceStatus(
+  state: AppState,
+  effects: SessionEffects,
+  status: DiscordPresenceStatus,
+  persistStatus: (token: string, status: DiscordPresenceStatus) => Promise<void>,
+): void {
+  const token = state.auth.savedToken;
+  if (!token || !state.auth.user) {
+    setNotice(state, "Login first with /login <token|username>.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  state.auth.presenceStatus = status;
+  if (!appGateway || appGatewayToken !== token) startAppGateway(state, token, effects);
+  appGateway?.updatePresenceStatus(status);
+  effects.scheduleRender();
+
+  void (async () => {
+    try {
+      await persistStatus(token, status);
+    } catch (error) {
+      setNotice(state, `Status changed for this session, but saving to Discord failed: ${(error as Error).message}`, "warning", { chat: false });
+      effects.scheduleRender();
+    }
+  })();
 }
 
 export function refreshReadOnlyClient(state: AppState, effects: SessionEffects): void {
