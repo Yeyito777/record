@@ -32,6 +32,7 @@
 #define STATUS_ICON_SIZE 16
 #define STATUS_ICON_GAP 4
 #define STATUS_ICON_COLOR "#94a3b8"
+#define RIGHT_MARGIN 2
 #define ROW_RADIUS 11.0
 #define IDLE_ALPHA 0.82
 #define MAX_PARTICIPANTS 64
@@ -314,12 +315,13 @@ static bool ensure_window(int width, int height) {
     attrs.border_pixel = 0;
     attrs.background_pixel = 0;
     attrs.event_mask = ExposureMask | StructureNotifyMask;
+    attrs.override_redirect = True;
     overlay.window = XCreateWindow(
       overlay.display,
       RootWindow(overlay.display, overlay.screen),
       0, 0, (unsigned int)width, (unsigned int)height,
       0, overlay.depth, InputOutput, overlay.visual,
-      CWColormap | CWBorderPixel | CWBackPixel | CWEventMask,
+      CWColormap | CWBorderPixel | CWBackPixel | CWEventMask | CWOverrideRedirect,
       &attrs
     );
     set_window_atoms();
@@ -336,11 +338,12 @@ static bool ensure_window(int width, int height) {
   }
 
   Screen *screen = ScreenOfDisplay(overlay.display, overlay.screen);
-  int x = WidthOfScreen(screen) - width - 24;
+  int x = WidthOfScreen(screen) - width - RIGHT_MARGIN;
   int y = (HeightOfScreen(screen) - height) / 2;
   if (x < 0) x = 0;
   if (y < 0) y = 0;
   XMoveWindow(overlay.display, overlay.window, x, y);
+  XRaiseWindow(overlay.display, overlay.window);
   return true;
 }
 
