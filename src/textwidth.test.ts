@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   getViewportByWidth,
+  hardBreak,
   padRight,
   termWidth,
   truncate,
@@ -28,6 +29,18 @@ describe("textwidth", () => {
   test("measures ANSI-wrapped text by visible width", () => {
     expect(visibleLength("\x1b[31m🦋\x1b[0m hi")).toBe(5);
     expect(termWidth("\x1b[31m🦋\x1b[0m hi")).toBe(5);
+  });
+
+  test("preserves active ANSI color across hard-wrapped segments", () => {
+    const red = "\x1b[31m";
+    const reset = "\x1b[0m";
+    const wrapped: string[] = [];
+    const tail = hardBreak(`${red}abcdefghijkl${reset}`, 5, wrapped);
+
+    expect([...wrapped, tail].map((part) => part.replace(/\x1b\[[0-9;]*m/g, ""))).toEqual(["abcde", "fghij", "kl"]);
+    expect(wrapped[0]).toBe(`${red}abcde${reset}`);
+    expect(wrapped[1]).toBe(`${red}fghij${reset}`);
+    expect(tail).toBe(`${red}kl${reset}`);
   });
 
   test("builds a width-aware viewport that keeps the cursor visible", () => {
