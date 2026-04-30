@@ -2101,8 +2101,15 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     displayName,
     ringRecipients: !joiningExistingCall,
   }).then(({ warnings }) => {
-    if (!joiningExistingCall) startOutboundCallRingtone(channel.id);
-    else debugLog("call.outbound_ringtone.skipped", { channelId: channel.id, reason: "joining_existing_call" });
+    if (joiningExistingCall) {
+      debugLog("call.outbound_ringtone.skipped", { channelId: channel.id, reason: "joining_existing_call" });
+      if (callHasRemoteParticipants(state, channel.id)) {
+        debugLog("call.participants.sound", { source: "existing_call_join", channelId: channel.id, action: "join", effect: "callJoin" });
+        playSoundEffect("callJoin");
+      }
+    } else {
+      startOutboundCallRingtone(channel.id);
+    }
     if (warnings.length > 0) {
       setNotice(state, `Call connected, but ${warnings[0]}`, "warning", { chat: false });
     } else {
