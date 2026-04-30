@@ -2091,6 +2091,14 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     joiningExistingCall,
     knownParticipants: Array.from(knownCallParticipantsByChannelId.get(channel.id) ?? []),
   });
+  const activeSession = controller.activeSession;
+  const replacingActiveCall = Boolean(
+    activeSession
+      && activeSession.state !== "ended"
+      && activeSession.state !== "error"
+      && activeSession.target.channelId !== channel.id,
+  );
+
   setNotice(state, "", "muted");
   effects.scheduleRender();
 
@@ -2100,7 +2108,7 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     recipientIds: recipients,
     displayName,
     ringRecipients: !joiningExistingCall,
-  }).then(({ warnings }) => {
+  }, { replaceActive: replacingActiveCall }).then(({ warnings }) => {
     if (joiningExistingCall) {
       debugLog("call.outbound_ringtone.skipped", { channelId: channel.id, reason: "joining_existing_call" });
       if (callHasRemoteParticipants(state, channel.id)) {

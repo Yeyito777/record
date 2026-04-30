@@ -120,6 +120,10 @@ export interface VoiceCallStartResult {
   warnings: string[];
 }
 
+export interface VoiceCallStartOptions {
+  replaceActive?: boolean;
+}
+
 export interface VoiceCallControllerOptions {
   selfUserId: string;
   signaling: VoiceSignalingClient;
@@ -463,9 +467,10 @@ export class VoiceCallController {
     return this.active;
   }
 
-  async startCall(target: VoiceCallTarget): Promise<VoiceCallStartResult> {
+  async startCall(target: VoiceCallTarget, startOptions: VoiceCallStartOptions = {}): Promise<VoiceCallStartResult> {
     if (this.active && this.active.state !== "ended" && this.active.state !== "error") {
-      throw new Error("Already in a call.");
+      if (!startOptions.replaceActive) throw new Error("Already in a call.");
+      this.leave();
     }
     if (this.pending) throw new Error("Already joining a call.");
 
