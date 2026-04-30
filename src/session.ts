@@ -105,6 +105,7 @@ import {
   getSelectedSidebarEntry,
   isSidebarGuildMuted,
   moveSelectedSidebarGuild,
+  setSidebarCachedChannels,
   setSidebarGuildMuted,
   setSidebarGuilds,
   sidebarCachedGuilds,
@@ -634,6 +635,7 @@ function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEff
   if (state.channelList.guildId === channel.guildId) {
     upsertChannel(state.channelList, channel);
     refreshHiddenChannelFlags(state, channel.guildId);
+    setSidebarCachedChannels(state.sidebar, channel.guildId, state.channelList.channels);
     if (state.memberList.open && state.channelList.activeChannelId === channel.id) {
       syncMemberListForCurrentChannel(state, effects);
     }
@@ -644,7 +646,9 @@ function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEff
 
 function handleGatewayChannelDelete(state: AppState, effects: SessionEffects, channelId: string): void {
   const wasActive = state.channelList.activeChannelId === channelId;
+  const removedGuildId = state.channelList.channels.find((channel) => channel.id === channelId)?.guildId ?? state.channelList.guildId;
   const removed = removeChannel(state.channelList, channelId);
+  if (removed && removedGuildId) setSidebarCachedChannels(state.sidebar, removedGuildId, state.channelList.channels);
   clearCachedChannelMessages(state.messageCacheByChannelId, channelId);
   if (wasActive || state.timeline.channelId === channelId) {
     clearTimeline(state.timeline);
@@ -1483,6 +1487,11 @@ export async function bootstrapReadOnlyClient(
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
     const cachedGuildOrder = loadCachedGuildOrder(accountId);
     const cachedGuilds = sortGuildsByOrder(loadCachedGuilds(accountId) ?? [], cachedGuildOrder);
+    setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, cachedDirectMessages);
+    for (const guild of cachedGuilds) {
+      const cachedChannels = loadCachedGuildChannels(accountId, guild.id) ?? [];
+      if (cachedChannels.length > 0) setSidebarCachedChannels(state.sidebar, guild.id, cachedChannels);
+    }
     state.guildRolesByGuildId = loadCachedGuildRoles(accountId);
     state.memberRoleIdsByGuildId = loadCachedMemberRoles(accountId);
     state.messageCacheByChannelId = loadCachedChannelMessages(accountId);
@@ -1518,6 +1527,7 @@ export async function bootstrapReadOnlyClient(
 
     state.sidebar.loading = false;
     mergeRestGuilds(state, directMessages, guilds, guildOrder);
+    setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, directMessages);
     state.sidebar.expandedGuildId = liveExpandedGuildId;
     state.sidebar.activeGuildId = liveActiveGuildId;
     if (liveChannelListGuildId && liveChannels.length > 0) {
@@ -1609,6 +1619,7 @@ export async function loadGuildChannels(
       showedCachedChannels = true;
       setChannelList(state.channelList, guildId, cachedChannels);
       refreshHiddenChannelFlags(state, guildId);
+      setSidebarCachedChannels(state.sidebar, guildId, state.channelList.channels);
       state.channelList.loading = false;
       if (state.sidebar.loadingGuildId === guildId) {
         state.sidebar.loadingGuildId = null;
@@ -1636,6 +1647,7 @@ export async function loadGuildChannels(
     }
     setChannelList(state.channelList, guildId, channels);
     refreshHiddenChannelFlags(state, guildId);
+    setSidebarCachedChannels(state.sidebar, guildId, state.channelList.channels);
     debugLog("channel_cache.rest", {
       guildId,
       directMessages: isDirectMessages,

@@ -19,7 +19,11 @@ import {
   moveSidebarSelectionToPrevDirectMessage,
   moveSidebarSelectionToPrevGuild,
   moveSelectedSidebarGuild,
+  openSidebarSearchBar,
+  handleSidebarSearchBarKey,
+  jumpToSidebarSearchMatch,
   renderSidebar,
+  setSidebarCachedChannels,
   setSidebarGuilds,
   SIDEBAR_WIDTH,
 } from "./sidebar";
@@ -361,6 +365,76 @@ describe("sidebar state", () => {
 
     moveSidebarSelectionToPrevDirectMessage(sidebar, channels);
     expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]?.id).toBe("dm-3");
+  });
+
+  test("searches cached direct messages and channels across servers", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "Guild One", icon: null },
+      { id: "guild-2", name: "Guild Two", icon: null },
+    ]);
+    sidebar.expandedGuildId = "guild-1";
+    setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, [
+      { id: "dm-1", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false },
+    ]);
+    setSidebarCachedChannels(sidebar, "guild-2", [
+      { id: "cat-2", guildId: "guild-2", parentId: null, name: "Topics", topic: null, position: 0, type: 4, nsfw: false },
+      { id: "chan-2", guildId: "guild-2", parentId: "cat-2", name: "project-alpha", topic: null, position: 1, type: 0, nsfw: false },
+    ]);
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const ch of "alpha") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["guild-2", "cat-2", "chan-2"]);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("chan-2");
+
+    handleSidebarSearchBarKey(sidebar, [], { type: "enter" });
+    expect(sidebar.search?.query).toBe("alpha");
+    expect(sidebar.search?.highlightsVisible).toBe(true);
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["guild-2", "cat-2", "chan-2"]);
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const ch of "alice") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("dm-1");
+  });
+
+  test("sidebar search supports n/N and :noh like conversation search", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    setSidebarCachedChannels(sidebar, "guild-1", [
+      { id: "alpha-1", guildId: "guild-1", parentId: null, name: "alpha-one", topic: null, position: 0, type: 0, nsfw: false },
+      { id: "alpha-2", guildId: "guild-1", parentId: null, name: "alpha-two", topic: null, position: 1, type: 0, nsfw: false },
+    ]);
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const ch of "alpha") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    handleSidebarSearchBarKey(sidebar, [], { type: "enter" });
+
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("alpha-1");
+    expect(jumpToSidebarSearchMatch(sidebar, [], "forward")).toBe(true);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("alpha-2");
+    expect(jumpToSidebarSearchMatch(sidebar, [], "backward")).toBe(true);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("alpha-1");
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    handleSidebarSearchBarKey(sidebar, [], { type: "escape" });
+    expect(sidebar.search?.barOpen).toBe(false);
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    handleSidebarSearchBarKey(sidebar, [], { type: "char", char: "z" });
+    handleSidebarSearchBarKey(sidebar, [], { type: "escape" });
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("alpha-1");
+
+    sidebar.search!.barOpen = true;
+    sidebar.search!.barMode = "command";
+    for (const ch of "noh") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    handleSidebarSearchBarKey(sidebar, [], { type: "enter" });
+    expect(sidebar.search?.highlightsVisible).toBe(false);
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["guild-1"]);
+    expect(jumpToSidebarSearchMatch(sidebar, [], "forward")).toBe(true);
+    expect(sidebar.search?.highlightsVisible).toBe(true);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("alpha-1");
   });
 
   test("renders wide channel names without overflowing the sidebar border", () => {
