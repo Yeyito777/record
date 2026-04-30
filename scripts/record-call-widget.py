@@ -42,6 +42,7 @@ except Exception:
 
 AVATAR_SIZE = 44
 BORDER_WIDTH = 4
+AVATAR_RENDER_SCALE = 4
 CARD_PADDING = 0
 ROW_PADDING_X = 5
 ROW_PADDING_Y = 4
@@ -152,6 +153,7 @@ def render_avatar_path(participant: Participant) -> Path:
         "speaking": participant.speaking,
         "avatarSize": AVATAR_SIZE,
         "borderWidth": BORDER_WIDTH,
+        "renderScale": AVATAR_RENDER_SCALE,
         "idleAlpha": IDLE_ALPHA,
     }, sort_keys=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -163,6 +165,10 @@ def render_avatar_path(participant: Participant) -> Path:
         return source
 
     diameter = AVATAR_SIZE + BORDER_WIDTH * 2
+    scale = AVATAR_RENDER_SCALE
+    scaled_avatar_size = AVATAR_SIZE * scale
+    scaled_border_width = BORDER_WIDTH * scale
+    scaled_diameter = diameter * scale
     try:
         avatar = Image.open(source).convert("RGBA")
     except Exception as exc:
@@ -170,10 +176,13 @@ def render_avatar_path(participant: Participant) -> Path:
         avatar = Image.open(placeholder_path(participant)).convert("RGBA")
 
     # Center-crop before resizing so rectangular avatars still fill the circle.
+    # Render the entire avatar/ring at a higher resolution and downsample at the
+    # end. Pillow's ImageDraw ellipse edges are jagged at widget size; this
+    # supersampling gives both the avatar clip and the border an antialiased edge.
     side = min(avatar.width, avatar.height)
     left = (avatar.width - side) // 2
     top = (avatar.height - side) // 2
-    avatar = avatar.crop((left, top, left + side, top + side)).resize((AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS)
+    avatar = avatar.crop((left, top, left + side, top + side)).resize((scaled_avatar_size, scaled_avatar_size), Image.LANCZOS)
     if participant.speaking:
         alpha = SPEAKING_ALPHA
     else:
@@ -183,19 +192,20 @@ def render_avatar_path(participant: Participant) -> Path:
         a = a.point(lambda value: int(value * alpha))
         avatar.putalpha(a)
 
-    mask = Image.new("L", (AVATAR_SIZE, AVATAR_SIZE), 0)
+    mask = Image.new("L", (scaled_avatar_size, scaled_avatar_size), 0)
     mask_draw = ImageDraw.Draw(mask)
-    mask_draw.ellipse((0, 0, AVATAR_SIZE - 1, AVATAR_SIZE - 1), fill=255)
+    mask_draw.ellipse((0, 0, scaled_avatar_size - 1, scaled_avatar_size - 1), fill=255)
 
-    canvas = Image.new("RGBA", (diameter, diameter), (0, 0, 0, 0))
-    canvas.paste(avatar, (BORDER_WIDTH, BORDER_WIDTH), mask)
+    canvas = Image.new("RGBA", (scaled_diameter, scaled_diameter), (0, 0, 0, 0))
+    canvas.paste(avatar, (scaled_border_width, scaled_border_width), mask)
     draw = ImageDraw.Draw(canvas)
-    inset = BORDER_WIDTH // 2
+    inset = scaled_border_width // 2
     draw.ellipse(
-        (inset, inset, diameter - inset - 1, diameter - inset - 1),
+        (inset, inset, scaled_diameter - inset - 1, scaled_diameter - inset - 1),
         outline=SPEAKING_BORDER if participant.speaking else IDLE_BORDER,
-        width=BORDER_WIDTH,
+        width=scaled_border_width,
     )
+    canvas = canvas.resize((diameter, diameter), Image.LANCZOS)
     canvas.save(output)
     return output
 
