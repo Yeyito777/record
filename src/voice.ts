@@ -74,6 +74,7 @@ export interface VoiceCallTarget {
   recipientIds?: string[];
   displayName?: string;
   preferredRegions?: string[];
+  ringRecipients?: boolean;
 }
 
 export interface VoiceGatewayJoinData {
@@ -491,7 +492,7 @@ export class VoiceCallController {
 
         const warnings: string[] = [];
         const recipients = target.recipientIds ?? [];
-        if (recipients.length > 0 && this.options.ringRecipients) {
+        if (target.ringRecipients !== false && recipients.length > 0 && this.options.ringRecipients) {
           try {
             await this.options.ringRecipients(target.channelId, recipients);
           } catch (error) {

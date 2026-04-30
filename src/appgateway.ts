@@ -50,6 +50,7 @@ export interface CallGatewayEvent {
   ringingUserIds: string[];
   region: string | null;
   voiceStateUserIds: string[];
+  isActive: boolean;
 }
 
 export interface AppGatewayCallbacks {
@@ -504,6 +505,7 @@ export function mapCallGatewayEvent(data: unknown): CallGatewayEvent | null {
       : [],
     region: typeof data.region === "string" ? data.region : null,
     voiceStateUserIds,
+    isActive: typeof data.message_id === "string" || voiceStateUserIds.length > 0,
   };
 }
 

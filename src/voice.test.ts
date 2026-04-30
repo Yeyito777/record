@@ -202,6 +202,40 @@ describe("voice backend", () => {
     expect(signaling.leaves).toBe(1);
   });
 
+  test("can join an existing DM call without ringing recipients", async () => {
+    const signaling = new FakeSignaling();
+    const gateway = new FakeGateway();
+    const rings: Array<{ channelId: string; recipientIds: string[] }> = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      createGatewayConnection: () => gateway,
+      ringRecipients: async (channelId, recipientIds) => {
+        rings.push({ channelId, recipientIds: [...recipientIds] });
+      },
+    });
+
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: ["friend"], displayName: "Friend", ringRecipients: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token", endpoint: "voice.example", guildId: null });
+
+    await started;
+
+    expect(gateway.connected).toBe(true);
+    expect(rings).toEqual([]);
+  });
+
   test("forwards speaking callbacks to voice gateway connections", async () => {
     const signaling = new FakeSignaling();
     const speakingEvents: Array<{ userId: string; speaking: boolean }> = [];
