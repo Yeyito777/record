@@ -198,23 +198,8 @@ static char *status_icon_path(const char *name) {
   return out;
 }
 
-static int participant_status_count(const Participant *p) {
-  return (p->muted ? 1 : 0) + (p->deafened ? 1 : 0);
-}
-
-static int participant_status_width(const Participant *p) {
-  int count = participant_status_count(p);
-  if (count == 0) return 0;
-  return count * STATUS_ICON_SIZE + (count - 1) * STATUS_ICON_GAP;
-}
-
-static int max_status_width(void) {
-  int width = 0;
-  for (size_t i = 0; i < participant_count; i++) {
-    int current = participant_status_width(&participants[i]);
-    if (current > width) width = current;
-  }
-  return width;
+static int reserved_status_width(void) {
+  return 2 * STATUS_ICON_SIZE + STATUS_ICON_GAP;
 }
 
 static void desired_size(int *out_w, int *out_h) {
@@ -513,9 +498,12 @@ static void draw_icon(cairo_t *cr, const char *name, double x, double y) {
 }
 
 static void render(void) {
-  if (participant_count == 0) return;
   int width = 0, height = 0;
   desired_size(&width, &height);
+  if (participant_count == 0) {
+    if (overlay.display && overlay.window) XUnmapWindow(overlay.display, overlay.window);
+    return;
+  }
   if (!ensure_window(width, height)) return;
 
   cairo_t *cr = overlay.cr;
@@ -527,9 +515,9 @@ static void render(void) {
 
   int diameter = AVATAR_SIZE + BORDER_WIDTH * 2;
   int row_h = diameter + ROW_PADDING_Y * 2;
-  int swidth = max_status_width();
-  int nwidth = width - ROW_PADDING_X * 2 - diameter - NAME_GAP;
-  if (swidth > 0) nwidth -= STATUS_GAP + swidth + ROW_PADDING_X;
+  int swidth = reserved_status_width();
+  int text_right = width - ROW_PADDING_X;
+  int nwidth = text_right - (ROW_PADDING_X + diameter + NAME_GAP);
   if (nwidth < 24) nwidth = 24;
   int row_w = width;
 
@@ -551,18 +539,31 @@ static void render(void) {
     draw_avatar(cr, p, avatar_x, avatar_y);
 
     double text_x = avatar_x + diameter + NAME_GAP;
+    cairo_save(cr);
+    rounded_rect(cr, 0.5, y + 0.5, row_w - 1.0, row_h - 1.0, ROW_RADIUS);
+    cairo_clip(cr);
     draw_text(cr, p, text_x, y, nwidth, row_h);
+    cairo_restore(cr);
 
-    if (swidth > 0) {
-      int count = participant_status_count(p);
-      double icon_x = text_x + nwidth + STATUS_GAP;
-      double icon_y = y + (row_h - STATUS_ICON_SIZE) / 2.0;
-      if (count == 0) continue;
-      if (p->muted) {
-        draw_icon(cr, "muted", icon_x, icon_y);
-        icon_x += STATUS_ICON_SIZE + STATUS_ICON_GAP;
-      }
-      if (p->deafened) draw_icon(cr, "deafened", icon_x, icon_y);
+    double icon_x = width - ROW_PADDING_X - swidth;
+    double icon_y = y + (row_h - STATUS_ICON_SIZE) / 2.0;
+    if (p->muted || p->deafened) {
+      double mask_x = icon_x - STATUS_GAP;
+      double mask_w = width - mask_x;
+      cairo_save(cr);
+      rounded_rect(cr, 0.5, y + 0.5, row_w - 1.0, row_h - 1.0, ROW_RADIUS);
+      cairo_clip(cr);
+      cairo_rectangle(cr, mask_x, y, mask_w, row_h);
+      if (p->speaking) cairo_set_source_rgba(cr, 0.078, 0.325, 0.176, 1.0);
+      else cairo_set_source_rgba(cr, 0.059, 0.090, 0.165, 1.0);
+      cairo_fill(cr);
+      cairo_restore(cr);
+    }
+    if (p->muted) {
+      draw_icon(cr, "muted", icon_x, icon_y);
+    }
+    if (p->deafened) {
+      draw_icon(cr, "deafened", icon_x + STATUS_ICON_SIZE + STATUS_ICON_GAP, icon_y);
     }
   }
 
