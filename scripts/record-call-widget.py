@@ -218,7 +218,11 @@ class CallWidget(Gtk.Window):
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
         self.set_keep_above(True)
-        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        # The user's picom config disables both shadows and backdrop blur for
+        # dock-type windows. We do not set struts/reserved screen edges, so this
+        # still behaves like a small floating overlay while opting this specific
+        # widget out of picom's frosted/shadow treatment.
+        self.set_type_hint(Gdk.WindowTypeHint.DOCK)
 
         screen = self.get_screen()
         visual = screen.get_rgba_visual() if screen else None
