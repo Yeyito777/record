@@ -143,6 +143,8 @@ const MESSAGE_PAGE_LIMIT = 50;
 const MESSAGE_CACHE_FRESH_MS = 2 * 60 * 1000;
 const MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS = 7_000;
 const MEMBER_LIST_SUBSCRIBE_RETRIES = 2;
+const PRESENCE_STATUS_PERSIST_RETRIES = 3;
+const PRESENCE_STATUS_PERSIST_RETRY_DELAY_MS = 3_000;
 
 let memberListGateway: MemberListGatewayClient | null = null;
 let memberListGatewayToken: string | null = null;
@@ -2412,6 +2414,53 @@ export function ackCurrentChannelIfAtBottom(state: AppState): void {
   markChannelRead(state, state.auth.savedToken, channelId, latestMessageId);
 }
 
+interface PresenceStatusPersistRetryOptions {
+  retries?: number;
+  delayMs?: number;
+  shouldContinue?: () => boolean;
+}
+
+export async function persistPresenceStatusWithRetries(
+  token: string,
+  status: DiscordPresenceStatus,
+  persistStatus: (token: string, status: DiscordPresenceStatus) => Promise<void>,
+  options: PresenceStatusPersistRetryOptions = {},
+): Promise<boolean> {
+  const retries = options.retries ?? PRESENCE_STATUS_PERSIST_RETRIES;
+  const delayMs = options.delayMs ?? PRESENCE_STATUS_PERSIST_RETRY_DELAY_MS;
+  const maxAttempts = retries + 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (options.shouldContinue?.() === false) {
+      debugLog("presence_status.persist_cancelled", { status, attempt, retries });
+      return false;
+    }
+
+    try {
+      await persistStatus(token, status);
+      if (attempt > 1) debugLog("presence_status.persist_succeeded_after_retry", { status, attempt, retries });
+      return true;
+    } catch (error) {
+      const finalAttempt = attempt >= maxAttempts;
+      debugLog(finalAttempt ? "presence_status.persist_error" : "presence_status.persist_retry", {
+        status,
+        attempt,
+        retries,
+        retryInMs: finalAttempt ? null : delayMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (finalAttempt) return false;
+      await waitForPresenceStatusRetry(delayMs);
+    }
+  }
+
+  return false;
+}
+
+function waitForPresenceStatusRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 export function setCurrentUserPresenceStatus(
   state: AppState,
   effects: SessionEffects,
@@ -2430,14 +2479,9 @@ export function setCurrentUserPresenceStatus(
   appGateway?.updatePresenceStatus(status);
   effects.scheduleRender();
 
-  void (async () => {
-    try {
-      await persistStatus(token, status);
-    } catch (error) {
-      setNotice(state, `Status changed for this session, but saving to Discord failed: ${(error as Error).message}`, "warning", { chat: false });
-      effects.scheduleRender();
-    }
-  })();
+  void persistPresenceStatusWithRetries(token, status, persistStatus, {
+    shouldContinue: () => state.auth.savedToken === token && state.auth.presenceStatus === status,
+  });
 }
 
 export function refreshReadOnlyClient(state: AppState, effects: SessionEffects): void {

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
+import { bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, persistPresenceStatusWithRetries, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -841,5 +841,43 @@ describe("session", () => {
     expect(state.editor.buffer).toBe("hello");
     expect(state.timeline.messages[0]).toMatchObject({ content: "hello", localStatus: "failed" });
     expect(state.timeline.messages[0]?.localError).toBe("Discord denied access to that resource.");
+  });
+
+  test("presence status persistence retries transient failures", async () => {
+    const attempts: string[] = [];
+
+    const persisted = await persistPresenceStatusWithRetries("token-1", "idle", async (_token, status) => {
+      attempts.push(status);
+      if (attempts.length < 3) throw new Error("Discord rate-limited the request.");
+    }, { retries: 3, delayMs: 0 });
+
+    expect(persisted).toBe(true);
+    expect(attempts).toEqual(["idle", "idle", "idle"]);
+  });
+
+  test("presence status persistence gives up after configured retries", async () => {
+    let attempts = 0;
+
+    const persisted = await persistPresenceStatusWithRetries("token-1", "online", async () => {
+      attempts += 1;
+      throw new Error("Discord rate-limited the request.");
+    }, { retries: 3, delayMs: 0 });
+
+    expect(persisted).toBe(false);
+    expect(attempts).toBe(4);
+  });
+
+  test("presence status persistence stops retrying stale status changes", async () => {
+    let attempts = 0;
+    let currentStatus = "idle";
+
+    const persisted = await persistPresenceStatusWithRetries("token-1", "idle", async () => {
+      attempts += 1;
+      currentStatus = "online";
+      throw new Error("Discord rate-limited the request.");
+    }, { retries: 3, delayMs: 0, shouldContinue: () => currentStatus === "idle" });
+
+    expect(persisted).toBe(false);
+    expect(attempts).toBe(1);
   });
 });

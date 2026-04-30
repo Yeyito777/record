@@ -31,7 +31,7 @@ describe("statusline", () => {
     expect(status.lines[0]).toContain("Yeyito");
     expect(status.lines[0]).not.toContain("@yeyito");
     expect(status.lines[0]).toContain("Status:");
-    expect(status.lines[0]).toContain("online");
+    expect(status.lines[0]).toContain("Online");
     expect(status.lines[0]).toContain(theme.success);
   });
 
@@ -51,6 +51,7 @@ describe("statusline", () => {
 
     state.auth.presenceStatus = "idle";
     expect(renderStatusLine(state, 80).lines[0]).toContain(theme.warning);
+    expect(renderStatusLine(state, 80).lines[0]).toContain("Idle");
 
     state.auth.presenceStatus = "dnd";
     expect(renderStatusLine(state, 80).lines[0]).toContain(theme.error);

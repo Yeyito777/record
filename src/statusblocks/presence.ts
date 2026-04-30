@@ -29,8 +29,9 @@ function presenceLabel(status: PresenceStatus | null): string {
     case "invisible":
       return "Invisible";
     case "online":
+      return "Online";
     case "idle":
-      return status;
+      return "Idle";
     default:
       return "N/A";
   }
