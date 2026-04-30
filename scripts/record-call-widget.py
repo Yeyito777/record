@@ -48,9 +48,13 @@ ROW_PADDING_X = 5
 ROW_PADDING_Y = 4
 NAME_GAP = 8
 ROW_GAP = 5
-NAME_MIN_WIDTH = 72
-NAME_MAX_WIDTH = 170
+NAME_MIN_WIDTH = 52
+NAME_MAX_WIDTH = 142
 NAME_CHAR_WIDTH = 9
+STATUS_GAP = 6
+STATUS_ICON_SIZE = 16
+STATUS_ICON_GAP = 4
+STATUS_ICON_COLOR = "#94a3b8"
 IDLE_ALPHA = 0.82
 SPEAKING_ALPHA = 1.0
 SPEAKING_BORDER = (0x23, 0xA5, 0x5A, 0xFF)
@@ -59,6 +63,11 @@ DEFAULT_NAME_COLOR = "#f8fafc"
 PLACEHOLDER_BG = (0x1D, 0x9B, 0xF0, 0xFF)
 PLACEHOLDER_FG = (0xF1, 0xFA, 0xEE, 0xFF)
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "record" / "call-widget"
+ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "call-widget"
+STATUS_ICON_SOURCES = {
+    "muted": ASSET_DIR / "mic-muted.svg",
+    "deafened": ASSET_DIR / "headphones-deafened.svg",
+}
 
 
 class Participant:
@@ -99,22 +108,45 @@ def normalize_role_color(value: Any) -> str | None:
     return value.lower()
 
 
-def participant_status_icons(participant: Participant) -> str:
-    icons = []
+def participant_status_icon_names(participant: Participant) -> list[str]:
+    icons: list[str] = []
     if participant.muted:
-        icons.append("🔇")
+        icons.append("muted")
     if participant.deafened:
-        icons.append("🔈")
-    return " ".join(icons)
+        icons.append("deafened")
+    return icons
+
+
+def participant_status_width(participant: Participant) -> int:
+    count = len(participant_status_icon_names(participant))
+    if count == 0:
+        return 0
+    return count * STATUS_ICON_SIZE + (count - 1) * STATUS_ICON_GAP
+
+
+def status_icon_path(name: str) -> Path | None:
+    source = STATUS_ICON_SOURCES.get(name)
+    if source is None or not source.exists():
+        return None
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    output = CACHE_DIR / f"status-{name}-{safe_cache_name(STATUS_ICON_COLOR)}.svg"
+    if output.exists():
+        return output
+    try:
+        svg = source.read_text(encoding="utf-8")
+        svg = svg.replace("currentColor", STATUS_ICON_COLOR)
+        output.write_text(svg, encoding="utf-8")
+        return output
+    except Exception as exc:
+        print(f"record-call-widget: status icon load failed for {name}: {exc}", file=sys.stderr, flush=True)
+        return None
 
 
 def label_markup(participant: Participant) -> str:
     color = participant.role_color or DEFAULT_NAME_COLOR
     weight = "700" if participant.speaking else "500"
     escaped_name = html.escape(participant.name, quote=False)
-    icons = html.escape(participant_status_icons(participant), quote=False)
-    suffix = f' <span foreground="#94a3b8">{icons}</span>' if icons else ""
-    return f'<span foreground="{color}" weight="{weight}">{escaped_name}</span>{suffix}'
+    return f'<span foreground="{color}" weight="{weight}">{escaped_name}</span>'
 
 
 def placeholder_path(participant: Participant) -> Path:
@@ -305,14 +337,20 @@ class CallWidget(Gtk.Window):
         return False
 
     def name_width(self) -> int:
-        longest = max((len(participant.name) + len(participant_status_icons(participant)) for participant in self.participants), default=0)
+        longest = max((len(participant.name) for participant in self.participants), default=0)
         return max(NAME_MIN_WIDTH, min(NAME_MAX_WIDTH, longest * NAME_CHAR_WIDTH + 8))
+
+    def max_status_width(self) -> int:
+        return max((participant_status_width(participant) for participant in self.participants), default=0)
 
     def desired_size(self) -> tuple[int, int]:
         rows = max(1, len(self.participants))
         diameter = AVATAR_SIZE + BORDER_WIDTH * 2
+        status_width = self.max_status_width()
         row_height = diameter + ROW_PADDING_Y * 2
         row_width = ROW_PADDING_X * 2 + diameter + NAME_GAP + self.name_width()
+        if status_width > 0:
+            row_width += STATUS_GAP + status_width + ROW_PADDING_X
         width = CARD_PADDING * 2 + row_width
         height = CARD_PADDING * 2 + rows * row_height + max(0, rows - 1) * ROW_GAP
         return width, height
@@ -322,8 +360,11 @@ class CallWidget(Gtk.Window):
             self.remove(self.grid)
         diameter = AVATAR_SIZE + BORDER_WIDTH * 2
         name_width = self.name_width()
+        max_status_width = self.max_status_width()
         row_height = diameter + ROW_PADDING_Y * 2
         row_width = ROW_PADDING_X * 2 + diameter + NAME_GAP + name_width
+        if max_status_width > 0:
+            row_width += STATUS_GAP + max_status_width + ROW_PADDING_X
 
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         card.set_name("record-call-widget-card")
@@ -367,6 +408,25 @@ class CallWidget(Gtk.Window):
             label.set_size_request(name_width, -1)
             label.set_opacity(1.0 if participant.speaking else 0.9)
             row_box.pack_start(label, True, True, 0)
+
+            if max_status_width > 0:
+                status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=STATUS_ICON_GAP)
+                status_box.set_size_request(max_status_width, STATUS_ICON_SIZE)
+                status_box.set_halign(Gtk.Align.END)
+                status_box.set_valign(Gtk.Align.CENTER)
+                status_box.set_margin_start(STATUS_GAP)
+                status_box.set_margin_end(ROW_PADDING_X)
+                for icon_name in participant_status_icon_names(participant):
+                    path = status_icon_path(icon_name)
+                    if path is None:
+                        continue
+                    icon = Gtk.Image.new_from_file(str(path))
+                    icon.set_pixel_size(STATUS_ICON_SIZE)
+                    icon.set_size_request(STATUS_ICON_SIZE, STATUS_ICON_SIZE)
+                    icon.set_halign(Gtk.Align.CENTER)
+                    icon.set_valign(Gtk.Align.CENTER)
+                    status_box.pack_start(icon, False, False, 0)
+                row_box.pack_start(status_box, False, False, 0)
 
             inner.pack_start(row_box, False, False, 0)
         self.grid = card
