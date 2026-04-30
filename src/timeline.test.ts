@@ -272,6 +272,29 @@ describe("timeline rendering", () => {
     expect(rendered.lines[1]).not.toContain("`code`");
   });
 
+  test("keeps openable link highlighting across hard-wrapped link lines", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "https://example.com/abcdefghijklmnopqrstuvwxyz")]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      20,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const contentLines = rendered.lines.slice(1, 4);
+    expect(contentLines.map(stripAnsi)).toEqual([
+      "https://example.com/",
+      "abcdefghijklmnopqrst",
+      "uvwxyz",
+    ]);
+    for (const line of contentLines) {
+      expect(line).toContain(theme.accent);
+    }
+  });
+
   test("renders fenced code blocks with gutter and language label", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("message-1", "```ts\nconst x = 1\n```")]);

@@ -102,6 +102,8 @@ const WIDE_RANGES: readonly [number, number][] = [
 ];
 
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
+const ANSI_SGR_RE = /\x1b\[([0-9;]*)m/g;
+const ANSI_RESET = "\x1b[0m";
 
 function inRanges(cp: number, ranges: readonly [number, number][]): boolean {
   let lo = 0;
@@ -222,17 +224,41 @@ export function visibleLength(text: string): number {
   return termWidth(text.replace(ANSI_ESCAPE_RE, ""));
 }
 
+// Keep color/style SGR escapes active when a styled word is split across
+// physical terminal rows. Without this, a hard-wrapped link only keeps its
+// accent color on the first visual line.
+function activeSgrPrefix(text: string): string {
+  let active = "";
+  ANSI_SGR_RE.lastIndex = 0;
+  for (;;) {
+    const match = ANSI_SGR_RE.exec(text);
+    if (!match) break;
+    const params = match[1] || "0";
+    if (params.split(";").some((param) => param === "0")) {
+      active = "";
+    } else {
+      active += match[0];
+    }
+  }
+  return active;
+}
+
+function closeIfStyled(text: string): string {
+  return activeSgrPrefix(text) ? `${text}${ANSI_RESET}` : text;
+}
+
 export function hardBreak(word: string, width: number, result: string[]): string {
   let remaining = word;
   for (;;) {
     const [taken, rest] = sliceByWidth(remaining, width);
-    if (!rest) return taken;
+    if (!rest) return remaining;
     if (taken === "") {
-      result.push(remaining.slice(0, 1));
+      result.push(closeIfStyled(remaining.slice(0, 1)));
       remaining = remaining.slice(1);
     } else {
-      result.push(taken);
-      remaining = rest;
+      const active = activeSgrPrefix(taken);
+      result.push(active ? `${taken}${ANSI_RESET}` : taken);
+      remaining = active ? `${active}${rest}` : rest;
     }
   }
 }
