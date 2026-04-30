@@ -41,7 +41,7 @@ except Exception:
     ImageFont = None
 
 AVATAR_SIZE = 44
-BORDER_WIDTH = 4
+BORDER_WIDTH = 2
 AVATAR_RENDER_SCALE = 4
 CARD_PADDING = 0
 ROW_PADDING_X = 5
