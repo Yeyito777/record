@@ -48,8 +48,8 @@ ROW_PADDING_X = 5
 ROW_PADDING_Y = 4
 NAME_GAP = 8
 ROW_GAP = 5
-NAME_MIN_WIDTH = 52
-NAME_MAX_WIDTH = 142
+NAME_MIN_WIDTH = 72
+NAME_MAX_WIDTH = 170
 NAME_CHAR_WIDTH = 9
 IDLE_ALPHA = 0.82
 SPEAKING_ALPHA = 1.0
@@ -68,6 +68,8 @@ class Participant:
         self.avatar_url = data.get("avatarUrl") if isinstance(data.get("avatarUrl"), str) else None
         self.role_color = normalize_role_color(data.get("textColor")) or normalize_role_color(data.get("roleColor"))
         self.speaking = bool(data.get("speaking"))
+        self.muted = bool(data.get("muted"))
+        self.deafened = bool(data.get("deafened"))
         self.self = bool(data.get("self"))
 
 
@@ -97,11 +99,22 @@ def normalize_role_color(value: Any) -> str | None:
     return value.lower()
 
 
+def participant_status_icons(participant: Participant) -> str:
+    icons = []
+    if participant.muted:
+        icons.append("🔇")
+    if participant.deafened:
+        icons.append("🔈")
+    return " ".join(icons)
+
+
 def label_markup(participant: Participant) -> str:
     color = participant.role_color or DEFAULT_NAME_COLOR
     weight = "700" if participant.speaking else "500"
     escaped_name = html.escape(participant.name, quote=False)
-    return f'<span foreground="{color}" weight="{weight}">{escaped_name}</span>'
+    icons = html.escape(participant_status_icons(participant), quote=False)
+    suffix = f' <span foreground="#94a3b8">{icons}</span>' if icons else ""
+    return f'<span foreground="{color}" weight="{weight}">{escaped_name}</span>{suffix}'
 
 
 def placeholder_path(participant: Participant) -> Path:
@@ -292,7 +305,7 @@ class CallWidget(Gtk.Window):
         return False
 
     def name_width(self) -> int:
-        longest = max((len(participant.name) for participant in self.participants), default=0)
+        longest = max((len(participant.name) + len(participant_status_icons(participant)) for participant in self.participants), default=0)
         return max(NAME_MIN_WIDTH, min(NAME_MAX_WIDTH, longest * NAME_CHAR_WIDTH + 8))
 
     def desired_size(self) -> tuple[int, int]:

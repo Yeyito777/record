@@ -45,11 +45,20 @@ export interface InitialNotification {
   count: number;
 }
 
+export interface CallGatewayVoiceState {
+  userId: string;
+  selfMute: boolean;
+  selfDeaf: boolean;
+  mute: boolean;
+  deaf: boolean;
+}
+
 export interface CallGatewayEvent {
   channelId: string;
   ringingUserIds: string[];
   region: string | null;
   voiceStateUserIds: string[];
+  voiceStates: CallGatewayVoiceState[];
   isActive: boolean;
 }
 
@@ -493,11 +502,12 @@ export function mapVoiceServerUpdate(data: unknown): VoiceServerUpdate | null {
 
 export function mapCallGatewayEvent(data: unknown): CallGatewayEvent | null {
   if (!isObject(data) || typeof data.channel_id !== "string") return null;
-  const voiceStateUserIds = Array.isArray(data.voice_states)
+  const voiceStates = Array.isArray(data.voice_states)
     ? data.voice_states
-      .map((state) => isObject(state) ? snowflakeToString(state.user_id) : null)
-      .filter((userId): userId is string => Boolean(userId))
+      .map(mapCallGatewayVoiceState)
+      .filter((state): state is CallGatewayVoiceState => state !== null)
     : [];
+  const voiceStateUserIds = voiceStates.map((state) => state.userId);
   return {
     channelId: data.channel_id,
     ringingUserIds: Array.isArray(data.ringing)
@@ -505,7 +515,21 @@ export function mapCallGatewayEvent(data: unknown): CallGatewayEvent | null {
       : [],
     region: typeof data.region === "string" ? data.region : null,
     voiceStateUserIds,
+    voiceStates,
     isActive: typeof data.message_id === "string" || voiceStateUserIds.length > 0,
+  };
+}
+
+function mapCallGatewayVoiceState(data: unknown): CallGatewayVoiceState | null {
+  if (!isObject(data)) return null;
+  const userId = snowflakeToString(data.user_id);
+  if (!userId) return null;
+  return {
+    userId,
+    selfMute: Boolean(data.self_mute),
+    selfDeaf: Boolean(data.self_deaf),
+    mute: Boolean(data.mute),
+    deaf: Boolean(data.deaf),
   };
 }
 

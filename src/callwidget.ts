@@ -17,6 +17,8 @@ export interface CallWidgetParticipant {
   /** CSS hex text color for this participant (role color in guilds, deterministic user color in DMs). */
   textColor?: string | null;
   speaking: boolean;
+  muted?: boolean;
+  deafened?: boolean;
   self: boolean;
 }
 
