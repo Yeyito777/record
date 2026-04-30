@@ -386,6 +386,14 @@ function handleCallGatewayEvent(state: AppState, channelId: string, ringingUserI
   maybePlayIncomingCallRingtone(state, channelId);
 }
 
+function callHasRemoteParticipants(state: AppState, channelId: string): boolean {
+  const selfUserId = state.auth.user?.id;
+  for (const userId of knownCallParticipantsByChannelId.get(channelId) ?? []) {
+    if (userId && userId !== selfUserId) return true;
+  }
+  return false;
+}
+
 function startOutboundCallRingtone(channelId: string): void {
   stopOutboundCallRingtone(channelId, "restart");
   if ((knownCallParticipantsByChannelId.get(channelId)?.size ?? 0) > 0) {
@@ -493,6 +501,22 @@ function handleActiveCallGatewayEvent(state: AppState, channelId: string, voiceS
   const session = voiceCallController?.activeSession;
   if (session?.target.channelId === channelId) syncVoiceCallStatus(state, session);
   return changed;
+}
+
+function rememberActiveCallParticipants(state: AppState, channelId: string, voiceStateUserIds: readonly string[]): void {
+  const selfUserId = state.auth.user?.id;
+  const existing = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const before = new Set(existing);
+  for (const userId of voiceStateUserIds) {
+    if (userId && userId !== selfUserId) existing.add(userId);
+  }
+  knownCallParticipantsByChannelId.set(channelId, existing);
+  debugLog("call.participants.remember_active", {
+    channelId,
+    before: Array.from(before),
+    voiceStateUserIds,
+    after: Array.from(existing),
+  });
 }
 
 function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): boolean {
@@ -1200,11 +1224,13 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onCallCreate: (event) => {
       handleCallGatewayEvent(state, event.channelId, event.ringingUserIds);
+      if (event.isActive) rememberActiveCallParticipants(state, event.channelId, event.voiceStateUserIds);
       handleActiveCallGatewayEvent(state, event.channelId, event.voiceStateUserIds);
       effects.scheduleRender();
     },
     onCallUpdate: (event) => {
       handleCallGatewayEvent(state, event.channelId, event.ringingUserIds);
+      if (event.isActive) rememberActiveCallParticipants(state, event.channelId, event.voiceStateUserIds);
       handleActiveCallGatewayEvent(state, event.channelId, event.voiceStateUserIds);
       effects.scheduleRender();
     },
@@ -2069,7 +2095,13 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
   }
 
   const displayName = channel.name || "DM";
-  knownCallParticipantsByChannelId.set(channel.id, new Set());
+  const joiningExistingCall = callHasRemoteParticipants(state, channel.id);
+  if (!knownCallParticipantsByChannelId.has(channel.id)) knownCallParticipantsByChannelId.set(channel.id, new Set());
+  debugLog("call.command", {
+    channelId: channel.id,
+    joiningExistingCall,
+    knownParticipants: Array.from(knownCallParticipantsByChannelId.get(channel.id) ?? []),
+  });
   setNotice(state, "", "muted");
   effects.scheduleRender();
 
@@ -2078,8 +2110,17 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     channelId: channel.id,
     recipientIds: recipients,
     displayName,
+    ringRecipients: !joiningExistingCall,
   }).then(({ warnings }) => {
-    startOutboundCallRingtone(channel.id);
+    if (joiningExistingCall) {
+      debugLog("call.outbound_ringtone.skipped", { channelId: channel.id, reason: "joining_existing_call" });
+      if (callHasRemoteParticipants(state, channel.id)) {
+        debugLog("call.participants.sound", { source: "existing_call_join", channelId: channel.id, action: "join", effect: "callJoin" });
+        playSoundEffect("callJoin");
+      }
+    } else {
+      startOutboundCallRingtone(channel.id);
+    }
     if (warnings.length > 0) {
       setNotice(state, `Call connected, but ${warnings[0]}`, "warning", { chat: false });
     } else {

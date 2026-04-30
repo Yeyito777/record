@@ -117,7 +117,14 @@ describe("app gateway helpers", () => {
       ringingUserIds: ["user-2"],
       region: "atl",
       voiceStateUserIds: ["user-1", "user-2"],
+      isActive: true,
     });
+
+    expect(mapCallGatewayEvent({
+      channel_id: "dm-1",
+      ringing: ["user-2"],
+      voice_states: [],
+    })?.isActive).toBe(false);
   });
 
   test("extracts guilds from READY", () => {
