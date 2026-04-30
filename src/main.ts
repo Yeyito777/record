@@ -23,6 +23,7 @@ import {
   scrollHistoryViewportSticky,
   scrollHistoryWithCursor,
 } from "./historycursor";
+import { setChannelList } from "./channels";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
 import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
@@ -55,10 +56,15 @@ import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
   jumpSidebarSelectionToVisibleEdge,
+  handleSidebarSearchBarKey,
   jumpSidebarSelectionToVisibleMiddle,
+  jumpToSidebarSearchMatch,
   moveSidebarSelection,
+  openSidebarCommandBar,
+  openSidebarSearchBar,
   scrollSidebarSelection,
   scrollSidebarSelectionLine,
+  sidebarChannelsForGuild,
   moveSidebarSelectionToNextAnyNotification,
   moveSidebarSelectionToNextCategory,
   moveSidebarSelectionToNextDirectMessage,
@@ -630,7 +636,47 @@ function handleGlobalAction(key: KeyEvent): boolean {
   }
 }
 
+function ensureSidebarEntryGuildLoaded(guildId: string): void {
+  if (state.channelList.guildId === guildId && state.channelList.channels.length > 0) return;
+  const channels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
+  if (channels.length > 0) setChannelList(state.channelList, guildId, channels);
+}
+
 function handleSidebarFocused(key: KeyEvent): boolean {
+  if (state.sidebar.search?.barOpen) {
+    handleSidebarSearchBarKey(state.sidebar, state.channelList.channels, key, sidebarVisibilityOptions());
+    scheduleRender();
+    return true;
+  }
+
+  if (key.type === "char" && key.char) {
+    if (key.char === "/" || key.char === "?") {
+      openSidebarSearchBar(state.sidebar, state.channelList.channels, key.char === "/" ? "forward" : "backward", sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === ":") {
+      openSidebarCommandBar(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "n" && state.sidebar.search?.query) {
+      jumpToSidebarSearchMatch(state.sidebar, state.channelList.channels, state.sidebar.search.direction, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "N" && state.sidebar.search?.query) {
+      jumpToSidebarSearchMatch(
+        state.sidebar,
+        state.channelList.channels,
+        state.sidebar.search.direction === "forward" ? "backward" : "forward",
+        sidebarVisibilityOptions(),
+      );
+      scheduleRender();
+      return true;
+    }
+  }
+
   const action = resolveAction(key, "navigation");
   if (!action) return false;
 
@@ -708,6 +754,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       }
 
       if (entry.kind === "channel") {
+        ensureSidebarEntryGuildLoaded(entry.guildId);
         void loadChannelMessages(state, token, entry.id, { scheduleRender });
         return true;
       }
@@ -895,6 +942,11 @@ function handlePromptFocused(key: KeyEvent): void {
 }
 
 function handleKey(key: KeyEvent): void {
+  if (state.panelFocus === "sidebar" && state.sidebar.open && state.sidebar.search?.barOpen) {
+    handleSidebarFocused(key);
+    return;
+  }
+
   if (handleGlobalAction(key)) return;
 
   if (state.panelFocus === "sidebar" && state.sidebar.open) {

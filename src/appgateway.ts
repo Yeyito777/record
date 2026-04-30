@@ -17,6 +17,7 @@ import {
   type DiscordMessage,
   type DiscordMessagePatch,
   type DiscordMessageResponse,
+  type DiscordPresenceStatus,
 } from "./discord";
 import { buildVoiceStatePayload, type VoiceServerUpdate, type VoiceSignalingClient, type VoiceStateRequest, type VoiceStateUpdate } from "./voice";
 
@@ -94,11 +95,15 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private ready = false;
   private currentUserId: string | null = null;
   private guildChannelSubscription: GuildChannelSubscription | null = null;
+  private currentPresenceStatus: DiscordPresenceStatus;
 
   constructor(
     private readonly token: string,
     private readonly callbacks: AppGatewayCallbacks,
-  ) {}
+    initialPresenceStatus: DiscordPresenceStatus = "online",
+  ) {
+    this.currentPresenceStatus = initialPresenceStatus;
+  }
 
   start(): void {
     if (this.ws || this.connecting) return;
@@ -118,6 +123,13 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
     this.guildChannelSubscription = { guildId, channelId };
     this.sendGuildChannelSubscription();
+  }
+
+  updatePresenceStatus(status: DiscordPresenceStatus): boolean {
+    this.currentPresenceStatus = status;
+    if (!this.isReady()) return false;
+    this.sendPresenceUpdate();
+    return true;
   }
 
   requestVoiceState(request: VoiceStateRequest): boolean {
@@ -211,6 +223,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.callbacks.onReadyGuilds?.(extractReadyGuilds(payload.d));
       this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
       this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
+      this.sendPresenceUpdate();
       this.sendGuildChannelSubscription();
       return;
     }
@@ -218,6 +231,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     if (payload.t === "RESUMED") {
       this.reconnectAttempt = 0;
       this.ready = true;
+      this.sendPresenceUpdate();
       this.sendGuildChannelSubscription();
       return;
     }
@@ -254,7 +268,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
         properties: createGatewayProperties(),
         presence: {
           activities: [],
-          status: "online",
+          status: this.currentPresenceStatus,
           since: null,
           afk: false,
         },
@@ -416,6 +430,18 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.reconnectTimer = null;
       void this.connect();
     }, delayMs);
+  }
+
+  private sendPresenceUpdate(): void {
+    this.send({
+      op: 3,
+      d: {
+        status: this.currentPresenceStatus,
+        afk: false,
+        since: 0,
+        activities: [],
+      },
+    });
   }
 
   private sendGuildChannelSubscription(): void {

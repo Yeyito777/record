@@ -35,7 +35,7 @@ describe("statusline", () => {
     expect(status.lines[0]).toContain(theme.success);
   });
 
-  test("colors idle/dnd/offline like Discord and spells out dnd", () => {
+  test("colors idle/dnd/invisible like Discord and spells out dnd", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.status = "authenticated";
     state.auth.user = {
@@ -56,8 +56,10 @@ describe("statusline", () => {
     expect(renderStatusLine(state, 80).lines[0]).toContain(theme.error);
     expect(renderStatusLine(state, 80).lines[0]).toContain("Do Not Disturb");
 
-    state.auth.presenceStatus = "offline";
-    expect(renderStatusLine(state, 80).lines[0]).toContain(theme.dim);
+    state.auth.presenceStatus = "invisible";
+    const invisibleLine = renderStatusLine(state, 80).lines[0];
+    expect(invisibleLine).toContain(theme.dim);
+    expect(invisibleLine).toContain("Invisible");
   });
 
   test("shows N/A in red while logged out", () => {

@@ -58,6 +58,36 @@ describe("commands", () => {
     expect(tryCommand("/deafen off", state)).toEqual({ type: "deafen", deafened: false });
   });
 
+  test("parses /status presence values", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand("/status online", state)).toEqual({ type: "status", status: "online" });
+    expect(tryCommand("/status idle", state)).toEqual({ type: "status", status: "idle" });
+    expect(tryCommand("/status dnd", state)).toEqual({ type: "status", status: "dnd" });
+    expect(tryCommand("/status invisible", state)).toEqual({ type: "status", status: "invisible" });
+    expect(tryCommand("/status offline", state)).toEqual({ type: "status", status: "invisible" });
+    expect(tryCommand("/status 4", state)).toEqual({ type: "status", status: "invisible" });
+  });
+
+  test("rejects invalid /status values", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+    const result = tryCommand("/status busy", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.notice.text).toContain("Usage: /status <online|idle|dnd|invisible>");
+  });
+
+  test("suggests /status args", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(getCommandArgs(state)["/status"]).toEqual([
+      { name: "online", desc: "Show as online" },
+      { name: "idle", desc: "Show as idle" },
+      { name: "dnd", desc: "Show as Do Not Disturb" },
+      { name: "invisible", desc: "Show as offline" },
+    ]);
+  });
+
   test("toggles hidden channel display", () => {
     withTempConfigHome(() => {
       const state = createInitialState("token", "/tmp/record-config.json");

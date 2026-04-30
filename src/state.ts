@@ -5,7 +5,7 @@
 import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
 import type { SavedLogins } from "./config";
-import type { DiscordGuildMember, DiscordIdentity, DiscordRole } from "./discord";
+import type { DiscordGuildMember, DiscordIdentity, DiscordPresenceStatus, DiscordRole } from "./discord";
 import type { ChannelMessageCache } from "./messagecache";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
@@ -20,7 +20,7 @@ import type { NoticeTone } from "./theme";
 import type { VoiceConnectionState } from "./voice";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
-export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
+export type PresenceStatus = DiscordPresenceStatus;
 export type PanelFocus = "sidebar" | "memberlist" | "chat";
 export type ChatFocus = "prompt" | "history";
 
