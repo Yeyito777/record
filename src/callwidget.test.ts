@@ -5,6 +5,7 @@ import { buildCallWidgetCommand, defaultDiscordAvatarIndex, discordAvatarUrl } f
 describe("call widget", () => {
   test("builds the external widget command", () => {
     expect(buildCallWidgetCommand("/tmp/widget.py")).toEqual(["python3", "/tmp/widget.py"]);
+    expect(buildCallWidgetCommand("/tmp/widget")).toEqual(["/tmp/widget"]);
   });
 
   test("builds Discord avatar URLs", () => {

@@ -29,10 +29,11 @@ export interface CallWidgetControllerOptions {
 
 type WidgetProcess = ReturnType<typeof Bun.spawn>;
 
-const DEFAULT_WIDGET_COMMAND = ["python3", fileURLToPath(new URL("../scripts/record-call-widget.py", import.meta.url))];
+const RUN_WIDGET_PATH = fileURLToPath(new URL("../scripts/run-call-widget", import.meta.url));
+const DEFAULT_WIDGET_COMMAND = buildCallWidgetCommand(RUN_WIDGET_PATH);
 
-export function buildCallWidgetCommand(scriptPath = DEFAULT_WIDGET_COMMAND[1]): string[] {
-  return ["python3", scriptPath];
+export function buildCallWidgetCommand(widgetPath = RUN_WIDGET_PATH): string[] {
+  return widgetPath.endsWith(".py") ? ["python3", widgetPath] : [widgetPath];
 }
 
 export function defaultDiscordAvatarIndex(userId: string, discriminator?: string | null): number {
@@ -93,8 +94,9 @@ export class CallWidgetController {
   private ensureProcess(): WidgetProcess | null {
     if (this.proc) return this.proc;
     const command = this.options.command ?? DEFAULT_WIDGET_COMMAND;
-    if (command.length === 0 || !existsSync(command[1] ?? "")) {
-      debugLog("call.widget.skipped", { reason: "missing_script", command });
+    const executablePath = command[0] === "python3" ? command[1] : command[0];
+    if (command.length === 0 || !executablePath || !existsSync(executablePath)) {
+      debugLog("call.widget.skipped", { reason: "missing_widget", command });
       return null;
     }
     try {

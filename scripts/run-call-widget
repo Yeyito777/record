@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+WIDGET="$ROOT/widgets/call-widget/record-call-widget"
+
+if [[ ! -x "$WIDGET" || "$ROOT/widgets/call-widget/record-call-widget.c" -nt "$WIDGET" || "$ROOT/widgets/call-widget/Makefile" -nt "$WIDGET" ]]; then
+  if ! make -C "$ROOT/widgets/call-widget" >/dev/null; then
+    exec python3 "$ROOT/scripts/record-call-widget.py"
+  fi
+fi
+
+exec "$WIDGET"

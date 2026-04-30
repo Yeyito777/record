@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "dev": "bun run --watch src/main.ts",
+    "build:widget": "scripts/build-call-widget",
     "test": "bun test",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit",
     "check": "bun run typecheck && bun run test"

@@ -1,3 +1,4 @@
 node_modules
 .worktrees/
 config/
+widgets/call-widget/record-call-widget
