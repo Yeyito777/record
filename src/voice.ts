@@ -831,7 +831,8 @@ export class VoiceCallController {
 }
 
 function isRecoverableVoiceGatewayClose(error: Error): boolean {
-  return error instanceof VoiceGatewayCloseError && error.code === VOICE_GATEWAY_INVALID_SESSION_CODE;
+  return error instanceof VoiceGatewayCloseError
+    && (error.code === VOICE_GATEWAY_INVALID_SESSION_CODE || /session is no longer valid/i.test(error.closeReason));
 }
 
 function isTerminalVoiceGatewayClose(error: Error): boolean {

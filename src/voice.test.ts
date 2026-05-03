@@ -404,7 +404,7 @@ describe("voice backend", () => {
     controller.handleVoiceServerUpdate({ token: "voice-token-1", endpoint: "voice1.example", guildId: null });
     await started;
 
-    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4006, "Session is no longer valid."));
+    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(101, "Session is no longer valid."));
     await waitFor(() => signaling.requests.length === 2);
 
     expect(signaling.leaves).toBe(1);
