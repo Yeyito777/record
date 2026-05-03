@@ -95,6 +95,20 @@ function graphemeStartAtOrAfterFallback(buffer: string, pos: number): number {
   return pos;
 }
 
+function graphemeBoundaryAtOrAfterFallback(buffer: string, pos: number): number {
+  if (pos <= 0) return 0;
+  if (pos >= buffer.length) return buffer.length;
+  let index = 0;
+  while (index < buffer.length) {
+    const end = fallbackNextGraphemeEnd(buffer, index);
+    if (index === pos) return pos;
+    if (index > pos) return index;
+    if (end > pos) return end;
+    index = end;
+  }
+  return buffer.length;
+}
+
 export function previousGraphemeStart(buffer: string, pos: number): number {
   const clamped = Math.max(0, Math.min(pos, buffer.length));
   if (clamped <= 0) return 0;
@@ -135,6 +149,21 @@ function graphemeStartAtOrAfter(buffer: string, pos: number): number {
     const end = start + segment.segment.length;
     if (start >= clamped) return start;
     if (end > clamped) return start;
+  }
+  return clamped;
+}
+
+export function graphemeBoundaryAtOrAfter(buffer: string, pos: number): number {
+  const clamped = Math.max(0, Math.min(pos, buffer.length));
+  if (clamped === 0 || clamped >= buffer.length) return clamped;
+  if (!graphemeSegmenter) return graphemeBoundaryAtOrAfterFallback(buffer, clamped);
+
+  for (const segment of graphemeSegmenter.segment(buffer)) {
+    const start = segment.index;
+    const end = start + segment.segment.length;
+    if (start === clamped) return clamped;
+    if (start > clamped) return start;
+    if (end > clamped) return end;
   }
   return clamped;
 }

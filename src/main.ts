@@ -49,6 +49,7 @@ import {
   loadGuildChannels,
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
+  persistSidebarFolders,
   syncMemberListForCurrentChannel,
   toggleSelectedGuildMute,
 } from "./session";
@@ -57,15 +58,23 @@ import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
   jumpSidebarSelectionToVisibleEdge,
+  handleSidebarPromptKey,
   handleSidebarSearchBarKey,
   jumpSidebarSelectionToVisibleMiddle,
   jumpToSidebarSearchMatch,
+  leaveSidebarFolder,
   moveSidebarSelection,
+  moveSidebarSelectionOut,
   openSidebarCommandBar,
+  openSidebarCreateFolderPrompt,
+  openSidebarMoveItemsPrompt,
+  openSidebarRenameFolderPrompt,
   openSidebarSearchBar,
   scrollSidebarSelection,
   scrollSidebarSelectionLine,
   sidebarChannelsForGuild,
+  toggleSidebarVisualSelection,
+  unwrapSelectedSidebarFolder,
   moveSidebarSelectionToNextAnyNotification,
   moveSidebarSelectionToNextCategory,
   moveSidebarSelectionToNextDirectMessage,
@@ -686,8 +695,28 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
 }
 
 function handleSidebarFocused(key: KeyEvent): boolean {
+  if (state.sidebar.prompt) {
+    handleSidebarPromptKey(state.sidebar, key, state.channelList.channels, sidebarVisibilityOptions());
+    persistSidebarFolders(state);
+    scheduleRender();
+    return true;
+  }
+
   if (state.sidebar.search?.barOpen) {
     handleSidebarSearchBarKey(state.sidebar, state.channelList.channels, key, sidebarVisibilityOptions());
+    scheduleRender();
+    return true;
+  }
+
+  if (key.type === "escape") {
+    state.sidebar.visualAnchor = null;
+    state.sidebar.pendingDeleteItem = null;
+    scheduleRender();
+    return true;
+  }
+
+  if (key.type === "backspace") {
+    leaveSidebarFolder(state.sidebar);
     scheduleRender();
     return true;
   }
@@ -705,6 +734,47 @@ function handleSidebarFocused(key: KeyEvent): boolean {
     }
     if (key.char === "n" && state.sidebar.search?.query) {
       jumpToSidebarSearchMatch(state.sidebar, state.channelList.channels, state.sidebar.search.direction, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "v" || key.char === "V") {
+      toggleSidebarVisualSelection(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "f") {
+      openSidebarCreateFolderPrompt(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "F") {
+      openSidebarMoveItemsPrompt(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "<") {
+      if (moveSidebarSelectionOut(state.sidebar, state.channelList.channels, sidebarVisibilityOptions())) persistSidebarFolders(state);
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "h") {
+      leaveSidebarFolder(state.sidebar);
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "l") {
+      const before = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      if (before.kind === "folder" || before.kind === "up") activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "r") {
+      openSidebarRenameFolderPrompt(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    }
+    if (key.char === "x") {
+      if (unwrapSelectedSidebarFolder(state.sidebar, state.channelList.channels, sidebarVisibilityOptions())) persistSidebarFolders(state);
       scheduleRender();
       return true;
     }
@@ -781,10 +851,16 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_select": {
+      const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      if (selectedBefore.kind === "folder" || selectedBefore.kind === "up") {
+        activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+        scheduleRender();
+        return true;
+      }
+
       const token = tokenOrWarn();
       if (!token) return true;
 
-      const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       const entry = activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()) ?? selectedBefore;
 
       if (entry.kind === "guild") {
@@ -998,7 +1074,22 @@ function handlePromptFocused(key: KeyEvent): void {
 }
 
 function handleKey(key: KeyEvent): void {
+  if (key.type === "ctrl-c") {
+    cleanup();
+    return;
+  }
+
+  if (state.panelFocus === "sidebar" && state.sidebar.open && state.sidebar.prompt) {
+    handleSidebarFocused(key);
+    return;
+  }
+
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.sidebar.search?.barOpen) {
+    handleSidebarFocused(key);
+    return;
+  }
+
+  if (state.panelFocus === "sidebar" && state.sidebar.open && key.type === "escape") {
     handleSidebarFocused(key);
     return;
   }

@@ -8,6 +8,7 @@ import { dirname, join } from "path";
 
 import { configDir } from "./config";
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild, type DiscordGuildMember, type DiscordRole } from "./discord";
+import type { SidebarFolderLayout } from "./sidebar";
 import type { ChannelMessageCache, CachedChannelMessages } from "./messagecache";
 import type { NotificationState } from "./notifications";
 
@@ -35,6 +36,13 @@ interface GuildOrderCacheFile {
   savedAt: number;
 }
 
+interface SidebarFoldersCacheFile {
+  version: 1;
+  accountId: string;
+  layout: SidebarFolderLayout;
+  savedAt: number;
+}
+
 const CACHE_VERSION = 1;
 const CACHE_SAVE_DEBOUNCE_MS = 2_500;
 const MAX_PERSISTED_MESSAGE_CHANNELS = 30;
@@ -58,6 +66,10 @@ function accountScopedCacheDir(accountId: string): string {
 
 function guildOrderPath(accountId: string): string {
   return join(accountScopedCacheDir(accountId), "guild-order.json");
+}
+
+function sidebarFoldersPath(accountId: string): string {
+  return join(accountScopedCacheDir(accountId), "server-folders.json");
 }
 
 function uniqueStringList(values: readonly unknown[]): string[] {
@@ -246,6 +258,53 @@ export function saveCachedGuildOrder(accountId: string, guildIds: readonly strin
     savedAt: Date.now(),
   };
   writeJsonFileAtomic(guildOrderPath(accountId), `${JSON.stringify(file)}\n`);
+}
+
+function parseSidebarFolderLayout(value: unknown): SidebarFolderLayout | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<SidebarFolderLayout>;
+  const folders = Array.isArray(candidate.folders)
+    ? candidate.folders.filter((folder): folder is SidebarFolderLayout["folders"][number] => (
+      typeof folder === "object" && folder !== null
+      && typeof folder.id === "string" && folder.id.length > 0
+      && typeof folder.name === "string" && folder.name.length > 0
+      && (typeof folder.parentId === "string" || folder.parentId === null || folder.parentId === undefined)
+    )).map((folder, index) => ({
+      id: folder.id,
+      name: folder.name,
+      parentId: folder.parentId ?? null,
+      pinned: Boolean(folder.pinned),
+      sortOrder: typeof folder.sortOrder === "number" && Number.isFinite(folder.sortOrder) ? folder.sortOrder : index,
+    }))
+    : [];
+  const guildPlacements: SidebarFolderLayout["guildPlacements"] = {};
+  if (typeof candidate.guildPlacements === "object" && candidate.guildPlacements !== null) {
+    for (const [guildId, placement] of Object.entries(candidate.guildPlacements)) {
+      if (!placement || typeof placement !== "object") continue;
+      const p = placement as Partial<SidebarFolderLayout["guildPlacements"][string]>;
+      guildPlacements[guildId] = {
+        folderId: typeof p.folderId === "string" ? p.folderId : null,
+        pinned: Boolean(p.pinned),
+        sortOrder: typeof p.sortOrder === "number" && Number.isFinite(p.sortOrder) ? p.sortOrder : 0,
+      };
+    }
+  }
+  return { folders, guildPlacements };
+}
+
+export function loadCachedSidebarFolders(accountId: string): SidebarFolderLayout | null {
+  try {
+    const parsed = JSON.parse(readFileSync(sidebarFoldersPath(accountId), "utf8")) as Partial<SidebarFoldersCacheFile>;
+    if (parsed.version !== CACHE_VERSION || parsed.accountId !== accountId) return null;
+    return parseSidebarFolderLayout(parsed.layout);
+  } catch {
+    return null;
+  }
+}
+
+export function saveCachedSidebarFolders(accountId: string, layout: SidebarFolderLayout): void {
+  const file: SidebarFoldersCacheFile = { version: CACHE_VERSION, accountId, layout, savedAt: Date.now() };
+  writeJsonFileAtomic(sidebarFoldersPath(accountId), `${JSON.stringify(file)}\n`);
 }
 
 export function watchCachedGuildOrder(accountId: string, onChange: (guildOrder: string[] | null) => void): () => void {

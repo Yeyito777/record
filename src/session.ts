@@ -50,6 +50,7 @@ import {
   loadCachedGuilds,
   loadCachedGuildOrder,
   loadCachedGuildRoles,
+  loadCachedSidebarFolders,
   loadCachedMemberList,
   loadCachedMemberRoles,
   loadCachedNotifications,
@@ -58,6 +59,7 @@ import {
   saveCachedGuildChannels,
   saveCachedGuildOrder,
   saveCachedGuildRoles,
+  saveCachedSidebarFolders,
   saveCachedGuilds,
   saveCachedMemberList,
   saveCachedMemberRoles,
@@ -101,15 +103,18 @@ import type { ClipboardImageAttachment } from "./imageclipboard";
 import { playLoopingSoundEffect, playSoundEffect, type SoundEffectPlaybackHandle } from "./soundeffects";
 import { focusPrompt, setNotice } from "./state";
 import {
+  applySidebarFolderLayout,
   applySidebarGuildMuteSettings,
   clearSidebarData,
   getSelectedSidebarEntry,
   isSidebarGuildMuted,
   moveSelectedSidebarGuild,
+  moveSelectedSidebarItem,
   setSidebarCachedChannels,
   setSidebarGuildMuted,
   setSidebarGuilds,
   sidebarCachedGuilds,
+  sidebarFolderLayout,
 } from "./sidebar";
 import {
   appendTimelineMessage,
@@ -853,6 +858,13 @@ function persistSidebarGuilds(state: AppState, options: { order?: boolean } = {}
   const guilds = sidebarCachedGuilds(state.sidebar);
   saveCachedGuilds(accountId, guilds);
   if (options.order ?? true) saveCachedGuildOrder(accountId, guilds.map((guild) => guild.id));
+  saveCachedSidebarFolders(accountId, sidebarFolderLayout(state.sidebar));
+}
+
+export function persistSidebarFolders(state: AppState): void {
+  const accountId = currentAccountId(state);
+  if (!accountId) return;
+  saveCachedSidebarFolders(accountId, sidebarFolderLayout(state.sidebar));
 }
 
 const VIEW_CHANNEL_PERMISSION = 1n << 10n;
@@ -1566,6 +1578,7 @@ export async function bootstrapReadOnlyClient(
     ensureGuildOrderSync(state, effects);
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
     const cachedGuildOrder = loadCachedGuildOrder(accountId);
+    const cachedSidebarFolders = loadCachedSidebarFolders(accountId);
     const cachedGuilds = sortGuildsByOrder(loadCachedGuilds(accountId) ?? [], cachedGuildOrder);
     setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, cachedDirectMessages);
     for (const guild of cachedGuilds) {
@@ -1578,6 +1591,7 @@ export async function bootstrapReadOnlyClient(
     state.memberRoleCacheVersion += 1;
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
       setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
+      applySidebarFolderLayout(state.sidebar, cachedSidebarFolders);
       applyCachedNotifications(state);
       state.sidebar.expandedGuildId = previousExpandedGuildId;
       state.sidebar.activeGuildId = previousActiveGuildId;
@@ -2394,9 +2408,9 @@ export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects,
     return;
   }
 
-  const move = moveSelectedSidebarGuild(state.sidebar, state.channelList.channels, direction, { showHiddenChannels: state.showHiddenChannels });
-  if (!move) {
-    setNotice(state, "Select a server row that can move.", "muted");
+  const moved = moveSelectedSidebarItem(state.sidebar, state.channelList.channels, direction, { showHiddenChannels: state.showHiddenChannels });
+  if (!moved) {
+    setNotice(state, "Select a server or folder row that can move.", "muted");
     effects.scheduleRender();
     return;
   }

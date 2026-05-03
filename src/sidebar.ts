@@ -2,7 +2,11 @@
  * Servers sidebar with collapsible guild/category/channel tree.
  */
 
+import { randomUUID } from "crypto";
+
+import type { CompletionItem } from "./commands";
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild } from "./discord";
+import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import type { KeyEvent } from "./input";
 import { loadingLabel } from "./loading";
 import { getViewportByWidth, padRight, termWidth } from "./textwidth";
@@ -15,9 +19,47 @@ import {
 
 export const SIDEBAR_WIDTH = 28;
 
-export type SidebarEntryKind = "guild" | "category" | "channel" | "loading";
+export type SidebarEntryKind = "guild" | "folder" | "up" | "category" | "channel" | "loading";
 export type SidebarSearchDirection = "forward" | "backward";
 export type SidebarSearchBarMode = "search" | "command";
+export type SidebarFolderPromptPurpose = "create_folder" | "move_items" | "rename_folder";
+
+export interface SidebarFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  pinned: boolean;
+  sortOrder: number;
+}
+
+export interface SidebarGuildPlacement {
+  folderId: string | null;
+  pinned: boolean;
+  sortOrder: number;
+}
+
+export interface SidebarFolderLayout {
+  folders: SidebarFolder[];
+  guildPlacements: Record<string, SidebarGuildPlacement>;
+}
+
+export type SidebarItemRef = { type: "guild" | "folder"; id: string };
+export type SidebarSelectableItem = SidebarItemRef | { type: "up" };
+
+export interface SidebarFolderPromptAutocompleteState {
+  selection: number;
+  prefix: string;
+  matches: CompletionItem[];
+}
+
+export interface SidebarFolderPromptState {
+  purpose: SidebarFolderPromptPurpose;
+  input: string;
+  cursorPos: number;
+  items: SidebarItemRef[];
+  folderId?: string;
+  autocomplete?: SidebarFolderPromptAutocompleteState | null;
+}
 
 export type SidebarSearchKeyResult =
   | { type: "handled" }
@@ -49,6 +91,8 @@ export interface SidebarEntry {
   selected: boolean;
   active: boolean;
   expanded: boolean;
+  item?: SidebarSelectableItem;
+  childCount?: number;
 }
 
 export interface SidebarVisibilityOptions {
@@ -62,6 +106,13 @@ export interface SidebarState {
   activeGuildId: string | null;
   expandedGuildId: string | null;
   collapsedCategoryIds: string[];
+  folders: SidebarFolder[];
+  currentFolderId: string | null;
+  guildPlacements: Record<string, SidebarGuildPlacement>;
+  selectedItem: SidebarSelectableItem | null;
+  visualAnchor: SidebarItemRef | null;
+  pendingDeleteItem: SidebarItemRef | null;
+  prompt: SidebarFolderPromptState | null;
   loadingGuildId: string | null;
   scrollOffset: number;
   loading: boolean;
@@ -79,6 +130,13 @@ export function createSidebarState(): SidebarState {
     activeGuildId: null,
     expandedGuildId: null,
     collapsedCategoryIds: [],
+    folders: [],
+    currentFolderId: null,
+    guildPlacements: {},
+    selectedItem: null,
+    visualAnchor: null,
+    pendingDeleteItem: null,
+    prompt: null,
     loadingGuildId: null,
     scrollOffset: 0,
     loading: false,
@@ -90,6 +148,136 @@ export function createSidebarState(): SidebarState {
 
 function isSelectableEntry(entry: SidebarEntry): boolean {
   return entry.kind !== "loading";
+}
+
+function sameSidebarItem(a: SidebarSelectableItem | null | undefined, b: SidebarSelectableItem | null | undefined): boolean {
+  if (!a || !b) return false;
+  if (a.type !== b.type) return false;
+  if (a.type === "up" && b.type === "up") return true;
+  return "id" in a && "id" in b && a.id === b.id;
+}
+
+function sidebarItemKey(item: SidebarSelectableItem | null | undefined): string | null {
+  if (!item) return null;
+  if (item.type === "up") return "up";
+  return `${item.type}:${item.id}`;
+}
+
+function isMovableSidebarItem(item: SidebarSelectableItem | null | undefined): item is SidebarItemRef {
+  return item?.type === "guild" || item?.type === "folder";
+}
+
+function guildPlacement(sidebar: SidebarState, guildId: string): SidebarGuildPlacement {
+  const index = sidebar.guilds.findIndex((guild) => guild.id === guildId);
+  return sidebar.guildPlacements[guildId] ?? { folderId: null, pinned: false, sortOrder: index < 0 ? 0 : index };
+}
+
+function itemParent(sidebar: SidebarState, item: SidebarItemRef): string | null | undefined {
+  if (item.type === "guild") return guildPlacement(sidebar, item.id).folderId ?? null;
+  return sidebar.folders.find((folder) => folder.id === item.id)?.parentId ?? null;
+}
+
+function itemPinned(sidebar: SidebarState, item: SidebarItemRef): boolean | undefined {
+  if (item.type === "guild") return guildPlacement(sidebar, item.id).pinned;
+  return sidebar.folders.find((folder) => folder.id === item.id)?.pinned;
+}
+
+function itemSortOrder(sidebar: SidebarState, item: SidebarItemRef): number {
+  if (item.type === "guild") return guildPlacement(sidebar, item.id).sortOrder;
+  return sidebar.folders.find((folder) => folder.id === item.id)?.sortOrder ?? 0;
+}
+
+function compareSidebarOrder(a: { pinned: boolean; sortOrder: number; name: string }, b: { pinned: boolean; sortOrder: number; name: string }): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
+}
+
+function normalizeSidebarPlacement(sidebar: SidebarState): void {
+  const validFolderIds = new Set(sidebar.folders.map((folder) => folder.id));
+  const validGuildIds = new Set(sidebar.guilds.map((guild) => guild.id));
+  sidebar.folders = sidebar.folders.map((folder, index) => ({
+    ...folder,
+    parentId: folder.parentId && validFolderIds.has(folder.parentId) && folder.parentId !== folder.id ? folder.parentId : null,
+    pinned: Boolean(folder.pinned),
+    sortOrder: Number.isFinite(folder.sortOrder) ? folder.sortOrder : index,
+  }));
+  for (const [guildId, placement] of Object.entries(sidebar.guildPlacements)) {
+    if (!validGuildIds.has(guildId)) {
+      delete sidebar.guildPlacements[guildId];
+      continue;
+    }
+    if (guildId === DIRECT_MESSAGES_GUILD_ID) {
+      delete sidebar.guildPlacements[guildId];
+      continue;
+    }
+    sidebar.guildPlacements[guildId] = {
+      folderId: placement.folderId && validFolderIds.has(placement.folderId) ? placement.folderId : null,
+      pinned: Boolean(placement.pinned),
+      sortOrder: Number.isFinite(placement.sortOrder) ? placement.sortOrder : sidebar.guilds.findIndex((guild) => guild.id === guildId),
+    };
+  }
+  if (sidebar.currentFolderId && !validFolderIds.has(sidebar.currentFolderId)) sidebar.currentFolderId = null;
+  if (sidebar.visualAnchor && itemParent(sidebar, sidebar.visualAnchor) === undefined) sidebar.visualAnchor = null;
+}
+
+export function sidebarFolderLayout(sidebar: SidebarState): SidebarFolderLayout {
+  normalizeSidebarPlacement(sidebar);
+  return {
+    folders: sidebar.folders.map((folder) => ({ ...folder })),
+    guildPlacements: Object.fromEntries(Object.entries(sidebar.guildPlacements).map(([guildId, placement]) => [guildId, { ...placement }])),
+  };
+}
+
+export function applySidebarFolderLayout(sidebar: SidebarState, layout: SidebarFolderLayout | null | undefined): void {
+  sidebar.folders = (layout?.folders ?? []).map((folder, index) => ({
+    id: folder.id,
+    name: folder.name || "Folder",
+    parentId: folder.parentId ?? null,
+    pinned: Boolean(folder.pinned),
+    sortOrder: Number.isFinite(folder.sortOrder) ? folder.sortOrder : index,
+  }));
+  sidebar.guildPlacements = Object.fromEntries(Object.entries(layout?.guildPlacements ?? {}).map(([guildId, placement]) => [guildId, {
+    folderId: placement.folderId ?? null,
+    pinned: Boolean(placement.pinned),
+    sortOrder: Number.isFinite(placement.sortOrder) ? placement.sortOrder : 0,
+  }]));
+  normalizeSidebarPlacement(sidebar);
+}
+
+export function currentSidebarFolder(sidebar: SidebarState): SidebarFolder | null {
+  return sidebar.currentFolderId ? sidebar.folders.find((folder) => folder.id === sidebar.currentFolderId) ?? null : null;
+}
+
+export function sidebarFolderPath(sidebar: SidebarState, folderId: string | null | undefined): string {
+  if (!folderId) return "";
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let folder = sidebar.folders.find((candidate) => candidate.id === folderId);
+  while (folder && !seen.has(folder.id)) {
+    seen.add(folder.id);
+    names.unshift(folder.name);
+    folder = folder.parentId ? sidebar.folders.find((candidate) => candidate.id === folder?.parentId) : undefined;
+  }
+  return names.join("/");
+}
+
+function parentOfCurrentFolder(sidebar: SidebarState): string | null {
+  return currentSidebarFolder(sidebar)?.parentId ?? null;
+}
+
+function descendantFolderIds(sidebar: SidebarState, folderId: string): Set<string> {
+  const ids = new Set<string>([folderId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const folder of sidebar.folders) {
+      if (folder.parentId && ids.has(folder.parentId) && !ids.has(folder.id)) {
+        ids.add(folder.id);
+        changed = true;
+      }
+    }
+  }
+  return ids;
 }
 
 function clampSelectedIndex(sidebar: SidebarState, entries: SidebarEntry[]): number {
@@ -123,6 +311,13 @@ export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.activeGuildId = null;
   sidebar.expandedGuildId = null;
   sidebar.collapsedCategoryIds = [];
+  sidebar.folders = [];
+  sidebar.currentFolderId = null;
+  sidebar.guildPlacements = {};
+  sidebar.selectedItem = null;
+  sidebar.visualAnchor = null;
+  sidebar.pendingDeleteItem = null;
+  sidebar.prompt = null;
   sidebar.loadingGuildId = null;
   sidebar.scrollOffset = 0;
   sidebar.loading = false;
@@ -132,10 +327,25 @@ export function clearSidebarData(sidebar: SidebarState): void {
 
 export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]): void {
   const previousMutedByGuildId = new Map(sidebar.guilds.map((guild) => [guild.id, guild.muted]));
-  sidebar.guilds = guilds.map((guild) => ({
+  const previousGuildIds = new Set(sidebar.guilds.map((guild) => guild.id));
+  sidebar.guilds = guilds.map((guild, index) => ({
     ...guild,
     muted: guild.muted ?? previousMutedByGuildId.get(guild.id),
   }));
+  for (const [guildId] of Object.entries(sidebar.guildPlacements)) {
+    if (!guilds.some((guild) => guild.id === guildId)) delete sidebar.guildPlacements[guildId];
+  }
+  for (const [index, guild] of sidebar.guilds.entries()) {
+    if (guild.id === DIRECT_MESSAGES_GUILD_ID) continue;
+    if (!sidebar.guildPlacements[guild.id]) {
+      sidebar.guildPlacements[guild.id] = {
+        folderId: null,
+        pinned: false,
+        sortOrder: previousGuildIds.has(guild.id) ? sidebar.guilds.findIndex((candidate) => candidate.id === guild.id) : index,
+      };
+    }
+  }
+  normalizeSidebarPlacement(sidebar);
   sidebar.scrollOffset = 0;
   sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, guilds.length - 1)));
 
@@ -186,6 +396,266 @@ export interface SidebarGuildMoveResult {
   guild: DiscordGuild;
   previousGuilds: DiscordGuild[];
   nextGuilds: DiscordGuild[];
+}
+
+function assignItemSortOrder(sidebar: SidebarState, item: SidebarItemRef, sortOrder: number): void {
+  if (item.type === "guild") {
+    const existing = guildPlacement(sidebar, item.id);
+    sidebar.guildPlacements[item.id] = { ...existing, sortOrder };
+    return;
+  }
+  const folder = sidebar.folders.find((candidate) => candidate.id === item.id);
+  if (folder) folder.sortOrder = sortOrder;
+}
+
+function assignItemParent(sidebar: SidebarState, item: SidebarItemRef, parentId: string | null): void {
+  if (item.type === "guild") {
+    if (item.id === DIRECT_MESSAGES_GUILD_ID) return;
+    const existing = guildPlacement(sidebar, item.id);
+    sidebar.guildPlacements[item.id] = { ...existing, folderId: parentId };
+    return;
+  }
+  const folder = sidebar.folders.find((candidate) => candidate.id === item.id);
+  if (folder) folder.parentId = parentId;
+}
+
+function assignItemPinned(sidebar: SidebarState, item: SidebarItemRef, pinned: boolean): void {
+  if (item.type === "guild") {
+    if (item.id === DIRECT_MESSAGES_GUILD_ID) return;
+    const existing = guildPlacement(sidebar, item.id);
+    sidebar.guildPlacements[item.id] = { ...existing, pinned };
+    return;
+  }
+  const folder = sidebar.folders.find((candidate) => candidate.id === item.id);
+  if (folder) folder.pinned = pinned;
+}
+
+type SidebarOrderEntry = { type: "guild" | "folder"; id: string; pinned: boolean; sortOrder: number };
+
+function sidebarOrderEntries(sidebar: SidebarState, parentId: string | null): SidebarOrderEntry[] {
+  const entries: SidebarOrderEntry[] = [];
+  for (const folder of sidebar.folders) {
+    if ((folder.parentId ?? null) === parentId) {
+      entries.push({ type: "folder", id: folder.id, pinned: folder.pinned, sortOrder: folder.sortOrder });
+    }
+  }
+  for (const guild of sidebar.guilds) {
+    if (guild.id === DIRECT_MESSAGES_GUILD_ID) continue;
+    const placement = guildPlacement(sidebar, guild.id);
+    if ((placement.folderId ?? null) === parentId) {
+      entries.push({ type: "guild", id: guild.id, pinned: placement.pinned, sortOrder: placement.sortOrder });
+    }
+  }
+  return entries.sort((a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1) || a.sortOrder - b.sortOrder);
+}
+
+function nextUnpinnedOrderInFolder(sidebar: SidebarState, parentId: string | null, excludeId?: string): number {
+  let minOrder = 0;
+  for (const entry of sidebarOrderEntries(sidebar, parentId)) {
+    if (!entry.pinned && entry.id !== excludeId && entry.sortOrder < minOrder) minOrder = entry.sortOrder;
+  }
+  return minOrder - 1;
+}
+
+function nextPinnedOrderInFolder(sidebar: SidebarState, parentId: string | null, excludeId?: string): number {
+  let maxOrder = -Infinity;
+  for (const entry of sidebarOrderEntries(sidebar, parentId)) {
+    if (entry.pinned && entry.id !== excludeId && entry.sortOrder > maxOrder) maxOrder = entry.sortOrder;
+  }
+  return maxOrder === -Infinity ? 0 : maxOrder + 1;
+}
+
+function currentFolderRef(sidebar: SidebarState): SidebarItemRef | undefined {
+  return sidebar.currentFolderId ? { type: "folder", id: sidebar.currentFolderId } : undefined;
+}
+
+function topLevelCurrentFolderRef(sidebar: SidebarState): SidebarItemRef | undefined {
+  let folder = currentSidebarFolder(sidebar);
+  if (!folder) return undefined;
+  const seen = new Set<string>();
+  while (folder.parentId && !seen.has(folder.id)) {
+    seen.add(folder.id);
+    const parent = sidebar.folders.find((candidate) => candidate.id === folder?.parentId);
+    if (!parent) break;
+    folder = parent;
+  }
+  return { type: "folder", id: folder.id };
+}
+
+function siblingMovableItems(sidebar: SidebarState, parentId: string | null, pinned?: boolean): SidebarItemRef[] {
+  return folderVisibleItems({ ...sidebar, currentFolderId: parentId }).map(({ item }) => item)
+    .filter((item) => item.type !== "guild" || item.id !== DIRECT_MESSAGES_GUILD_ID)
+    .filter((item) => pinned === undefined || itemPinned(sidebar, item) === pinned);
+}
+
+function normalizeSiblingSortOrders(sidebar: SidebarState, parentId: string | null, pinned?: boolean): void {
+  const siblings = siblingMovableItems(sidebar, parentId, pinned);
+  siblings.forEach((item, index) => assignItemSortOrder(sidebar, item, index));
+}
+
+export function selectedSidebarItems(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): SidebarItemRef[] {
+  const selected = getSelectedSidebarEntry(sidebar, channels, options).item;
+  if (!isMovableSidebarItem(selected)) return [];
+  if (!sidebar.visualAnchor) return [selected];
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options)
+    .filter((entry) => isMovableSidebarItem(entry.item));
+  const anchorIndex = entries.findIndex((entry) => sameSidebarItem(entry.item, sidebar.visualAnchor));
+  const selectedIndex = entries.findIndex((entry) => sameSidebarItem(entry.item, selected));
+  if (anchorIndex < 0 || selectedIndex < 0) return [selected];
+  const start = Math.min(anchorIndex, selectedIndex);
+  const end = Math.max(anchorIndex, selectedIndex);
+  return entries.slice(start, end + 1).map((entry) => entry.item as SidebarItemRef);
+}
+
+function nextItemAfterRemovingItems(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  items: SidebarItemRef[],
+  options: SidebarVisibilityOptions = {},
+): SidebarSelectableItem | null {
+  const removedKeys = new Set(items.map((item) => sidebarItemKey(item)));
+  const rowsBefore = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options)
+    .filter((entry): entry is SidebarEntry & { item: SidebarSelectableItem } => Boolean(entry.item));
+  const removedIndices = rowsBefore
+    .map((entry, index) => removedKeys.has(sidebarItemKey(entry.item)) ? index : -1)
+    .filter((index) => index !== -1);
+  const rowsAfter = rowsBefore.filter((entry) => !removedKeys.has(sidebarItemKey(entry.item)));
+  if (rowsAfter.length === 0) return null;
+  const removedIndex = removedIndices.length === 0 ? 0 : Math.min(...removedIndices);
+  const nextIndex = Math.min(removedIndex, rowsAfter.length - 1);
+  return rowsAfter[nextIndex]?.item ?? null;
+}
+
+function requestFocusAfterMovingItemsOutOfView(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  items: SidebarItemRef[],
+  options: SidebarVisibilityOptions = {},
+): void {
+  const next = nextItemAfterRemovingItems(sidebar, channels, items, options);
+  sidebar.selectedItem = next?.type === "up" ? null : next;
+  if (!sidebar.selectedItem) sidebar.selectedIndex = 0;
+}
+
+interface LocalMoveSidebarItemsOptions {
+  preservePinned?: boolean;
+  placement?: "bottom";
+}
+
+function moveSidebarItems(
+  sidebar: SidebarState,
+  items: SidebarItemRef[],
+  parentId: string | null,
+  before?: SidebarItemRef,
+  options: LocalMoveSidebarItemsOptions = {},
+): boolean {
+  const safeParent = parentId && sidebar.folders.some((folder) => folder.id === parentId) ? parentId : null;
+  const seen = new Set<string>();
+  const movableItems: SidebarItemRef[] = [];
+  for (const item of items) {
+    if (item.type === "guild" && item.id === DIRECT_MESSAGES_GUILD_ID) continue;
+    const key = sidebarItemKey(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    if (item.type === "folder") {
+      if (!sidebar.folders.some((folder) => folder.id === item.id)) continue;
+      if (item.id === safeParent || (safeParent && descendantFolderIds(sidebar, item.id).has(safeParent))) continue;
+    } else if (!sidebar.guilds.some((guild) => guild.id === item.id)) {
+      continue;
+    }
+    movableItems.push(item);
+  }
+  if (movableItems.length === 0) return false;
+
+  const movingKeys = new Set(movableItems.map((item) => sidebarItemKey(item)));
+  const destinationEntries = sidebarOrderEntries(sidebar, safeParent)
+    .filter((entry) => !movingKeys.has(`${entry.type}:${entry.id}`));
+  const preservedPinned = options.preservePinned ? itemPinned(sidebar, movableItems[0]!) : undefined;
+  const hasHomogeneousPinnedState = preservedPinned !== undefined && movableItems.every((item) => itemPinned(sidebar, item) === preservedPinned);
+  const anchorEntries = hasHomogeneousPinnedState
+    ? destinationEntries.filter((entry) => entry.pinned === preservedPinned)
+    : destinationEntries;
+  const beforeEntry = before && itemParent(sidebar, before) === safeParent
+    ? anchorEntries.find((entry) => entry.type === before.type && entry.id === before.id)
+    : undefined;
+  const beforeIndex = beforeEntry ? anchorEntries.findIndex((entry) => entry.type === beforeEntry.type && entry.id === beforeEntry.id) : -1;
+  const previousEntry = beforeIndex > 0 ? anchorEntries[beforeIndex - 1] : undefined;
+
+  let startOrder: number;
+  let step: number;
+  if (beforeEntry) {
+    startOrder = previousEntry
+      ? previousEntry.sortOrder + ((beforeEntry.sortOrder - previousEntry.sortOrder) / (movableItems.length + 1))
+      : beforeEntry.sortOrder - movableItems.length;
+    step = previousEntry ? (beforeEntry.sortOrder - previousEntry.sortOrder) / (movableItems.length + 1) : 1;
+  } else if (options.placement === "bottom") {
+    const placementEntries = hasHomogeneousPinnedState ? anchorEntries : destinationEntries;
+    const maxOrder = placementEntries.reduce((max, entry) => Math.max(max, entry.sortOrder), -Infinity);
+    startOrder = maxOrder === -Infinity ? 0 : maxOrder + 1;
+    step = 1;
+  } else {
+    startOrder = nextUnpinnedOrderInFolder(sidebar, safeParent) - movableItems.length;
+    step = 1;
+  }
+
+  let order = startOrder - step;
+  for (const item of movableItems) {
+    order += step;
+    assignItemParent(sidebar, item, safeParent);
+    assignItemPinned(sidebar, item, options.preservePinned ? itemPinned(sidebar, item) ?? false : false);
+    assignItemSortOrder(sidebar, item, order);
+  }
+  return true;
+}
+
+export function moveSelectedSidebarItem(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  direction: "up" | "down",
+  options: SidebarVisibilityOptions = {},
+): boolean {
+  const items = selectedSidebarItems(sidebar, channels, options);
+  if (items.length === 0) return false;
+  const parentId = itemParent(sidebar, items[0]);
+  const pinned = itemPinned(sidebar, items[0]);
+  if (parentId === undefined || pinned === undefined) return false;
+  if (!items.every((item) => itemParent(sidebar, item) === parentId && itemPinned(sidebar, item) === pinned)) return false;
+  normalizeSiblingSortOrders(sidebar, parentId, pinned);
+  const siblings = siblingMovableItems(sidebar, parentId, pinned);
+  const selectedKeys = new Set(items.map((item) => sidebarItemKey(item)));
+  const indices = siblings.map((item, index) => selectedKeys.has(sidebarItemKey(item)) ? index : -1).filter((index) => index >= 0);
+  if (indices.length !== items.length) return false;
+  const first = Math.min(...indices);
+  const last = Math.max(...indices);
+  if (direction === "up") {
+    if (first <= 0) return false;
+    const block = siblings.splice(first, items.length);
+    siblings.splice(first - 1, 0, ...block);
+  } else {
+    if (last >= siblings.length - 1) return false;
+    const block = siblings.splice(first, items.length);
+    siblings.splice(first + 1, 0, ...block);
+  }
+  siblings.forEach((item, index) => assignItemSortOrder(sidebar, item, index));
+  const orderedSiblingGuildIds = siblings.filter((item): item is SidebarItemRef & { type: "guild" } => item.type === "guild").map((item) => item.id);
+  if (orderedSiblingGuildIds.length > 0) {
+    const rank = new Map(orderedSiblingGuildIds.map((id, index) => [id, index]));
+    sidebar.guilds = sidebar.guilds.slice().sort((a, b) => {
+      if (a.id === DIRECT_MESSAGES_GUILD_ID) return -1;
+      if (b.id === DIRECT_MESSAGES_GUILD_ID) return 1;
+      const ar = rank.get(a.id);
+      const br = rank.get(b.id);
+      if (ar === undefined && br === undefined) return 0;
+      if (ar === undefined) return 1;
+      if (br === undefined) return -1;
+      return ar - br;
+    });
+  }
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  const selectedKey = sidebarItemKey(items[0]);
+  const nextIndex = entries.findIndex((entry) => sidebarItemKey(entry.item) === selectedKey);
+  if (nextIndex >= 0) sidebar.selectedIndex = nextIndex;
+  return true;
 }
 
 export function moveSelectedSidebarGuild(
@@ -292,18 +762,53 @@ function pushGuildEntry(
   sidebar: SidebarState,
   guildNotificationCounts: ReadonlyMap<string, number>,
   expanded: boolean,
+  depth = 0,
 ): void {
   entries.push({
     kind: "guild",
     id: guild.id,
     guildId: guild.id,
     label: guild.name || "(unnamed)",
-    depth: 0,
+    depth,
     notificationCount: guild.muted ? 0 : guildNotificationCounts.get(guild.id) ?? 0,
     muted: Boolean(guild.muted),
     selected: false,
     active: guild.id === sidebar.activeGuildId,
     expanded,
+    item: { type: "guild", id: guild.id },
+  });
+}
+
+function pushFolderEntry(entries: SidebarEntry[], folder: SidebarFolder, sidebar: SidebarState, guildNotificationCounts: ReadonlyMap<string, number>): void {
+  const descendants = descendantFolderIds(sidebar, folder.id);
+  const childGuilds = sidebar.guilds.filter((guild) => guild.id !== DIRECT_MESSAGES_GUILD_ID && descendants.has(guildPlacement(sidebar, guild.id).folderId ?? ""));
+  const notificationCount = childGuilds.reduce((sum, guild) => sum + (guild.muted ? 0 : guildNotificationCounts.get(guild.id) ?? 0), 0);
+  entries.push({
+    kind: "folder",
+    id: folder.id,
+    guildId: folder.id,
+    label: folder.name,
+    depth: 0,
+    notificationCount,
+    selected: false,
+    active: false,
+    expanded: false,
+    item: { type: "folder", id: folder.id },
+    childCount: childGuilds.length,
+  });
+}
+
+function pushUpEntry(entries: SidebarEntry[]): void {
+  entries.push({
+    kind: "up",
+    id: "..",
+    guildId: "..",
+    label: "..",
+    depth: 0,
+    selected: false,
+    active: false,
+    expanded: false,
+    item: { type: "up" },
   });
 }
 
@@ -404,6 +909,88 @@ function buildSidebarSearchEntries(
   return entries;
 }
 
+function pushExpandedGuildChildren(
+  entries: SidebarEntry[],
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  guild: DiscordGuild,
+  loadingFrameIndex: number,
+  typingChannelIds: ReadonlySet<string>,
+  typingFrame: string,
+  channelNotificationCounts: ReadonlyMap<string, number>,
+  options: SidebarVisibilityOptions,
+): void {
+  const visibleGuildChannels = sidebarChannelsForGuild(sidebar, channels, guild.id);
+  const loadingExpandedGuild = sidebar.loadingGuildId === guild.id
+    || (guild.id === DIRECT_MESSAGES_GUILD_ID && sidebar.loading);
+  if (loadingExpandedGuild && visibleGuildChannels.length === 0) {
+    entries.push({
+      kind: "loading",
+      id: `${guild.id}::loading`,
+      guildId: guild.id,
+      label: loadingLabel("Loading…", loadingFrameIndex),
+      depth: 1,
+      selected: false,
+      active: false,
+      expanded: false,
+    });
+    return;
+  }
+
+  const visibleChannelRows = visibleGuildChannels.filter((channel) => channel.type !== 4 && (options.showHiddenChannels || !channel.hidden));
+  const guildCategories = visibleGuildChannels
+    .filter((channel) => channel.type === 4)
+    .filter((category) => options.showHiddenChannels || visibleChannelRows.some((channel) => channel.parentId === category.id))
+    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  const categoryIds = new Set(guildCategories.map((category) => category.id));
+  const uncategorized = visibleChannelRows
+    .filter((channel) => !channel.parentId || !categoryIds.has(channel.parentId))
+    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+
+  for (const channel of uncategorized) {
+    pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts);
+  }
+
+  for (const category of guildCategories) {
+    const collapsed = sidebar.collapsedCategoryIds.includes(category.id);
+    entries.push({
+      kind: "category",
+      id: category.id,
+      guildId: guild.id,
+      label: category.name,
+      depth: 1,
+      hidden: Boolean(category.hidden),
+      selected: false,
+      active: false,
+      expanded: !collapsed,
+    });
+
+    if (collapsed) continue;
+
+    const categoryChannels = visibleChannelRows
+      .filter((channel) => channel.parentId === category.id)
+      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+
+    for (const channel of categoryChannels) {
+      pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts);
+    }
+  }
+}
+
+function folderVisibleItems(sidebar: SidebarState): Array<{ item: SidebarItemRef; pinned: boolean; sortOrder: number; name: string }> {
+  const parentId = sidebar.currentFolderId;
+  const folders = sidebar.folders
+    .filter((folder) => (folder.parentId ?? null) === parentId)
+    .map((folder) => ({ item: { type: "folder" as const, id: folder.id }, pinned: folder.pinned, sortOrder: folder.sortOrder, name: folder.name }));
+  const guilds = sidebar.guilds
+    .filter((guild) => guild.id === DIRECT_MESSAGES_GUILD_ID ? parentId === null : (guildPlacement(sidebar, guild.id).folderId ?? null) === parentId)
+    .map((guild) => {
+      const placement = guildPlacement(sidebar, guild.id);
+      return { item: { type: "guild" as const, id: guild.id }, pinned: guild.id === DIRECT_MESSAGES_GUILD_ID ? false : placement.pinned, sortOrder: guild.id === DIRECT_MESSAGES_GUILD_ID ? Number.MIN_SAFE_INTEGER : placement.sortOrder, name: guild.name };
+    });
+  return [...folders, ...guilds].sort(compareSidebarOrder);
+}
+
 export function buildSidebarEntries(
   sidebar: SidebarState,
   channels: DiscordChannel[],
@@ -420,72 +1007,34 @@ export function buildSidebarEntries(
     : [];
 
   if (!query) {
-    for (const guild of sidebar.guilds) {
-      const isExpanded = guild.id === sidebar.expandedGuildId;
-      pushGuildEntry(entries, guild, sidebar, guildNotificationCounts, isExpanded);
+    normalizeSidebarPlacement(sidebar);
+    if (sidebar.currentFolderId) pushUpEntry(entries);
 
-      if (!isExpanded) continue;
-
-      const visibleGuildChannels = sidebarChannelsForGuild(sidebar, channels, guild.id);
-      const loadingExpandedGuild = sidebar.loadingGuildId === guild.id
-        || (guild.id === DIRECT_MESSAGES_GUILD_ID && sidebar.loading);
-      if (loadingExpandedGuild && visibleGuildChannels.length === 0) {
-        entries.push({
-          kind: "loading",
-          id: `${guild.id}::loading`,
-          guildId: guild.id,
-          label: loadingLabel("Loading…", loadingFrameIndex),
-          depth: 1,
-          selected: false,
-          active: false,
-          expanded: false,
-        });
+    for (const { item } of folderVisibleItems(sidebar)) {
+      if (item.type === "folder") {
+        const folder = sidebar.folders.find((candidate) => candidate.id === item.id);
+        if (folder) pushFolderEntry(entries, folder, sidebar, guildNotificationCounts);
         continue;
       }
 
-      const visibleChannelRows = visibleGuildChannels.filter((channel) => channel.type !== 4 && (options.showHiddenChannels || !channel.hidden));
-      const guildCategories = visibleGuildChannels
-        .filter((channel) => channel.type === 4)
-        .filter((category) => options.showHiddenChannels || visibleChannelRows.some((channel) => channel.parentId === category.id))
-        .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-      const categoryIds = new Set(guildCategories.map((category) => category.id));
-      const uncategorized = visibleChannelRows
-        .filter((channel) => !channel.parentId || !categoryIds.has(channel.parentId))
-        .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-
-      for (const channel of uncategorized) {
-        pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts);
-      }
-
-      for (const category of guildCategories) {
-        const collapsed = sidebar.collapsedCategoryIds.includes(category.id);
-        entries.push({
-          kind: "category",
-          id: category.id,
-          guildId: guild.id,
-          label: category.name,
-          depth: 1,
-          hidden: Boolean(category.hidden),
-          selected: false,
-          active: false,
-          expanded: !collapsed,
-        });
-
-        if (collapsed) continue;
-
-        const categoryChannels = visibleChannelRows
-          .filter((channel) => channel.parentId === category.id)
-          .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-
-        for (const channel of categoryChannels) {
-          pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts);
-        }
+      const guild = sidebar.guilds.find((candidate) => candidate.id === item.id);
+      if (!guild) continue;
+      const isExpanded = guild.id === sidebar.expandedGuildId;
+      pushGuildEntry(entries, guild, sidebar, guildNotificationCounts, isExpanded);
+      if (isExpanded) {
+        pushExpandedGuildChildren(entries, sidebar, channels, guild, loadingFrameIndex, typingChannelIds, typingFrame, channelNotificationCounts, options);
       }
     }
   }
 
+  const requestedKey = sidebarItemKey(sidebar.selectedItem);
+  if (requestedKey) {
+    const requestedIndex = entries.findIndex((entry) => sidebarItemKey(entry.item) === requestedKey);
+    if (requestedIndex >= 0) sidebar.selectedIndex = requestedIndex;
+  }
   const clampedIndex = clampSelectedIndex(sidebar, entries);
   sidebar.selectedIndex = clampedIndex;
+  sidebar.selectedItem = entries[clampedIndex]?.item ?? null;
 
   return entries.map((entry, index) => ({
     ...entry,
@@ -579,7 +1128,10 @@ function liveSidebarSearchToNearestMatch(sidebar: SidebarState, channels: Discor
   }
 
   const matchIndex = findNextSidebarSearchMatch(sidebar, channels, search.barInput, search.savedSelectedIndex, search.direction, options);
-  if (matchIndex != null) sidebar.selectedIndex = matchIndex;
+  if (matchIndex != null) {
+    sidebar.selectedItem = null;
+    sidebar.selectedIndex = matchIndex;
+  }
 }
 
 function replaceSidebarSearchBarInput(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions, nextInput: string, nextCursorPos: number): void {
@@ -646,6 +1198,7 @@ export function jumpToSidebarSearchMatch(sidebar: SidebarState, channels: Discor
   if (matchIndex == null) return false;
 
   search.highlightsVisible = true;
+  sidebar.selectedItem = null;
   sidebar.selectedIndex = matchIndex;
   return true;
 }
@@ -659,7 +1212,7 @@ export function handleSidebarSearchBarKey(sidebar: SidebarState, channels: Disco
     return { type: "handled" };
   }
 
-  if (key.type === "escape" || key.type === "ctrl-c") {
+  if (key.type === "escape") {
     closeSidebarSearchBar(sidebar, channels, true, options);
     return { type: "handled" };
   }
@@ -741,6 +1294,44 @@ export function handleSidebarSearchBarKey(sidebar: SidebarState, channels: Disco
   return { type: "handled" };
 }
 
+function getSidebarPromptBar(prompt: SidebarFolderPromptState, width: number): string {
+  const label = prompt.purpose === "create_folder" ? "Folder" : prompt.purpose === "move_items" ? "Move" : "Rename";
+  const prefix = `${label}: `;
+  const maxWidth = Math.max(0, width - termWidth(prefix));
+  const viewport = getViewportByWidth(prompt.input, prompt.cursorPos, maxWidth);
+  const placeholder = prompt.purpose === "move_items" ? "folder" : "name";
+  const displayText = viewport.visibleText ? padRight(viewport.visibleText, maxWidth) : padRight(placeholder, maxWidth);
+  const textStyle = viewport.visibleText ? theme.text : theme.dim;
+  return theme.sidebarBg + theme.accent + prefix + theme.text + textStyle + displayText;
+}
+
+function getSidebarPromptAutocompleteRows(prompt: SidebarFolderPromptState, width: number, visibleRows: number): string[] {
+  const autocomplete = prompt.autocomplete;
+  if (!autocomplete || autocomplete.matches.length === 0 || visibleRows <= 0) return [];
+  const { matches, selection } = autocomplete;
+  const maxName = matches.reduce((max, item) => Math.max(max, termWidth(item.name)), 0);
+  const markerWidth = 2;
+  const nameWidth = Math.min(maxName + 1, Math.max(0, Math.floor((width - markerWidth) * 0.6)));
+  const descWidth = Math.max(0, width - markerWidth - nameWidth);
+  const winSize = Math.min(matches.length, visibleRows);
+  let winStart = 0;
+  if (matches.length > winSize && selection >= 0) {
+    winStart = Math.max(0, Math.min(selection - Math.floor(winSize / 2), matches.length - winSize));
+  }
+  const rows: string[] = [];
+  for (let vi = 0; vi < winSize; vi++) {
+    const index = winStart + vi;
+    const item = matches[index]!;
+    const isSelected = selection === index;
+    const bg = isSelected ? theme.sidebarSelBg : theme.sidebarBg;
+    const marker = isSelected ? "▸ " : "  ";
+    const indicator = vi === 0 && winStart > 0 ? "▲" : vi === winSize - 1 && winStart + winSize < matches.length ? "▼" : "";
+    const descBodyWidth = Math.max(0, descWidth - termWidth(indicator));
+    rows.push(bg + theme.accent + marker + theme.text + padRight(item.name, nameWidth) + theme.dim + padRight(item.desc, descBodyWidth) + indicator + theme.reset);
+  }
+  return rows;
+}
+
 export function getSidebarSearchBarViewport(search: SidebarSearchState, width: number): { line: string; cursorCol: number } {
   const prompt = search.barMode === "command"
     ? ":"
@@ -792,10 +1383,18 @@ export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordCha
   const currentPos = Math.max(0, selectableIndices.indexOf(currentIndex));
   const nextPos = Math.max(0, Math.min(currentPos + delta, selectableIndices.length - 1));
   sidebar.selectedIndex = selectableIndices[nextPos] ?? currentIndex;
+  sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
+}
+
+function sidebarPromptAutocompleteVisibleRows(sidebar: SidebarState | undefined, totalRows: number): number {
+  const autocomplete = sidebar?.prompt?.autocomplete;
+  if (!sidebar?.prompt || sidebar.search?.barOpen || !autocomplete?.matches.length) return 0;
+  return Math.min(autocomplete.matches.length, Math.max(0, Math.min(5, totalRows - 5)));
 }
 
 function sidebarViewportRows(totalRows: number, sidebar?: SidebarState): number {
-  return Math.max(0, totalRows - 2 - (sidebar?.search?.barOpen ? 1 : 0));
+  const bottomBarRows = sidebar?.search?.barOpen ? 1 : sidebar?.prompt ? 1 + sidebarPromptAutocompleteVisibleRows(sidebar, totalRows) : 0;
+  return Math.max(0, totalRows - 2 - bottomBarRows);
 }
 
 function clampSidebarViewportToSelection(sidebar: SidebarState, entries: SidebarEntry[], viewportRows: number): void {
@@ -837,6 +1436,7 @@ export function scrollSidebarSelection(
     ? scrollPageWithCursorInViewport({ totalLines: entries.length, viewportHeight: viewportRows, viewStart: sidebar.scrollOffset, cursorRow: sidebar.selectedIndex }, dir, amount)
     : scrollByAmountWithCursorInViewport({ totalLines: entries.length, viewportHeight: viewportRows, viewStart: sidebar.scrollOffset, cursorRow: sidebar.selectedIndex }, dir, amount);
   sidebar.selectedIndex = clampSelectedIndex({ ...sidebar, selectedIndex: next.cursorRow }, entries);
+  sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
   sidebar.scrollOffset = next.viewStart;
 }
 
@@ -856,6 +1456,7 @@ export function scrollSidebarSelectionLine(sidebar: SidebarState, channels: Disc
     cursorRow: sidebar.selectedIndex,
   }, dir);
   sidebar.selectedIndex = clampSelectedIndex({ ...sidebar, selectedIndex: next.cursorRow }, entries);
+  sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
   sidebar.scrollOffset = next.viewStart;
 }
 
@@ -901,6 +1502,7 @@ export function jumpSidebarSelectionToVisibleEdge(
   }
 
   sidebar.selectedIndex = targetIndex;
+  sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
 }
 
 export function jumpSidebarSelectionToVisibleMiddle(
@@ -929,7 +1531,10 @@ export function jumpSidebarSelectionToVisibleMiddle(
   const targetIndex = findSelectableEntryIndex(entries, middleRow, viewEnd, 1)
     ?? findSelectableEntryIndex(entries, middleRow - 1, viewStart, -1);
 
-  if (targetIndex != null) sidebar.selectedIndex = targetIndex;
+  if (targetIndex != null) {
+    sidebar.selectedIndex = targetIndex;
+    sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
+  }
 }
 
 function jumpSidebarSelectionToKind(
@@ -949,6 +1554,7 @@ function jumpSidebarSelectionToKind(
   for (let index = currentIndex + direction; index >= 0 && index < entries.length; index += direction) {
     if (entries[index]?.kind === kind) {
       sidebar.selectedIndex = index;
+      sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
       return;
     }
   }
@@ -1023,6 +1629,7 @@ function jumpSidebarSelectionToGuildChannel(
     : candidates.findLast((index) => index < currentIndex) ?? candidates[candidates.length - 1];
   if (nextIndex !== undefined) {
     sidebar.selectedIndex = nextIndex;
+    sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
   }
 }
 
@@ -1062,12 +1669,294 @@ function jumpSidebarSelectionToAnyNotification(
     : candidates.findLast((index) => index < currentIndex) ?? candidates[candidates.length - 1];
   if (nextIndex !== undefined) {
     sidebar.selectedIndex = nextIndex;
+    sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
   }
+}
+
+export function enterSidebarFolder(sidebar: SidebarState, folderId: string): boolean {
+  if (!sidebar.folders.some((folder) => folder.id === folderId)) return false;
+  sidebar.currentFolderId = folderId;
+  sidebar.expandedGuildId = null;
+  sidebar.scrollOffset = 0;
+  sidebar.visualAnchor = null;
+  sidebar.selectedIndex = 0;
+  return true;
+}
+
+export function leaveSidebarFolder(sidebar: SidebarState): boolean {
+  if (!sidebar.currentFolderId) return false;
+  const leaving = sidebar.currentFolderId;
+  sidebar.currentFolderId = parentOfCurrentFolder(sidebar);
+  sidebar.expandedGuildId = null;
+  sidebar.scrollOffset = 0;
+  sidebar.visualAnchor = null;
+  sidebar.selectedItem = { type: "folder", id: leaving };
+  return true;
+}
+
+export function toggleSidebarVisualSelection(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
+  const item = getSelectedSidebarEntry(sidebar, channels, options).item;
+  if (!isMovableSidebarItem(item) || (item.type === "guild" && item.id === DIRECT_MESSAGES_GUILD_ID)) return false;
+  sidebar.visualAnchor = sidebar.visualAnchor ? null : item;
+  sidebar.pendingDeleteItem = null;
+  return true;
+}
+
+export function moveSidebarSelectionOut(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
+  if (!sidebar.currentFolderId) return false;
+  const items = selectedSidebarItems(sidebar, channels, options).filter((item) => item.type !== "guild" || item.id !== DIRECT_MESSAGES_GUILD_ID);
+  const before = currentFolderRef(sidebar);
+  if (items.length === 0 || !before) return false;
+  sidebar.visualAnchor = null;
+  return moveSidebarItems(sidebar, items, parentOfCurrentFolder(sidebar), before);
+}
+
+function normalizeMoveDestinationInput(input: string): string {
+  const trimmed = input.trim();
+  return trimmed.length > 1 ? trimmed.replace(/\/$/, "") : trimmed;
+}
+
+function canTargetFolder(sidebar: SidebarState, folderId: string, items: SidebarItemRef[]): boolean {
+  if (items.length > 0 && items.every((item) => itemParent(sidebar, item) === folderId)) return false;
+  for (const item of items) {
+    if (item.type !== "folder") continue;
+    if (item.id === folderId || descendantFolderIds(sidebar, item.id).has(folderId)) return false;
+  }
+  return true;
+}
+
+function currentFolderDescendantDepth(sidebar: SidebarState, folderId: string): number | null {
+  const currentFolderId = sidebar.currentFolderId;
+  if (!currentFolderId) return null;
+
+  const seen = new Set<string>();
+  let depth = 0;
+  let folder = sidebar.folders.find((candidate) => candidate.id === folderId);
+  while (folder && !seen.has(folder.id)) {
+    seen.add(folder.id);
+    const parentId = folder.parentId ?? null;
+    if (!parentId) return null;
+    depth++;
+    if (parentId === currentFolderId) return depth;
+    folder = sidebar.folders.find((candidate) => candidate.id === parentId);
+  }
+  return null;
+}
+
+function movePromptMatches(sidebar: SidebarState, input: string, items: SidebarItemRef[]): CompletionItem[] {
+  const normalized = normalizeMoveDestinationInput(input).toLowerCase();
+  const matchesPrefix = (value: string) => value.toLowerCase().startsWith(normalized);
+  const special: CompletionItem[] = [
+    { name: "/", desc: "root folder" },
+    ...(sidebar.currentFolderId ? [{ name: "..", desc: "parent folder" }] : []),
+  ].filter((item) => matchesPrefix(item.name));
+  const folders = sidebar.folders
+    .filter((folder) => canTargetFolder(sidebar, folder.id, items))
+    .map((folder) => {
+      const path = sidebarFolderPath(sidebar, folder.id);
+      return { folder, path, name: path || folder.name, localDepth: currentFolderDescendantDepth(sidebar, folder.id) };
+    })
+    .filter(({ folder, path, name }) => !normalized || matchesPrefix(name) || matchesPrefix(folder.name) || path.toLowerCase().includes(`/${normalized}`))
+    .sort((a, b) => {
+      if (a.localDepth !== null || b.localDepth !== null) {
+        if (a.localDepth === null) return 1;
+        if (b.localDepth === null) return -1;
+        if (a.localDepth !== b.localDepth) return a.localDepth - b.localDepth;
+      }
+      return a.name.localeCompare(b.name);
+    });
+  const localFolders = folders.filter(({ localDepth }) => localDepth !== null);
+  const otherFolders = folders.filter(({ localDepth }) => localDepth === null);
+  const toCompletion = ({ folder, name }: (typeof folders)[number]): CompletionItem => ({
+    name,
+    desc: folder.parentId ? `in ${sidebarFolderPath(sidebar, folder.parentId) || "/"}` : "top-level",
+  });
+  return [...special, ...localFolders.map(toCompletion), ...otherFolders.map(toCompletion)];
+}
+
+function findFolderDestination(sidebar: SidebarState, input: string): SidebarFolder | null | undefined {
+  const raw = input.trim();
+  if (!raw || raw === "/") return null;
+  if (raw === "..") {
+    const parentId = parentOfCurrentFolder(sidebar);
+    return parentId ? sidebar.folders.find((folder) => folder.id === parentId) : null;
+  }
+  const normalized = normalizeMoveDestinationInput(raw).toLowerCase();
+  const byPath = sidebar.folders.find((folder) => sidebarFolderPath(sidebar, folder.id).toLowerCase() === normalized);
+  if (byPath) return byPath;
+  const local = sidebar.folders.find((folder) => (folder.parentId ?? null) === sidebar.currentFolderId && folder.name.toLowerCase() === normalized);
+  if (local) return local;
+  return sidebar.folders.find((folder) => folder.name.toLowerCase() === normalized);
+}
+
+function updateMovePromptAutocomplete(sidebar: SidebarState): void {
+  const prompt = sidebar.prompt;
+  if (!prompt || prompt.purpose !== "move_items") return;
+  const matches = movePromptMatches(sidebar, prompt.input, prompt.items);
+  prompt.autocomplete = matches.length > 0 ? { selection: -1, prefix: prompt.input, matches } : null;
+}
+
+export function openSidebarCreateFolderPrompt(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): void {
+  sidebar.prompt = { purpose: "create_folder", input: "", cursorPos: 0, items: sidebar.visualAnchor ? selectedSidebarItems(sidebar, channels, options) : [] };
+  sidebar.pendingDeleteItem = null;
+}
+
+export function openSidebarMoveItemsPrompt(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
+  const items = selectedSidebarItems(sidebar, channels, options).filter((item) => item.type !== "guild" || item.id !== DIRECT_MESSAGES_GUILD_ID);
+  if (items.length === 0) return false;
+  sidebar.prompt = { purpose: "move_items", input: "", cursorPos: 0, items, autocomplete: null };
+  updateMovePromptAutocomplete(sidebar);
+  return true;
+}
+
+export function openSidebarRenameFolderPrompt(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
+  const item = getSelectedSidebarEntry(sidebar, channels, options).item;
+  if (item?.type !== "folder") return false;
+  const folder = sidebar.folders.find((candidate) => candidate.id === item.id);
+  if (!folder) return false;
+  sidebar.prompt = { purpose: "rename_folder", input: "", cursorPos: 0, items: [], folderId: folder.id };
+  return true;
+}
+
+export function unwrapSelectedSidebarFolder(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
+  const item = getSelectedSidebarEntry(sidebar, channels, options).item;
+  if (item?.type !== "folder") return false;
+  const folder = sidebar.folders.find((candidate) => candidate.id === item.id);
+  if (!folder) return false;
+  const parentId = folder.parentId ?? null;
+  const children = sidebarOrderEntries(sidebar, folder.id).map((entry): SidebarItemRef => ({ type: entry.type, id: entry.id }));
+  const fallback = nextItemAfterRemovingItems(sidebar, channels, [item], options);
+  if (children.length > 0) moveSidebarItems(sidebar, children, parentId, item);
+  sidebar.folders = sidebar.folders.filter((candidate) => candidate.id !== folder.id);
+  sidebar.visualAnchor = null;
+  sidebar.pendingDeleteItem = null;
+  sidebar.selectedItem = children[0] ?? (fallback?.type === "up" ? null : fallback);
+  if (!sidebar.selectedItem) sidebar.selectedIndex = 0;
+  return true;
+}
+
+export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent, channels: DiscordChannel[] = [], options: SidebarVisibilityOptions = {}): boolean {
+  const prompt = sidebar.prompt;
+  if (!prompt) return false;
+  if (key.type === "escape") { sidebar.prompt = null; return true; }
+  if (key.type === "tab" || key.type === "backtab") {
+    if (prompt.purpose === "move_items") {
+      if (!prompt.autocomplete || prompt.autocomplete.matches.length === 0) updateMovePromptAutocomplete(sidebar);
+      const autocomplete = prompt.autocomplete;
+      if (autocomplete?.matches.length) {
+        autocomplete.selection = key.type === "tab"
+          ? (autocomplete.selection < 0 ? 0 : (autocomplete.selection + 1) % autocomplete.matches.length)
+          : (autocomplete.selection <= 0 ? autocomplete.matches.length - 1 : autocomplete.selection - 1);
+        const name = autocomplete.matches[autocomplete.selection]?.name;
+        if (name) { prompt.input = name; prompt.cursorPos = name.length; }
+      }
+    }
+    return true;
+  }
+  if (key.type === "enter") {
+    const input = prompt.input.trim();
+    sidebar.prompt = null;
+    sidebar.visualAnchor = null;
+    if (prompt.purpose === "create_folder") {
+      if (!input) return true;
+      const parentId = sidebar.currentFolderId;
+      const items = prompt.items.filter((item) => item.type !== "guild" || item.id !== DIRECT_MESSAGES_GUILD_ID);
+      const selectedItemsInParent = items.filter((item) => itemParent(sidebar, item) === parentId);
+      const selectedOrders = selectedItemsInParent.map((item) => itemSortOrder(sidebar, item));
+      const selectedPinnedStates = selectedItemsInParent
+        .map((item) => itemPinned(sidebar, item))
+        .filter((pinned): pinned is boolean => typeof pinned === "boolean");
+      const pinned = selectedPinnedStates.length > 0 && selectedPinnedStates.every(Boolean);
+      const folder: SidebarFolder = {
+        id: randomUUID(),
+        name: input,
+        parentId,
+        pinned,
+        sortOrder: selectedOrders.length > 0
+          ? Math.min(...selectedOrders)
+          : pinned ? nextPinnedOrderInFolder(sidebar, parentId) : nextUnpinnedOrderInFolder(sidebar, parentId),
+      };
+      sidebar.folders.push(folder);
+      if (items.length > 0) moveSidebarItems(sidebar, items, folder.id);
+      sidebar.selectedItem = { type: "folder", id: folder.id };
+      return true;
+    }
+    if (prompt.purpose === "move_items") {
+      const raw = input.trim();
+      const destinationFolder = findFolderDestination(sidebar, raw);
+      const destination = destinationFolder === undefined ? undefined : destinationFolder?.id ?? null;
+      const before = raw === ".."
+        ? currentFolderRef(sidebar)
+        : (!raw || raw === "/")
+          ? topLevelCurrentFolderRef(sidebar)
+          : undefined;
+      if (destination !== undefined && destination !== sidebar.currentFolderId) {
+        requestFocusAfterMovingItemsOutOfView(sidebar, channels, prompt.items, options);
+      }
+      if (destination !== undefined) moveSidebarItems(sidebar, prompt.items, destination, before);
+      return true;
+    }
+    if (prompt.purpose === "rename_folder" && prompt.folderId && input) {
+      const folder = sidebar.folders.find((candidate) => candidate.id === prompt.folderId);
+      if (folder) folder.name = input;
+      return true;
+    }
+    return true;
+  }
+  if (key.type === "backspace") {
+    const pos = graphemeBoundaryAtOrAfter(prompt.input, prompt.cursorPos);
+    if (pos > 0) {
+      const start = previousGraphemeStart(prompt.input, pos);
+      prompt.input = prompt.input.slice(0, start) + prompt.input.slice(pos);
+      prompt.cursorPos = start;
+      updateMovePromptAutocomplete(sidebar);
+    } else if (prompt.input.length === 0) sidebar.prompt = null;
+    return true;
+  }
+  if (key.type === "delete") {
+    const pos = graphemeBoundaryAtOrAfter(prompt.input, prompt.cursorPos);
+    if (pos < prompt.input.length) {
+      prompt.input = prompt.input.slice(0, pos) + prompt.input.slice(nextGraphemeEnd(prompt.input, pos));
+      prompt.cursorPos = pos;
+      updateMovePromptAutocomplete(sidebar);
+    }
+    return true;
+  }
+  if (key.type === "left") { prompt.cursorPos = previousGraphemeStart(prompt.input, prompt.cursorPos); return true; }
+  if (key.type === "right") { prompt.cursorPos = nextGraphemeEnd(prompt.input, prompt.cursorPos); return true; }
+  if (key.type === "home") { prompt.cursorPos = 0; return true; }
+  if (key.type === "end") { prompt.cursorPos = prompt.input.length; return true; }
+  if (key.type === "paste" && key.text) {
+    const text = key.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, " ");
+    const pos = graphemeBoundaryAtOrAfter(prompt.input, prompt.cursorPos);
+    prompt.input = prompt.input.slice(0, pos) + text + prompt.input.slice(pos);
+    prompt.cursorPos = pos + text.length;
+    updateMovePromptAutocomplete(sidebar);
+    return true;
+  }
+  if (key.type === "char" && key.char) {
+    const pos = graphemeBoundaryAtOrAfter(prompt.input, prompt.cursorPos);
+    prompt.input = prompt.input.slice(0, pos) + key.char + prompt.input.slice(pos);
+    prompt.cursorPos = pos + key.char.length;
+    updateMovePromptAutocomplete(sidebar);
+    return true;
+  }
+  return true;
 }
 
 export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): SidebarEntry | null {
   const entry = getSelectedSidebarEntry(sidebar, channels, options);
   if (!entry.id || entry.kind === "loading") return null;
+
+  if (entry.kind === "up") {
+    leaveSidebarFolder(sidebar);
+    return entry;
+  }
+
+  if (entry.kind === "folder") {
+    enterSidebarFolder(sidebar, entry.id);
+    return entry;
+  }
 
   if (entry.kind === "guild") {
     if (sidebar.expandedGuildId === entry.guildId) {
@@ -1090,6 +1979,18 @@ export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordCh
   return entry;
 }
 
+function sidebarVisualKeys(sidebar: SidebarState, entries: SidebarEntry[]): Set<string | null> {
+  if (!sidebar.visualAnchor) return new Set();
+  const movableEntries = entries.filter((entry) => isMovableSidebarItem(entry.item));
+  const anchorIndex = movableEntries.findIndex((entry) => sameSidebarItem(entry.item, sidebar.visualAnchor));
+  const selected = entries[sidebar.selectedIndex]?.item ?? sidebar.selectedItem;
+  const selectedIndex = movableEntries.findIndex((entry) => sameSidebarItem(entry.item, selected));
+  if (anchorIndex < 0 || selectedIndex < 0) return new Set([sidebarItemKey(sidebar.visualAnchor)]);
+  const start = Math.min(anchorIndex, selectedIndex);
+  const end = Math.max(anchorIndex, selectedIndex);
+  return new Set(movableEntries.slice(start, end + 1).map((entry) => sidebarItemKey(entry.item)));
+}
+
 export function renderSidebar(
   sidebar: SidebarState,
   channels: DiscordChannel[],
@@ -1110,8 +2011,10 @@ export function renderSidebar(
   const borderFg = focused ? theme.borderFocused : theme.borderUnfocused;
   const borderBg = theme.appBg ?? "";
 
+  const folder = currentSidebarFolder(sidebar);
+  const header = folder ? ` ${folder.name}/` : " Servers";
   rows.push(
-    theme.sidebarBg + theme.text + theme.bold + padRight(" Servers", innerWidth)
+    theme.sidebarBg + theme.text + theme.bold + padRight(header, innerWidth)
     + theme.reset + borderBg + borderFg + "│" + theme.reset,
   );
 
@@ -1129,6 +2032,7 @@ export function renderSidebar(
     guildNotificationCounts,
     options,
   );
+  const visualKeys = sidebarVisualKeys(sidebar, entries);
   const listRows = sidebarViewportRows(totalRows, sidebar);
   clampSidebarViewportToSelection(sidebar, entries, listRows);
   const scrollOffset = sidebar.scrollOffset;
@@ -1147,7 +2051,7 @@ export function renderSidebar(
     for (let i = 0; i < listRows; i++) {
       const entry = entries[scrollOffset + i];
       if (!entry) break;
-      rows.push(renderEntryRow(entry, innerWidth, borderBg, borderFg, activeChannelId));
+      rows.push(renderEntryRow(entry, visualKeys, innerWidth, borderBg, borderFg, activeChannelId));
     }
   }
 
@@ -1159,6 +2063,20 @@ export function renderSidebar(
     }
     rows.push(
       getSidebarSearchBarViewport(sidebar.search, innerWidth).line
+      + theme.reset + borderBg + borderFg + "│" + theme.reset,
+    );
+  } else if (sidebar.prompt) {
+    const autocompleteRows = getSidebarPromptAutocompleteRows(sidebar.prompt, innerWidth, sidebarPromptAutocompleteVisibleRows(sidebar, totalRows));
+    while (rows.length < totalRows - autocompleteRows.length - 1) {
+      rows.push(
+        theme.sidebarBg + " ".repeat(innerWidth) + theme.reset + borderBg + borderFg + "│" + theme.reset,
+      );
+    }
+    for (const row of autocompleteRows) {
+      rows.push(row + theme.reset + borderBg + borderFg + "│" + theme.reset);
+    }
+    rows.push(
+      getSidebarPromptBar(sidebar.prompt, innerWidth)
       + theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   }
@@ -1174,6 +2092,7 @@ export function renderSidebar(
 
 function renderEntryRow(
   entry: SidebarEntry,
+  visualKeys: ReadonlySet<string | null>,
   innerWidth: number,
   borderBg: string,
   borderFg: string,
@@ -1188,23 +2107,29 @@ function renderEntryRow(
       + theme.reset + borderBg + borderFg + "│" + theme.reset;
   }
 
-  const bg = entry.selected ? theme.sidebarSelBg : theme.sidebarBg;
+  const itemKey = sidebarItemKey(entry.item);
+  const isVisual = itemKey !== null && visualKeys.has(itemKey);
+  const bg = entry.selected || isVisual ? theme.sidebarSelBg : theme.sidebarBg;
   const isActive = entry.kind === "channel" ? entry.id === activeChannelId : entry.active;
   const fg = entry.selected || isActive ? theme.text : theme.muted;
   const indent = "  ".repeat(entry.depth);
+  const selectPrefix = entry.selected ? "▸ " : isVisual ? "│ " : "  ";
   const marker = entry.kind === "guild"
     ? entry.expanded ? "▾ " : "▸ "
     : entry.kind === "category"
       ? entry.expanded ? "▾ " : "▸ "
-      : "# ";
-  const prefix = `${indent}${marker}`;
+      : entry.kind === "channel"
+        ? "# "
+        : "";
+  const rawLabel = entry.kind === "folder" ? `📁 ${entry.label}/ ${entry.childCount ?? 0}` : entry.label || "unnamed";
+  const prefix = entry.kind === "channel" || entry.kind === "category" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
   const badge = renderNotificationBadge(entry.notificationCount ?? 0);
   const muteIcon = entry.kind === "guild" && entry.muted ? " 🔕" : "";
   const badgeGap = badge ? 1 : 0;
   const badgeWidth = badge?.width ?? 0;
   const muteWidth = termWidth(muteIcon);
   const labelWidth = Math.max(0, innerWidth - termWidth(prefix) - muteWidth - badgeGap - badgeWidth);
-  const title = padRight(entry.label || "unnamed", labelWidth);
+  const title = padRight(rawLabel, labelWidth);
   const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
   const suffix = `${muteIcon}${badge ? `${" ".repeat(badgeGap)}${badge.text}` : ""}`;
 

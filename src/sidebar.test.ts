@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME } from "./discord";
 import {
   activateSelectedEntry,
+  applySidebarFolderLayout,
   buildSidebarEntries,
   createSidebarState,
   jumpSidebarSelectionToVisibleEdge,
@@ -18,13 +19,20 @@ import {
   moveSidebarSelectionToPrevCategory,
   moveSidebarSelectionToPrevDirectMessage,
   moveSidebarSelectionToPrevGuild,
+  moveSidebarSelectionOut,
   moveSelectedSidebarGuild,
+  openSidebarCreateFolderPrompt,
+  openSidebarMoveItemsPrompt,
   openSidebarSearchBar,
+  handleSidebarPromptKey,
   handleSidebarSearchBarKey,
   jumpToSidebarSearchMatch,
   renderSidebar,
   setSidebarCachedChannels,
   setSidebarGuilds,
+  sidebarFolderLayout,
+  toggleSidebarVisualSelection,
+  unwrapSelectedSidebarFolder,
   SIDEBAR_WIDTH,
 } from "./sidebar";
 import { termWidth } from "./textwidth";
@@ -79,6 +87,223 @@ describe("sidebar state", () => {
 
     expect(rows[2]).toContain("🔕");
     expect(rows[2]).not.toContain(" 7 ");
+  });
+
+  test("creating folders uses Exocortex placement semantics", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "One", icon: null },
+      { id: "guild-2", name: "Two", icon: null },
+      { id: "guild-3", name: "Three", icon: null },
+    ]);
+
+    openSidebarCreateFolderPrompt(sidebar, [], {});
+    for (const char of "Empty") handleSidebarPromptKey(sidebar, { type: "char", char });
+    handleSidebarPromptKey(sidebar, { type: "enter" });
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id).slice(0, 3)).toEqual([DIRECT_MESSAGES_GUILD_ID, sidebar.folders[0]?.id, "guild-1"]);
+
+    sidebar.selectedItem = { type: "guild", id: "guild-2" };
+    buildSidebarEntries(sidebar, []);
+    toggleSidebarVisualSelection(sidebar, [], {});
+    moveSidebarSelection(sidebar, [], 1);
+    openSidebarCreateFolderPrompt(sidebar, [], {});
+    for (const char of "Selected") handleSidebarPromptKey(sidebar, { type: "char", char });
+    handleSidebarPromptKey(sidebar, { type: "enter" });
+
+    const entries = buildSidebarEntries(sidebar, []);
+    const emptyFolder = sidebar.folders.find((folder) => folder.name === "Empty")!;
+    const selectedFolder = sidebar.folders.find((folder) => folder.name === "Selected")!;
+    expect(entries.map((entry) => entry.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, emptyFolder.id, "guild-1", selectedFolder.id]);
+    sidebar.currentFolderId = selectedFolder.id;
+    sidebar.selectedItem = null;
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["..", "guild-2", "guild-3"]);
+  });
+
+  test("server folders are local, navigable, movable, and persisted", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "One", icon: null },
+      { id: "guild-2", name: "Two", icon: null },
+    ]);
+
+    sidebar.selectedIndex = 1;
+    buildSidebarEntries(sidebar, []);
+    toggleSidebarVisualSelection(sidebar, [], {});
+    moveSidebarSelection(sidebar, [], 1);
+    openSidebarCreateFolderPrompt(sidebar, [], {});
+    for (const char of "Work") handleSidebarPromptKey(sidebar, { type: "char", char });
+    handleSidebarPromptKey(sidebar, { type: "enter" });
+
+    const rootEntries = buildSidebarEntries(sidebar, []);
+    expect(rootEntries.map((entry) => entry.kind)).toEqual(["guild", "folder"]);
+    expect(rootEntries[1]?.label).toBe("Work");
+
+    activateSelectedEntry(sidebar, []);
+    const folderEntries = buildSidebarEntries(sidebar, []);
+    expect(folderEntries.map((entry) => entry.kind)).toEqual(["up", "guild", "guild"]);
+    expect(folderEntries.map((entry) => entry.id)).toEqual(["..", "guild-1", "guild-2"]);
+
+    moveSidebarSelection(sidebar, [], 1);
+    openSidebarMoveItemsPrompt(sidebar, [], {});
+    expect(sidebar.prompt?.autocomplete?.matches.map((match) => match.name)).toContain("/");
+    handleSidebarPromptKey(sidebar, { type: "char", char: "/" });
+    handleSidebarPromptKey(sidebar, { type: "enter" });
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["..", "guild-2"]);
+
+    const restored = createSidebarState();
+    setSidebarGuilds(restored, sidebar.guilds);
+    applySidebarFolderLayout(restored, sidebarFolderLayout(sidebar));
+    expect(buildSidebarEntries(restored, []).map((entry) => entry.id).sort()).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", sidebar.folders[0]?.id].sort());
+  });
+
+  test("moving a folder into another folder keeps focus at the next visible row", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "One", icon: null },
+      { id: "guild-2", name: "Two", icon: null },
+      { id: "guild-3", name: "Three", icon: null },
+    ]);
+    applySidebarFolderLayout(sidebar, {
+      folders: [
+        { id: "folder-a", name: "A", parentId: null, pinned: false, sortOrder: 1 },
+        { id: "folder-b", name: "B", parentId: null, pinned: false, sortOrder: 3 },
+      ],
+      guildPlacements: {
+        "guild-1": { folderId: null, pinned: false, sortOrder: 0 },
+        "guild-2": { folderId: null, pinned: false, sortOrder: 2 },
+        "guild-3": { folderId: null, pinned: false, sortOrder: 4 },
+      },
+    });
+
+    let entries = buildSidebarEntries(sidebar, []);
+    expect(entries.map((entry) => entry.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", "folder-a", "guild-2", "folder-b", "guild-3"]);
+    sidebar.selectedIndex = 2;
+    sidebar.selectedItem = { type: "folder", id: "folder-a" };
+
+    openSidebarMoveItemsPrompt(sidebar, [], {});
+    for (const char of "B") handleSidebarPromptKey(sidebar, { type: "char", char });
+    handleSidebarPromptKey(sidebar, { type: "enter" });
+
+    entries = buildSidebarEntries(sidebar, []);
+    expect(sidebar.folders.find((folder) => folder.id === "folder-a")?.parentId).toBe("folder-b");
+    expect(entries.map((entry) => entry.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", "guild-2", "folder-b", "guild-3"]);
+    expect(entries[sidebar.selectedIndex]?.id).toBe("guild-2");
+  });
+
+  test("moving items out preserves the source folder slot", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-before", name: "Before", icon: null },
+      { id: "guild-child", name: "Child", icon: null },
+      { id: "guild-after", name: "After", icon: null },
+    ]);
+    applySidebarFolderLayout(sidebar, {
+      folders: [{ id: "folder-a", name: "A", parentId: null, pinned: false, sortOrder: 1 }],
+      guildPlacements: {
+        "guild-before": { folderId: null, pinned: false, sortOrder: 0 },
+        "guild-child": { folderId: "folder-a", pinned: false, sortOrder: 0 },
+        "guild-after": { folderId: null, pinned: false, sortOrder: 2 },
+      },
+    });
+
+    sidebar.currentFolderId = "folder-a";
+    sidebar.selectedItem = { type: "guild", id: "guild-child" };
+    expect(moveSidebarSelectionOut(sidebar, [], {})).toBe(true);
+    sidebar.currentFolderId = null;
+    sidebar.selectedItem = null;
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-before", "guild-child", "folder-a", "guild-after"]);
+  });
+
+  test("moving from a nested folder to root inserts before the top-level source folder", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-root", name: "Root", icon: null },
+      { id: "guild-child", name: "Child", icon: null },
+      { id: "guild-after", name: "After", icon: null },
+    ]);
+    applySidebarFolderLayout(sidebar, {
+      folders: [
+        { id: "folder-a", name: "A", parentId: null, pinned: false, sortOrder: 1 },
+        { id: "folder-b", name: "B", parentId: "folder-a", pinned: false, sortOrder: 0 },
+      ],
+      guildPlacements: {
+        "guild-root": { folderId: null, pinned: false, sortOrder: 0 },
+        "guild-child": { folderId: "folder-b", pinned: false, sortOrder: 0 },
+        "guild-after": { folderId: null, pinned: false, sortOrder: 2 },
+      },
+    });
+
+    sidebar.currentFolderId = "folder-b";
+    sidebar.selectedItem = { type: "guild", id: "guild-child" };
+    openSidebarMoveItemsPrompt(sidebar, [], {});
+    handleSidebarPromptKey(sidebar, { type: "char", char: "/" });
+    handleSidebarPromptKey(sidebar, { type: "enter" });
+
+    sidebar.currentFolderId = null;
+    sidebar.selectedItem = null;
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-root", "guild-child", "folder-a", "guild-after"]);
+  });
+
+  test("folder prompts edit by grapheme like Exocortex", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "One", icon: null },
+    ]);
+
+    openSidebarCreateFolderPrompt(sidebar, [], {});
+    handleSidebarPromptKey(sidebar, { type: "char", char: "📁" });
+    handleSidebarPromptKey(sidebar, { type: "char", char: "A" });
+    handleSidebarPromptKey(sidebar, { type: "left" });
+    handleSidebarPromptKey(sidebar, { type: "backspace" });
+    expect(sidebar.prompt?.input).toBe("A");
+    expect(sidebar.prompt?.cursorPos).toBe(0);
+    handleSidebarPromptKey(sidebar, { type: "delete" });
+    expect(sidebar.prompt?.input).toBe("");
+  });
+
+  test("Ctrl-C is reserved for global quit, not sidebar-local cancellation", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "One", icon: null },
+    ]);
+
+    openSidebarCreateFolderPrompt(sidebar, [], {});
+    handleSidebarPromptKey(sidebar, { type: "ctrl-c" });
+    expect(sidebar.prompt).not.toBeNull();
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    handleSidebarSearchBarKey(sidebar, [], { type: "ctrl-c" });
+    expect(sidebar.search?.barOpen).toBe(true);
+  });
+
+  test("unwrapping a folder keeps children in the deleted folder slot", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-before", name: "Before", icon: null },
+      { id: "guild-child", name: "Child", icon: null },
+      { id: "guild-after", name: "After", icon: null },
+    ]);
+    applySidebarFolderLayout(sidebar, {
+      folders: [{ id: "folder-a", name: "A", parentId: null, pinned: false, sortOrder: 1 }],
+      guildPlacements: {
+        "guild-before": { folderId: null, pinned: false, sortOrder: 0 },
+        "guild-child": { folderId: "folder-a", pinned: false, sortOrder: 0 },
+        "guild-after": { folderId: null, pinned: false, sortOrder: 2 },
+      },
+    });
+
+    sidebar.selectedItem = { type: "folder", id: "folder-a" };
+    expect(unwrapSelectedSidebarFolder(sidebar, [], {})).toBe(true);
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-before", "guild-child", "guild-after"]);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("guild-child");
   });
 
   test("renders notification badges for guilds and channels", () => {
