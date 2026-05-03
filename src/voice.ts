@@ -27,6 +27,7 @@ const VOICE_SIGNALING_READY_RETRY_MS = 100;
 const VOICE_GATEWAY_REJOIN_ATTEMPTS = 3;
 const VOICE_GATEWAY_REJOIN_DELAY_MS = 250;
 const VOICE_GATEWAY_INVALID_SESSION_CODE = 4006;
+const VOICE_GATEWAY_CALL_TERMINATED_CODE = 4022;
 const UDP_DISCOVERY_TIMEOUT_MS = 5_000;
 const VOICE_REGION_TIMEOUT_MS = 3_000;
 const OPUS_PAYLOAD_TYPE = 120;
@@ -704,6 +705,10 @@ export class VoiceCallController {
   private handleGatewayClose(session: VoiceCallSession, error: VoiceGatewayCloseError): void {
     if (this.active !== session || session.state === "ended" || session.state === "error") return;
     session.gateway = null;
+    if (isTerminalVoiceGatewayClose(error)) {
+      this.endSession(session);
+      return;
+    }
     if (!isRecoverableVoiceGatewayClose(error)) {
       this.failSession(session, error);
       return;
@@ -791,6 +796,18 @@ export class VoiceCallController {
     pending.reject(error);
   }
 
+  private endSession(session: VoiceCallSession): void {
+    if (this.active !== session) return;
+    session.state = "ended";
+    session.gateway?.disconnect();
+    session.gateway = null;
+    this.options.signaling.leaveVoice();
+    this.emitState();
+    this.active = null;
+    this.recoveringSession = null;
+    this.emitState();
+  }
+
   private failSession(session: VoiceCallSession, error: Error): void {
     session.state = "error";
     session.gateway?.disconnect();
@@ -808,6 +825,11 @@ export class VoiceCallController {
 
 function isRecoverableVoiceGatewayClose(error: Error): boolean {
   return error instanceof VoiceGatewayCloseError && error.code === VOICE_GATEWAY_INVALID_SESSION_CODE;
+}
+
+function isTerminalVoiceGatewayClose(error: Error): boolean {
+  return error instanceof VoiceGatewayCloseError
+    && (error.code === VOICE_GATEWAY_CALL_TERMINATED_CODE || /call terminated/i.test(error.closeReason));
 }
 
 function sleep(ms: number): Promise<void> {

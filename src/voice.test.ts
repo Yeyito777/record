@@ -424,6 +424,48 @@ describe("voice backend", () => {
     expect(errors).toEqual([]);
   });
 
+  test("treats call-terminated voice gateway closes as a normal hangup", async () => {
+    const signaling = new FakeSignaling();
+    const gateways: FakeGateway[] = [];
+    const errors: string[] = [];
+    const states: Array<string | null> = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      createGatewayConnection: (_data, callbacks) => {
+        const gateway = new FakeGateway(callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+      onStateChange: (session) => states.push(session?.state ?? null),
+      onError: (error) => errors.push(error.message),
+    });
+
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token", endpoint: "voice.example", guildId: null });
+    await started;
+
+    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4022, "Disconnected: Call terminated."));
+
+    expect(controller.activeSession).toBeNull();
+    expect(signaling.leaves).toBe(1);
+    expect(errors).toEqual([]);
+    expect(states.at(-2)).toBe("ended");
+    expect(states.at(-1)).toBeNull();
+  });
+
   test("retries a stale session during initial voice gateway connect", async () => {
     const signaling = new FakeSignaling();
     const gateways: FakeGateway[] = [];
