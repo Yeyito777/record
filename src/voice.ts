@@ -303,8 +303,9 @@ class DaveVoiceEncryption {
     if (!canDecrypt) return this.protocolVersion === 0 ? payload : null;
 
     const encrypted = isDaveEncryptedPayload(payload);
+    const normalizedPayload = encrypted ? stripDavePadding(payload) : payload;
     try {
-      const decoded = this.session.decrypt(userId, MediaType.AUDIO, payload);
+      const decoded = this.session.decrypt(userId, MediaType.AUDIO, normalizedPayload);
       if (isDaveEncryptedPayload(decoded)) {
         this.reportMediaError(new Error(`DAVE decrypt returned encrypted-looking voice audio from ${userId}; dropping packet.`));
         return null;
@@ -1730,6 +1731,16 @@ function isDaveEncryptedPayload(payload: Buffer | null | undefined): boolean {
   if (suffix.length === 0) return true;
   if (marker < payload.length - 256) return false;
   return suffix.every((byte) => byte === suffix[0]);
+}
+
+export function stripDavePadding(payload: Buffer): Buffer {
+  const marker = payload.lastIndexOf(DAVE_ENCRYPTED_MARKER);
+  if (marker < 0) return payload;
+  const suffix = payload.subarray(marker + DAVE_ENCRYPTED_MARKER.length);
+  if (suffix.length === 0) return payload;
+  if (marker < payload.length - 256) return payload;
+  if (!suffix.every((byte) => byte === suffix[0])) return payload;
+  return payload.subarray(0, marker + DAVE_ENCRYPTED_MARKER.length);
 }
 
 function isUnencryptedDavePassthroughError(error: unknown): boolean {

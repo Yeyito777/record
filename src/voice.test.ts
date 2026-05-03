@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, stripDavePadding, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 
 class FakeSignaling {
   requests: VoiceStateRequest[] = [];
@@ -93,6 +93,15 @@ describe("voice backend", () => {
   test("detects Opus silence frames", () => {
     expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff, 0xfe]))).toBe(true);
     expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff]))).toBe(false);
+  });
+
+  test("strips repeated padding after DAVE media marker", () => {
+    const padded = Buffer.from([0x01, 0x02, 0xfa, 0xfa, 0x37, 0x37, 0x37]);
+    expect(stripDavePadding(padded)).toEqual(Buffer.from([0x01, 0x02, 0xfa, 0xfa]));
+    const clean = Buffer.from([0x01, 0x02, 0xfa, 0xfa]);
+    expect(stripDavePadding(clean)).toBe(clean);
+    const mixedSuffix = Buffer.from([0x01, 0x02, 0xfa, 0xfa, 0x37, 0x38]);
+    expect(stripDavePadding(mixedSuffix)).toBe(mixedSuffix);
   });
 
   test("builds Discord gateway voice-state payloads", () => {
