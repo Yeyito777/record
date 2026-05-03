@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, persistPresenceStatusWithRetries, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
+import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, persistPresenceStatusWithRetries, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -806,6 +806,33 @@ describe("session", () => {
     expect(JSON.parse(requestedBody)).toEqual({ content: "edited" });
     expect(state.timeline.messages[0]?.content).toBe("edited");
     expect(state.timeline.messages[0]?.editedTimestamp).toBe(Date.parse("2026-01-01T12:01:00.000Z"));
+  });
+
+  test("collects active call participants from call messages", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    const activeCall = {
+      ...message("10", "", "dm-1"),
+      guildId: DIRECT_MESSAGES_GUILD_ID,
+      type: 3,
+      call: { endedTimestamp: null, participantIds: ["self", "friend"] },
+    };
+    const endedCall = {
+      ...message("9", "", "dm-1"),
+      guildId: DIRECT_MESSAGES_GUILD_ID,
+      type: 3,
+      call: { endedTimestamp: Date.UTC(2026, 0, 1, 12, 0, 9), participantIds: ["self", "old-friend"] },
+    };
+    state.timeline.channelId = "dm-1";
+    state.timeline.messages = [endedCall, activeCall];
+    state.messageCacheByChannelId["dm-1"] = {
+      channelId: "dm-1",
+      messages: [activeCall],
+      hasOlder: false,
+      updatedAt: 0,
+      latestFetchedAt: null,
+    };
+
+    expect(activeCallMessageParticipantIds(state, "dm-1")).toEqual(["self", "friend"]);
   });
 
   test("failed edits restore the prompt, edit state, and original message", async () => {
