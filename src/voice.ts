@@ -34,6 +34,7 @@ const OPUS_PAYLOAD_TYPE = 120;
 const OPUS_RTP_CLOCK_INCREMENT = 960; // 20 ms at 48 kHz.
 const RTP_HEADER_LENGTH = 12;
 const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
+const DAVE_ENCRYPTED_MARKER = Buffer.from([0xfa, 0xfa]);
 const DEFAULT_SPEAKING_THRESHOLD_DB = -40;
 const DEFAULT_SPEAKING_IDLE_MS = 700;
 
@@ -301,10 +302,16 @@ class DaveVoiceEncryption {
     const canDecrypt = this.ready || (this.session.ready && this.session.canPassthrough(userId));
     if (!canDecrypt) return this.protocolVersion === 0 ? payload : null;
 
+    const encrypted = isDaveEncryptedPayload(payload);
     try {
-      return this.session.decrypt(userId, MediaType.AUDIO, payload);
+      const decoded = this.session.decrypt(userId, MediaType.AUDIO, payload);
+      if (isDaveEncryptedPayload(decoded)) {
+        this.reportMediaError(new Error(`DAVE decrypt returned encrypted-looking voice audio from ${userId}; dropping packet.`));
+        return null;
+      }
+      return decoded;
     } catch (error) {
-      if (isUnencryptedDavePassthroughError(error)) {
+      if (isUnencryptedDavePassthroughError(error) && !encrypted) {
         this.enablePassthroughRecovery();
         return payload;
       }
@@ -1314,7 +1321,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       "c=IN IP4 127.0.0.1",
       "t=0 0",
       `m=audio ${port} RTP/AVP ${OPUS_PAYLOAD_TYPE}`,
-      `a=rtpmap:${OPUS_PAYLOAD_TYPE} opus/48000/2`,
+      `a=rtpmap:${OPUS_PAYLOAD_TYPE} opus/48000/1`,
       "",
     ].join("\n"));
 
@@ -1710,6 +1717,18 @@ function snowflakeToString(value: unknown): string | null {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isDaveEncryptedPayload(payload: Buffer | null | undefined): boolean {
+  if (!payload || payload.length < DAVE_ENCRYPTED_MARKER.length) return false;
+  const marker = payload.lastIndexOf(DAVE_ENCRYPTED_MARKER);
+  if (marker < 0) return false;
+  const suffix = payload.subarray(marker + DAVE_ENCRYPTED_MARKER.length);
+  // DAVE-encrypted media usually ends in FAFA, but Discord/davey can leave
+  // padding bytes after the marker. Do not feed those encrypted bytes to Opus.
+  if (suffix.length === 0) return true;
+  if (marker < payload.length - 256) return false;
+  return suffix.every((byte) => byte === suffix[0]);
 }
 
 function isUnencryptedDavePassthroughError(error: unknown): boolean {
