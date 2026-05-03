@@ -34,6 +34,7 @@ const OPUS_RTP_CLOCK_INCREMENT = 960; // 20 ms at 48 kHz.
 const RTP_HEADER_LENGTH = 12;
 const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
 const DEFAULT_SPEAKING_THRESHOLD_DB = -40;
+const DEFAULT_SPEAKING_IDLE_MS = 700;
 
 let cachedPreferredVoiceRegions: string[] | null = null;
 
@@ -42,6 +43,13 @@ function speakingThresholdDb(): number {
   if (!raw) return DEFAULT_SPEAKING_THRESHOLD_DB;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : DEFAULT_SPEAKING_THRESHOLD_DB;
+}
+
+function speakingIdleMs(): number {
+  const raw = process.env.RECORD_VOICE_SPEAKING_IDLE_MS;
+  if (!raw) return DEFAULT_SPEAKING_IDLE_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_SPEAKING_IDLE_MS;
 }
 
 function dbToLinear(db: number): number {
@@ -1218,6 +1226,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private lastInputLevelDb = -Infinity;
   private readonly speakingThresholdDb = speakingThresholdDb();
   private readonly speakingThreshold = dbToLinear(this.speakingThresholdDb);
+  private readonly speakingIdleMs = speakingIdleMs();
   private speakingIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly handleDiscordPacket = (packet: Buffer): void => this.forwardDiscordPacket(packet);
   private readonly handleCapturePacket = (packet: Buffer): void => this.forwardCapturePacket(packet);
@@ -1304,7 +1313,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     socket.on("message", this.handleCapturePacket);
     const port = await bindUdp(socket, "127.0.0.1", 0);
 
-    debugLog("voice.capture.start", { input: "default", speakingThresholdDb: this.speakingThresholdDb });
+    debugLog("voice.capture.start", { input: "default", speakingThresholdDb: this.speakingThresholdDb, speakingIdleMs: this.speakingIdleMs });
     this.captureProcess = spawn("ffmpeg", [
       "-nostdin",
       "-hide_banner",
@@ -1438,7 +1447,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     if (this.speakingIdleTimer) clearTimeout(this.speakingIdleTimer);
     this.speakingIdleTimer = setTimeout(() => {
       if (this.context === context) this.setCaptureSpeaking(context, false);
-    }, 450);
+    }, this.speakingIdleMs);
     this.speakingIdleTimer.unref?.();
   }
 
@@ -1458,6 +1467,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       selfMute: context.selfMute,
       inputLevelDb: Number.isFinite(this.lastInputLevelDb) ? Math.round(this.lastInputLevelDb * 10) / 10 : null,
       speakingThresholdDb: this.speakingThresholdDb,
+      speakingIdleMs: this.speakingIdleMs,
     });
     context.sendSpeaking(speaking);
   }

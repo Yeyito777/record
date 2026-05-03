@@ -17,6 +17,7 @@ import {
   DIRECT_MESSAGES_GUILD_ID,
   DIRECT_MESSAGES_GUILD_NAME,
   ackChannelMessage,
+  fetchChannelMessage,
   fetchChannelMessages,
   editChannelMessage,
   deleteChannelMessage,
@@ -30,6 +31,9 @@ import {
   sortGuildsByOrder,
   ringDirectMessageCall,
   isDirectMessageChannel,
+  hydrateMissingReplyPreviewFromLookup,
+  replyPreviewFromMessage,
+  replyReferenceTarget,
   type DiscordMessageAttachment,
   type DiscordMessageReply,
   type SendMessageReplyOptions,
@@ -146,6 +150,7 @@ interface LoadGuildChannelsOptions {
 
 const MESSAGE_PAGE_LIMIT = 50;
 const MESSAGE_CACHE_FRESH_MS = 2 * 60 * 1000;
+const replyPreviewRestFetchKeys = new Set<string>();
 const MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS = 7_000;
 const MEMBER_LIST_SUBSCRIBE_RETRIES = 2;
 const PRESENCE_STATUS_PERSIST_RETRIES = 3;
@@ -625,7 +630,7 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
 
 function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
   const guildId = guildIdForChannel(state, message);
-  const cachedMessage = withMessageGuildId(message, guildId);
+  const cachedMessage = hydrateMissingReplyPreviewFromKnownMessages(state, withMessageGuildId(message, guildId));
   recordMessageRoleIds(state, cachedMessage, guildId);
   upsertCachedChannelMessage(state.messageCacheByChannelId, cachedMessage);
   persistChannelMessageCache(state, cachedMessage.channelId);
@@ -649,6 +654,7 @@ function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, me
       }
     }
   }
+  maybeHydrateMissingReplyPreviewFromRest(state, effects, cachedMessage);
   effects.scheduleRender();
 }
 
@@ -782,6 +788,98 @@ function recordMemberRoleIds(state: AppState, guildId: string | null | undefined
 
 function withMessageGuildId(message: DiscordMessage, guildId: string | null | undefined): DiscordMessage {
   return message.guildId || !guildId || guildId === DIRECT_MESSAGES_GUILD_ID ? message : { ...message, guildId };
+}
+
+function hydrateMissingReplyPreviewFromKnownMessages(state: AppState, message: DiscordMessage): DiscordMessage {
+  const target = replyReferenceTarget(message);
+  if (!target) return message;
+  const hydrated = hydrateMissingReplyPreviewFromLookup(message, (reference) => findKnownMessage(state, reference.channelId, reference.messageId));
+  debugLog(hydrated === message ? "reply.preview.cache_miss" : "reply.preview.cache_hydrated", {
+    channelId: message.channelId,
+    messageId: message.id,
+    referenceChannelId: target.channelId,
+    referenceMessageId: target.messageId,
+  });
+  return hydrated;
+}
+
+function hydrateMissingReplyPreviewsFromKnownMessages(state: AppState, messages: readonly DiscordMessage[]): { messages: DiscordMessage[]; changed: boolean } {
+  let changed = false;
+  const hydrated = messages.map((message) => {
+    const next = hydrateMissingReplyPreviewFromKnownMessages(state, message);
+    changed ||= next !== message;
+    return next;
+  });
+  return { messages: hydrated, changed };
+}
+
+function findKnownMessage(state: AppState, channelId: string, messageId: string): DiscordMessage | null {
+  const cached = state.messageCacheByChannelId[channelId]?.messages.find((message) => message.id === messageId);
+  if (cached) return cached;
+  if (state.timeline.channelId === channelId) {
+    return state.timeline.messages.find((message) => message.id === messageId) ?? null;
+  }
+  return null;
+}
+
+function maybeHydrateMissingReplyPreviewFromRest(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
+  const target = replyReferenceTarget(message);
+  if (!target) return;
+  const token = state.auth.savedToken;
+  if (!token) return;
+
+  const referenceChannelId = target.channelId;
+  const referenceMessageId = target.messageId;
+  const fetchKey = `${message.channelId}:${message.id}:${referenceChannelId}:${referenceMessageId}`;
+  if (replyPreviewRestFetchKeys.has(fetchKey)) return;
+  replyPreviewRestFetchKeys.add(fetchKey);
+  debugLog("reply.preview.rest_fetch", {
+    channelId: message.channelId,
+    messageId: message.id,
+    referenceChannelId,
+    referenceMessageId,
+  });
+
+  void (async () => {
+    try {
+      const referenced = await fetchChannelMessage(token, referenceChannelId, referenceMessageId);
+      if (state.auth.savedToken !== token) return;
+      const patch: DiscordMessagePatch = {
+        id: message.id,
+        channelId: message.channelId,
+        reply: replyPreviewFromMessage(withMessageGuildId(referenced, guildIdForChannel(state, referenced))),
+      };
+      let changed = false;
+      if (patchCachedChannelMessage(state.messageCacheByChannelId, patch)) {
+        persistChannelMessageCache(state, patch.channelId);
+        changed = true;
+      }
+      if (state.timeline.channelId === patch.channelId) {
+        patchTimelineMessage(state.timeline, patch);
+        changed = true;
+      }
+      debugLog("reply.preview.rest_hydrated", {
+        channelId: message.channelId,
+        messageId: message.id,
+        referenceChannelId,
+        referenceMessageId,
+        changed,
+      });
+      if (changed) effects.scheduleRender();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (!/Discord resource not found|Discord denied access/.test(errorMessage)) {
+        replyPreviewRestFetchKeys.delete(fetchKey);
+      }
+      debugLog("reply.preview.rest_failed", {
+        channelId: message.channelId,
+        messageId: message.id,
+        referenceChannelId,
+        referenceMessageId,
+        error: errorMessage,
+      });
+    }
+  })();
 }
 
 function recordMessageRoleIds(state: AppState, message: DiscordMessage, fallbackGuildId: string | null | undefined): boolean {
@@ -1828,10 +1926,16 @@ export async function loadChannelMessages(
 
   const cached = cachedChannelMessages(state.messageCacheByChannelId, channelId);
   if (cached) {
+    const hydrated = hydrateMissingReplyPreviewsFromKnownMessages(state, cached.messages);
+    if (hydrated.changed) {
+      cached.messages = hydrated.messages;
+      persistChannelMessageCache(state, channelId);
+    }
     recordMessagesRoleIds(state, cached.messages, guildId);
     setTimelineMessages(state.timeline, channelId, cached.messages, { hasOlder: cached.hasOlder });
     const latestMessage = cached.messages.at(-1);
     if (latestMessage) markChannelRead(state, token, channelId, latestMessage.id);
+    cached.messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
     effects.scheduleRender();
 
     if (cachedChannelMessagesAreFresh(cached, Date.now(), MESSAGE_CACHE_FRESH_MS)) {
@@ -1866,7 +1970,8 @@ async function refreshLatestChannelMessages(
 ): Promise<void> {
   try {
     const fetchedMessages = await fetchChannelMessages(token, channelId, MESSAGE_PAGE_LIMIT);
-    const messages = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
+    const withGuildIds = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
+    const { messages } = hydrateMissingReplyPreviewsFromKnownMessages(state, withGuildIds);
     recordMessagesRoleIds(state, messages, guildId);
     const cacheEntry = setCachedChannelMessages(state.messageCacheByChannelId, channelId, messages, {
       hasOlder: messages.length >= MESSAGE_PAGE_LIMIT,
@@ -1881,6 +1986,7 @@ async function refreshLatestChannelMessages(
     if (latestMessage) {
       markChannelRead(state, token, channelId, latestMessage.id);
     }
+    cacheEntry.messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
     effects.scheduleRender();
   } catch (error) {
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
@@ -1915,14 +2021,16 @@ export async function loadOlderChannelMessages(
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
 
     const guildId = state.channelList.activeChannel?.guildId ?? null;
-    const deduped = olderMessages
+    const dedupedWithGuildIds = olderMessages
       .filter((message) => !existingIds.has(message.id))
       .map((message) => withMessageGuildId(message, guildId));
+    const { messages: deduped } = hydrateMissingReplyPreviewsFromKnownMessages(state, dedupedWithGuildIds);
     const hasOlder = olderMessages.length >= MESSAGE_PAGE_LIMIT;
     recordMessagesRoleIds(state, deduped, guildId);
     setCachedChannelMessages(state.messageCacheByChannelId, channelId, deduped, { hasOlder, updatedAt: Date.now(), replace: false, latestFetched: false });
     persistChannelMessageCache(state, channelId);
     prependTimelineMessages(state.timeline, deduped, width, { hasOlder });
+    deduped.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
     effects.scheduleRender();
   } catch (error) {
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;

@@ -2,7 +2,7 @@
  * Discord REST client.
  */
 
-import { summarizeInlineMessageParts } from "./messageparts";
+import { summarizeInlineMessageParts, type DisplayAttachment, type DisplayEmbed } from "./messageparts";
 
 const API_BASE = "https://discord.com/api/v9";
 const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) record/0.1.0 Safari/537.36";
@@ -241,6 +241,8 @@ export interface DiscordGuildMember {
 
 export interface DiscordMessageReply {
   messageId: string | null;
+  /** Channel that Discord says contains messageId. Missing on older local/cache entries. */
+  channelId?: string | null;
   authorId: string | null;
   authorDisplayName: string | null;
   timestamp: number | null;
@@ -543,11 +545,11 @@ export function directMessageName(channel: DiscordChannelResponse): string {
 
 function summarizeReplyPreview(
   content: string,
-  attachments: DiscordAttachmentResponse[] = [],
-  embeds: DiscordEmbedResponse[] = [],
-  stickerNames: string[] = [],
+  attachments: readonly DisplayAttachment[] = [],
+  embeds: readonly DisplayEmbed[] | number = [],
+  stickerNames: readonly string[] = [],
 ): string {
-  return summarizeInlineMessageParts(content, attachments, embeds.map(mapDiscordEmbed), stickerNames);
+  return summarizeInlineMessageParts(content, attachments, embeds, stickerNames);
 }
 
 function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
@@ -562,6 +564,8 @@ function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
 }
 
 export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessageReply | null {
+  const referenceChannelId = message.message_reference?.channel_id ?? message.channel_id;
+
   if (message.referenced_message) {
     return {
       messageId: message.referenced_message.id,
@@ -582,6 +586,7 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
   if (message.message_reference) {
     return {
       messageId: message.message_reference.message_id ?? null,
+      channelId: referenceChannelId,
       authorId: null,
       authorDisplayName: null,
       timestamp: null,
@@ -590,6 +595,56 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
   }
 
   return null;
+}
+
+export function replyPreviewFromMessage(message: DiscordMessage): DiscordMessageReply {
+  return {
+    messageId: message.id,
+    authorId: message.author.id,
+    authorDisplayName: message.author.displayName,
+    timestamp: message.timestamp,
+    summary: summarizeReplyPreview(
+      message.content,
+      message.attachments,
+      message.embeds ?? message.embedsCount,
+      message.stickerNames,
+    ),
+    ...(message.mentionRoleIds.length > 0 ? { mentionRoleIds: message.mentionRoleIds } : {}),
+    ...(message.mentionUsers && message.mentionUsers.length > 0 ? { mentionUsers: message.mentionUsers } : {}),
+  };
+}
+
+export function isMissingReplyPreview(reply: DiscordMessageReply | null | undefined): reply is DiscordMessageReply & { messageId: string } {
+  return Boolean(reply
+    && reply.messageId
+    && reply.authorId === null
+    && reply.authorDisplayName === null
+    && reply.timestamp === null
+    && reply.summary === "Deleted message");
+}
+
+export interface ReplyReferenceTarget {
+  channelId: string;
+  messageId: string;
+}
+
+export function replyReferenceTarget(message: DiscordMessage): ReplyReferenceTarget | null {
+  if (!isMissingReplyPreview(message.reply)) return null;
+  return {
+    channelId: message.reply.channelId ?? message.channelId,
+    messageId: message.reply.messageId,
+  };
+}
+
+export function hydrateMissingReplyPreviewFromLookup(
+  message: DiscordMessage,
+  lookup: (target: ReplyReferenceTarget) => DiscordMessage | null | undefined,
+): DiscordMessage {
+  const target = replyReferenceTarget(message);
+  if (!target) return message;
+  const referenced = lookup(target);
+  if (!referenced || referenced.id === message.id) return message;
+  return { ...message, reply: replyPreviewFromMessage(referenced) };
 }
 
 export function mapDirectMessageChannel(channel: DiscordChannelResponse, position = 0): DiscordChannel {
@@ -886,6 +941,20 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
   };
 }
 
+function resolveReplyPreviewsFromMessages(messages: DiscordMessage[]): DiscordMessage[] {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  return messages.map((message) => hydrateMissingReplyPreviewFromLookup(message, (target) => byId.get(target.messageId)));
+}
+
+export async function fetchChannelMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+): Promise<DiscordMessage> {
+  const message = await apiGetJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages/${messageId}`);
+  return mapDiscordMessage(message);
+}
+
 export async function fetchChannelMessages(
   token: string,
   channelId: string,
@@ -895,7 +964,7 @@ export async function fetchChannelMessages(
   const query = new URLSearchParams({ limit: String(limit) });
   if (before) query.set("before", before);
   const messages = await apiGetJson<DiscordMessageResponse[]>(token, `/channels/${channelId}/messages?${query.toString()}`);
-  return messages.map(mapDiscordMessage).reverse();
+  return resolveReplyPreviewsFromMessages(messages.map(mapDiscordMessage).reverse());
 }
 
 export interface SendMessageReplyOptions {

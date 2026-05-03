@@ -460,6 +460,64 @@ describe("session", () => {
     expect(state.messageCacheByChannelId["channel-1"]?.messages.map((entry) => entry.content)).toEqual(["from rest"]);
   });
 
+  test("loading a channel hydrates missing reply previews with a direct message fetch", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/channels/channel-1/messages?")) {
+        return new Response(JSON.stringify([{
+          id: "43",
+          channel_id: "channel-1",
+          guild_id: "guild-1",
+          type: 0,
+          content: "reply body",
+          timestamp: "2026-01-01T12:43:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          message_reference: { message_id: "42", channel_id: "channel-1" },
+          referenced_message: null,
+          attachments: [],
+          embeds: [],
+        }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/channels/channel-1/messages/42")) {
+        return new Response(JSON.stringify({
+          id: "42",
+          channel_id: "channel-1",
+          guild_id: "guild-1",
+          type: 0,
+          content: "real original",
+          timestamp: "2026-01-01T12:42:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-2", username: "alice", global_name: "Alice" },
+          attachments: [],
+          embeds: [],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/guilds/guild-1/roles")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/ack")) {
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+
+    await loadChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
+    await waitForCondition(() => state.timeline.messages[0]?.reply?.summary === "real original");
+
+    expect(state.timeline.messages[0]?.reply).toMatchObject({
+      messageId: "42",
+      authorId: "user-2",
+      authorDisplayName: "Alice",
+      summary: "real original",
+    });
+    expect(state.messageCacheByChannelId["channel-1"]?.messages[0]?.reply?.summary).toBe("real original");
+  });
+
   test("loading a channel with only gateway messages keeps them visible while REST loads", async () => {
     let messageFetches = 0;
     let resolveMessages: (response: Response) => void = () => {};
