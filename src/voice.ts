@@ -27,12 +27,14 @@ const VOICE_SIGNALING_READY_RETRY_MS = 100;
 const VOICE_GATEWAY_REJOIN_ATTEMPTS = 3;
 const VOICE_GATEWAY_REJOIN_DELAY_MS = 250;
 const VOICE_GATEWAY_INVALID_SESSION_CODE = 4006;
+const VOICE_GATEWAY_CALL_TERMINATED_CODE = 4022;
 const UDP_DISCOVERY_TIMEOUT_MS = 5_000;
 const VOICE_REGION_TIMEOUT_MS = 3_000;
 const OPUS_PAYLOAD_TYPE = 120;
 const OPUS_RTP_CLOCK_INCREMENT = 960; // 20 ms at 48 kHz.
 const RTP_HEADER_LENGTH = 12;
 const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
+const DAVE_ENCRYPTED_MARKER = Buffer.from([0xfa, 0xfa]);
 const DEFAULT_SPEAKING_THRESHOLD_DB = -40;
 const DEFAULT_SPEAKING_IDLE_MS = 700;
 
@@ -300,10 +302,16 @@ class DaveVoiceEncryption {
     const canDecrypt = this.ready || (this.session.ready && this.session.canPassthrough(userId));
     if (!canDecrypt) return this.protocolVersion === 0 ? payload : null;
 
+    const encrypted = isDaveEncryptedPayload(payload);
     try {
-      return this.session.decrypt(userId, MediaType.AUDIO, payload);
+      const decoded = this.session.decrypt(userId, MediaType.AUDIO, payload);
+      if (isDaveEncryptedPayload(decoded)) {
+        this.reportMediaError(new Error(`DAVE decrypt returned encrypted-looking voice audio from ${userId}; dropping packet.`));
+        return null;
+      }
+      return decoded;
     } catch (error) {
-      if (isUnencryptedDavePassthroughError(error)) {
+      if (isUnencryptedDavePassthroughError(error) && !encrypted) {
         this.enablePassthroughRecovery();
         return payload;
       }
@@ -704,6 +712,10 @@ export class VoiceCallController {
   private handleGatewayClose(session: VoiceCallSession, error: VoiceGatewayCloseError): void {
     if (this.active !== session || session.state === "ended" || session.state === "error") return;
     session.gateway = null;
+    if (isTerminalVoiceGatewayClose(error)) {
+      this.endSession(session);
+      return;
+    }
     if (!isRecoverableVoiceGatewayClose(error)) {
       this.failSession(session, error);
       return;
@@ -791,6 +803,18 @@ export class VoiceCallController {
     pending.reject(error);
   }
 
+  private endSession(session: VoiceCallSession): void {
+    if (this.active !== session) return;
+    session.state = "ended";
+    session.gateway?.disconnect();
+    session.gateway = null;
+    this.options.signaling.leaveVoice();
+    this.emitState();
+    this.active = null;
+    this.recoveringSession = null;
+    this.emitState();
+  }
+
   private failSession(session: VoiceCallSession, error: Error): void {
     session.state = "error";
     session.gateway?.disconnect();
@@ -808,6 +832,11 @@ export class VoiceCallController {
 
 function isRecoverableVoiceGatewayClose(error: Error): boolean {
   return error instanceof VoiceGatewayCloseError && error.code === VOICE_GATEWAY_INVALID_SESSION_CODE;
+}
+
+function isTerminalVoiceGatewayClose(error: Error): boolean {
+  return error instanceof VoiceGatewayCloseError
+    && (error.code === VOICE_GATEWAY_CALL_TERMINATED_CODE || /call terminated/i.test(error.closeReason));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1292,7 +1321,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       "c=IN IP4 127.0.0.1",
       "t=0 0",
       `m=audio ${port} RTP/AVP ${OPUS_PAYLOAD_TYPE}`,
-      `a=rtpmap:${OPUS_PAYLOAD_TYPE} opus/48000/2`,
+      `a=rtpmap:${OPUS_PAYLOAD_TYPE} opus/48000/1`,
       "",
     ].join("\n"));
 
@@ -1688,6 +1717,18 @@ function snowflakeToString(value: unknown): string | null {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isDaveEncryptedPayload(payload: Buffer | null | undefined): boolean {
+  if (!payload || payload.length < DAVE_ENCRYPTED_MARKER.length) return false;
+  const marker = payload.lastIndexOf(DAVE_ENCRYPTED_MARKER);
+  if (marker < 0) return false;
+  const suffix = payload.subarray(marker + DAVE_ENCRYPTED_MARKER.length);
+  // DAVE-encrypted media usually ends in FAFA, but Discord/davey can leave
+  // padding bytes after the marker. Do not feed those encrypted bytes to Opus.
+  if (suffix.length === 0) return true;
+  if (marker < payload.length - 256) return false;
+  return suffix.every((byte) => byte === suffix[0]);
 }
 
 function isUnencryptedDavePassthroughError(error: unknown): boolean {
