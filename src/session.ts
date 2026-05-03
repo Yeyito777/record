@@ -412,12 +412,64 @@ function handleCallGatewayEvent(state: AppState, channelId: string, ringingUserI
   maybePlayIncomingCallRingtone(state, channelId);
 }
 
-function callHasRemoteParticipants(state: AppState, channelId: string): boolean {
-  const selfUserId = state.auth.user?.id;
-  for (const userId of knownCallParticipantsByChannelId.get(channelId) ?? []) {
-    if (userId && userId !== selfUserId) return true;
+export function activeCallMessageParticipantIds(state: AppState, channelId: string): string[] {
+  const participantIds = new Set<string>();
+  const addFromMessage = (message: DiscordMessage): void => {
+    if (message.channelId !== channelId || !message.call || message.call.endedTimestamp !== null) return;
+    for (const userId of message.call.participantIds) {
+      if (userId) participantIds.add(userId);
+    }
+  };
+
+  for (const message of state.messageCacheByChannelId[channelId]?.messages ?? []) addFromMessage(message);
+  if (state.timeline.channelId === channelId) {
+    for (const message of state.timeline.messages) addFromMessage(message);
   }
-  return false;
+  return Array.from(participantIds);
+}
+
+function remoteCallParticipantIds(state: AppState, channelId: string): string[] {
+  const selfUserId = state.auth.user?.id;
+  const participantIds = new Set<string>();
+  for (const userId of activeCallMessageParticipantIds(state, channelId)) {
+    if (userId && userId !== selfUserId) participantIds.add(userId);
+  }
+  for (const userId of knownCallParticipantsByChannelId.get(channelId) ?? []) {
+    if (userId && userId !== selfUserId) participantIds.add(userId);
+  }
+  return Array.from(participantIds);
+}
+
+function rememberActiveCallMessageParticipants(state: AppState, channelId: string, participantIds: readonly string[], source: string): boolean {
+  const selfUserId = state.auth.user?.id;
+  const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const before = new Set(participants);
+  for (const userId of participantIds) {
+    if (userId && userId !== selfUserId) participants.add(userId);
+  }
+  const changed = participants.size !== before.size || Array.from(participants).some((userId) => !before.has(userId));
+  knownCallParticipantsByChannelId.set(channelId, participants);
+  debugLog("call.participants.message", {
+    source,
+    channelId,
+    participantIds,
+    before: Array.from(before),
+    after: Array.from(participants),
+    changed,
+  });
+  if (changed) stopOutboundCallRingtone(channelId, "participant_join_call_message");
+  return changed;
+}
+
+function handleCallMessageParticipants(state: AppState, channelId: string, call: DiscordMessage["call"], source: string): void {
+  if (!call || call.endedTimestamp !== null) return;
+  const changed = rememberActiveCallMessageParticipants(state, channelId, call.participantIds, source);
+  const session = voiceCallController?.activeSession;
+  if (changed && session?.target.channelId === channelId) syncVoiceCallStatus(state, session);
+}
+
+function callHasRemoteParticipants(state: AppState, channelId: string): boolean {
+  return remoteCallParticipantIds(state, channelId).length > 0;
 }
 
 function startOutboundCallRingtone(channelId: string): void {
@@ -644,6 +696,7 @@ function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, me
     }
   }
   maybeResortDirectMessages(state, cachedMessage.channelId, cachedMessage.id);
+  handleCallMessageParticipants(state, cachedMessage.channelId, cachedMessage.call, "message_create");
   if (state.timeline.channelId === cachedMessage.channelId) {
     const pinned = activeTimelineWasPinned(state);
     appendTimelineMessage(state.timeline, cachedMessage);
@@ -670,6 +723,7 @@ function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, pa
   if (patchCachedChannelMessage(state.messageCacheByChannelId, patch)) {
     persistChannelMessageCache(state, patch.channelId);
   }
+  handleCallMessageParticipants(state, patch.channelId, patch.call ?? null, "message_update");
   if (state.timeline.channelId === patch.channelId) {
     patchTimelineMessage(state.timeline, patch);
   }
@@ -1224,7 +1278,7 @@ function buildCallWidgetParticipants(state: AppState, session: VoiceCallSession)
   }
 
   const voiceStates = callVoiceStatesByChannelId.get(channelId);
-  for (const userId of knownCallParticipantsByChannelId.get(channelId) ?? []) {
+  for (const userId of remoteCallParticipantIds(state, channelId)) {
     if (!userId || seen.has(userId)) continue;
     seen.add(userId);
     const voiceState = voiceStates?.get(userId);
@@ -1271,7 +1325,7 @@ function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null):
     startedAt: session.startedAt,
     selfMute: session.selfMute,
     selfDeaf: session.selfDeaf,
-    participantUserIds: Array.from(knownCallParticipantsByChannelId.get(session.target.channelId) ?? []),
+    participantUserIds: remoteCallParticipantIds(state, session.target.channelId),
   };
   syncCallWidget(state, session);
 }
@@ -2368,14 +2422,32 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
   }
 
   const displayName = channel.name || "DM";
-  const joiningExistingCall = callHasRemoteParticipants(state, channel.id);
   if (!knownCallParticipantsByChannelId.has(channel.id)) knownCallParticipantsByChannelId.set(channel.id, new Set());
+  const activeCallMessageParticipants = activeCallMessageParticipantIds(state, channel.id);
+  if (activeCallMessageParticipants.length > 0) {
+    rememberActiveCallMessageParticipants(state, channel.id, activeCallMessageParticipants, "call_command_active_message");
+  }
+  const joiningExistingCall = callHasRemoteParticipants(state, channel.id);
+  const activeSession = controller.activeSession;
+  if (activeSession && activeSession.state !== "ended" && activeSession.state !== "error" && activeSession.target.channelId === channel.id) {
+    debugLog("call.command.noop", {
+      channelId: channel.id,
+      activeState: activeSession.state,
+      knownParticipants: Array.from(knownCallParticipantsByChannelId.get(channel.id) ?? []),
+      activeCallMessageParticipants,
+    });
+    stopOutboundCallRingtone(channel.id, "already_active");
+    syncVoiceCallStatus(state, activeSession);
+    setNotice(state, "", "muted");
+    effects.scheduleRender();
+    return;
+  }
   debugLog("call.command", {
     channelId: channel.id,
     joiningExistingCall,
     knownParticipants: Array.from(knownCallParticipantsByChannelId.get(channel.id) ?? []),
+    activeCallMessageParticipants,
   });
-  const activeSession = controller.activeSession;
   const replacingActiveCall = Boolean(
     activeSession
       && activeSession.state !== "ended"
@@ -2393,9 +2465,14 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     displayName,
     ringRecipients: !joiningExistingCall,
   }, { replaceActive: replacingActiveCall }).then(({ warnings }) => {
-    if (joiningExistingCall) {
-      debugLog("call.outbound_ringtone.skipped", { channelId: channel.id, reason: "joining_existing_call" });
-      if (callHasRemoteParticipants(state, channel.id)) {
+    const hasRemoteParticipants = callHasRemoteParticipants(state, channel.id);
+    if (joiningExistingCall || hasRemoteParticipants) {
+      debugLog("call.outbound_ringtone.skipped", {
+        channelId: channel.id,
+        reason: joiningExistingCall ? "joining_existing_call" : "participant_discovered_before_ringtone",
+        remoteParticipants: remoteCallParticipantIds(state, channel.id),
+      });
+      if (hasRemoteParticipants) {
         debugLog("call.participants.sound", { source: "existing_call_join", channelId: channel.id, action: "join", effect: "callJoin" });
         playSoundEffect("callJoin");
       }
