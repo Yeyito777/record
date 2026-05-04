@@ -870,6 +870,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private selfMute = false;
   private selfDeaf = false;
   private readonly ssrcToUserId = new Map<number, string>();
+  private readonly remoteUserIds = new Set<string>();
   private readonly dave: DaveVoiceEncryption;
   mediaSessionId: string | null = null;
 
@@ -1014,7 +1015,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const userId = snowflakeToString(data.user_id);
     if (!userId) return;
     const ssrc = typeof data.ssrc === "number" ? data.ssrc : null;
-    if (ssrc !== null) this.ssrcToUserId.set(ssrc, userId);
+    if (userId !== this.data.userId) this.remoteUserIds.add(userId);
+    if (ssrc !== null) {
+      const previous = this.ssrcToUserId.get(ssrc);
+      this.ssrcToUserId.set(ssrc, userId);
+      if (previous !== userId) debugLog("voice.playback.ssrc_map", { ssrc, userId, source: "speaking" });
+    }
     const speaking = typeof data.speaking === "number" ? data.speaking !== 0 : Boolean(data.speaking);
     // Our local capture path is the authoritative source for the current user.
     // Discord may echo stale SPEAKING frames for self, which made the call
@@ -1025,13 +1031,18 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
 
   private handleClientsConnect(data: unknown): void {
     if (!isObject(data) || !Array.isArray(data.user_ids)) return;
-    this.dave.addKnownUsers(data.user_ids.map(snowflakeToString).filter((userId): userId is string => Boolean(userId)));
+    const userIds = data.user_ids.map(snowflakeToString).filter((userId): userId is string => Boolean(userId));
+    for (const userId of userIds) {
+      if (userId !== this.data.userId) this.remoteUserIds.add(userId);
+    }
+    this.dave.addKnownUsers(userIds);
   }
 
   private handleClientDisconnect(data: unknown): void {
     if (!isObject(data)) return;
     const disconnectedUserId = snowflakeToString(data.user_id);
     if (!disconnectedUserId) return;
+    this.remoteUserIds.delete(disconnectedUserId);
     this.dave.removeKnownUser(disconnectedUserId);
     for (const [ssrc, userId] of this.ssrcToUserId) {
       if (userId === disconnectedUserId) this.ssrcToUserId.delete(ssrc);
@@ -1101,7 +1112,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         selfDeaf: this.selfDeaf,
         sendSpeaking: (speaking) => this.sendSpeaking(speaking),
         encodeOutgoingOpus: (payload) => this.dave.encodeOutgoingOpus(payload),
-        decodeIncomingOpus: (ssrc, payload) => this.dave.decodeIncomingOpus(this.ssrcToUserId.get(ssrc) ?? null, payload),
+        decodeIncomingOpus: (ssrc, payload) => this.dave.decodeIncomingOpus(this.resolveIncomingSsrcUserId(ssrc), payload),
         onError: (error) => this.reportError(error),
       };
       this.audioContext = audioContext;
@@ -1113,6 +1124,19 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     }
 
     this.resolveReady();
+  }
+
+  private resolveIncomingSsrcUserId(ssrc: number): string | null {
+    const mappedUserId = this.ssrcToUserId.get(ssrc);
+    if (mappedUserId) return mappedUserId;
+    if (this.remoteUserIds.size !== 1) {
+      debugLog("voice.playback.ssrc_unmapped", { ssrc, remoteUserIds: [...this.remoteUserIds] });
+      return null;
+    }
+    const [inferredUserId] = [...this.remoteUserIds];
+    this.ssrcToUserId.set(ssrc, inferredUserId);
+    debugLog("voice.playback.ssrc_map", { ssrc, userId: inferredUserId, source: "single_remote_fallback" });
+    return inferredUserId;
   }
 
   private identify(): void {
