@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, stripDavePadding, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, stripDavePadding, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 
 class FakeSignaling {
   requests: VoiceStateRequest[] = [];
@@ -88,6 +88,11 @@ describe("voice backend", () => {
       "-i", "/tmp/voice.sdp",
     ]);
     expect(buildFfplayPlaybackArgs("/tmp/voice.sdp")).not.toContain("-nostdin");
+  });
+
+  test("builds a stereo-compatible Opus playback SDP", () => {
+    expect(buildVoicePlaybackSdp(38830)).toContain("m=audio 38830 RTP/AVP 120");
+    expect(buildVoicePlaybackSdp(38830)).toContain("a=rtpmap:120 opus/48000/2");
   });
 
   test("detects Opus silence frames", () => {

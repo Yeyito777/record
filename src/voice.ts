@@ -1253,6 +1253,18 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private droppedPacketCount = 0;
   private nonSilencePacketCount = 0;
   private captureDropLogged = false;
+  private playbackPacketCount = 0;
+  private playbackParsedPacketCount = 0;
+  private playbackTransportFailCount = 0;
+  private playbackEmptyPayloadCount = 0;
+  private playbackDaveDropCount = 0;
+  private playbackForwardedPacketCount = 0;
+  private playbackSendErrorCount = 0;
+  private playbackWrongPayloadCount = 0;
+  private playbackInvalidPacketCount = 0;
+  private playbackSelfDeafDropCount = 0;
+  private playbackFirstPacketLogged = false;
+  private lastPlaybackStatsAt = 0;
   private pcmRemainder = Buffer.alloc(0);
   private lastInputLevelDb = -Infinity;
   private readonly speakingThresholdDb = speakingThresholdDb();
@@ -1271,6 +1283,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     }
 
     context.udp.on("message", this.handleDiscordPacket);
+    this.resetPlaybackStats();
     await Promise.all([
       this.startPlayback(context),
       this.startCapture(context),
@@ -1304,6 +1317,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.captureProcess = null;
     this.playbackProcess?.kill("SIGTERM");
     this.playbackProcess = null;
+    this.logPlaybackStats("stop", true);
     if (this.tempDir) {
       try { rmSync(this.tempDir, { recursive: true, force: true }); } catch {}
       this.tempDir = null;
@@ -1316,24 +1330,21 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackSocket = createSocket("udp4");
     this.tempDir = mkdtempSync(join(tmpdir(), "record-voice-"));
     const sdpPath = join(this.tempDir, "voice.sdp");
-    writeFileSync(sdpPath, [
-      "v=0",
-      "o=- 0 0 IN IP4 127.0.0.1",
-      "s=Record Discord Voice",
-      "c=IN IP4 127.0.0.1",
-      "t=0 0",
-      `m=audio ${port} RTP/AVP ${OPUS_PAYLOAD_TYPE}`,
-      `a=rtpmap:${OPUS_PAYLOAD_TYPE} opus/48000/1`,
-      "",
-    ].join("\n"));
+    writeFileSync(sdpPath, buildVoicePlaybackSdp(port));
 
-    this.playbackProcess = spawn("ffplay", buildFfplayPlaybackArgs(sdpPath));
+    const args = buildFfplayPlaybackArgs(sdpPath);
+    debugLog("voice.playback.start", { port, sdpPath, args, codecChannels: 2 });
+    this.playbackProcess = spawn("ffplay", args);
     this.playbackProcess.stdin.end();
     const playbackErrorOutput = drainChildOutput(this.playbackProcess);
-    this.playbackProcess.on("error", (error) => context.onError(new Error(`Failed to start voice playback: ${error.message}`)));
+    this.playbackProcess.on("error", (error) => {
+      debugLog("voice.playback.spawn_error", { error: error.message });
+      context.onError(new Error(`Failed to start voice playback: ${error.message}`));
+    });
     this.playbackProcess.on("exit", (code, signal) => {
-      if (this.context !== context || code === 0 || signal === "SIGTERM") return;
       const details = playbackErrorOutput().trim();
+      debugLog("voice.playback.exit", { code, signal, details, active: this.context === context });
+      if (this.context !== context || code === 0 || signal === "SIGTERM") return;
       context.onError(new Error(`Voice playback stopped${details ? `: ${details}` : "."}`));
     });
   }
@@ -1382,17 +1393,49 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
 
   private forwardDiscordPacket(packet: Buffer): void {
     const context = this.context;
-    if (!context || !this.playbackSocket || this.localPlaybackPort === null || context.selfDeaf) return;
+    this.playbackPacketCount += 1;
+    if (!context || !this.playbackSocket || this.localPlaybackPort === null) {
+      this.playbackInvalidPacketCount += 1;
+      this.logPlaybackStats("missing_context");
+      return;
+    }
+    if (context.selfDeaf) {
+      this.playbackSelfDeafDropCount += 1;
+      this.logPlaybackStats("self_deaf");
+      return;
+    }
     const parsed = parseDiscordRtpPacket(packet);
-    if (!parsed || parsed.payloadType !== OPUS_PAYLOAD_TYPE) return;
+    if (!parsed) {
+      this.playbackInvalidPacketCount += 1;
+      this.logPlaybackStats("invalid_rtp");
+      return;
+    }
+    this.playbackParsedPacketCount += 1;
+    if (parsed.payloadType !== OPUS_PAYLOAD_TYPE) {
+      this.playbackWrongPayloadCount += 1;
+      this.logPlaybackStats("wrong_payload");
+      return;
+    }
 
     const decrypted = decryptAes256GcmRtp(packet, parsed.headerLength, context.secretKey);
-    if (!decrypted) return;
+    if (!decrypted) {
+      this.playbackTransportFailCount += 1;
+      this.logPlaybackStats("transport_fail");
+      return;
+    }
     const extensionBodyLength = parsed.hasExtension ? packet.readUInt16BE(parsed.headerLength - 2) * 4 : 0;
     const opusPayload = extensionBodyLength < decrypted.length ? decrypted.subarray(extensionBodyLength) : Buffer.alloc(0);
-    if (opusPayload.length === 0) return;
+    if (opusPayload.length === 0) {
+      this.playbackEmptyPayloadCount += 1;
+      this.logPlaybackStats("empty_payload");
+      return;
+    }
     const decodedPayload = context.decodeIncomingOpus ? context.decodeIncomingOpus(parsed.ssrc, opusPayload) : opusPayload;
-    if (!decodedPayload || decodedPayload.length === 0) return;
+    if (!decodedPayload || decodedPayload.length === 0) {
+      this.playbackDaveDropCount += 1;
+      this.logPlaybackStats("dave_drop");
+      return;
+    }
 
     const header = Buffer.alloc(RTP_HEADER_LENGTH);
     header[0] = 0x80;
@@ -1400,7 +1443,63 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     header.writeUInt16BE(parsed.sequence, 2);
     header.writeUInt32BE(parsed.timestamp, 4);
     header.writeUInt32BE(parsed.ssrc, 8);
-    this.playbackSocket.send(Buffer.concat([header, decodedPayload]), this.localPlaybackPort, "127.0.0.1");
+    this.playbackSocket.send(Buffer.concat([header, decodedPayload]), this.localPlaybackPort, "127.0.0.1", (error) => {
+      if (error) {
+        this.playbackSendErrorCount += 1;
+        debugLog("voice.playback.send_error", { error: error.message });
+      }
+    });
+    this.playbackForwardedPacketCount += 1;
+    if (!this.playbackFirstPacketLogged) {
+      this.playbackFirstPacketLogged = true;
+      debugLog("voice.playback.first_packet", {
+        ssrc: parsed.ssrc,
+        sequence: parsed.sequence,
+        timestamp: parsed.timestamp,
+        payloadBytes: opusPayload.length,
+        decodedBytes: decodedPayload.length,
+        hasExtension: parsed.hasExtension,
+        extensionBodyLength,
+        localPort: this.localPlaybackPort,
+      });
+    }
+    this.logPlaybackStats("forwarded");
+  }
+
+  private resetPlaybackStats(): void {
+    this.playbackPacketCount = 0;
+    this.playbackParsedPacketCount = 0;
+    this.playbackTransportFailCount = 0;
+    this.playbackEmptyPayloadCount = 0;
+    this.playbackDaveDropCount = 0;
+    this.playbackForwardedPacketCount = 0;
+    this.playbackSendErrorCount = 0;
+    this.playbackWrongPayloadCount = 0;
+    this.playbackInvalidPacketCount = 0;
+    this.playbackSelfDeafDropCount = 0;
+    this.playbackFirstPacketLogged = false;
+    this.lastPlaybackStatsAt = 0;
+  }
+
+  private logPlaybackStats(reason: string, force = false): void {
+    const now = Date.now();
+    if (!force && this.playbackForwardedPacketCount > 0 && now - this.lastPlaybackStatsAt < 5_000) return;
+    if (!force && this.playbackForwardedPacketCount === 0 && now - this.lastPlaybackStatsAt < 2_000) return;
+    this.lastPlaybackStatsAt = now;
+    debugLog("voice.playback.stats", {
+      reason,
+      packets: this.playbackPacketCount,
+      parsedPackets: this.playbackParsedPacketCount,
+      forwardedPackets: this.playbackForwardedPacketCount,
+      transportFailures: this.playbackTransportFailCount,
+      daveDrops: this.playbackDaveDropCount,
+      emptyPayloads: this.playbackEmptyPayloadCount,
+      invalidPackets: this.playbackInvalidPacketCount,
+      wrongPayloads: this.playbackWrongPayloadCount,
+      selfDeafDrops: this.playbackSelfDeafDropCount,
+      sendErrors: this.playbackSendErrorCount,
+      localPort: this.localPlaybackPort,
+    });
   }
 
   private forwardCapturePacket(packet: Buffer): void {
@@ -1522,6 +1621,22 @@ export function buildFfplayPlaybackArgs(sdpPath: string): string[] {
     "-protocol_whitelist", "file,udp,rtp",
     "-i", sdpPath,
   ];
+}
+
+export function buildVoicePlaybackSdp(port: number): string {
+  return [
+    "v=0",
+    "o=- 0 0 IN IP4 127.0.0.1",
+    "s=Record Discord Voice",
+    "c=IN IP4 127.0.0.1",
+    "t=0 0",
+    `m=audio ${port} RTP/AVP ${OPUS_PAYLOAD_TYPE}`,
+    // Discord voice Opus payloads are commonly stereo; ffmpeg also announces
+    // RTP Opus as /2 even when the source was mono. Advertising /1 here made
+    // ffplay accept the socket but fail to render those packets audibly.
+    `a=rtpmap:${OPUS_PAYLOAD_TYPE} opus/48000/2`,
+    "",
+  ].join("\n");
 }
 
 function drainChildOutput(child: ChildProcessWithoutNullStreams): () => string {
