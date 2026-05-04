@@ -219,6 +219,7 @@ class DaveVoiceEncryption {
   private reinitializing = false;
   private lastTransitionId: number | null = null;
   private lastMediaErrorAt = 0;
+  private lastMediaDebugAt = 0;
   private passthroughRecoveryEnabled = false;
 
   constructor(private readonly options: DaveVoiceEncryptionOptions) {
@@ -297,16 +298,23 @@ class DaveVoiceEncryption {
   decodeIncomingOpus(userId: string | null, payload: Buffer): Buffer | null {
     if (payload.equals(OPUS_SILENCE_FRAME)) return payload;
     if (!this.session) return this.protocolVersion === 0 ? payload : null;
-    if (!userId) return this.protocolVersion === 0 ? payload : null;
+    if (!userId) {
+      this.logMediaDebug("missing_user", { payloadBytes: payload.length, encrypted: isDaveEncryptedPayload(payload) });
+      return this.protocolVersion === 0 ? payload : null;
+    }
 
     const canDecrypt = this.ready || (this.session.ready && this.session.canPassthrough(userId));
-    if (!canDecrypt) return this.protocolVersion === 0 ? payload : null;
+    if (!canDecrypt) {
+      this.logMediaDebug("not_ready", { userId, sessionReady: this.session.ready, protocolVersion: this.protocolVersion, payloadBytes: payload.length, encrypted: isDaveEncryptedPayload(payload), users: this.safeUserIds() });
+      return this.protocolVersion === 0 ? payload : null;
+    }
 
     const encrypted = isDaveEncryptedPayload(payload);
     const normalizedPayload = encrypted ? stripDavePadding(payload) : payload;
     try {
       const decoded = this.session.decrypt(userId, MediaType.AUDIO, normalizedPayload);
       if (isDaveEncryptedPayload(decoded)) {
+        this.logMediaDebug("encrypted_after_decrypt", { userId, payloadBytes: payload.length, normalizedBytes: normalizedPayload.length, decodedBytes: decoded.length, users: this.safeUserIds(), stats: this.safeDecryptionStats(userId) });
         this.reportMediaError(new Error(`DAVE decrypt returned encrypted-looking voice audio from ${userId}; dropping packet.`));
         return null;
       }
@@ -316,7 +324,31 @@ class DaveVoiceEncryption {
         this.enablePassthroughRecovery();
         return payload;
       }
+      this.logMediaDebug("decrypt_error", { userId, error: error instanceof Error ? error.message : String(error), payloadBytes: payload.length, normalizedBytes: normalizedPayload.length, encrypted, users: this.safeUserIds(), stats: this.safeDecryptionStats(userId), canPassthrough: this.session.canPassthrough(userId) });
       this.reportMediaError(asError(error, `Failed to DAVE-decrypt voice audio from ${userId}.`));
+      return null;
+    }
+  }
+
+  private logMediaDebug(reason: string, data: Record<string, unknown>): void {
+    const now = Date.now();
+    if (now - this.lastMediaDebugAt < 2_000) return;
+    this.lastMediaDebugAt = now;
+    debugLog("voice.dave.media", { reason, ...data });
+  }
+
+  private safeUserIds(): string[] {
+    try {
+      return this.session?.getUserIds() ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  private safeDecryptionStats(userId: string): unknown {
+    try {
+      return this.session?.getDecryptionStats(userId, MediaType.AUDIO) ?? null;
+    } catch {
       return null;
     }
   }
