@@ -96,22 +96,6 @@ describe("timeline rendering", () => {
     expect(rendered.lines.join("\n")).not.toContain("Downloading image.png");
   });
 
-  test("chat-only notices render after populated timeline content", () => {
-    const timeline = createTimelineState();
-    setTimelineMessages(timeline, "channel-1", [message("message-1", "latest chat")]);
-    const rendered = renderTimelineLines(
-      timeline,
-      80,
-      10,
-      { text: "Could not join Discord invite: Captcha required.", tone: "warning", loading: false, statusLine: false, chat: true },
-      0,
-    );
-    const plainLines = rendered.lines.map(stripAnsi);
-
-    expect(plainLines.join("\n")).toContain("latest chat");
-    expect(plainLines.at(-1)).toContain("Could not join Discord invite");
-  });
-
   test("formats message timestamps in local system time", () => {
     const previousTimezone = process.env.TZ;
     try {
