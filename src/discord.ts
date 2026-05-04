@@ -20,6 +20,9 @@ export type DiscordPresenceStatus = typeof DISCORD_PRESENCE_STATUSES[number];
 interface DiscordErrorResponse {
   message?: string;
   code?: number;
+  captcha_key?: unknown;
+  captcha_sitekey?: unknown;
+  errors?: unknown;
 }
 
 interface DiscordMeResponse {
@@ -38,6 +41,38 @@ interface DiscordGuildResponse {
   name: string;
   icon: string | null;
 }
+
+interface DiscordInviteGuildResponse {
+  id?: string;
+  name?: string | null;
+  icon?: string | null;
+}
+
+interface DiscordInviteChannelResponse {
+  id?: string;
+  name?: string | null;
+  type?: number;
+}
+
+interface DiscordInviteResponse {
+  code?: string;
+  guild?: DiscordInviteGuildResponse | null;
+  channel?: DiscordInviteChannelResponse | null;
+}
+
+export interface DiscordInviteAcceptOptions {
+  sessionId?: string | null;
+}
+
+export interface DiscordInviteJoinResult {
+  code: string;
+  guildId: string | null;
+  guildName: string | null;
+  channelId: string | null;
+  channelName: string | null;
+}
+
+const DISCORD_CLIENT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
 
 interface DiscordUserSettingsResponse {
   status?: string | null;
@@ -1098,6 +1133,110 @@ export async function setGuildMuted(token: string, guildId: string, muted: boole
   });
 }
 
+export function discordInviteCodeFromUrl(target: string): string | null {
+  const trimmed = target.trim();
+  if (/^[A-Za-z0-9_-]+$/.test(trimmed)) return trimmed;
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+
+  const hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+  const parts = url.pathname.split("/").filter(Boolean);
+  let code: string | undefined;
+
+  if (hostname === "discord.gg") {
+    code = parts[0];
+  } else if (
+    hostname === "discord.com"
+    || hostname === "discordapp.com"
+    || hostname === "canary.discord.com"
+    || hostname === "ptb.discord.com"
+  ) {
+    if (parts[0] === "invite" || parts[0] === "invites") code = parts[1];
+  }
+
+  if (!code) return null;
+  try {
+    code = decodeURIComponent(code);
+  } catch {
+    return null;
+  }
+  return /^[A-Za-z0-9_-]+$/.test(code) ? code : null;
+}
+
+function base64Json(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64");
+}
+
+function discordSuperProperties(): string {
+  return base64Json({
+    os: "Linux",
+    browser: "Discord Client",
+    device: "",
+    system_locale: "en-US",
+    browser_user_agent: DISCORD_CLIENT_USER_AGENT,
+    browser_version: "138.0.7204.251",
+    os_version: "",
+    referrer: "",
+    referring_domain: "",
+    release_channel: "stable",
+    client_build_number: 409090,
+    client_event_source: null,
+  });
+}
+
+function inviteContextProperties(invite: DiscordInviteResponse): string {
+  return base64Json({
+    location: "Accept Invite Page",
+    location_guild_id: invite.guild?.id ?? null,
+    location_channel_id: invite.channel?.id ?? null,
+    location_channel_type: typeof invite.channel?.type === "number" ? invite.channel.type : null,
+  });
+}
+
+function inviteRequestHeaders(code: string, inviteDetails: DiscordInviteResponse): Record<string, string> {
+  return {
+    "Origin": "https://discord.com",
+    "Referer": `https://discord.com/invite/${code}`,
+    "User-Agent": DISCORD_CLIENT_USER_AGENT,
+    "X-Context-Properties": inviteContextProperties(inviteDetails),
+    "X-Debug-Options": "bugReporterEnabled",
+    "X-Discord-Locale": "en-US",
+    "X-Discord-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    "X-Super-Properties": discordSuperProperties(),
+  };
+}
+
+export async function acceptDiscordInvite(token: string, invite: string, options: DiscordInviteAcceptOptions = {}): Promise<DiscordInviteJoinResult> {
+  const code = discordInviteCodeFromUrl(invite);
+  if (!code) throw new Error("Not a Discord invite link.");
+
+  const inviteDetails = await apiGetJson<DiscordInviteResponse>(
+    token,
+    `/invites/${encodeURIComponent(code)}?with_counts=true&with_expiration=true`,
+  );
+
+  const response = await requestJson<DiscordInviteResponse>(token, `/invites/${encodeURIComponent(code)}`, {
+    method: "POST",
+    headers: inviteRequestHeaders(code, inviteDetails),
+    body: JSON.stringify({ session_id: options.sessionId ?? null }),
+  });
+
+  return {
+    code: response.code ?? code,
+    guildId: response.guild?.id ?? inviteDetails.guild?.id ?? null,
+    guildName: response.guild?.name ?? inviteDetails.guild?.name ?? null,
+    channelId: response.channel?.id ?? inviteDetails.channel?.id ?? null,
+    channelName: response.channel?.name ?? inviteDetails.channel?.name ?? null,
+  };
+}
+
 async function apiGetJson<T>(token: string, path: string): Promise<T> {
   return requestJson<T>(token, path, { method: "GET" });
 }
@@ -1160,8 +1299,42 @@ function buildDiscordError(status: number, body: DiscordErrorResponse | null): E
     return new Error("Discord rate-limited the request. Try again in a moment.");
   }
 
-  const detail = body?.message ? ` ${body.message}` : "";
+  const detail = discordErrorDetail(body);
   return new Error(`Discord returned ${status}.${detail}`.trim());
+}
+
+function discordErrorDetail(body: DiscordErrorResponse | null): string {
+  if (!body) return "";
+  if (body.message) return ` ${body.message}`;
+  if (body.captcha_key !== undefined || body.captcha_sitekey !== undefined) {
+    return " Captcha required to join this server.";
+  }
+  const errorSummary = summarizeDiscordErrorObject(body.errors);
+  if (errorSummary) return ` ${errorSummary}`;
+  return "";
+}
+
+function summarizeDiscordErrorObject(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const messages: string[] = [];
+  collectDiscordErrorMessages(value, messages, 0);
+  return messages.length > 0 ? messages.slice(0, 3).join(" ") : null;
+}
+
+function collectDiscordErrorMessages(value: unknown, messages: string[], depth: number): void {
+  if (messages.length >= 3 || depth > 5 || !value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectDiscordErrorMessages(item, messages, depth + 1);
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.message === "string") messages.push(record.message);
+  if (Array.isArray(record._errors)) collectDiscordErrorMessages(record._errors, messages, depth + 1);
+  for (const [key, child] of Object.entries(record)) {
+    if (key === "message" || key === "_errors") continue;
+    collectDiscordErrorMessages(child, messages, depth + 1);
+  }
 }
 
 function tryParseJson(text: string): unknown {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   DIRECT_MESSAGES_GUILD_ID,
+  acceptDiscordInvite,
   ackChannelMessage,
   fetchChannelMessages,
   applyDiscordMessagePatch,
@@ -19,6 +20,7 @@ import {
   ringDirectMessageCall,
   setCurrentUserSettingsProtoStatus,
   fetchCurrentUserPresenceStatus,
+  discordInviteCodeFromUrl,
 } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -28,6 +30,79 @@ afterEach(() => {
 });
 
 describe("discord helpers", () => {
+  test("extracts Discord invite codes from join links", () => {
+    expect(discordInviteCodeFromUrl("https://discord.gg/jKqsESXTc")).toBe("jKqsESXTc");
+    expect(discordInviteCodeFromUrl("https://discord.com/invite/jKqsESXTc?event=1")).toBe("jKqsESXTc");
+    expect(discordInviteCodeFromUrl("https://canary.discord.com/invites/custom-code")).toBe("custom-code");
+    expect(discordInviteCodeFromUrl("jKqsESXTc")).toBe("jKqsESXTc");
+    expect(discordInviteCodeFromUrl("https://discord.com/channels/1/2")).toBeNull();
+    expect(discordInviteCodeFromUrl("https://example.com/invite/jKqsESXTc")).toBeNull();
+  });
+
+  test("accepts a Discord invite through REST", async () => {
+    const requests: Array<{
+      url: string;
+      method: string;
+      authorization: string | undefined;
+      contextProperties: string | undefined;
+      body: unknown;
+    }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      requests.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        authorization: headers?.Authorization,
+        contextProperties: headers?.["X-Context-Properties"],
+        body: JSON.parse(String(init?.body ?? "{}")),
+      });
+      return new Response(JSON.stringify({
+        code: "jKqsESXTc",
+        guild: { id: "guild-1", name: "Example Server", icon: null },
+        channel: { id: "channel-1", name: "general", type: 0 },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const result = await acceptDiscordInvite("token", "https://discord.gg/jKqsESXTc", { sessionId: "gateway-session" });
+
+    expect(requests).toEqual([{
+      url: "https://discord.com/api/v9/invites/jKqsESXTc?with_counts=true&with_expiration=true",
+      method: "GET",
+      authorization: "token",
+      contextProperties: undefined,
+      body: {},
+    }, {
+      url: "https://discord.com/api/v9/invites/jKqsESXTc",
+      method: "POST",
+      authorization: "token",
+      contextProperties: expect.any(String),
+      body: { session_id: "gateway-session" },
+    }]);
+    expect(result).toEqual({
+      code: "jKqsESXTc",
+      guildId: "guild-1",
+      guildName: "Example Server",
+      channelId: "channel-1",
+      channelName: "general",
+    });
+  });
+
+  test("surfaces captcha invite join failures", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/invites/jKqsESXTc?with_counts=true&with_expiration=true")) {
+        return new Response(JSON.stringify({ code: "jKqsESXTc" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/invites/jKqsESXTc") && init?.method === "POST") {
+        return new Response(JSON.stringify({ captcha_key: ["captcha-required"], captcha_sitekey: "sitekey" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    await expect(acceptDiscordInvite("token", "https://discord.gg/jKqsESXTc"))
+      .rejects.toThrow("Captcha required to join this server.");
+  });
+
   test("deletes a channel message through Discord REST", async () => {
     const requests: Array<{ url: string; method: string }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

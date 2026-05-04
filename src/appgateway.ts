@@ -19,6 +19,7 @@ import {
   type DiscordMessageResponse,
   type DiscordPresenceStatus,
 } from "./discord";
+import { debugLog } from "./debuglog";
 import { buildVoiceStatePayload, type VoiceServerUpdate, type VoiceSignalingClient, type VoiceStateRequest, type VoiceStateUpdate } from "./voice";
 
 const API_BASE = "https://discord.com/api/v9";
@@ -122,6 +123,10 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
   isReady(): boolean {
     return this.ready && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  getSessionId(): string | null {
+    return this.sessionId;
   }
 
   subscribeToGuildChannel(guildId: string | null | undefined, channelId: string | null | undefined): void {
@@ -228,6 +233,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.ready = true;
       this.currentUserId = extractCurrentUserId(payload.d);
       this.sessionId = isObject(payload.d) && typeof payload.d.session_id === "string" ? payload.d.session_id : null;
+      debugLog("app_gateway.ready", { userId: this.currentUserId, hasSessionId: Boolean(this.sessionId) });
       this.callbacks.onCurrentUserRoleIds?.(extractCurrentUserRoleIdsByGuildId(payload.d));
       this.callbacks.onReadyGuilds?.(extractReadyGuilds(payload.d));
       this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
@@ -240,6 +246,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     if (payload.t === "RESUMED") {
       this.reconnectAttempt = 0;
       this.ready = true;
+      debugLog("app_gateway.resumed", { hasSessionId: Boolean(this.sessionId) });
       this.sendPresenceUpdate();
       this.sendGuildChannelSubscription();
       return;
@@ -404,10 +411,13 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
   private handleClose = (event: CloseEvent): void => {
     const manual = this.manualDisconnect;
+    const wasReady = this.ready;
+    debugLog("app_gateway.close", { code: event.code, reason: event.reason || null, manualDisconnect: manual, wasReady });
     this.closeSocket();
     if (manual) return;
 
     if (event.code === 4004) {
+      debugLog("app_gateway.auth_failed", { wasReady });
       this.callbacks.onError?.(new Error("Discord gateway authentication failed."));
       return;
     }
@@ -417,6 +427,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
   private handleError = (): void => {
     if (this.manualDisconnect) return;
+    debugLog("app_gateway.error", {});
     this.callbacks.onError?.(new Error("Discord gateway connection error."));
   };
 

@@ -42,6 +42,7 @@ import { render } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
   bootstrapReadOnlyClient,
+  currentAppGatewaySessionId,
   disconnectAppGateway,
   disconnectMemberListGateway,
   deleteMessage,
@@ -107,7 +108,8 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
-import { DIRECT_MESSAGES_GUILD_ID, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { debugLog } from "./debuglog";
 import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
 import { downloadAttachment, openTargetDetached, type AttachmentDownloadProgress } from "./openable";
@@ -231,6 +233,47 @@ function formatAttachmentDownloadProgress(progress: AttachmentDownloadProgress):
 function showAttachmentDownloadProgress(filename: string, progress: AttachmentDownloadProgress): void {
   setNotice(state, `Downloading ${filename}… ${formatAttachmentDownloadProgress(progress)}`, "muted", { loading: true, chat: false });
   scheduleRender();
+}
+
+function inviteJoinLabel(result: DiscordInviteJoinResult): string {
+  if (result.guildName) return `“${result.guildName}”`;
+  if (result.guildId) return `server ${result.guildId}`;
+  return `invite ${result.code}`;
+}
+
+function showInviteNotice(text: string, tone: "muted" | "warning" = "muted", loading = false): void {
+  setNotice(state, text, tone, { loading, statusLine: true, chat: false });
+  scheduleRender();
+}
+
+function joinDiscordInviteTarget(target: string, code: string): void {
+  const token = state.auth.savedToken;
+  if (!token) {
+    showInviteNotice("Login first with /login <token|username> to join Discord invites.", "warning");
+    return;
+  }
+
+  const sessionId = currentAppGatewaySessionId(token);
+  debugLog("invite.join.start", { code, hasSessionId: Boolean(sessionId) });
+  showInviteNotice(`Joining Discord invite ${code}…`, "muted", true);
+  void (async () => {
+    try {
+      const result = await acceptDiscordInvite(token, target, { sessionId });
+      if (!running) return;
+      debugLog("invite.join.success", {
+        code: result.code,
+        guildId: result.guildId,
+        channelId: result.channelId,
+      });
+      showInviteNotice(`Joined ${inviteJoinLabel(result)}. Refreshing servers…`, "muted", true);
+      bootstrapSession(token);
+    } catch (error) {
+      if (!running) return;
+      const message = error instanceof Error ? error.message : String(error);
+      debugLog("invite.join.error", { code, error: message });
+      showInviteNotice(`Could not join Discord invite ${code}: ${message}`, "warning");
+    }
+  })();
 }
 
 function applyThemeCursor(): void {
@@ -965,6 +1008,11 @@ function handleHistoryFocused(key: KeyEvent): boolean {
 
       const target = openableTargetAtHistoryCursor(state);
       if (!target) return true;
+      const inviteCode = discordInviteCodeFromUrl(target);
+      if (inviteCode) {
+        joinDiscordInviteTarget(target, inviteCode);
+        return true;
+      }
       if (!openTargetDetached(target)) {
         setNotice(state, `No opener configured for ${target}.`, "warning");
         scheduleRender();

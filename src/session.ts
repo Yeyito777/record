@@ -1515,6 +1515,11 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
   subscribeAppGatewayToActiveChannel(state);
 }
 
+export function currentAppGatewaySessionId(token: string | null | undefined): string | null {
+  if (!token || !appGateway || appGatewayToken !== token) return null;
+  return appGateway.getSessionId();
+}
+
 export function clearReadOnlyClient(state: AppState): void {
   disconnectMemberListGateway();
   disconnectAppGateway();

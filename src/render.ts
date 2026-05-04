@@ -363,7 +363,9 @@ export function render(state: AppState): void {
   );
   const timelineNotice = state.timeline.messages.length === 0 && state.timeline.channelId === null
     ? state.notice
-    : { ...state.notice, chat: false };
+    : (state.notice.statusLine === false && state.notice.chat !== false)
+      ? state.notice
+      : { ...state.notice, chat: false };
   const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, timelineNotice, state.loadingFrameIndex);
 
   if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom && !pinPromptChromeToBottom && !pinTypingToBottom) {

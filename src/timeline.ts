@@ -344,7 +344,7 @@ export function renderTimelineLines(
   timeline: TimelineState,
   width: number,
   height: number,
-  notice: { text: string; tone: "muted" | "success" | "warning" | "error"; loading?: boolean; chat?: boolean },
+  notice: { text: string; tone: "muted" | "success" | "warning" | "error"; loading?: boolean; chat?: boolean; statusLine?: boolean },
   loadingFrameIndex = 0,
 ): RenderedTimeline {
   let allLines: string[] = [];
@@ -354,22 +354,32 @@ export function renderTimelineLines(
   let messageBounds: TimelineMessageBound[] = [];
 
   const showNoticeInTimeline = notice.chat !== false;
+  const noticeAfterContent = showNoticeInTimeline && notice.statusLine === false && Boolean(notice.text) && timeline.messages.length > 0;
 
-  if (showNoticeInTimeline && notice.text) {
+  const appendNoticeLines = (position: "before" | "after"): void => {
+    if (!showNoticeInTimeline || !notice.text) return;
+    if (position === "after" && allLines.length > 0) {
+      allLines.push("");
+      lineAnchors.push("notice:gap:before");
+      lineBackgrounds.push("");
+      wrapContinuation.push(false);
+    }
     for (const [index, line] of notice.text.split("\n").entries()) {
       const renderedLine = notice.loading ? loadingLabel(line, loadingFrameIndex) : line;
       allLines.push(`${toneColor(notice.tone)}${truncate(renderedLine, width)}${theme.reset}`);
-      lineAnchors.push(`notice:${index}:${notice.loading ? "loading" : "static"}:${line}`);
+      lineAnchors.push(`notice:${position}:${index}:${notice.loading ? "loading" : "static"}:${line}`);
       lineBackgrounds.push("");
       wrapContinuation.push(false);
     }
-    if (allLines.length > 0) {
+    if (position === "before" && allLines.length > 0) {
       allLines.push("");
-      lineAnchors.push("notice:gap");
+      lineAnchors.push("notice:gap:after");
       lineBackgrounds.push("");
       wrapContinuation.push(false);
     }
-  }
+  };
+
+  if (!noticeAfterContent) appendNoticeLines("before");
 
   if (timeline.loading) {
     allLines.push(`${theme.muted}${truncate(loadingLabel("Loading messages…", loadingFrameIndex), width)}${theme.reset}`);
@@ -399,6 +409,8 @@ export function renderTimelineLines(
       messageBounds = content.messageBounds;
     }
   }
+
+  if (noticeAfterContent) appendNoticeLines("after");
 
   if (!(showNoticeInTimeline && notice.text) && timeline.loading && timeline.messages.length > 0) {
     prependBlankTimelineRows(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, Math.max(0, height - allLines.length));
