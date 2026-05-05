@@ -72,6 +72,13 @@ export interface DiscordInviteJoinResult {
   channelName: string | null;
 }
 
+export class DiscordCaptchaRequiredError extends Error {
+  constructor(message = "Captcha required to join this server.") {
+    super(message);
+    this.name = "DiscordCaptchaRequiredError";
+  }
+}
+
 const DISCORD_CLIENT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
 
 interface DiscordUserSettingsResponse {
@@ -1299,6 +1306,10 @@ function buildDiscordError(status: number, body: DiscordErrorResponse | null): E
     return new Error("Discord rate-limited the request. Try again in a moment.");
   }
 
+  if (body?.captcha_key !== undefined || body?.captcha_sitekey !== undefined) {
+    return new DiscordCaptchaRequiredError();
+  }
+
   const detail = discordErrorDetail(body);
   return new Error(`Discord returned ${status}.${detail}`.trim());
 }
@@ -1306,9 +1317,6 @@ function buildDiscordError(status: number, body: DiscordErrorResponse | null): E
 function discordErrorDetail(body: DiscordErrorResponse | null): string {
   if (!body) return "";
   if (body.message) return ` ${body.message}`;
-  if (body.captcha_key !== undefined || body.captcha_sitekey !== undefined) {
-    return " Captcha required to join this server.";
-  }
   const errorSummary = summarizeDiscordErrorObject(body.errors);
   if (errorSummary) return ` ${errorSummary}`;
   return "";

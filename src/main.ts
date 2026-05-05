@@ -108,7 +108,7 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { debugLog } from "./debuglog";
 import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
@@ -246,6 +246,15 @@ function showInviteNotice(text: string, tone: "muted" | "warning" = "muted", loa
   scheduleRender();
 }
 
+function openInviteInBrowserForCaptcha(target: string, code: string): void {
+  debugLog("invite.join.captcha_open_browser", { code });
+  if (openTargetDetached(target)) {
+    showInviteNotice(`Captcha required for invite ${code}; opening in browser…`, "warning");
+  } else {
+    showInviteNotice(`Captcha required for invite ${code}, but no browser opener is configured.`, "warning");
+  }
+}
+
 function joinDiscordInviteTarget(target: string, code: string): void {
   const token = state.auth.savedToken;
   if (!token) {
@@ -271,6 +280,10 @@ function joinDiscordInviteTarget(target: string, code: string): void {
       if (!running) return;
       const message = error instanceof Error ? error.message : String(error);
       debugLog("invite.join.error", { code, error: message });
+      if (error instanceof DiscordCaptchaRequiredError) {
+        openInviteInBrowserForCaptcha(target, code);
+        return;
+      }
       showInviteNotice(`Could not join Discord invite ${code}: ${message}`, "warning");
     }
   })();
