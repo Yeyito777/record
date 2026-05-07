@@ -1,0 +1,351 @@
+import { VOICE_GATEWAY_REJOIN_ATTEMPTS, VOICE_GATEWAY_REJOIN_DELAY_MS, VOICE_READY_TIMEOUT_MS, VOICE_SIGNALING_READY_RETRY_MS, VOICE_SIGNALING_READY_TIMEOUT_MS } from "./constants";
+import { isRecoverableVoiceGatewayClose, isTerminalVoiceGatewayClose } from "./errors";
+import { fetchPreferredVoiceRegions } from "./regions";
+import { createDefaultVoiceAudioBackend } from "./audio-ffmpeg";
+import { DiscordVoiceGatewayConnection } from "./gateway";
+import { VoiceGatewayCloseError, type PendingVoiceJoin, type VoiceCallControllerOptions, type VoiceCallSession, type VoiceCallStartOptions, type VoiceCallStartResult, type VoiceCallTarget, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceServerUpdate, type VoiceStateRequest, type VoiceStateUpdate } from "./types";
+
+export class VoiceCallController {
+  private pending: PendingVoiceJoin | null = null;
+  private active: VoiceCallSession | null = null;
+  private recoveringSession: VoiceCallSession | null = null;
+
+  constructor(private readonly options: VoiceCallControllerOptions) {}
+
+  get activeSession(): VoiceCallSession | null {
+    return this.active;
+  }
+
+  async startCall(target: VoiceCallTarget, startOptions: VoiceCallStartOptions = {}): Promise<VoiceCallStartResult> {
+    if (this.active && this.active.state !== "ended" && this.active.state !== "error") {
+      if (!startOptions.replaceActive) throw new Error("Already in a call.");
+      this.leave();
+    }
+    if (this.pending) throw new Error("Already joining a call.");
+
+    const session: VoiceCallSession = {
+      target,
+      state: "signaling",
+      gateway: null,
+      startedAt: Date.now(),
+      selfMute: false,
+      selfDeaf: false,
+    };
+    this.active = session;
+    this.emitState();
+
+    const preferredRegions = target.preferredRegions ?? await this.fetchPreferredRegions();
+    if (this.active !== session) throw new Error("Call cancelled.");
+    session.target = { ...target, preferredRegions };
+
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= VOICE_GATEWAY_REJOIN_ATTEMPTS; attempt++) {
+      try {
+        if (attempt > 0) await this.prepareVoiceGatewayRejoin(session);
+        await this.connectSessionGateway(session);
+
+        const warnings: string[] = [];
+        const recipients = target.recipientIds ?? [];
+        if (target.ringRecipients !== false && recipients.length > 0 && this.options.ringRecipients) {
+          try {
+            await this.options.ringRecipients(target.channelId, recipients);
+          } catch (error) {
+            warnings.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+
+        if (this.active !== session) throw new Error("Call cancelled.");
+        session.state = "ready";
+        this.emitState();
+        return { session, warnings };
+      } catch (error) {
+        const asErr = error instanceof Error ? error : new Error(String(error));
+        lastError = asErr;
+        session.gateway?.disconnect();
+        session.gateway = null;
+        if (this.active !== session) throw asErr;
+        if (attempt < VOICE_GATEWAY_REJOIN_ATTEMPTS && isRecoverableVoiceGatewayClose(asErr)) continue;
+        this.failSession(session, asErr);
+        throw asErr;
+      }
+    }
+
+    const error = lastError ?? new Error("Failed to join Discord voice gateway.");
+    this.failSession(session, error);
+    throw error;
+  }
+
+
+  leave(): void {
+    if (this.pending) this.clearPending(new Error("Call cancelled."));
+    if (this.active?.gateway) this.active.gateway.disconnect();
+    if (this.active) {
+      this.active.state = "ended";
+      this.active.gateway = null;
+      this.emitState();
+    }
+    this.active = null;
+    this.recoveringSession = null;
+    this.options.signaling.leaveVoice();
+    this.emitState();
+  }
+
+  disconnect(): void {
+    this.leave();
+  }
+
+  setSelfMute(selfMute: boolean): boolean {
+    return this.updateSelfVoiceState({ selfMute });
+  }
+
+  toggleSelfMute(): boolean | null {
+    const session = this.active;
+    if (!session || session.state === "ended" || session.state === "error") return null;
+    return this.setSelfMute(!session.selfMute);
+  }
+
+  setSelfDeaf(selfDeaf: boolean): boolean {
+    return this.updateSelfVoiceState({ selfDeaf });
+  }
+
+  toggleSelfDeaf(): boolean | null {
+    const session = this.active;
+    if (!session || session.state === "ended" || session.state === "error") return null;
+    return this.setSelfDeaf(!session.selfDeaf);
+  }
+
+  handleVoiceStateUpdate(update: VoiceStateUpdate): void {
+    if (update.userId !== this.options.selfUserId) return;
+    const active = this.active;
+    if (active && update.channelId === active.target.channelId) {
+      const changed = active.selfMute !== update.selfMute || active.selfDeaf !== update.selfDeaf;
+      active.selfMute = update.selfMute;
+      active.selfDeaf = update.selfDeaf;
+      if (changed) {
+        active.gateway?.setSelfVoiceState?.({ selfMute: active.selfMute, selfDeaf: active.selfDeaf });
+        this.emitState();
+      }
+    }
+    if (!this.pending) return;
+    if (update.channelId !== this.pending.target.channelId) return;
+    this.pending.state = update;
+    this.maybeResolvePending();
+  }
+
+  handleVoiceServerUpdate(update: VoiceServerUpdate): void {
+    if (!this.pending) return;
+    const targetGuildId = this.pending.target.guildId ?? this.pending.target.channelId;
+    if (update.guildId && update.guildId !== targetGuildId && update.guildId !== this.pending.target.guildId) return;
+    if (!update.endpoint) return;
+    this.pending.server = update;
+    this.maybeResolvePending();
+  }
+
+  private async fetchPreferredRegions(): Promise<string[]> {
+    try {
+      return await (this.options.fetchPreferredRegions ? this.options.fetchPreferredRegions() : fetchPreferredVoiceRegions());
+    } catch {
+      return [];
+    }
+  }
+
+  private updateSelfVoiceState(update: { selfMute?: boolean; selfDeaf?: boolean }): boolean {
+    const session = this.active;
+    if (!session || session.state === "ended" || session.state === "error") return false;
+    const previousMute = session.selfMute;
+    const previousDeaf = session.selfDeaf;
+    session.selfMute = update.selfMute ?? session.selfMute;
+    session.selfDeaf = update.selfDeaf ?? session.selfDeaf;
+    session.gateway?.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
+    this.emitState();
+
+    const requested = this.options.signaling.requestVoiceState({
+      guildId: session.target.guildId,
+      channelId: session.target.channelId,
+      selfMute: session.selfMute,
+      selfDeaf: session.selfDeaf,
+      selfVideo: false,
+      preferredRegions: session.target.preferredRegions,
+    });
+    if (requested) return true;
+
+    session.selfMute = previousMute;
+    session.selfDeaf = previousDeaf;
+    session.gateway?.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
+    this.emitState();
+    return false;
+  }
+
+  private async requestGatewayDataWhenSignalingReady(session: VoiceCallSession, request: VoiceStateRequest): Promise<VoiceGatewayJoinData> {
+    const deadline = Date.now() + VOICE_SIGNALING_READY_TIMEOUT_MS;
+    const retryDelay = Math.max(0, this.options.retryDelayMs ?? VOICE_SIGNALING_READY_RETRY_MS);
+    while (true) {
+      if (this.active !== session) throw new Error("Call cancelled.");
+      if (this.options.signaling.isReady()) {
+        const gatewayDataPromise = this.waitForGatewayData(session.target);
+        if (this.options.signaling.requestVoiceState(request)) return gatewayDataPromise;
+        void gatewayDataPromise.catch(() => {});
+        this.clearPending(new Error("Retrying Discord gateway voice-state request."));
+      }
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for Discord gateway to become ready.");
+      await sleep(retryDelay);
+    }
+  }
+
+  private async connectSessionGateway(session: VoiceCallSession): Promise<void> {
+    if (this.active !== session) throw new Error("Call cancelled.");
+    session.state = "signaling";
+    this.emitState();
+
+    const gatewayData = await this.requestGatewayDataWhenSignalingReady(session, {
+      guildId: session.target.guildId,
+      channelId: session.target.channelId,
+      selfMute: session.selfMute,
+      selfDeaf: session.selfDeaf,
+      selfVideo: false,
+      preferredRegions: session.target.preferredRegions,
+    });
+    if (this.active !== session) throw new Error("Call cancelled.");
+    session.state = "connecting";
+    this.emitState();
+
+    const callbacks = this.gatewayCallbacks(session);
+    const gateway = this.options.createGatewayConnection?.(gatewayData, callbacks)
+      ?? new DiscordVoiceGatewayConnection(gatewayData, createDefaultVoiceAudioBackend(), callbacks);
+    session.gateway = gateway;
+    gateway.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
+    await gateway.connect();
+  }
+
+  private gatewayCallbacks(session: VoiceCallSession): VoiceGatewayConnectionCallbacks {
+    return {
+      onError: this.options.onError,
+      onClose: (error) => this.handleGatewayClose(session, error),
+      onSpeakingChange: this.options.onSpeakingChange,
+    };
+  }
+
+  private handleGatewayClose(session: VoiceCallSession, error: VoiceGatewayCloseError): void {
+    if (this.active !== session || session.state === "ended" || session.state === "error") return;
+    session.gateway = null;
+    if (isTerminalVoiceGatewayClose(error)) {
+      this.endSession(session);
+      return;
+    }
+    if (!isRecoverableVoiceGatewayClose(error)) {
+      this.failSession(session, error);
+      return;
+    }
+    if (this.recoveringSession === session) return;
+    this.recoveringSession = session;
+    void this.recoverVoiceGateway(session, error).finally(() => {
+      if (this.recoveringSession === session) this.recoveringSession = null;
+    });
+  }
+
+  private async recoverVoiceGateway(session: VoiceCallSession, cause: VoiceGatewayCloseError): Promise<void> {
+    let lastError: Error = cause;
+    for (let attempt = 0; attempt < VOICE_GATEWAY_REJOIN_ATTEMPTS; attempt++) {
+      if (this.active !== session) return;
+      try {
+        await this.prepareVoiceGatewayRejoin(session);
+        await this.connectSessionGateway(session);
+        if (this.active !== session) return;
+        session.state = "ready";
+        this.emitState();
+        return;
+      } catch (error) {
+        const asErr = error instanceof Error ? error : new Error(String(error));
+        lastError = asErr;
+        session.gateway?.disconnect();
+        session.gateway = null;
+        if (!isRecoverableVoiceGatewayClose(asErr)) break;
+      }
+    }
+
+    if (this.active === session) this.failSession(session, lastError);
+  }
+
+  private async prepareVoiceGatewayRejoin(session: VoiceCallSession): Promise<void> {
+    if (this.pending) this.clearPending(new Error("Retrying Discord voice gateway."));
+    session.gateway?.disconnect();
+    session.gateway = null;
+    session.state = "signaling";
+    this.emitState();
+    this.options.signaling.leaveVoice();
+    const delay = Math.max(0, this.options.retryDelayMs ?? VOICE_GATEWAY_REJOIN_DELAY_MS);
+    if (delay > 0) await sleep(delay);
+  }
+
+  private waitForGatewayData(target: VoiceCallTarget): Promise<VoiceGatewayJoinData> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.clearPending(new Error("Timed out waiting for Discord voice gateway details."));
+      }, VOICE_READY_TIMEOUT_MS);
+      timer.unref?.();
+      this.pending = { target, state: null, server: null, resolve, reject, timer };
+    });
+  }
+
+  private maybeResolvePending(): void {
+    const pending = this.pending;
+    if (!pending || !pending.state || !pending.server) return;
+    if (!pending.state.sessionId) {
+      this.clearPending(new Error("Discord voice state did not include a session id."));
+      return;
+    }
+    if (!pending.server.endpoint) {
+      this.clearPending(new Error("Discord voice server did not include an endpoint."));
+      return;
+    }
+
+    clearTimeout(pending.timer);
+    this.pending = null;
+    pending.resolve({
+      guildId: pending.state.guildId ?? pending.target.channelId,
+      channelId: pending.target.channelId,
+      userId: this.options.selfUserId,
+      sessionId: pending.state.sessionId,
+      token: pending.server.token,
+      endpoint: pending.server.endpoint,
+    });
+  }
+
+  private clearPending(error: Error): void {
+    const pending = this.pending;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pending = null;
+    pending.reject(error);
+  }
+
+  private endSession(session: VoiceCallSession): void {
+    if (this.active !== session) return;
+    session.state = "ended";
+    session.gateway?.disconnect();
+    session.gateway = null;
+    this.options.signaling.leaveVoice();
+    this.emitState();
+    this.active = null;
+    this.recoveringSession = null;
+    this.emitState();
+  }
+
+  private failSession(session: VoiceCallSession, error: Error): void {
+    session.state = "error";
+    session.gateway?.disconnect();
+    session.gateway = null;
+    this.options.signaling.leaveVoice();
+    this.options.onError?.(error);
+    this.emitState();
+    if (this.active === session) this.active = null;
+  }
+
+  private emitState(): void {
+    this.options.onStateChange?.(this.active);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
