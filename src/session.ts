@@ -501,13 +501,16 @@ function forgetCallJoinSound(channelId: string, userId: string): void {
   if (played.size === 0) callJoinSoundUserIdsByChannelId.delete(channelId);
 }
 
-function rememberActiveCallMessageParticipants(state: AppState, channelId: string, participantIds: readonly string[], source: string): boolean {
+function rememberActiveCallMessageParticipants(state: AppState, channelId: string, participantIds: readonly string[], source: string): { changed: boolean; addedParticipantIds: string[] } {
   const selfUserId = state.auth.user?.id;
   const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
   const departed = departedCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
   const before = new Set(participants);
+  const addedParticipantIds: string[] = [];
   for (const userId of participantIds) {
-    if (userId && userId !== selfUserId && !departed.has(userId)) participants.add(userId);
+    if (!userId || userId === selfUserId || departed.has(userId)) continue;
+    if (!participants.has(userId)) addedParticipantIds.push(userId);
+    participants.add(userId);
   }
   const changed = participants.size !== before.size || Array.from(participants).some((userId) => !before.has(userId));
   knownCallParticipantsByChannelId.set(channelId, participants);
@@ -518,25 +521,20 @@ function rememberActiveCallMessageParticipants(state: AppState, channelId: strin
     departed: Array.from(departed),
     before: Array.from(before),
     after: Array.from(participants),
+    addedParticipantIds,
     changed,
   });
   if (changed) stopOutboundCallRingtone(channelId, "participant_join_call_message");
-  return changed;
+  return { changed, addedParticipantIds };
 }
 
 function handleCallMessageParticipants(state: AppState, channelId: string, call: DiscordMessage["call"], source: string): void {
   if (!call || call.endedTimestamp !== null) return;
-  const beforeRemoteParticipants = remoteCallParticipantIds(state, channelId);
-  const changed = rememberActiveCallMessageParticipants(state, channelId, call.participantIds, source);
+  const { changed, addedParticipantIds } = rememberActiveCallMessageParticipants(state, channelId, call.participantIds, source);
   const session = voiceCallController?.activeSession;
   if (changed && session?.target.channelId === channelId) {
-    const addedRemoteParticipants = newRemoteCallParticipantIds(
-      state.auth.user?.id,
-      beforeRemoteParticipants,
-      remoteCallParticipantIds(state, channelId),
-    );
-    if (addedRemoteParticipants.length > 0) {
-      playCallJoinSoundForParticipants(channelId, addedRemoteParticipants, "call_message");
+    if (addedParticipantIds.length > 0) {
+      playCallJoinSoundForParticipants(channelId, addedParticipantIds, "call_message");
     }
     syncVoiceCallStatus(state, session);
   }
