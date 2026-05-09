@@ -27,8 +27,9 @@ import { setChannelList } from "./channels";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
 import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
-import { resolveAction } from "./keybinds";
+import { resolveAction, resolveNavigationAction } from "./keybinds";
 import {
+  jumpMemberListSelectionToEdge,
   jumpMemberListSelectionToVisibleEdge,
   jumpMemberListSelectionToVisibleMiddle,
   MEMBER_LIST_WIDTH,
@@ -58,6 +59,7 @@ import { renderStatusLine } from "./statusline";
 import {
   activateSelectedEntry,
   getSelectedSidebarEntry,
+  jumpSidebarSelectionToEdge,
   jumpSidebarSelectionToVisibleEdge,
   handleSidebarPromptKey,
   handleSidebarSearchBarKey,
@@ -670,6 +672,7 @@ function handleGlobalAction(key: KeyEvent): boolean {
     : "prompt";
   const action = resolveAction(key, context);
   if (action && action !== "cancel_action" && !action.startsWith("nav_") && action !== "focus_prompt") {
+    state.navigationPendingKeys = "";
     clearPendingMessageDelete();
   }
 
@@ -752,6 +755,7 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
 
 function handleSidebarFocused(key: KeyEvent): boolean {
   if (state.sidebar.prompt) {
+    state.navigationPendingKeys = "";
     handleSidebarPromptKey(state.sidebar, key, state.channelList.channels, sidebarVisibilityOptions());
     persistSidebarFolders(state);
     scheduleRender();
@@ -759,12 +763,14 @@ function handleSidebarFocused(key: KeyEvent): boolean {
   }
 
   if (state.sidebar.search?.barOpen) {
+    state.navigationPendingKeys = "";
     handleSidebarSearchBarKey(state.sidebar, state.channelList.channels, key, sidebarVisibilityOptions());
     scheduleRender();
     return true;
   }
 
   if (key.type === "escape") {
+    state.navigationPendingKeys = "";
     state.sidebar.visualAnchor = null;
     state.sidebar.pendingDeleteItem = null;
     scheduleRender();
@@ -772,9 +778,38 @@ function handleSidebarFocused(key: KeyEvent): boolean {
   }
 
   if (key.type === "backspace") {
+    state.navigationPendingKeys = "";
     leaveSidebarFolder(state.sidebar);
     scheduleRender();
     return true;
+  }
+
+  const navigation = resolveNavigationAction(key, state.navigationPendingKeys);
+  state.navigationPendingKeys = navigation.pendingKeys;
+  if (!navigation.action) return navigation.handled;
+
+  switch (navigation.action) {
+    case "focus_prompt":
+      focusPromptInsert(key.type === "char" && key.char === "a");
+      return true;
+    case "nav_up":
+      moveSidebarSelection(state.sidebar, state.channelList.channels, -1, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    case "nav_down":
+      moveSidebarSelection(state.sidebar, state.channelList.channels, 1, sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    case "nav_top":
+      jumpSidebarSelectionToEdge(state.sidebar, state.channelList.channels, state.rows, "top", sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    case "nav_bottom":
+      jumpSidebarSelectionToEdge(state.sidebar, state.channelList.channels, state.rows, "bottom", sidebarVisibilityOptions());
+      scheduleRender();
+      return true;
+    default:
+      break;
   }
 
   if (key.type === "char" && key.char) {
@@ -846,21 +881,10 @@ function handleSidebarFocused(key: KeyEvent): boolean {
     }
   }
 
-  const action = resolveAction(key, "navigation");
+  const action = navigation.action;
   if (!action) return false;
 
   switch (action) {
-    case "focus_prompt":
-      focusPromptInsert(key.type === "char" && key.char === "a");
-      return true;
-    case "nav_up":
-      moveSidebarSelection(state.sidebar, state.channelList.channels, -1, sidebarVisibilityOptions());
-      scheduleRender();
-      return true;
-    case "nav_down":
-      moveSidebarSelection(state.sidebar, state.channelList.channels, 1, sidebarVisibilityOptions());
-      scheduleRender();
-      return true;
     case "nav_prev_server":
       moveSidebarSelectionToPrevGuild(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       scheduleRender();
@@ -1040,8 +1064,10 @@ function handleHistoryFocused(key: KeyEvent): boolean {
 }
 
 function handleMemberListFocused(key: KeyEvent): boolean {
-  const action = resolveAction(key, "navigation");
-  if (!action) return false;
+  const navigation = resolveNavigationAction(key, state.navigationPendingKeys);
+  state.navigationPendingKeys = navigation.pendingKeys;
+  const action = navigation.action;
+  if (!action) return navigation.handled;
 
   switch (action) {
     case "focus_prompt":
@@ -1056,6 +1082,14 @@ function handleMemberListFocused(key: KeyEvent): boolean {
         Math.max(0, state.memberList.members.length - 1),
         state.memberList.selectedIndex + 1,
       );
+      scheduleRender();
+      return true;
+    case "nav_top":
+      jumpMemberListSelectionToEdge(state.memberList, state.rows, "top");
+      scheduleRender();
+      return true;
+    case "nav_bottom":
+      jumpMemberListSelectionToEdge(state.memberList, state.rows, "bottom");
       scheduleRender();
       return true;
     case "nav_visible_top":

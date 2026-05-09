@@ -6,6 +6,7 @@ import {
   applySidebarFolderLayout,
   buildSidebarEntries,
   createSidebarState,
+  jumpSidebarSelectionToEdge,
   jumpSidebarSelectionToVisibleEdge,
   jumpSidebarSelectionToVisibleMiddle,
   moveSidebarSelection,
@@ -509,6 +510,25 @@ describe("sidebar state", () => {
     jumpSidebarSelectionToVisibleEdge(sidebar, [], 7, "bottom");
     expect(sidebar.selectedIndex).toBe(6);
     expect(sidebar.scrollOffset).toBe(2);
+  });
+
+  test("gg/G-style jumps move to the top and bottom of the servers menu", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, Array.from({ length: 20 }, (_unused, index) => ({
+      id: `guild-${index}`,
+      name: `Guild ${index}`,
+      icon: null,
+    })));
+    sidebar.selectedIndex = 10;
+    sidebar.scrollOffset = 8;
+
+    jumpSidebarSelectionToEdge(sidebar, [], 7, "top");
+    expect(sidebar.selectedIndex).toBe(0);
+    expect(sidebar.scrollOffset).toBe(0);
+
+    jumpSidebarSelectionToEdge(sidebar, [], 7, "bottom");
+    expect(sidebar.selectedIndex).toBe(19);
+    expect(sidebar.scrollOffset).toBe(15);
   });
 
   test("jumps between guilds with brace motions", () => {

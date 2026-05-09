@@ -1505,6 +1505,39 @@ export function jumpSidebarSelectionToVisibleEdge(
   sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
 }
 
+export function jumpSidebarSelectionToEdge(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  totalRows: number,
+  edge: "top" | "bottom",
+  options: SidebarVisibilityOptions = {},
+): void {
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  if (entries.length === 0) {
+    sidebar.selectedIndex = 0;
+    sidebar.scrollOffset = 0;
+    sidebar.selectedItem = null;
+    return;
+  }
+
+  const viewportRows = sidebarViewportRows(totalRows, sidebar);
+  const maxScroll = Math.max(0, entries.length - viewportRows);
+  const targetIndex = edge === "top"
+    ? findSelectableEntryIndex(entries, 0, entries.length - 1, 1)
+    : findSelectableEntryIndex(entries, entries.length - 1, 0, -1);
+
+  if (targetIndex == null) {
+    sidebar.selectedIndex = 0;
+    sidebar.scrollOffset = edge === "top" ? 0 : maxScroll;
+    sidebar.selectedItem = null;
+    return;
+  }
+
+  sidebar.selectedIndex = targetIndex;
+  sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
+  sidebar.scrollOffset = edge === "top" ? 0 : maxScroll;
+}
+
 export function jumpSidebarSelectionToVisibleMiddle(
   sidebar: SidebarState,
   channels: DiscordChannel[],

@@ -185,6 +185,25 @@ export function jumpMemberListSelectionToVisibleEdge(
   memberList.selectedIndex = targetIndex;
 }
 
+export function jumpMemberListSelectionToEdge(
+  memberList: MemberListState,
+  totalRows: number,
+  edge: "top" | "bottom",
+): void {
+  if (memberList.members.length === 0) return;
+
+  const viewportRows = memberListViewportRows(totalRows);
+  const maxScroll = Math.max(0, memberList.members.length - viewportRows);
+
+  if (edge === "top") {
+    memberList.selectedIndex = 0;
+    memberList.scrollOffset = 0;
+  } else {
+    memberList.selectedIndex = memberList.members.length - 1;
+    memberList.scrollOffset = maxScroll;
+  }
+}
+
 export function jumpMemberListSelectionToVisibleMiddle(memberList: MemberListState, totalRows: number): void {
   if (memberList.members.length === 0) return;
 
