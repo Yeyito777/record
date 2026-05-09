@@ -33,6 +33,8 @@ export type Action =
   | "nav_toggle_guild_mute"
   | "nav_move_guild_up"
   | "nav_move_guild_down"
+  | "nav_top"
+  | "nav_bottom"
   | "nav_visible_top"
   | "nav_visible_middle"
   | "nav_visible_bottom"
@@ -90,6 +92,19 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
   "char:L": "nav_visible_bottom",
 };
 
+const NAV_SEQUENCE_BINDS: Record<string, Action> = {
+  "gg": "nav_top",
+  "G": "nav_bottom",
+};
+
+const NAV_SEQUENCE_PREFIXES = new Set(["g"]);
+
+export interface NavigationActionResolution {
+  action: Action | null;
+  pendingKeys: string;
+  handled: boolean;
+}
+
 export type KeyContext = "prompt" | "navigation";
 
 export function resolveAction(key: KeyEvent, context: KeyContext = "prompt"): Action | null {
@@ -107,4 +122,27 @@ export function resolveAction(key: KeyEvent, context: KeyContext = "prompt"): Ac
   if (globalAction) return globalAction;
 
   return context === "navigation" ? NAV_BINDS[key.type] ?? null : null;
+}
+
+export function resolveNavigationAction(key: KeyEvent, pendingKeys = ""): NavigationActionResolution {
+  if (key.type === "char" && key.char) {
+    const fullKey = pendingKeys + key.char;
+    const sequenceAction = NAV_SEQUENCE_BINDS[fullKey];
+    if (sequenceAction) {
+      return { action: sequenceAction, pendingKeys: "", handled: true };
+    }
+
+    if (NAV_SEQUENCE_PREFIXES.has(fullKey)) {
+      return { action: null, pendingKeys: fullKey, handled: true };
+    }
+
+    if (pendingKeys) {
+      return { action: null, pendingKeys: "", handled: true };
+    }
+  } else if (pendingKeys) {
+    return { action: null, pendingKeys: "", handled: true };
+  }
+
+  const action = resolveAction(key, "navigation");
+  return { action, pendingKeys: "", handled: action !== null };
 }

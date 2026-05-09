@@ -88,6 +88,7 @@ export interface AppState {
   rows: number;
   panelFocus: PanelFocus;
   chatFocus: ChatFocus;
+  navigationPendingKeys: string;
   editor: EditorState;
   historyCursor: HistoryCursor;
   historyVisualAnchor: HistoryCursor;
@@ -133,6 +134,7 @@ export function createInitialState(
     rows: process.stdout.rows || 24,
     panelFocus: "chat",
     chatFocus: "prompt",
+    navigationPendingKeys: "",
     editor: createEditorState("", "insert"),
     historyCursor: createHistoryCursor(),
     historyVisualAnchor: createHistoryCursor(),
@@ -205,6 +207,7 @@ export function isCurrentAuthRequest(state: AppState, requestId: number): boolea
 }
 
 export function focusPrompt(state: AppState, append = false): void {
+  state.navigationPendingKeys = "";
   state.panelFocus = "chat";
   state.chatFocus = "prompt";
   const targetCursor = append ? state.editor.cursor + 1 : state.editor.cursor;
@@ -212,17 +215,20 @@ export function focusPrompt(state: AppState, append = false): void {
 }
 
 export function focusHistory(state: AppState): void {
+  state.navigationPendingKeys = "";
   state.panelFocus = "chat";
   state.chatFocus = "history";
   leaveInsertMode(state.editor);
 }
 
 export function focusSidebar(state: AppState): void {
+  state.navigationPendingKeys = "";
   state.panelFocus = "sidebar";
   leaveInsertMode(state.editor);
 }
 
 export function focusMemberList(state: AppState): void {
+  state.navigationPendingKeys = "";
   state.panelFocus = "memberlist";
   leaveInsertMode(state.editor);
 }

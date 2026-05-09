@@ -4,6 +4,7 @@ import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import {
   cacheMemberList,
   createMemberListState,
+  jumpMemberListSelectionToEdge,
   jumpMemberListSelectionToVisibleEdge,
   jumpMemberListSelectionToVisibleMiddle,
   moveMemberListSelection,
@@ -180,6 +181,27 @@ describe("member list", () => {
     jumpMemberListSelectionToVisibleEdge(memberList, 7, "bottom");
     expect(memberList.selectedIndex).toBe(6);
     expect(memberList.scrollOffset).toBe(2);
+  });
+
+  test("gg/G-style jumps move to the top and bottom of the members menu", () => {
+    const memberList = createMemberListState();
+    memberList.open = true;
+    setMemberListMembers(memberList, "guild-1", "channel-1", Array.from({ length: 20 }, (_unused, index) => ({
+      id: String(index),
+      username: `user-${index}`,
+      displayName: `User ${index}`,
+      bot: false,
+    })));
+    memberList.selectedIndex = 10;
+    memberList.scrollOffset = 8;
+
+    jumpMemberListSelectionToEdge(memberList, 7, "top");
+    expect(memberList.selectedIndex).toBe(0);
+    expect(memberList.scrollOffset).toBe(0);
+
+    jumpMemberListSelectionToEdge(memberList, 7, "bottom");
+    expect(memberList.selectedIndex).toBe(19);
+    expect(memberList.scrollOffset).toBe(15);
   });
 
   test("highlights the viewer row and keeps all rows inside the panel width", () => {

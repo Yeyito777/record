@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveAction } from "./keybinds";
+import { resolveAction, resolveNavigationAction } from "./keybinds";
 
 describe("keybinds", () => {
   test("Ctrl+S toggles the sidebar", () => {
@@ -71,6 +71,21 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "char", char: "H" }, "navigation")).toBe("nav_visible_top");
     expect(resolveAction({ type: "char", char: "M" }, "navigation")).toBe("nav_visible_middle");
     expect(resolveAction({ type: "char", char: "L" }, "navigation")).toBe("nav_visible_bottom");
+  });
+
+  test("navigation gg and G jump to the list top and bottom like Exocortex", () => {
+    const first = resolveNavigationAction({ type: "char", char: "g" });
+    expect(first).toEqual({ action: null, pendingKeys: "g", handled: true });
+    expect(resolveNavigationAction({ type: "char", char: "g" }, first.pendingKeys)).toEqual({
+      action: "nav_top",
+      pendingKeys: "",
+      handled: true,
+    });
+    expect(resolveNavigationAction({ type: "char", char: "G" })).toEqual({
+      action: "nav_bottom",
+      pendingKeys: "",
+      handled: true,
+    });
   });
 
   test("ctrl brackets jump between notifications globally", () => {
