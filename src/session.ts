@@ -165,6 +165,7 @@ let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | n
 const callWidget = new CallWidgetController();
 const recentIncomingCallRingtones = new Map<string, number>();
 const knownCallParticipantsByChannelId = new Map<string, Set<string>>();
+const departedCallParticipantsByChannelId = new Map<string, Set<string>>();
 const callVoiceStatesByChannelId = new Map<string, Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>>();
 const speakingCallUserIds = new Set<string>();
 const outboundCallRingtonesByChannelId = new Map<string, SoundEffectPlaybackHandle>();
@@ -205,6 +206,7 @@ export function disconnectAppGateway(): void {
   voiceCallController?.disconnect();
   voiceCallController = null;
   callVoiceStatesByChannelId.clear();
+  departedCallParticipantsByChannelId.clear();
   speakingCallUserIds.clear();
   callWidget.stop();
   appGateway?.disconnect();
@@ -429,23 +431,38 @@ export function activeCallMessageParticipantIds(state: AppState, channelId: stri
 }
 
 function remoteCallParticipantIds(state: AppState, channelId: string): string[] {
-  const selfUserId = state.auth.user?.id;
+  return resolveRemoteCallParticipantIds(
+    state.auth.user?.id,
+    activeCallMessageParticipantIds(state, channelId),
+    Array.from(knownCallParticipantsByChannelId.get(channelId) ?? []),
+    Array.from(departedCallParticipantsByChannelId.get(channelId) ?? []),
+  );
+}
+
+export function resolveRemoteCallParticipantIds(
+  selfUserId: string | null | undefined,
+  messageParticipantIds: readonly string[],
+  knownParticipantIds: readonly string[],
+  departedParticipantIds: readonly string[] = [],
+): string[] {
+  const departed = new Set(departedParticipantIds.filter(Boolean));
   const participantIds = new Set<string>();
-  for (const userId of activeCallMessageParticipantIds(state, channelId)) {
-    if (userId && userId !== selfUserId) participantIds.add(userId);
-  }
-  for (const userId of knownCallParticipantsByChannelId.get(channelId) ?? []) {
-    if (userId && userId !== selfUserId) participantIds.add(userId);
-  }
+  const add = (userId: string): void => {
+    if (!userId || userId === selfUserId || departed.has(userId)) return;
+    participantIds.add(userId);
+  };
+  for (const userId of messageParticipantIds) add(userId);
+  for (const userId of knownParticipantIds) add(userId);
   return Array.from(participantIds);
 }
 
 function rememberActiveCallMessageParticipants(state: AppState, channelId: string, participantIds: readonly string[], source: string): boolean {
   const selfUserId = state.auth.user?.id;
   const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const departed = departedCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
   const before = new Set(participants);
   for (const userId of participantIds) {
-    if (userId && userId !== selfUserId) participants.add(userId);
+    if (userId && userId !== selfUserId && !departed.has(userId)) participants.add(userId);
   }
   const changed = participants.size !== before.size || Array.from(participants).some((userId) => !before.has(userId));
   knownCallParticipantsByChannelId.set(channelId, participants);
@@ -453,6 +470,7 @@ function rememberActiveCallMessageParticipants(state: AppState, channelId: strin
     source,
     channelId,
     participantIds,
+    departed: Array.from(departed),
     before: Array.from(before),
     after: Array.from(participants),
     changed,
@@ -545,6 +563,12 @@ function syncCallParticipantSounds(state: AppState, channelId: string, voiceStat
   const selfUserId = state.auth.user?.id;
   if (!activeSession || activeSession.target.channelId !== channelId || activeSession.state === "ended" || activeSession.state === "error") {
     const baseline = new Set(voiceStateUserIds.filter((userId) => userId && userId !== selfUserId));
+    const departed = departedCallParticipantsByChannelId.get(channelId);
+    if (departed) {
+      for (const userId of baseline) departed.delete(userId);
+      if (departed.size > 0) departedCallParticipantsByChannelId.set(channelId, departed);
+      else departedCallParticipantsByChannelId.delete(channelId);
+    }
     knownCallParticipantsByChannelId.set(channelId, baseline);
     debugLog("call.participants.baseline", {
       source: "call_gateway_inactive",
@@ -552,6 +576,7 @@ function syncCallParticipantSounds(state: AppState, channelId: string, voiceStat
       activeChannelId: activeSession?.target.channelId ?? null,
       activeState: activeSession?.state ?? null,
       participants: Array.from(baseline),
+      departed: Array.from(departed ?? []),
       rawVoiceStateUserIds: voiceStateUserIds,
     });
     return false;
@@ -579,9 +604,11 @@ function syncCallParticipantSounds(state: AppState, channelId: string, voiceStat
   // from users missing in a snapshot; VOICE_STATE_UPDATE is the authoritative
   // path for join/leave removals.
   const after = new Set(previous);
+  const departed = departedCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
   let changed = false;
   for (const userId of next) {
-    if (!previous.has(userId)) {
+    const wasDeparted = departed.delete(userId);
+    if (!previous.has(userId) || wasDeparted) {
       after.add(userId);
       stopOutboundCallRingtone(channelId, "participant_join_call_gateway");
       debugLog("call.participants.sound", { source: "call_gateway", channelId, userId, action: "join", effect: "callJoin" });
@@ -590,6 +617,8 @@ function syncCallParticipantSounds(state: AppState, channelId: string, voiceStat
     }
   }
   knownCallParticipantsByChannelId.set(channelId, after);
+  if (departed.size > 0) departedCallParticipantsByChannelId.set(channelId, departed);
+  else departedCallParticipantsByChannelId.delete(channelId);
   debugLog("call.participants.snapshot", {
     source: "call_gateway",
     channelId,
@@ -597,6 +626,7 @@ function syncCallParticipantSounds(state: AppState, channelId: string, voiceStat
     previous: Array.from(previous),
     next: Array.from(next),
     after: Array.from(after),
+    departed: Array.from(departed),
     retainedMissing: Array.from(previous).filter((userId) => !next.has(userId)),
     rawVoiceStateUserIds: voiceStateUserIds,
     changed,
@@ -645,35 +675,47 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
   }
 
   const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const departed = departedCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
   debugLog("call.participants.voice_state", {
     channelId,
     activeState: activeSession.state,
     userId: update.userId,
     updateChannelId: update.channelId,
     before: Array.from(participants),
+    departedBefore: Array.from(departed),
   });
   let changed = false;
   if (update.channelId === channelId) {
-    if (!participants.has(update.userId)) {
+    const wasDeparted = departed.delete(update.userId);
+    if (!participants.has(update.userId) || wasDeparted) {
       participants.add(update.userId);
       stopOutboundCallRingtone(channelId, "participant_join_voice_state");
       debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "join", effect: "callJoin" });
       playSoundEffect("callJoin");
       changed = true;
     }
-  } else if (participants.delete(update.userId)) {
+  } else {
+    const wasKnown = participants.delete(update.userId);
+    const wasFromCallMessage = activeCallMessageParticipantIds(state, channelId).includes(update.userId);
+    const wasDeparted = departed.has(update.userId);
+    departed.add(update.userId);
     callVoiceStatesByChannelId.get(channelId)?.delete(update.userId);
     speakingCallUserIds.delete(update.userId);
-    debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave" });
-    playSoundEffect("callUserLeave");
-    changed = true;
+    if (!wasDeparted && (wasKnown || wasFromCallMessage)) {
+      debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave", wasKnown, wasFromCallMessage });
+      playSoundEffect("callUserLeave");
+      changed = true;
+    }
   }
   knownCallParticipantsByChannelId.set(channelId, participants);
+  if (departed.size > 0) departedCallParticipantsByChannelId.set(channelId, departed);
+  else departedCallParticipantsByChannelId.delete(channelId);
   debugLog("call.participants.voice_state_after", {
     channelId,
     userId: update.userId,
     updateChannelId: update.channelId,
     after: Array.from(participants),
+    departedAfter: Array.from(departed),
     changed,
   });
   if (changed) syncVoiceCallStatus(state, activeSession);
@@ -1462,6 +1504,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onCallDelete: (channelId) => {
       recentIncomingCallRingtones.delete(channelId);
       knownCallParticipantsByChannelId.delete(channelId);
+      departedCallParticipantsByChannelId.delete(channelId);
       callVoiceStatesByChannelId.delete(channelId);
       speakingCallUserIds.clear();
       stopOutboundCallRingtone(channelId, "call_delete");

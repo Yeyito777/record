@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, persistPresenceStatusWithRetries, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
+import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -833,6 +833,22 @@ describe("session", () => {
     };
 
     expect(activeCallMessageParticipantIds(state, "dm-1")).toEqual(["self", "friend"]);
+  });
+
+  test("does not keep departed call participants alive from stale call messages", () => {
+    expect(resolveRemoteCallParticipantIds(
+      "self",
+      ["self", "friend", "other"],
+      ["friend", "other"],
+      ["friend"],
+    )).toEqual(["other"]);
+
+    expect(resolveRemoteCallParticipantIds(
+      "self",
+      ["self", "friend", "other"],
+      ["friend", "other", "newcomer"],
+      [],
+    )).toEqual(["friend", "other", "newcomer"]);
   });
 
   test("failed edits restore the prompt, edit state, and original message", async () => {
