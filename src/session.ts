@@ -167,6 +167,7 @@ const recentIncomingCallRingtones = new Map<string, number>();
 const knownCallParticipantsByChannelId = new Map<string, Set<string>>();
 const departedCallParticipantsByChannelId = new Map<string, Set<string>>();
 const callVoiceStatesByChannelId = new Map<string, Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>>();
+const callJoinSoundUserIdsByChannelId = new Map<string, Set<string>>();
 const speakingCallUserIds = new Set<string>();
 const outboundCallRingtonesByChannelId = new Map<string, SoundEffectPlaybackHandle>();
 const INCOMING_CALL_RINGTONE_DEDUPE_MS = 15_000;
@@ -207,6 +208,7 @@ export function disconnectAppGateway(): void {
   voiceCallController = null;
   callVoiceStatesByChannelId.clear();
   departedCallParticipantsByChannelId.clear();
+  callJoinSoundUserIdsByChannelId.clear();
   speakingCallUserIds.clear();
   callWidget.stop();
   appGateway?.disconnect();
@@ -456,6 +458,49 @@ export function resolveRemoteCallParticipantIds(
   return Array.from(participantIds);
 }
 
+export function newRemoteCallParticipantIds(
+  selfUserId: string | null | undefined,
+  beforeParticipantIds: readonly string[],
+  afterParticipantIds: readonly string[],
+): string[] {
+  const before = new Set(beforeParticipantIds.filter((userId) => userId && userId !== selfUserId));
+  const added: string[] = [];
+  for (const userId of afterParticipantIds) {
+    if (!userId || userId === selfUserId || before.has(userId) || added.includes(userId)) continue;
+    added.push(userId);
+  }
+  return added;
+}
+
+function playCallJoinSoundOnce(channelId: string, userId: string, source: string): boolean {
+  if (!userId) return false;
+  const played = callJoinSoundUserIdsByChannelId.get(channelId) ?? new Set<string>();
+  if (played.has(userId)) {
+    debugLog("call.participants.sound_skipped", { source, channelId, userId, action: "join", reason: "already_played" });
+    return false;
+  }
+  played.add(userId);
+  callJoinSoundUserIdsByChannelId.set(channelId, played);
+  debugLog("call.participants.sound", { source, channelId, userId, action: "join", effect: "callJoin" });
+  playSoundEffect("callJoin");
+  return true;
+}
+
+function playCallJoinSoundForParticipants(channelId: string, userIds: readonly string[], source: string): boolean {
+  let played = false;
+  for (const userId of userIds) {
+    played = playCallJoinSoundOnce(channelId, userId, source) || played;
+  }
+  return played;
+}
+
+function forgetCallJoinSound(channelId: string, userId: string): void {
+  const played = callJoinSoundUserIdsByChannelId.get(channelId);
+  if (!played) return;
+  played.delete(userId);
+  if (played.size === 0) callJoinSoundUserIdsByChannelId.delete(channelId);
+}
+
 function rememberActiveCallMessageParticipants(state: AppState, channelId: string, participantIds: readonly string[], source: string): boolean {
   const selfUserId = state.auth.user?.id;
   const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
@@ -481,9 +526,20 @@ function rememberActiveCallMessageParticipants(state: AppState, channelId: strin
 
 function handleCallMessageParticipants(state: AppState, channelId: string, call: DiscordMessage["call"], source: string): void {
   if (!call || call.endedTimestamp !== null) return;
+  const beforeRemoteParticipants = remoteCallParticipantIds(state, channelId);
   const changed = rememberActiveCallMessageParticipants(state, channelId, call.participantIds, source);
   const session = voiceCallController?.activeSession;
-  if (changed && session?.target.channelId === channelId) syncVoiceCallStatus(state, session);
+  if (changed && session?.target.channelId === channelId) {
+    const addedRemoteParticipants = newRemoteCallParticipantIds(
+      state.auth.user?.id,
+      beforeRemoteParticipants,
+      remoteCallParticipantIds(state, channelId),
+    );
+    if (addedRemoteParticipants.length > 0) {
+      playCallJoinSoundForParticipants(channelId, addedRemoteParticipants, "call_message");
+    }
+    syncVoiceCallStatus(state, session);
+  }
 }
 
 function callHasRemoteParticipants(state: AppState, channelId: string): boolean {
@@ -611,8 +667,7 @@ function syncCallParticipantSounds(state: AppState, channelId: string, voiceStat
     if (!previous.has(userId) || wasDeparted) {
       after.add(userId);
       stopOutboundCallRingtone(channelId, "participant_join_call_gateway");
-      debugLog("call.participants.sound", { source: "call_gateway", channelId, userId, action: "join", effect: "callJoin" });
-      playSoundEffect("callJoin");
+      playCallJoinSoundOnce(channelId, userId, "call_gateway");
       changed = true;
     }
   }
@@ -690,8 +745,7 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
     if (!participants.has(update.userId) || wasDeparted) {
       participants.add(update.userId);
       stopOutboundCallRingtone(channelId, "participant_join_voice_state");
-      debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "join", effect: "callJoin" });
-      playSoundEffect("callJoin");
+      playCallJoinSoundOnce(channelId, update.userId, "voice_state");
       changed = true;
     }
   } else {
@@ -701,6 +755,7 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
     departed.add(update.userId);
     callVoiceStatesByChannelId.get(channelId)?.delete(update.userId);
     speakingCallUserIds.delete(update.userId);
+    forgetCallJoinSound(channelId, update.userId);
     if (!wasDeparted && (wasKnown || wasFromCallMessage)) {
       debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave", wasKnown, wasFromCallMessage });
       playSoundEffect("callUserLeave");
@@ -1353,8 +1408,13 @@ function syncCallWidget(state: AppState, session: VoiceCallSession | null): void
 function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null): void {
   const hadActiveCall = Boolean(state.voiceCall);
   if (!session || session.state === "ended" || session.state === "error") {
-    if (session?.target.channelId) stopOutboundCallRingtone(session.target.channelId, session.state);
-    else stopAllOutboundCallRingtones("idle");
+    if (session?.target.channelId) {
+      stopOutboundCallRingtone(session.target.channelId, session.state);
+      callJoinSoundUserIdsByChannelId.delete(session.target.channelId);
+    } else {
+      stopAllOutboundCallRingtones("idle");
+      callJoinSoundUserIdsByChannelId.clear();
+    }
     state.voiceCall = null;
     syncCallWidget(state, session);
     if (hadActiveCall && session?.state === "ended") playSoundEffect("callLeave");
@@ -2521,8 +2581,7 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
         remoteParticipants: remoteCallParticipantIds(state, channel.id),
       });
       if (hasRemoteParticipants) {
-        debugLog("call.participants.sound", { source: "existing_call_join", channelId: channel.id, action: "join", effect: "callJoin" });
-        playSoundEffect("callJoin");
+        playCallJoinSoundForParticipants(channel.id, remoteCallParticipantIds(state, channel.id), "existing_call_join");
       }
     } else {
       startOutboundCallRingtone(channel.id);

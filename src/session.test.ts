@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
+import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -849,6 +849,12 @@ describe("session", () => {
       ["friend", "other", "newcomer"],
       [],
     )).toEqual(["friend", "other", "newcomer"]);
+  });
+
+  test("detects newly added remote call participants", () => {
+    expect(newRemoteCallParticipantIds("self", ["self"], ["self", "friend"])).toEqual(["friend"]);
+    expect(newRemoteCallParticipantIds("self", ["friend"], ["self", "friend", "other", "other"])).toEqual(["other"]);
+    expect(newRemoteCallParticipantIds("self", ["friend", "other"], ["self", "friend", "other"])).toEqual([]);
   });
 
   test("failed edits restore the prompt, edit state, and original message", async () => {
