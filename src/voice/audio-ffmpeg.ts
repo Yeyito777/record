@@ -46,6 +46,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private lastPlaybackStatsAt = 0;
   private pcmRemainder = Buffer.alloc(0);
   private lastInputLevelDb = -Infinity;
+  // Coupled with discord-cli's transcription speech gate.  If the Record
+  // speaking-widget hysteresis/idle logic changes here, mirror the intent in:
+  // /home/yeyito/Workspace/exocortex/external-tools/discord-cli/src/calls/receive.py
   private readonly speakingStartThresholdDb = speakingStartThresholdDb();
   private readonly speakingStopThresholdDb = speakingStopThresholdDb();
   private readonly speakingStartThreshold = dbToLinear(this.speakingStartThresholdDb);
@@ -350,6 +353,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     }
     const rms = Math.sqrt(sumSquares / sampleCount);
     this.lastInputLevelDb = linearToDb(rms);
+    // Keep this start/stop hysteresis aligned with discord-cli's
+    // SpeakerSegmenter so Record's green talking state and Exo's call
+    // transcription gate behave similarly for the same audio.
     const threshold = this.speaking ? this.speakingStopThreshold : this.speakingStartThreshold;
     if (rms >= threshold) this.markCaptureSpeaking(context);
   }
