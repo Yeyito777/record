@@ -1,9 +1,14 @@
-import { VOICE_GATEWAY_CALL_TERMINATED_CODE, VOICE_GATEWAY_INVALID_SESSION_CODE } from "./constants";
+import { VOICE_GATEWAY_CALL_TERMINATED_CODE, VOICE_GATEWAY_DISCONNECTED_CODE, VOICE_GATEWAY_INVALID_SESSION_CODE } from "./constants";
 import { VoiceGatewayCloseError } from "./types";
 
 export function isRecoverableVoiceGatewayClose(error: Error): boolean {
   return error instanceof VoiceGatewayCloseError
-    && (error.code === VOICE_GATEWAY_INVALID_SESSION_CODE || /session is no longer valid/i.test(error.closeReason));
+    && (
+      error.code === VOICE_GATEWAY_INVALID_SESSION_CODE
+      || error.code === VOICE_GATEWAY_DISCONNECTED_CODE
+      || /session is no longer valid/i.test(error.closeReason)
+      || /^disconnected\.?$/i.test(error.closeReason)
+    );
 }
 
 export function isTerminalVoiceGatewayClose(error: Error): boolean {

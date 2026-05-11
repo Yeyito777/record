@@ -453,6 +453,58 @@ describe("voice backend", () => {
     expect(errors).toEqual([]);
   });
 
+  test("recovers Discord voice gateway 4014 disconnects without surfacing an error", async () => {
+    const signaling = new FakeSignaling();
+    const gateways: FakeGateway[] = [];
+    const errors: string[] = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      retryDelayMs: 0,
+      createGatewayConnection: (_data, callbacks) => {
+        const gateway = new FakeGateway(callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+      onError: (error) => errors.push(error.message),
+    });
+
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session-1",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-1", endpoint: "voice1.example", guildId: null });
+    await started;
+
+    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4014, "Disconnected."));
+    await waitFor(() => signaling.requests.length === 2);
+
+    expect(signaling.leaves).toBe(1);
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session-2",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-2", endpoint: "voice2.example", guildId: null });
+
+    await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true && controller.activeSession?.state === "ready");
+    expect(errors).toEqual([]);
+  });
+
   test("treats call-terminated voice gateway closes as a normal hangup", async () => {
     const signaling = new FakeSignaling();
     const gateways: FakeGateway[] = [];
