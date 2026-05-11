@@ -17,4 +17,4 @@ export const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe]);
 export const DAVE_ENCRYPTED_MARKER = Buffer.from([0xfa, 0xfa]);
 export const DEFAULT_SPEAKING_THRESHOLD_DB = -42;
 export const DEFAULT_SPEAKING_STOP_THRESHOLD_DB = -55;
-export const DEFAULT_SPEAKING_IDLE_MS = 1500;
+export const DEFAULT_SPEAKING_IDLE_MS = 700;
