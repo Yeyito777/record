@@ -786,7 +786,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 
   const navigation = resolveNavigationAction(key, state.navigationPendingKeys);
   state.navigationPendingKeys = navigation.pendingKeys;
-  if (!navigation.action) return navigation.handled;
+  if (!navigation.action && navigation.handled) return true;
 
   switch (navigation.action) {
     case "focus_prompt":
