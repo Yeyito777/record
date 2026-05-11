@@ -6,7 +6,7 @@ import { join } from "path";
 
 import { debugLog } from "../debuglog";
 import { OPUS_PAYLOAD_TYPE, OPUS_RTP_CLOCK_INCREMENT, OPUS_SILENCE_FRAME, RTP_HEADER_LENGTH } from "./constants";
-import { dbToLinear, linearToDb, speakingIdleMs, speakingThresholdDb } from "./env";
+import { dbToLinear, linearToDb, speakingIdleMs, speakingStartThresholdDb, speakingStopThresholdDb } from "./env";
 import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parseDiscordRtpPacket, parsePlainRtpPacket, reserveUdpPort } from "./rtp";
 import { NoopVoiceAudioBackend, type VoiceAudioBackend, type VoiceAudioContext } from "./types";
 
@@ -46,8 +46,10 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private lastPlaybackStatsAt = 0;
   private pcmRemainder = Buffer.alloc(0);
   private lastInputLevelDb = -Infinity;
-  private readonly speakingThresholdDb = speakingThresholdDb();
-  private readonly speakingThreshold = dbToLinear(this.speakingThresholdDb);
+  private readonly speakingStartThresholdDb = speakingStartThresholdDb();
+  private readonly speakingStopThresholdDb = speakingStopThresholdDb();
+  private readonly speakingStartThreshold = dbToLinear(this.speakingStartThresholdDb);
+  private readonly speakingStopThreshold = dbToLinear(this.speakingStopThresholdDb);
   private readonly speakingIdleMs = speakingIdleMs();
   private speakingIdleTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly handleDiscordPacket = (packet: Buffer): void => this.forwardDiscordPacket(packet);
@@ -134,7 +136,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     socket.on("message", this.handleCapturePacket);
     const port = await bindUdp(socket, "127.0.0.1", 0);
 
-    debugLog("voice.capture.start", { input: "default", speakingThresholdDb: this.speakingThresholdDb, speakingIdleMs: this.speakingIdleMs });
+    debugLog("voice.capture.start", { input: "default", speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
     this.captureProcess = spawn("ffmpeg", [
       "-nostdin",
       "-hide_banner",
@@ -348,7 +350,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     }
     const rms = Math.sqrt(sumSquares / sampleCount);
     this.lastInputLevelDb = linearToDb(rms);
-    if (rms >= this.speakingThreshold) this.markCaptureSpeaking(context);
+    const threshold = this.speaking ? this.speakingStopThreshold : this.speakingStartThreshold;
+    if (rms >= threshold) this.markCaptureSpeaking(context);
   }
 
   private markCaptureSpeaking(context: VoiceAudioContext): void {
@@ -375,7 +378,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       droppedPackets: this.droppedPacketCount,
       selfMute: context.selfMute,
       inputLevelDb: Number.isFinite(this.lastInputLevelDb) ? Math.round(this.lastInputLevelDb * 10) / 10 : null,
-      speakingThresholdDb: this.speakingThresholdDb,
+      speakingThresholdDb: this.speakingStartThresholdDb,
+      speakingStartThresholdDb: this.speakingStartThresholdDb,
+      speakingStopThresholdDb: this.speakingStopThresholdDb,
       speakingIdleMs: this.speakingIdleMs,
     });
     context.sendSpeaking(speaking);
