@@ -69,6 +69,10 @@ describe("openable target command resolution", () => {
     expect(resolveOpenCommand("https://example.com")).toEqual({ command: "xdg-open", args: ["https://example.com"] });
   });
 
+  test("opens html paths with xdg-open", () => {
+    expect(resolveOpenCommand("/tmp/reference.html")).toEqual({ command: "xdg-open", args: ["/tmp/reference.html"] });
+  });
+
   test("opens audio/video paths with audio-play inside an ephemeral st terminal", () => {
     expect(resolveOpenCommand("/tmp/song.mp3")).toEqual({
       command: "st",

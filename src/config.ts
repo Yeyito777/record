@@ -75,6 +75,11 @@ export function defaultOpenersConfig(): OpenersConfig {
         args: ["{path}"],
       },
       {
+        extensions: ["html"],
+        command: "xdg-open",
+        args: ["{path}"],
+      },
+      {
         extensions: [
           "mp3", "wav", "flac", "m4a", "aac", "ogg", "oga", "opus", "wma",
           "aif", "aiff", "alac", "mid", "midi", "mov", "mp4", "m4v", "mkv",
