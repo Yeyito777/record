@@ -90,7 +90,10 @@ export class DaveVoiceEncryption {
   encodeOutgoingOpus(payload: Buffer): Buffer | null {
     if (payload.equals(OPUS_SILENCE_FRAME)) return payload;
     if (this.protocolVersion === 0) return payload;
-    if (!this.session?.ready) return null;
+    if (!this.session?.ready) {
+      this.logMediaDebug("encrypt_passthrough_not_ready", { protocolVersion: this.protocolVersion, payloadBytes: payload.length, users: this.safeUserIds() });
+      return payload;
+    }
     try {
       return this.session.encryptOpus(payload);
     } catch (error) {
@@ -101,16 +104,17 @@ export class DaveVoiceEncryption {
 
   decodeIncomingOpus(userId: string | null, payload: Buffer): Buffer | null {
     if (payload.equals(OPUS_SILENCE_FRAME)) return payload;
-    if (!this.session) return this.protocolVersion === 0 ? payload : null;
+    if (!this.session) return this.protocolVersion === 0 ? payload : (isDaveEncryptedPayload(payload) ? null : payload);
     if (!userId) {
       this.logMediaDebug("missing_user", { payloadBytes: payload.length, encrypted: isDaveEncryptedPayload(payload) });
-      return this.protocolVersion === 0 ? payload : null;
+      return this.protocolVersion === 0 || !isDaveEncryptedPayload(payload) ? payload : null;
     }
 
     const canDecrypt = this.ready || (this.session.ready && this.session.canPassthrough(userId));
     if (!canDecrypt) {
-      this.logMediaDebug("not_ready", { userId, sessionReady: this.session.ready, protocolVersion: this.protocolVersion, payloadBytes: payload.length, encrypted: isDaveEncryptedPayload(payload), users: this.safeUserIds() });
-      return this.protocolVersion === 0 ? payload : null;
+      const encrypted = isDaveEncryptedPayload(payload);
+      this.logMediaDebug("not_ready", { userId, sessionReady: this.session.ready, protocolVersion: this.protocolVersion, payloadBytes: payload.length, encrypted, users: this.safeUserIds() });
+      return this.protocolVersion === 0 || !encrypted ? payload : null;
     }
 
     const encrypted = isDaveEncryptedPayload(payload);

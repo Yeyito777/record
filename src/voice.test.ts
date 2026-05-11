@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, stripDavePadding, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
   requests: VoiceStateRequest[] = [];
@@ -107,6 +108,20 @@ describe("voice backend", () => {
     expect(stripDavePadding(clean)).toBe(clean);
     const mixedSuffix = Buffer.from([0x01, 0x02, 0xfa, 0xfa, 0x37, 0x38]);
     expect(stripDavePadding(mixedSuffix)).toBe(mixedSuffix);
+  });
+
+  test("passes Opus through while DAVE is still establishing", () => {
+    const dave = new DaveVoiceEncryption({
+      userId: "self",
+      channelId: "dm-1",
+      sendJson: () => {},
+      sendBinary: () => {},
+    });
+    dave.handleSessionDescription({ dave_protocol_version: 1 });
+    const opusPayload = Buffer.from([0xf8, 0xff, 0xfe, 0x01]);
+    expect(dave.ready).toBe(false);
+    expect(dave.encodeOutgoingOpus(opusPayload)).toBe(opusPayload);
+    expect(dave.decodeIncomingOpus("friend", opusPayload)).toBe(opusPayload);
   });
 
   test("builds Discord gateway voice-state payloads", () => {
