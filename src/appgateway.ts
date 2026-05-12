@@ -519,16 +519,29 @@ export function extractCurrentUserId(data: unknown): string | null {
 
 export function mapVoiceStateUpdate(data: unknown, fallbackGuildId: string | null = null): VoiceStateUpdate | null {
   if (!isObject(data) || typeof data.user_id !== "string") return null;
+  const displayName = voiceStateDisplayName(data);
   return {
     userId: data.user_id,
     channelId: typeof data.channel_id === "string" ? data.channel_id : null,
     guildId: typeof data.guild_id === "string" ? data.guild_id : fallbackGuildId,
     sessionId: typeof data.session_id === "string" ? data.session_id : null,
+    ...(displayName ? { displayName } : {}),
     selfMute: Boolean(data.self_mute),
     selfDeaf: Boolean(data.self_deaf),
     mute: Boolean(data.mute),
     deaf: Boolean(data.deaf),
   };
+}
+
+function voiceStateDisplayName(data: Record<string, any>): string | null {
+  const member = isObject(data.member) ? data.member : null;
+  const memberUser = member && isObject(member.user) ? member.user : null;
+  const user = isObject(data.user) ? data.user : null;
+  return displayNameField(member?.nick)
+    ?? displayNameField(memberUser?.global_name)
+    ?? displayNameField(memberUser?.username)
+    ?? displayNameField(user?.global_name)
+    ?? displayNameField(user?.username);
 }
 
 export function extractReadyVoiceStates(data: unknown): VoiceStateUpdate[] {

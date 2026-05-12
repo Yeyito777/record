@@ -171,7 +171,14 @@ const callWidget = new CallWidgetController();
 const recentIncomingCallRingtones = new Map<string, number>();
 const knownCallParticipantsByChannelId = new Map<string, Set<string>>();
 const departedCallParticipantsByChannelId = new Map<string, Set<string>>();
-const callVoiceStatesByChannelId = new Map<string, Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>>();
+interface TrackedCallVoiceState {
+  displayName?: string;
+  selfMute: boolean;
+  selfDeaf: boolean;
+  mute: boolean;
+  deaf: boolean;
+}
+const callVoiceStatesByChannelId = new Map<string, Map<string, TrackedCallVoiceState>>();
 const callJoinSoundUserIdsByChannelId = new Map<string, Set<string>>();
 const speakingCallUserIds = new Set<string>();
 const speakingCallTimersByUserId = new Map<string, ReturnType<typeof setTimeout>>();
@@ -275,6 +282,10 @@ function displayNameForUser(state: AppState, channelId: string, userId: string, 
     if (guildId && !key.startsWith(`${guildId}:`)) continue;
     const fromCachedMemberList = members.find((member) => member.id === userId)?.displayName;
     if (fromCachedMemberList) return fromCachedMemberList;
+  }
+
+  if (state.auth.user?.id === userId) {
+    return state.auth.user.globalName ?? state.auth.user.username;
   }
 
   const fromRecipients = activeChannel?.recipients?.find((recipient) => recipient.id === userId)?.displayName;
@@ -648,10 +659,10 @@ function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: 
   return true;
 }
 
-function sidebarVoiceMemberFromState(state: AppState, channelId: string, userId: string, voiceState: { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }): SidebarVoiceMember {
+function sidebarVoiceMemberFromState(state: AppState, channelId: string, userId: string, voiceState: TrackedCallVoiceState): SidebarVoiceMember {
   return {
     userId,
-    displayName: displayNameForUser(state, channelId, userId, userId),
+    displayName: voiceState.displayName ?? displayNameForUser(state, channelId, userId, userId),
     muted: voiceState.selfMute || voiceState.mute,
     deafened: voiceState.selfDeaf || voiceState.deaf,
     self: userId === state.auth.user?.id,
@@ -691,8 +702,9 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
     if (states.delete(update.userId)) affectedChannelIds.add(existingChannelId);
     if (states.size === 0) callVoiceStatesByChannelId.delete(existingChannelId);
   }
-  const states = callVoiceStatesByChannelId.get(channelId) ?? new Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>();
+  const states = callVoiceStatesByChannelId.get(channelId) ?? new Map<string, TrackedCallVoiceState>();
   states.set(update.userId, {
+    ...(update.displayName ? { displayName: update.displayName } : {}),
     selfMute: update.selfMute,
     selfDeaf: update.selfDeaf,
     mute: update.mute,
@@ -707,7 +719,7 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
 
 function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }[] }): void {
   if (event.voiceStates.length === 0) return;
-  const states = callVoiceStatesByChannelId.get(event.channelId) ?? new Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>();
+  const states = callVoiceStatesByChannelId.get(event.channelId) ?? new Map<string, TrackedCallVoiceState>();
   for (const state of event.voiceStates) {
     states.set(state.userId, {
       selfMute: state.selfMute,
