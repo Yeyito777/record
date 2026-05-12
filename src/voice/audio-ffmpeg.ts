@@ -12,7 +12,7 @@ import { NoopVoiceAudioBackend, type VoiceAudioBackend, type VoiceAudioContext }
 
 const VOICE_HELPER_SHUTDOWN_GRACE_MS = 1_500;
 const VOICE_CAPTURE_STARTUP_TIMEOUT_MS = 5_000;
-const PLAYBACK_PACE_DELAY_MS = parsePositiveInt(process.env.RECORD_PLAYBACK_PACE_DELAY_MS, 120);
+const PLAYBACK_PACE_DELAY_MS = parsePositiveInt(process.env.RECORD_PLAYBACK_PACE_DELAY_MS, 240);
 const PLAYBACK_PACER_IDLE_RESET_MS = 2_000;
 const PLAYBACK_PACER_MAX_DELTA_SAMPLES = 48_000 * 60;
 
@@ -48,7 +48,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackForwardedPacketCount = 0;
   private playbackPacedPacketCount = 0;
   private playbackPacerLateCount = 0;
+  private playbackPacerMaxLateMs = 0;
   private playbackPacerResetCount = 0;
+  private playbackPacerDroppedCount = 0;
   private playbackSendErrorCount = 0;
   private playbackWrongPayloadCount = 0;
   private playbackInvalidPacketCount = 0;
@@ -283,7 +285,14 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
         ssrc,
         delayMs: PLAYBACK_PACE_DELAY_MS,
         send: (pacedPacket) => this.sendPlaybackPacket(pacedPacket),
-        onLate: () => { this.playbackPacerLateCount += 1; },
+        onLate: (lateMs) => {
+          this.playbackPacerLateCount += 1;
+          this.playbackPacerMaxLateMs = Math.max(this.playbackPacerMaxLateMs, Math.round(lateMs));
+        },
+        onDrop: (reason) => {
+          this.playbackPacerDroppedCount += 1;
+          debugLog("voice.playback.pacer_drop", { ssrc, reason, delayMs: PLAYBACK_PACE_DELAY_MS });
+        },
         onReset: (reason) => {
           this.playbackPacerResetCount += 1;
           debugLog("voice.playback.pacer_reset", { ssrc, reason, delayMs: PLAYBACK_PACE_DELAY_MS });
@@ -314,7 +323,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackForwardedPacketCount = 0;
     this.playbackPacedPacketCount = 0;
     this.playbackPacerLateCount = 0;
+    this.playbackPacerMaxLateMs = 0;
     this.playbackPacerResetCount = 0;
+    this.playbackPacerDroppedCount = 0;
     this.playbackSendErrorCount = 0;
     this.playbackWrongPayloadCount = 0;
     this.playbackInvalidPacketCount = 0;
@@ -335,6 +346,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       forwardedPackets: this.playbackForwardedPacketCount,
       pacedPackets: this.playbackPacedPacketCount,
       pacerLatePackets: this.playbackPacerLateCount,
+      pacerMaxLateMs: this.playbackPacerMaxLateMs,
+      pacerDroppedPackets: this.playbackPacerDroppedCount,
       pacerResets: this.playbackPacerResetCount,
       pacerDelayMs: PLAYBACK_PACE_DELAY_MS,
       transportFailures: this.playbackTransportFailCount,
@@ -561,7 +574,8 @@ interface PlaybackPacerOptions {
   ssrc: number;
   delayMs: number;
   send: (packet: Buffer) => void;
-  onLate: () => void;
+  onLate: (lateMs: number) => void;
+  onDrop: (reason: string) => void;
   onReset: (reason: string) => void;
 }
 
@@ -569,6 +583,7 @@ class PlaybackPacer {
   private baseTimestamp: number | null = null;
   private baseWallMs = 0;
   private lastReceivedAt = 0;
+  private lastSentTimestamp: number | null = null;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(private readonly options: PlaybackPacerOptions) {}
@@ -591,10 +606,16 @@ class PlaybackPacer {
     }
 
     const targetMs = this.baseWallMs + (deltaSamples / 48);
-    const delayMs = Math.max(0, Math.round(targetMs - now));
-    if (targetMs <= now) this.options.onLate();
+    const lateMs = Math.max(0, now - targetMs);
+    const delayMs = Math.max(0, Math.ceil(targetMs - now));
+    if (lateMs > 0) this.options.onLate(lateMs);
     const timer = setTimeout(() => {
       this.timers.delete(timer);
+      if (this.lastSentTimestamp !== null && !isNewerRtpTimestamp(timestamp, this.lastSentTimestamp)) {
+        this.options.onDrop("out_of_order_after_pace");
+        return;
+      }
+      this.lastSentTimestamp = timestamp >>> 0;
       this.options.send(packet);
     }, delayMs);
     timer.unref?.();
@@ -608,6 +629,7 @@ class PlaybackPacer {
   private resetBase(timestamp: number, now: number, reason: string, report: boolean): void {
     this.baseTimestamp = timestamp >>> 0;
     this.baseWallMs = now + this.options.delayMs;
+    this.lastSentTimestamp = null;
     if (report) this.options.onReset(reason);
   }
 
@@ -615,6 +637,11 @@ class PlaybackPacer {
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
   }
+}
+
+function isNewerRtpTimestamp(timestamp: number, previous: number): boolean {
+  const delta = ((timestamp >>> 0) - (previous >>> 0)) >>> 0;
+  return delta > 0 && delta < 0x80000000;
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
