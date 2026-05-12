@@ -602,7 +602,8 @@ function clearAllSpeakingCallUsers(): void {
   speakingCallUserIds.clear();
 }
 
-function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: VoiceCallSession, userId: string, speaking: boolean): void {
+function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: VoiceCallSession, userId: string, speaking: boolean): boolean {
+  const wasSpeaking = speakingCallUserIds.has(userId);
   if (speaking) {
     speakingCallUserIds.add(userId);
     clearSpeakingCallTimer(userId);
@@ -621,7 +622,9 @@ function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: 
   } else {
     clearSpeakingCallUser(userId);
   }
+  if (wasSpeaking === speaking) return false;
   syncVoiceCallStatus(state, session);
+  return true;
 }
 
 function updateCallVoiceState(update: VoiceStateUpdate): void {
@@ -1494,13 +1497,15 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
     onSpeakingChange: (userId, speaking) => {
       const activeSession = voiceCallController?.activeSession;
       if (!activeSession || activeSession.state === "ended" || activeSession.state === "error") return;
-      setCallUserSpeaking(state, effects, activeSession, userId, speaking);
-      debugLog("call.widget.speaking", {
-        channelId: activeSession.target.channelId,
-        userId,
-        speaking,
-      });
-      effects.scheduleRender();
+      const changed = setCallUserSpeaking(state, effects, activeSession, userId, speaking);
+      if (changed) {
+        debugLog("call.widget.speaking", {
+          channelId: activeSession.target.channelId,
+          userId,
+          speaking,
+        });
+        effects.scheduleRender();
+      }
     },
     onError: (error) => {
       setNotice(state, `Voice call: ${error.message}`, "warning", { chat: false });

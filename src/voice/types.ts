@@ -121,6 +121,7 @@ export interface VoiceAudioContext {
   sendSpeaking: (speaking: boolean) => void;
   encodeOutgoingOpus?: (payload: Buffer) => Buffer | null;
   decodeIncomingOpus?: (ssrc: number, payload: Buffer) => Buffer | null;
+  onIncomingAudio?: (ssrc: number) => void;
   onError: (error: Error) => void;
 }
 

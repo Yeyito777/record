@@ -207,6 +207,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       this.logPlaybackStats("dave_drop");
       return;
     }
+    if (!decodedPayload.equals(OPUS_SILENCE_FRAME)) context.onIncomingAudio?.(parsed.ssrc);
 
     const header = Buffer.alloc(RTP_HEADER_LENGTH);
     header[0] = 0x80;

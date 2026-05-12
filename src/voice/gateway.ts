@@ -359,6 +359,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         sendSpeaking: (speaking) => this.sendSpeaking(speaking),
         encodeOutgoingOpus: (payload) => this.dave.encodeOutgoingOpus(payload),
         decodeIncomingOpus: (ssrc, payload) => this.dave.decodeIncomingOpus(this.resolveIncomingSsrcUserId(ssrc), payload),
+        onIncomingAudio: (ssrc) => this.handleIncomingAudio(ssrc),
         onError: (error) => this.reportError(error),
       };
       this.audioContext = audioContext;
@@ -384,6 +385,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.ssrcToUserId.set(ssrc, inferredUserId);
     debugLog("voice.playback.ssrc_map", { ssrc, userId: inferredUserId, source: "single_remote_fallback" });
     return inferredUserId;
+  }
+
+  private handleIncomingAudio(ssrc: number): void {
+    const userId = this.resolveIncomingSsrcUserId(ssrc);
+    if (!userId || userId === this.data.userId) return;
+    this.callbacks.onSpeakingChange?.(userId, true);
   }
 
   private identify(): void {
