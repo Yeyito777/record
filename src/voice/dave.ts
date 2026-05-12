@@ -123,7 +123,9 @@ export class DaveVoiceEncryption {
       const decoded = this.session.decrypt(userId, MediaType.AUDIO, normalizedPayload);
       if (isDaveEncryptedPayload(decoded)) {
         this.logMediaDebug("encrypted_after_decrypt", { userId, payloadBytes: payload.length, normalizedBytes: normalizedPayload.length, decodedBytes: decoded.length, users: this.safeUserIds(), stats: this.safeDecryptionStats(userId) });
-        this.reportMediaError(new Error(`DAVE decrypt returned encrypted-looking voice audio from ${userId}; dropping packet.`));
+        // DAVE transition/ratchet boundaries can produce still-encrypted media
+        // after a decrypt attempt. Dropping that packet is expected recovery;
+        // surfacing it as a call warning makes healthy calls look broken.
         return null;
       }
       return decoded;
@@ -133,6 +135,7 @@ export class DaveVoiceEncryption {
         return payload;
       }
       this.logMediaDebug("decrypt_error", { userId, error: error instanceof Error ? error.message : String(error), payloadBytes: payload.length, normalizedBytes: normalizedPayload.length, encrypted, users: this.safeUserIds(), stats: this.safeDecryptionStats(userId), canPassthrough: this.session.canPassthrough(userId) });
+      if (encrypted) return null;
       this.reportMediaError(asError(error, `Failed to DAVE-decrypt voice audio from ${userId}.`));
       return null;
     }

@@ -169,10 +169,12 @@ const departedCallParticipantsByChannelId = new Map<string, Set<string>>();
 const callVoiceStatesByChannelId = new Map<string, Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>>();
 const callJoinSoundUserIdsByChannelId = new Map<string, Set<string>>();
 const speakingCallUserIds = new Set<string>();
+const speakingCallTimersByUserId = new Map<string, ReturnType<typeof setTimeout>>();
 const outboundCallRingtonesByChannelId = new Map<string, SoundEffectPlaybackHandle>();
 const INCOMING_CALL_RINGTONE_DEDUPE_MS = 15_000;
 const OUTBOUND_CALL_RINGTONE_MAX_MS = 15_000;
 const OUTBOUND_CALL_RINGTONE_REPEAT_MS = 2_500;
+const REMOTE_CALL_SPEAKING_IDLE_MS = 1_500;
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
   const members: DiscordGuildMember[] = [];
@@ -209,7 +211,7 @@ export function disconnectAppGateway(): void {
   callVoiceStatesByChannelId.clear();
   departedCallParticipantsByChannelId.clear();
   callJoinSoundUserIdsByChannelId.clear();
-  speakingCallUserIds.clear();
+  clearAllSpeakingCallUsers();
   callWidget.stop();
   appGateway?.disconnect();
   appGateway = null;
@@ -582,10 +584,51 @@ function stopAllOutboundCallRingtones(reason: string): void {
   }
 }
 
+function clearSpeakingCallTimer(userId: string): void {
+  const timer = speakingCallTimersByUserId.get(userId);
+  if (!timer) return;
+  speakingCallTimersByUserId.delete(userId);
+  clearTimeout(timer);
+}
+
+function clearSpeakingCallUser(userId: string): boolean {
+  clearSpeakingCallTimer(userId);
+  return speakingCallUserIds.delete(userId);
+}
+
+function clearAllSpeakingCallUsers(): void {
+  for (const timer of speakingCallTimersByUserId.values()) clearTimeout(timer);
+  speakingCallTimersByUserId.clear();
+  speakingCallUserIds.clear();
+}
+
+function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: VoiceCallSession, userId: string, speaking: boolean): void {
+  if (speaking) {
+    speakingCallUserIds.add(userId);
+    clearSpeakingCallTimer(userId);
+    if (userId !== state.auth.user?.id) {
+      const timer = setTimeout(() => {
+        speakingCallTimersByUserId.delete(userId);
+        if (!speakingCallUserIds.delete(userId)) return;
+        const activeSession = voiceCallController?.activeSession;
+        if (!activeSession || activeSession.state === "ended" || activeSession.state === "error") return;
+        syncVoiceCallStatus(state, activeSession);
+        effects.scheduleRender();
+      }, REMOTE_CALL_SPEAKING_IDLE_MS);
+      timer.unref?.();
+      speakingCallTimersByUserId.set(userId, timer);
+    }
+  } else {
+    clearSpeakingCallUser(userId);
+  }
+  syncVoiceCallStatus(state, session);
+}
+
 function updateCallVoiceState(update: VoiceStateUpdate): void {
   const channelId = update.channelId;
   if (!channelId) {
     for (const states of callVoiceStatesByChannelId.values()) states.delete(update.userId);
+    clearSpeakingCallUser(update.userId);
     return;
   }
   const states = callVoiceStatesByChannelId.get(channelId) ?? new Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>();
@@ -596,6 +639,7 @@ function updateCallVoiceState(update: VoiceStateUpdate): void {
     deaf: update.deaf,
   });
   callVoiceStatesByChannelId.set(channelId, states);
+  if (update.selfMute || update.mute) clearSpeakingCallUser(update.userId);
 }
 
 function rememberCallGatewayVoiceStates(event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }[] }): void {
@@ -752,7 +796,7 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
     const wasDeparted = departed.has(update.userId);
     departed.add(update.userId);
     callVoiceStatesByChannelId.get(channelId)?.delete(update.userId);
-    speakingCallUserIds.delete(update.userId);
+    clearSpeakingCallUser(update.userId);
     forgetCallJoinSound(channelId, update.userId);
     if (!wasDeparted && (wasKnown || wasFromCallMessage)) {
       debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave", wasKnown, wasFromCallMessage });
@@ -1395,7 +1439,7 @@ function syncCallWidget(state: AppState, session: VoiceCallSession | null): void
   if (!session || session.state !== "ready") {
     if (!session || session.state === "ended" || session.state === "error") {
       callVoiceStatesByChannelId.clear();
-      speakingCallUserIds.clear();
+      clearAllSpeakingCallUsers();
     }
     callWidget.stop();
     return;
@@ -1450,14 +1494,13 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
     onSpeakingChange: (userId, speaking) => {
       const activeSession = voiceCallController?.activeSession;
       if (!activeSession || activeSession.state === "ended" || activeSession.state === "error") return;
-      if (speaking) speakingCallUserIds.add(userId);
-      else speakingCallUserIds.delete(userId);
+      setCallUserSpeaking(state, effects, activeSession, userId, speaking);
       debugLog("call.widget.speaking", {
         channelId: activeSession.target.channelId,
         userId,
         speaking,
       });
-      syncVoiceCallStatus(state, activeSession);
+      effects.scheduleRender();
     },
     onError: (error) => {
       setNotice(state, `Voice call: ${error.message}`, "warning", { chat: false });
@@ -1564,7 +1607,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       knownCallParticipantsByChannelId.delete(channelId);
       departedCallParticipantsByChannelId.delete(channelId);
       callVoiceStatesByChannelId.delete(channelId);
-      speakingCallUserIds.clear();
+      clearAllSpeakingCallUsers();
       stopOutboundCallRingtone(channelId, "call_delete");
       markActiveCallEnded(state, channelId);
       syncCallWidget(state, null);

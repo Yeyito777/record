@@ -1,13 +1,16 @@
-import { VOICE_GATEWAY_CALL_TERMINATED_CODE, VOICE_GATEWAY_DISCONNECTED_CODE, VOICE_GATEWAY_INVALID_SESSION_CODE } from "./constants";
+import { VOICE_GATEWAY_ABNORMAL_CLOSE_CODE, VOICE_GATEWAY_CALL_TERMINATED_CODE, VOICE_GATEWAY_DISCONNECTED_CODE, VOICE_GATEWAY_INVALID_SESSION_CODE } from "./constants";
 import { VoiceGatewayCloseError } from "./types";
 
 export function isRecoverableVoiceGatewayClose(error: Error): boolean {
   return error instanceof VoiceGatewayCloseError
     && (
       error.code === VOICE_GATEWAY_INVALID_SESSION_CODE
+      || error.code === VOICE_GATEWAY_ABNORMAL_CLOSE_CODE
       || error.code === VOICE_GATEWAY_DISCONNECTED_CODE
       || /session is no longer valid/i.test(error.closeReason)
       || /^disconnected\.?$/i.test(error.closeReason)
+      || /connection ended/i.test(error.closeReason)
+      || /abnormal/i.test(error.closeReason)
     );
 }
 
@@ -19,7 +22,11 @@ export function isTerminalVoiceGatewayClose(error: Error): boolean {
 export function voiceGatewayCloseError(event: CloseEvent): VoiceGatewayCloseError {
   const reason = event.code === 4017
     ? "DAVE/E2EE protocol required"
-    : event.reason || (event.code === VOICE_GATEWAY_INVALID_SESSION_CODE ? "Session is no longer valid." : "unknown reason");
+    : event.reason || (event.code === VOICE_GATEWAY_INVALID_SESSION_CODE
+      ? "Session is no longer valid."
+      : event.code === VOICE_GATEWAY_ABNORMAL_CLOSE_CODE
+        ? "Connection ended."
+        : "unknown reason");
   return new VoiceGatewayCloseError(event.code, reason);
 }
 

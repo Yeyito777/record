@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildVoiceEngineCaptureArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, resolveVoiceEngineCommand, stripDavePadding, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildVoiceEngineCaptureArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, NoopVoiceAudioBackend, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -161,6 +161,35 @@ describe("voice backend", () => {
     expect(dave.ready).toBe(false);
     expect(dave.encodeOutgoingOpus(opusPayload)).toBe(opusPayload);
     expect(dave.decodeIncomingOpus("friend", opusPayload)).toBe(opusPayload);
+  });
+
+  test("drops still-encrypted DAVE media without surfacing call errors", () => {
+    const errors: string[] = [];
+    const dave = new DaveVoiceEncryption({
+      userId: "self",
+      channelId: "dm-1",
+      sendJson: () => {},
+      sendBinary: () => {},
+      onError: (error) => errors.push(error.message),
+    });
+    (dave as any).protocolVersion = 1;
+    (dave as any).session = {
+      ready: true,
+      canPassthrough: () => false,
+      decrypt: () => Buffer.from([0x11, 0xfa, 0xfa]),
+      getUserIds: () => ["self", "friend"],
+      getDecryptionStats: () => null,
+    };
+
+    expect(dave.decodeIncomingOpus("friend", Buffer.from([0x22, 0xfa, 0xfa]))).toBeNull();
+    expect(errors).toEqual([]);
+  });
+
+  test("treats abnormal voice gateway closes as recoverable connection endings", () => {
+    const close = voiceGatewayCloseError({ code: 1006, reason: "", wasClean: false } as CloseEvent);
+    expect(close.message).toBe("Discord voice gateway closed (1006: Connection ended.).");
+    expect(isRecoverableVoiceGatewayClose(close)).toBe(true);
+    expect(isRecoverableVoiceGatewayClose(new VoiceGatewayCloseError(1006, "Connection ended"))).toBe(true);
   });
 
   test("builds Discord gateway voice-state payloads", () => {
