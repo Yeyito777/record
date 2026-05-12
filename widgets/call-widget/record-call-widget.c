@@ -10,7 +10,6 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib.h>
 #include <json-c/json.h>
-#include <math.h>
 #include <pango/pangocairo.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -20,25 +19,38 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define WIDGET_WIDTH 202
-#define AVATAR_SIZE 34
-#define BORDER_WIDTH 2
-#define ROW_PADDING_X 5
-#define ROW_PADDING_Y 4
+#define WIDGET_WIDTH 224
+#define OUTER_BORDER_WIDTH 1
+#define PANEL_PADDING 6
+#define AVATAR_SIZE 32
+#define AVATAR_BORDER_WIDTH 1
+#define ROW_PADDING_X 6
+#define ROW_PADDING_Y 5
 #define NAME_GAP 8
-#define ROW_GAP 5
+#define ROW_GAP 1
 #define STATUS_GAP 6
 #define STATUS_ICON_SIZE 16
 #define STATUS_ICON_GAP 4
-#define STATUS_ICON_COLOR "#94a3b8"
+#define STATUS_ICON_COLOR "#646464"
+#define THEME_TEXT_COLOR "#ffffff"
 #define RIGHT_MARGIN 5
-#define ROW_RADIUS 11.0
-#define IDLE_ALPHA 0.82
 #define MAX_PARTICIPANTS 64
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+typedef struct {
+  double r;
+  double g;
+  double b;
+} ThemeColor;
+
+#define RGB_COLOR(r, g, b) { (r) / 255.0, (g) / 255.0, (b) / 255.0 }
+
+/* Whale theme colors from vimbrowser/docs/design.md. */
+static const ThemeColor COLOR_ACCENT = RGB_COLOR(0x1d, 0x9b, 0xf0);
+static const ThemeColor COLOR_SUCCESS = RGB_COLOR(0x50, 0xc8, 0x78);
+static const ThemeColor COLOR_USER_BG = RGB_COLOR(0x09, 0x0d, 0x35);
+static const ThemeColor COLOR_SIDEBAR_SEL = RGB_COLOR(0x0f, 0x19, 0x3c);
+static const ThemeColor COLOR_BORDER_FOCUSED = RGB_COLOR(0x1c, 0x94, 0xe5);
+static const ThemeColor COLOR_BORDER_UNFOCUSED = RGB_COLOR(0x55, 0x55, 0x55);
 
 typedef struct {
   char *id;
@@ -206,12 +218,29 @@ static int reserved_status_width(void) {
   return 2 * STATUS_ICON_SIZE + STATUS_ICON_GAP;
 }
 
+static void set_source_theme(cairo_t *cr, ThemeColor color) {
+  cairo_set_source_rgb(cr, color.r, color.g, color.b);
+}
+
+static void fill_rect(cairo_t *cr, double x, double y, double w, double h, ThemeColor color) {
+  cairo_rectangle(cr, x, y, w, h);
+  set_source_theme(cr, color);
+  cairo_fill(cr);
+}
+
+static void stroke_rect(cairo_t *cr, double x, double y, double w, double h, ThemeColor color, double line_width) {
+  cairo_rectangle(cr, x + line_width / 2.0, y + line_width / 2.0, w - line_width, h - line_width);
+  set_source_theme(cr, color);
+  cairo_set_line_width(cr, line_width);
+  cairo_stroke(cr);
+}
+
 static void desired_size(int *out_w, int *out_h) {
   int rows = participant_count > 0 ? (int)participant_count : 1;
-  int diameter = AVATAR_SIZE + BORDER_WIDTH * 2;
-  int row_h = diameter + ROW_PADDING_Y * 2;
+  int avatar_box = AVATAR_SIZE + AVATAR_BORDER_WIDTH * 2;
+  int row_h = avatar_box + ROW_PADDING_Y * 2;
   *out_w = WIDGET_WIDTH;
-  *out_h = rows * row_h + (rows - 1) * ROW_GAP;
+  *out_h = OUTER_BORDER_WIDTH * 2 + PANEL_PADDING * 2 + rows * row_h + (rows - 1) * ROW_GAP;
 }
 
 static Visual *find_argb_visual(Display *dpy, int screen, int *depth_out) {
@@ -395,17 +424,6 @@ static void present_surface(cairo_surface_t *source) {
   XFlush(overlay.display);
 }
 
-static void rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r) {
-  double x2 = x + w;
-  double y2 = y + h;
-  cairo_new_sub_path(cr);
-  cairo_arc(cr, x2 - r, y + r, r, -M_PI / 2, 0);
-  cairo_arc(cr, x2 - r, y2 - r, r, 0, M_PI / 2);
-  cairo_arc(cr, x + r, y2 - r, r, M_PI / 2, M_PI);
-  cairo_arc(cr, x + r, y + r, r, M_PI, 3 * M_PI / 2);
-  cairo_close_path(cr);
-}
-
 static cairo_surface_t *surface_from_pixbuf(GdkPixbuf *pixbuf) {
   int width = gdk_pixbuf_get_width(pixbuf);
   int height = gdk_pixbuf_get_height(pixbuf);
@@ -444,17 +462,13 @@ static cairo_surface_t *surface_from_pixbuf(GdkPixbuf *pixbuf) {
 
 static void draw_placeholder(cairo_t *cr, const Participant *p, double x, double y, double size) {
   (void)p;
-  cairo_save(cr);
-  cairo_arc(cr, x + size / 2, y + size / 2, size / 2, 0, 2 * M_PI);
-  cairo_set_source_rgb(cr, 0.114, 0.608, 0.941);
-  cairo_fill(cr);
-  cairo_restore(cr);
+  fill_rect(cr, x, y, size, size, COLOR_ACCENT);
 }
 
 static void draw_avatar(cairo_t *cr, const Participant *p, double x, double y) {
-  int diameter = AVATAR_SIZE + BORDER_WIDTH * 2;
-  double cx = x + diameter / 2.0;
-  double cy = y + diameter / 2.0;
+  int avatar_box = AVATAR_SIZE + AVATAR_BORDER_WIDTH * 2;
+  double image_x = x + AVATAR_BORDER_WIDTH;
+  double image_y = y + AVATAR_BORDER_WIDTH;
 
   char *cached = avatar_cache_path(p->avatar_url);
   GError *error = NULL;
@@ -463,30 +477,26 @@ static void draw_avatar(cairo_t *cr, const Participant *p, double x, double y) {
   g_free(cached);
 
   cairo_save(cr);
-  cairo_arc(cr, cx, cy, AVATAR_SIZE / 2.0, 0, 2 * M_PI);
+  cairo_rectangle(cr, image_x, image_y, AVATAR_SIZE, AVATAR_SIZE);
   cairo_clip(cr);
   if (pixbuf) {
     int pw = gdk_pixbuf_get_width(pixbuf);
     int ph = gdk_pixbuf_get_height(pixbuf);
-    double px = x + BORDER_WIDTH + (AVATAR_SIZE - pw) / 2.0;
-    double py = y + BORDER_WIDTH + (AVATAR_SIZE - ph) / 2.0;
+    double px = image_x + (AVATAR_SIZE - pw) / 2.0;
+    double py = image_y + (AVATAR_SIZE - ph) / 2.0;
     cairo_surface_t *avatar_surface = surface_from_pixbuf(pixbuf);
     if (avatar_surface) {
       cairo_set_source_surface(cr, avatar_surface, px, py);
-      cairo_paint_with_alpha(cr, p->speaking ? 1.0 : IDLE_ALPHA);
+      cairo_paint(cr);
       cairo_surface_destroy(avatar_surface);
     }
     g_object_unref(pixbuf);
   } else {
-    draw_placeholder(cr, p, x + BORDER_WIDTH, y + BORDER_WIDTH, AVATAR_SIZE);
+    draw_placeholder(cr, p, image_x, image_y, AVATAR_SIZE);
   }
   cairo_restore(cr);
 
-  if (p->speaking) cairo_set_source_rgba(cr, 0.302, 0.859, 0.718, 1.0);
-  else cairo_set_source_rgba(cr, 0.188, 0.227, 0.290, 0.86);
-  cairo_set_line_width(cr, BORDER_WIDTH);
-  cairo_arc(cr, cx, cy, diameter / 2.0 - BORDER_WIDTH / 2.0, 0, 2 * M_PI);
-  cairo_stroke(cr);
+  stroke_rect(cr, x, y, avatar_box, avatar_box, p->speaking ? COLOR_SUCCESS : COLOR_BORDER_UNFOCUSED, AVATAR_BORDER_WIDTH);
 }
 
 static void draw_text(cairo_t *cr, const Participant *p, double x, double y, int width, int row_h) {
@@ -498,7 +508,7 @@ static void draw_text(cairo_t *cr, const Participant *p, double x, double y, int
 
   char *escaped = g_markup_escape_text(p->name ? p->name : "?", -1);
   char *markup = g_strdup_printf("<span foreground=\"%s\" weight=\"%s\">%s</span>",
-                                 p->text_color ? p->text_color : "#f8fafc",
+                                 p->text_color ? p->text_color : THEME_TEXT_COLOR,
                                  p->speaking ? "700" : "500",
                                  escaped);
   pango_layout_set_markup(layout, markup, -1);
@@ -555,38 +565,37 @@ static void render(void) {
   cairo_restore(cr);
   cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
-  int diameter = AVATAR_SIZE + BORDER_WIDTH * 2;
-  int row_h = diameter + ROW_PADDING_Y * 2;
+  int avatar_box = AVATAR_SIZE + AVATAR_BORDER_WIDTH * 2;
+  int row_h = avatar_box + ROW_PADDING_Y * 2;
   int swidth = reserved_status_width();
-  int nwidth = width - ROW_PADDING_X * 2 - diameter - NAME_GAP - STATUS_GAP - swidth - ROW_PADDING_X;
+  int content_x = OUTER_BORDER_WIDTH + PANEL_PADDING;
+  int content_y = OUTER_BORDER_WIDTH + PANEL_PADDING;
+  int content_w = width - (OUTER_BORDER_WIDTH + PANEL_PADDING) * 2;
+  int nwidth = content_w - ROW_PADDING_X * 2 - avatar_box - NAME_GAP - STATUS_GAP - swidth - ROW_PADDING_X;
   if (nwidth < 24) nwidth = 24;
-  int row_w = width;
+  int row_w = content_w;
 
   for (size_t i = 0; i < participant_count; i++) {
     Participant *p = &participants[i];
-    double y = i * (row_h + ROW_GAP);
+    double y = content_y + i * (row_h + ROW_GAP);
+    double row_x = content_x;
 
-    rounded_rect(cr, 0.5, y + 0.5, row_w - 1.0, row_h - 1.0, ROW_RADIUS);
-    if (p->speaking) cairo_set_source_rgba(cr, 0.060, 0.300, 0.270, 0.24);
-    else cairo_set_source_rgba(cr, 0.059, 0.090, 0.165, 0.42);
-    cairo_fill_preserve(cr);
-    if (p->speaking) cairo_set_source_rgba(cr, 0.302, 0.859, 0.718, 0.45);
-    else cairo_set_source_rgba(cr, 0.580, 0.639, 0.722, 0.08);
-    cairo_set_line_width(cr, 1.0);
-    cairo_stroke(cr);
+    fill_rect(cr, row_x, y, row_w, row_h, p->speaking ? COLOR_SIDEBAR_SEL : COLOR_USER_BG);
+    stroke_rect(cr, row_x, y, row_w, row_h, p->speaking ? COLOR_BORDER_FOCUSED : COLOR_BORDER_UNFOCUSED, 1.0);
+    if (p->speaking) fill_rect(cr, row_x, y, 3.0, row_h, COLOR_SUCCESS);
 
-    double avatar_x = ROW_PADDING_X;
+    double avatar_x = row_x + ROW_PADDING_X;
     double avatar_y = y + ROW_PADDING_Y;
     draw_avatar(cr, p, avatar_x, avatar_y);
 
-    double text_x = avatar_x + diameter + NAME_GAP;
+    double text_x = avatar_x + avatar_box + NAME_GAP;
     cairo_save(cr);
-    rounded_rect(cr, 0.5, y + 0.5, row_w - 1.0, row_h - 1.0, ROW_RADIUS);
+    cairo_rectangle(cr, row_x, y, row_w, row_h);
     cairo_clip(cr);
     draw_text(cr, p, text_x, y, nwidth, row_h);
     cairo_restore(cr);
 
-    double icon_x = width - ROW_PADDING_X - swidth;
+    double icon_x = row_x + row_w - ROW_PADDING_X - swidth;
     double icon_y = y + (row_h - STATUS_ICON_SIZE) / 2.0;
     if (p->muted) {
       draw_icon(cr, "muted", icon_x, icon_y);
@@ -632,7 +641,7 @@ static void handle_update(json_object *root) {
     p->id = g_strdup(id ? id : "");
     p->name = g_strdup((name && *name) ? name : (id && *id ? id : "?"));
     p->avatar_url = g_strdup(avatar ? avatar : "");
-    p->text_color = g_strdup(text_color ? text_color : "#f8fafc");
+    p->text_color = g_strdup(text_color ? text_color : THEME_TEXT_COLOR);
     p->speaking = json_get_bool(item, "speaking");
     p->muted = json_get_bool(item, "muted");
     p->deafened = json_get_bool(item, "deafened");
