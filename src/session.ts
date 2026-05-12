@@ -123,6 +123,7 @@ import {
   setSidebarGuilds,
   sidebarCachedGuilds,
   sidebarFolderLayout,
+  type SidebarVoiceMember,
 } from "./sidebar";
 import {
   appendTimelineMessage,
@@ -647,12 +648,48 @@ function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: 
   return true;
 }
 
-function updateCallVoiceState(update: VoiceStateUpdate): void {
+function sidebarVoiceMemberFromState(state: AppState, channelId: string, userId: string, voiceState: { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }): SidebarVoiceMember {
+  return {
+    userId,
+    displayName: displayNameForUser(state, channelId, userId, userId),
+    muted: voiceState.selfMute || voiceState.mute,
+    deafened: voiceState.selfDeaf || voiceState.deaf,
+    self: userId === state.auth.user?.id,
+  };
+}
+
+function syncSidebarVoiceMembersForChannel(state: AppState, channelId: string): void {
+  const voiceStates = callVoiceStatesByChannelId.get(channelId);
+  if (!voiceStates || voiceStates.size === 0) {
+    delete state.sidebar.voiceMembersByChannelId[channelId];
+    return;
+  }
+
+  state.sidebar.voiceMembersByChannelId[channelId] = Array.from(voiceStates.entries())
+    .map(([userId, voiceState]) => sidebarVoiceMemberFromState(state, channelId, userId, voiceState))
+    .sort((a, b) => Number(Boolean(b.self)) - Number(Boolean(a.self)) || a.displayName.localeCompare(b.displayName));
+}
+
+function syncSidebarVoiceMembersForChannels(state: AppState, channelIds: Iterable<string>): void {
+  for (const channelId of channelIds) syncSidebarVoiceMembersForChannel(state, channelId);
+}
+
+function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolean {
+  const affectedChannelIds = new Set<string>();
   const channelId = update.channelId;
   if (!channelId) {
-    for (const states of callVoiceStatesByChannelId.values()) states.delete(update.userId);
+    for (const [existingChannelId, states] of callVoiceStatesByChannelId.entries()) {
+      if (states.delete(update.userId)) affectedChannelIds.add(existingChannelId);
+      if (states.size === 0) callVoiceStatesByChannelId.delete(existingChannelId);
+    }
     clearSpeakingCallUser(update.userId);
-    return;
+    syncSidebarVoiceMembersForChannels(state, affectedChannelIds);
+    return affectedChannelIds.size > 0;
+  }
+  for (const [existingChannelId, states] of callVoiceStatesByChannelId.entries()) {
+    if (existingChannelId === channelId) continue;
+    if (states.delete(update.userId)) affectedChannelIds.add(existingChannelId);
+    if (states.size === 0) callVoiceStatesByChannelId.delete(existingChannelId);
   }
   const states = callVoiceStatesByChannelId.get(channelId) ?? new Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>();
   states.set(update.userId, {
@@ -663,9 +700,12 @@ function updateCallVoiceState(update: VoiceStateUpdate): void {
   });
   callVoiceStatesByChannelId.set(channelId, states);
   if (update.selfMute || update.mute) clearSpeakingCallUser(update.userId);
+  affectedChannelIds.add(channelId);
+  syncSidebarVoiceMembersForChannels(state, affectedChannelIds);
+  return affectedChannelIds.size > 0;
 }
 
-function rememberCallGatewayVoiceStates(event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }[] }): void {
+function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }[] }): void {
   if (event.voiceStates.length === 0) return;
   const states = callVoiceStatesByChannelId.get(event.channelId) ?? new Map<string, { selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }>();
   for (const state of event.voiceStates) {
@@ -677,6 +717,7 @@ function rememberCallGatewayVoiceStates(event: { channelId: string; voiceStates:
     });
   }
   callVoiceStatesByChannelId.set(event.channelId, states);
+  syncSidebarVoiceMembersForChannel(state, event.channelId);
 }
 
 function syncCallParticipantSounds(state: AppState, channelId: string, voiceStateUserIds: readonly string[]): boolean {
@@ -1542,6 +1583,7 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
 function startAppGateway(state: AppState, token: string, effects: SessionEffects): void {
   if (appGateway && appGatewayToken === token) return;
   state.voiceCall = null;
+  state.sidebar.voiceMembersByChannelId = {};
   disconnectAppGateway();
   appGatewayToken = token;
   appGateway = new AppGatewayClient(token, {
@@ -1607,26 +1649,26 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       effects.scheduleRender();
     },
     onVoiceStateUpdate: (update) => {
-      updateCallVoiceState(update);
+      const voiceMembersChanged = updateCallVoiceState(state, update);
       voiceCallController?.handleVoiceStateUpdate(update);
       const activeSession = voiceCallController?.activeSession;
       const changed = handleCallVoiceStateUpdate(state, update);
       if (!changed && activeSession?.target.channelId === update.channelId) syncVoiceCallStatus(state, activeSession);
-      if (changed) effects.scheduleRender();
+      if (changed || voiceMembersChanged) effects.scheduleRender();
     },
     onVoiceServerUpdate: (update) => {
       voiceCallController?.handleVoiceServerUpdate(update);
     },
     onCallCreate: (event) => {
       handleCallGatewayEvent(state, event.channelId, event.ringingUserIds);
-      rememberCallGatewayVoiceStates(event);
+      rememberCallGatewayVoiceStates(state, event);
       if (event.isActive) rememberActiveCallParticipants(state, event.channelId, event.voiceStateUserIds);
       handleActiveCallGatewayEvent(state, event.channelId, event.voiceStateUserIds);
       effects.scheduleRender();
     },
     onCallUpdate: (event) => {
       handleCallGatewayEvent(state, event.channelId, event.ringingUserIds);
-      rememberCallGatewayVoiceStates(event);
+      rememberCallGatewayVoiceStates(state, event);
       if (event.isActive) rememberActiveCallParticipants(state, event.channelId, event.voiceStateUserIds);
       handleActiveCallGatewayEvent(state, event.channelId, event.voiceStateUserIds);
       effects.scheduleRender();
@@ -1636,6 +1678,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       knownCallParticipantsByChannelId.delete(channelId);
       departedCallParticipantsByChannelId.delete(channelId);
       callVoiceStatesByChannelId.delete(channelId);
+      delete state.sidebar.voiceMembersByChannelId[channelId];
       clearAllSpeakingCallUsers();
       stopOutboundCallRingtone(channelId, "call_delete");
       markActiveCallEnded(state, channelId);

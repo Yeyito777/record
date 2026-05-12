@@ -238,6 +238,9 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.callbacks.onReadyGuilds?.(extractReadyGuilds(payload.d));
       this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
       this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
+      for (const voiceState of extractReadyVoiceStates(payload.d)) {
+        this.callbacks.onVoiceStateUpdate?.(voiceState);
+      }
       this.sendPresenceUpdate();
       this.sendGuildChannelSubscription();
       return;
@@ -514,18 +517,31 @@ export function extractCurrentUserId(data: unknown): string | null {
   return user && typeof user.id === "string" ? user.id : null;
 }
 
-export function mapVoiceStateUpdate(data: unknown): VoiceStateUpdate | null {
+export function mapVoiceStateUpdate(data: unknown, fallbackGuildId: string | null = null): VoiceStateUpdate | null {
   if (!isObject(data) || typeof data.user_id !== "string") return null;
   return {
     userId: data.user_id,
     channelId: typeof data.channel_id === "string" ? data.channel_id : null,
-    guildId: typeof data.guild_id === "string" ? data.guild_id : null,
+    guildId: typeof data.guild_id === "string" ? data.guild_id : fallbackGuildId,
     sessionId: typeof data.session_id === "string" ? data.session_id : null,
     selfMute: Boolean(data.self_mute),
     selfDeaf: Boolean(data.self_deaf),
     mute: Boolean(data.mute),
     deaf: Boolean(data.deaf),
   };
+}
+
+export function extractReadyVoiceStates(data: unknown): VoiceStateUpdate[] {
+  if (!isObject(data) || !Array.isArray(data.guilds)) return [];
+  const updates: VoiceStateUpdate[] = [];
+  for (const guild of data.guilds) {
+    if (!isObject(guild) || typeof guild.id !== "string" || !Array.isArray(guild.voice_states)) continue;
+    for (const rawVoiceState of guild.voice_states) {
+      const update = mapVoiceStateUpdate(rawVoiceState, guild.id);
+      if (update) updates.push(update);
+    }
+  }
+  return updates;
 }
 
 export function mapVoiceServerUpdate(data: unknown): VoiceServerUpdate | null {

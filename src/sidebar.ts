@@ -19,7 +19,7 @@ import {
 
 export const SIDEBAR_WIDTH = 28;
 
-export type SidebarEntryKind = "guild" | "folder" | "up" | "category" | "channel" | "loading";
+export type SidebarEntryKind = "guild" | "folder" | "up" | "category" | "channel" | "voice-member" | "loading";
 export type SidebarSearchDirection = "forward" | "backward";
 export type SidebarSearchBarMode = "search" | "command";
 export type SidebarFolderPromptPurpose = "create_folder" | "move_items" | "rename_folder";
@@ -87,12 +87,22 @@ export interface SidebarEntry {
   channelType?: number;
   notificationCount?: number;
   muted?: boolean;
+  deafened?: boolean;
+  self?: boolean;
   hidden?: boolean;
   selected: boolean;
   active: boolean;
   expanded: boolean;
   item?: SidebarSelectableItem;
   childCount?: number;
+}
+
+export interface SidebarVoiceMember {
+  userId: string;
+  displayName: string;
+  muted?: boolean;
+  deafened?: boolean;
+  self?: boolean;
 }
 
 export interface SidebarVisibilityOptions {
@@ -119,6 +129,7 @@ export interface SidebarState {
   requestId: number;
   /** Cached channels by guild id, including the synthetic direct-message guild. */
   cachedChannelsByGuildId: Record<string, DiscordChannel[]>;
+  voiceMembersByChannelId: Record<string, SidebarVoiceMember[]>;
   search: SidebarSearchState | null;
 }
 
@@ -142,12 +153,13 @@ export function createSidebarState(): SidebarState {
     loading: false,
     requestId: 0,
     cachedChannelsByGuildId: {},
+    voiceMembersByChannelId: {},
     search: null,
   };
 }
 
 function isSelectableEntry(entry: SidebarEntry): boolean {
-  return entry.kind !== "loading";
+  return entry.kind !== "loading" && entry.kind !== "voice-member";
 }
 
 function sameSidebarItem(a: SidebarSelectableItem | null | undefined, b: SidebarSelectableItem | null | undefined): boolean {
@@ -322,6 +334,7 @@ export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.scrollOffset = 0;
   sidebar.loading = false;
   sidebar.cachedChannelsByGuildId = {};
+  sidebar.voiceMembersByChannelId = {};
   sidebar.search = null;
 }
 
@@ -820,6 +833,7 @@ function pushChannelEntry(
   typingChannelIds: ReadonlySet<string>,
   typingFrame: string,
   channelNotificationCounts: ReadonlyMap<string, number>,
+  voiceMembersByChannelId: Readonly<Record<string, readonly SidebarVoiceMember[]>>,
 ): void {
   entries.push({
     kind: "channel",
@@ -830,6 +844,42 @@ function pushChannelEntry(
     channelType: channel.type,
     notificationCount: channelNotificationCounts.get(channel.id) ?? 0,
     hidden: Boolean(channel.hidden),
+    selected: false,
+    active: false,
+    expanded: false,
+  });
+  pushVoiceMemberEntries(entries, guildId, channel, depth + 1, voiceMembersByChannelId);
+}
+
+function pushVoiceMemberEntries(
+  entries: SidebarEntry[],
+  guildId: string,
+  channel: DiscordChannel,
+  depth: number,
+  voiceMembersByChannelId: Readonly<Record<string, readonly SidebarVoiceMember[]>>,
+): void {
+  if (channel.type !== 2 && channel.type !== 13) return;
+  const members = voiceMembersByChannelId[channel.id] ?? [];
+  members.forEach((member, index) => pushSidebarVoiceMemberEntry(entries, guildId, channel.id, member, depth, index));
+}
+
+function pushSidebarVoiceMemberEntry(
+  entries: SidebarEntry[],
+  guildId: string,
+  channelId: string,
+  member: SidebarVoiceMember,
+  depth: number,
+  index: number,
+): void {
+  entries.push({
+    kind: "voice-member",
+    id: `${channelId}:${member.userId}:${index}`,
+    guildId,
+    label: member.displayName || member.userId,
+    depth,
+    muted: member.muted,
+    deafened: member.deafened,
+    self: member.self,
     selected: false,
     active: false,
     expanded: false,
@@ -864,7 +914,7 @@ function buildSidebarSearchEntries(
 
     if (guild.id === DIRECT_MESSAGES_GUILD_ID) {
       for (const channel of sortChannelsForSidebar(visibleChannelRows)) {
-        pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts);
+        pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
       }
       continue;
     }
@@ -879,7 +929,7 @@ function buildSidebarSearchEntries(
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
     for (const channel of uncategorized) {
-      pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts);
+      pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
     }
 
     for (const category of guildCategories) {
@@ -901,7 +951,7 @@ function buildSidebarSearchEntries(
       });
 
       for (const channel of categoryChannels) {
-        pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts);
+        pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
       }
     }
   }
@@ -948,7 +998,7 @@ function pushExpandedGuildChildren(
     .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
   for (const channel of uncategorized) {
-    pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts);
+    pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
   }
 
   for (const category of guildCategories) {
@@ -972,7 +1022,7 @@ function pushExpandedGuildChildren(
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
     for (const channel of categoryChannels) {
-      pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts);
+      pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
     }
   }
 }
@@ -1054,6 +1104,11 @@ function channelEntryMarker(channelType: number | undefined): string {
   if (channelType === 2) return "🔊 ";
   if (channelType === 13) return "🎙 ";
   return "# ";
+}
+
+function voiceMemberEntryLabel(entry: SidebarEntry): string {
+  const suffix = `${entry.self ? " (you)" : ""}${entry.muted ? " 🔇" : ""}${entry.deafened ? " 🔕" : ""}`;
+  return `${entry.label}${suffix}`;
 }
 
 function selectedEntrySnapshot(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions): Pick<SidebarEntry, "kind" | "id" | "guildId"> | null {
@@ -2159,9 +2214,15 @@ function renderEntryRow(
       ? entry.expanded ? "▾ " : "▸ "
       : entry.kind === "channel"
         ? channelEntryMarker(entry.channelType)
+        : entry.kind === "voice-member"
+          ? "• "
         : "";
-  const rawLabel = entry.kind === "folder" ? `📁 ${entry.label}/ ${entry.childCount ?? 0}` : entry.label || "unnamed";
-  const prefix = entry.kind === "channel" || entry.kind === "category" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
+  const rawLabel = entry.kind === "folder"
+    ? `📁 ${entry.label}/ ${entry.childCount ?? 0}`
+    : entry.kind === "voice-member"
+      ? voiceMemberEntryLabel(entry)
+      : entry.label || "unnamed";
+  const prefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
   const badge = renderNotificationBadge(entry.notificationCount ?? 0);
   const muteIcon = entry.kind === "guild" && entry.muted ? " 🔕" : "";
   const badgeGap = badge ? 1 : 0;
