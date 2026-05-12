@@ -476,6 +476,10 @@ export function newRemoteCallParticipantIds(
 
 function playCallJoinSoundOnce(channelId: string, userId: string, source: string): boolean {
   if (!userId) return false;
+  if (!isActiveRecordCallChannel(channelId)) {
+    debugLog("call.participants.sound_skipped", { source, channelId, userId, action: "join", reason: "not_active_record_call" });
+    return false;
+  }
   const played = callJoinSoundUserIdsByChannelId.get(channelId) ?? new Set<string>();
   if (played.has(userId)) {
     debugLog("call.participants.sound_skipped", { source, channelId, userId, action: "join", reason: "already_played" });
@@ -494,6 +498,11 @@ function playCallJoinSoundForParticipants(channelId: string, userIds: readonly s
     played = playCallJoinSoundOnce(channelId, userId, source) || played;
   }
   return played;
+}
+
+function isActiveRecordCallChannel(channelId: string): boolean {
+  const session = voiceCallController?.activeSession;
+  return Boolean(session && session.target.channelId === channelId && session.state !== "ended" && session.state !== "error");
 }
 
 function forgetCallJoinSound(channelId: string, userId: string): void {
@@ -802,8 +811,12 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
     clearSpeakingCallUser(update.userId);
     forgetCallJoinSound(channelId, update.userId);
     if (!wasDeparted && (wasKnown || wasFromCallMessage)) {
-      debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave", wasKnown, wasFromCallMessage });
-      playSoundEffect("callUserLeave");
+      if (isActiveRecordCallChannel(channelId)) {
+        debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave", wasKnown, wasFromCallMessage });
+        playSoundEffect("callUserLeave");
+      } else {
+        debugLog("call.participants.sound_skipped", { source: "voice_state", channelId, userId: update.userId, action: "leave", reason: "not_active_record_call", wasKnown, wasFromCallMessage });
+      }
       changed = true;
     }
   }
