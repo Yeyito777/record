@@ -71,8 +71,10 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackSendErrorCount = 0;
   private playbackWrongPayloadCount = 0;
   private playbackInvalidPacketCount = 0;
+  private playbackInvalidOpusPacketCount = 0;
   private playbackSelfDeafDropCount = 0;
   private playbackFirstPacketLogged = false;
+  private playbackForceFfplay = false;
   private lastPlaybackStatsAt = 0;
   private captureHealthy = false;
   private pcmRemainder = Buffer.alloc(0);
@@ -172,7 +174,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     if (this.localPlaybackPort === null || !this.playbackSdpPath || !this.tempDir) return;
     const voiceEngine = resolveVoiceEngineCommand();
     const speakerVolume = this.localVolumes.speakerVolume;
-    const useNativePlayback = shouldUseNativePlayback(voiceEngine, speakerVolume);
+    const useNativePlayback = !this.playbackForceFfplay && shouldUseNativePlayback(voiceEngine, speakerVolume);
     const command = useNativePlayback && voiceEngine ? voiceEngine : "ffplay";
     const readyPath = useNativePlayback ? join(this.tempDir, `playback-${Date.now()}.ready`) : null;
     const args = useNativePlayback ? buildVoiceEnginePlaybackArgs(this.localPlaybackPort, readyPath ?? undefined) : buildFfplayPlaybackArgs(this.playbackSdpPath, speakerVolume);
@@ -194,6 +196,21 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       debugLog("voice.playback.exit", { code, signal, details, active: this.context === context });
       if (this.playbackProcess !== playbackProcess) return;
       if (this.context !== context || code === 0 || signal === "SIGTERM" || signal === "SIGKILL") return;
+      if (this.playbackBackend === "engine" && isRecoverableNativePlaybackExit(details)) {
+        // The native helper currently exits on a single malformed/corrupt Opus
+        // packet. Discord can occasionally deliver such packets during DAVE
+        // transitions or RTP reordering bursts; tearing down the whole call is
+        // much worse than falling back to ffplay's packet pacer for the rest of
+        // the session.
+        this.playbackProcess = null;
+        this.playbackForceFfplay = true;
+        debugLog("voice.playback.fallback", { from: "engine", to: "ffplay", reason: "recoverable_native_exit", details });
+        void this.startPlaybackProcess(context, "recoverable_native_exit").catch((error) => {
+          context.onError(error instanceof Error ? error : new Error(String(error)));
+          if (this.context === context) this.stop();
+        });
+        return;
+      }
       context.onError(new Error(`Voice playback stopped${details ? `: ${details}` : "."}`));
       if (this.context === context) this.stop();
     });
@@ -339,6 +356,18 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       this.logPlaybackStats("dave_drop");
       return;
     }
+    if (!isValidOpusPacket(decodedPayload)) {
+      this.playbackInvalidOpusPacketCount += 1;
+      debugLog("voice.playback.invalid_opus", {
+        ssrc: parsed.ssrc,
+        sequence: parsed.sequence,
+        timestamp: parsed.timestamp,
+        payloadBytes: decodedPayload.length,
+        toc: decodedPayload[0] ?? null,
+      });
+      this.logPlaybackStats("invalid_opus");
+      return;
+    }
     if (!decodedPayload.equals(OPUS_SILENCE_FRAME)) context.onIncomingAudio?.(parsed.ssrc);
     const gap = this.observePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp);
     if (gap) debugLog("voice.playback.sequence_gap", { ...gap });
@@ -424,8 +453,10 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackSendErrorCount = 0;
     this.playbackWrongPayloadCount = 0;
     this.playbackInvalidPacketCount = 0;
+    this.playbackInvalidOpusPacketCount = 0;
     this.playbackSelfDeafDropCount = 0;
     this.playbackFirstPacketLogged = false;
+    this.playbackForceFfplay = false;
     this.lastPlaybackStatsAt = 0;
     this.playbackDiagnosticsBySsrc.clear();
   }
@@ -454,6 +485,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       daveDrops: this.playbackDaveDropCount,
       emptyPayloads: this.playbackEmptyPayloadCount,
       invalidPackets: this.playbackInvalidPacketCount,
+      invalidOpusPackets: this.playbackInvalidOpusPacketCount,
       wrongPayloads: this.playbackWrongPayloadCount,
       selfDeafDrops: this.playbackSelfDeafDropCount,
       sendErrors: this.playbackSendErrorCount,
@@ -630,6 +662,80 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
 
 export function isOpusSilenceFrame(payload: Buffer): boolean {
   return payload.equals(OPUS_SILENCE_FRAME);
+}
+
+export function isValidOpusPacket(payload: Buffer): boolean {
+  if (payload.length === 0) return false;
+  const frameCountCode = payload[0] & 0x03;
+  switch (frameCountCode) {
+    case 0:
+      return true;
+    case 1:
+      return (payload.length - 1) % 2 === 0;
+    case 2:
+      return hasValidTwoFrameVbrLayout(payload);
+    case 3:
+      return hasValidArbitraryFrameLayout(payload);
+    default:
+      return false;
+  }
+}
+
+interface OpusFrameLengthResult {
+  length: number;
+  bytes: number;
+}
+
+function hasValidTwoFrameVbrLayout(payload: Buffer): boolean {
+  const firstLength = readOpusFrameLength(payload, 1);
+  if (!firstLength) return false;
+  const frameStart = 1 + firstLength.bytes;
+  const remaining = payload.length - frameStart;
+  return firstLength.length <= remaining;
+}
+
+function hasValidArbitraryFrameLayout(payload: Buffer): boolean {
+  if (payload.length < 2) return false;
+  const frameCountByte = payload[1];
+  const isVbr = (frameCountByte & 0x80) !== 0;
+  const hasPadding = (frameCountByte & 0x40) !== 0;
+  const frameCount = frameCountByte & 0x3f;
+  if (frameCount < 1 || frameCount > 48) return false;
+
+  let offset = 2;
+  let paddingBytes = 0;
+  if (hasPadding) {
+    while (true) {
+      if (offset >= payload.length) return false;
+      const padding = payload[offset];
+      offset += 1;
+      paddingBytes += padding;
+      if (padding !== 255) break;
+    }
+  }
+  if (paddingBytes > payload.length - offset) return false;
+  const payloadEnd = payload.length - paddingBytes;
+  if (payloadEnd < offset) return false;
+
+  if (!isVbr) return (payloadEnd - offset) % frameCount === 0;
+
+  let describedBytes = 0;
+  for (let index = 0; index < frameCount - 1; index += 1) {
+    const frameLength = readOpusFrameLength(payload, offset);
+    if (!frameLength) return false;
+    offset += frameLength.bytes;
+    describedBytes += frameLength.length;
+    if (offset + describedBytes > payloadEnd) return false;
+  }
+  return describedBytes <= payloadEnd - offset;
+}
+
+function readOpusFrameLength(payload: Buffer, offset: number): OpusFrameLengthResult | null {
+  if (offset >= payload.length) return null;
+  const first = payload[offset];
+  if (first < 252) return { length: first, bytes: 1 };
+  if (offset + 1 >= payload.length) return null;
+  return { length: first + (payload[offset + 1] * 4), bytes: 2 };
 }
 
 export function buildPlainPlaybackRtpPacket(ssrc: number, sequence: number, timestamp: number, payload: Buffer): Buffer {
@@ -1074,6 +1180,10 @@ function shouldUseNativePlayback(voiceEngine: string | null, speakerVolume = DEF
 function shouldUseNativeCapture(voiceEngine: string | null, micVolume = DEFAULT_LOCAL_VOLUME_PERCENT): boolean {
   if (!voiceEngine) return false;
   return clampVolumePercent(micVolume) === DEFAULT_LOCAL_VOLUME_PERCENT;
+}
+
+function isRecoverableNativePlaybackExit(details: string): boolean {
+  return /decode Opus (?:FEC\/PLC )?playback packet/i.test(details) || /opus_decode_float: corrupted stream/i.test(details);
 }
 
 function normalizeLocalVolumes(volumes: LocalAudioVolumes): LocalAudioVolumes {

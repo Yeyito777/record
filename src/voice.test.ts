@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -163,6 +163,16 @@ describe("voice backend", () => {
     expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff]))).toBe(false);
   });
 
+  test("rejects malformed Opus packet framing before playback", () => {
+    expect(isValidOpusPacket(Buffer.from([0xf8, 0xff, 0xfe]))).toBe(true);
+    expect(isValidOpusPacket(Buffer.from([0x00]))).toBe(true);
+    expect(isValidOpusPacket(Buffer.alloc(0))).toBe(false);
+    expect(isValidOpusPacket(Buffer.from([0x01, 0x11]))).toBe(false);
+    expect(isValidOpusPacket(Buffer.from([0x02]))).toBe(false);
+    expect(isValidOpusPacket(Buffer.from([0x03, 0x00]))).toBe(false);
+    expect(isValidOpusPacket(Buffer.from([0x03, 0x41]))).toBe(false);
+  });
+
   test("builds local playback RTP packets", () => {
     const packet = buildPlainPlaybackRtpPacket(0x11223344, 0x12345, 0x55667788, Buffer.from([1, 2, 3]));
     expect([...packet.subarray(0, 12)]).toEqual([0x80, 120, 0x23, 0x45, 0x55, 0x66, 0x77, 0x88, 0x11, 0x22, 0x33, 0x44]);
@@ -217,6 +227,18 @@ describe("voice backend", () => {
     expect(dave.ready).toBe(false);
     expect(dave.encodeOutgoingOpus(opusPayload)).toBe(opusPayload);
     expect(dave.decodeIncomingOpus("friend", opusPayload)).toBe(opusPayload);
+  });
+
+  test("drops unmapped non-silence media while DAVE is negotiated", () => {
+    const dave = new DaveVoiceEncryption({
+      userId: "self",
+      channelId: "dm-1",
+      sendJson: () => {},
+      sendBinary: () => {},
+    });
+    dave.handleSessionDescription({ dave_protocol_version: 1 });
+    expect(dave.decodeIncomingOpus(null, Buffer.from([0xf8, 0xff, 0xfe]))).toEqual(Buffer.from([0xf8, 0xff, 0xfe]));
+    expect(dave.decodeIncomingOpus(null, Buffer.from([0x11, 0x22, 0x33]))).toBeNull();
   });
 
   test("drops still-encrypted DAVE media without surfacing call errors", () => {

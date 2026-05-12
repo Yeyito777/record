@@ -104,10 +104,18 @@ export class DaveVoiceEncryption {
 
   decodeIncomingOpus(userId: string | null, payload: Buffer): Buffer | null {
     if (payload.equals(OPUS_SILENCE_FRAME)) return payload;
-    if (!this.session) return this.protocolVersion === 0 ? payload : (isDaveEncryptedPayload(payload) ? null : payload);
+    if (!this.session) {
+      if (this.protocolVersion === 0) return payload;
+      if (!userId) return null;
+      return isDaveEncryptedPayload(payload) ? null : payload;
+    }
     if (!userId) {
       this.logMediaDebug("missing_user", { payloadBytes: payload.length, encrypted: isDaveEncryptedPayload(payload) });
-      return this.protocolVersion === 0 || !isDaveEncryptedPayload(payload) ? payload : null;
+      // Once DAVE is negotiated we need the SSRC->user mapping before we can
+      // choose the correct ratchet.  Passing unknown non-silence media through
+      // is unsafe: encrypted packets are not guaranteed to end in FAFA after
+      // Discord padding/transitions, and feeding them to Opus can kill playback.
+      return this.protocolVersion === 0 || payload.equals(OPUS_SILENCE_FRAME) ? payload : null;
     }
 
     const canDecrypt = this.ready || (this.session.ready && this.session.canPassthrough(userId));
