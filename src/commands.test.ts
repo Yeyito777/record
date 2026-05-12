@@ -74,6 +74,33 @@ describe("commands", () => {
     expect(tryCommand("/deafen off", state)).toEqual({ type: "deafen", deafened: false });
   });
 
+  test("parses local volume commands with optional percent sign and clamps values", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand("/mic volume 0", state)).toEqual({ type: "mic_volume", volume: 0 });
+    expect(tryCommand("/mic volume 40%", state)).toEqual({ type: "mic_volume", volume: 40 });
+    expect(tryCommand("/speaker volume 50%", state)).toEqual({ type: "speaker_volume", volume: 50 });
+    expect(tryCommand("/speaker volume 150", state)).toEqual({ type: "speaker_volume", volume: 100 });
+    expect(tryCommand("/mic volume -10", state)).toEqual({ type: "mic_volume", volume: 0 });
+  });
+
+  test("rejects invalid local volume commands", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand("/mic volume loud", state)).toEqual({ type: "handled" });
+    expect(state.notice.text).toContain("Usage: /mic volume <0-100>");
+
+    expect(tryCommand("/speaker gain 50", state)).toEqual({ type: "handled" });
+    expect(state.notice.text).toContain("Usage: /speaker volume <0-100>");
+  });
+
+  test("suggests local volume subcommands and values", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(getCommandArgs(state)["/mic"]).toEqual([{ name: "volume", desc: "Set local volume" }]);
+    expect(getCommandArgs(state)["/speaker volume"]?.map((item) => item.name)).toEqual(["100%", "75%", "50%", "25%", "0%"]);
+  });
+
   test("parses /status presence values", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
 

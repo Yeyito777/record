@@ -1,4 +1,5 @@
 import type { Socket as UdpSocket } from "dgram";
+import type { LocalAudioVolumes } from "../volume";
 
 export type VoiceConnectionState = "idle" | "signaling" | "connecting" | "ready" | "ended" | "error";
 
@@ -56,6 +57,7 @@ export interface VoiceGatewayConnection {
   connect(): Promise<void>;
   disconnect(): void;
   setSelfVoiceState?(state: { selfMute: boolean; selfDeaf: boolean }): void;
+  setLocalVolumes?(volumes: LocalAudioVolumes): void;
   readonly mediaSessionId: string | null;
 }
 
@@ -93,6 +95,7 @@ export interface VoiceCallStartOptions {
 export interface VoiceCallControllerOptions {
   selfUserId: string;
   signaling: VoiceSignalingClient;
+  localVolumes?: LocalAudioVolumes;
   createGatewayConnection?: (data: VoiceGatewayJoinData, callbacks: VoiceGatewayConnectionCallbacks) => VoiceGatewayConnection;
   fetchPreferredRegions?: () => Promise<string[]>;
   ringRecipients?: (channelId: string, recipientIds: string[]) => Promise<void>;
@@ -128,6 +131,7 @@ export interface VoiceAudioContext {
 export interface VoiceAudioBackend {
   start(context: VoiceAudioContext): Promise<void> | void;
   stop(): void;
+  setLocalVolumes?(volumes: LocalAudioVolumes): void;
 }
 
 export class NoopVoiceAudioBackend implements VoiceAudioBackend {

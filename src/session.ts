@@ -107,7 +107,7 @@ import {
 } from "./notifications";
 import { clearPrompt } from "./promptstate";
 import type { ClipboardImageAttachment } from "./imageclipboard";
-import { playLoopingSoundEffect, playSoundEffect, type SoundEffectPlaybackHandle } from "./soundeffects";
+import { playLoopingSoundEffect, playSoundEffect, setSoundEffectVolume, type SoundEffectPlaybackHandle } from "./soundeffects";
 import { focusPrompt, setNotice } from "./state";
 import {
   applySidebarFolderLayout,
@@ -142,6 +142,7 @@ import {
 import { clearTypingUser, recordTypingStart } from "./typing";
 import { dmAuthorColor, theme } from "./theme";
 import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
+import { clampVolumePercent } from "./volume";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -1508,6 +1509,7 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
   voiceCallController = new VoiceCallController({
     selfUserId,
     signaling: appGateway,
+    localVolumes: state.audio,
     ringRecipients: (channelId, recipientIds) => ringDirectMessageCall(token, channelId, recipientIds),
     onStateChange: (session) => {
       debugLog("voice.state", { state: session?.state ?? "idle", channelId: session?.target.channelId ?? null });
@@ -2811,6 +2813,23 @@ export function setCurrentCallDeaf(state: AppState, effects: SessionEffects, dea
     playSoundEffect(target ? "deafen" : "undeafen");
     setNotice(state, "", "muted");
   }
+  effects.scheduleRender();
+}
+
+export function setLocalMicVolume(state: AppState, effects: SessionEffects, volume: number): void {
+  const next = clampVolumePercent(volume);
+  state.audio.micVolume = next;
+  voiceCallController?.setLocalVolumes({ micVolume: next, speakerVolume: state.audio.speakerVolume });
+  setNotice(state, `Microphone volume set to ${next}%.`, "muted", { statusLine: false });
+  effects.scheduleRender();
+}
+
+export function setLocalSpeakerVolume(state: AppState, effects: SessionEffects, volume: number): void {
+  const next = clampVolumePercent(volume);
+  state.audio.speakerVolume = next;
+  setSoundEffectVolume(next);
+  voiceCallController?.setLocalVolumes({ micVolume: state.audio.micVolume, speakerVolume: next });
+  setNotice(state, `Speaker volume set to ${next}%.`, "muted", { statusLine: false });
   effects.scheduleRender();
 }
 

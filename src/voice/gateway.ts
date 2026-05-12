@@ -9,6 +9,7 @@ import { buildVoiceIdentifyPayload } from "./payloads";
 import { connectUdp, discoverUdpAddress, selectEncryptionMode } from "./rtp";
 import { isDaveVoiceGatewayBinaryMessage, isObject, messageDataToBinaryBuffer, messageDataToString, snowflakeToString } from "./util";
 import { NoopVoiceAudioBackend, type VoiceAudioBackend, type VoiceAudioContext, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData } from "./types";
+import type { LocalAudioVolumes } from "../volume";
 
 interface VoiceGatewayWebSocketTarget {
   url: string;
@@ -84,6 +85,10 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
       this.audioContext.selfDeaf = this.selfDeaf;
     }
     if (this.selfMute) this.sendSpeaking(false);
+  }
+
+  setLocalVolumes(volumes: LocalAudioVolumes): void {
+    this.audio.setLocalVolumes?.(volumes);
   }
 
   disconnect(): void {

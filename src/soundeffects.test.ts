@@ -43,6 +43,23 @@ describe("sound effects", () => {
     ]);
   });
 
+  test("builds local-volume playback args", () => {
+    expect(buildPwPlaySoundEffectPlaybackArgs("/tmp/sound.mp3", 50)).toEqual([
+      "--media-role", "event",
+      "--latency", "20ms",
+      "--volume", "0.5",
+      "/tmp/sound.mp3",
+    ]);
+    expect(buildPaplaySoundEffectPlaybackArgs("/tmp/sound.mp3", 50)).toContain("--volume=32768");
+    expect(buildFfplaySoundEffectPlaybackArgs("/tmp/sound.mp3", 25)).toEqual([
+      "-nodisp",
+      "-autoexit",
+      "-loglevel", "quiet",
+      "-volume", "25",
+      "/tmp/sound.mp3",
+    ]);
+  });
+
   test("resolves bundled Discord voice sounds", () => {
     expect(soundEffectPath("mute")).toEndWith("/assets/sounds/discord-mute.mp3");
     expect(soundEffectPath("deafen")).toEndWith("/assets/sounds/discord-deafen.mp3");

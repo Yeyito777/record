@@ -10,6 +10,7 @@ import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
 import { THEME_NAMES, setTheme, type ThemeName } from "./theme";
+import { parseVolumePercent } from "./volume";
 
 export interface CompletionItem {
   name: string;
@@ -28,6 +29,8 @@ export type CommandResult =
   | { type: "hangup" }
   | { type: "mute"; muted: boolean | null }
   | { type: "deafen"; deafened: boolean | null }
+  | { type: "mic_volume"; volume: number }
+  | { type: "speaker_volume"; volume: number }
   | { type: "status"; status: DiscordPresenceStatus }
   | { type: "theme_changed" };
 
@@ -58,6 +61,18 @@ const SHOW_HIDDEN_ARGS: CompletionItem[] = [
 const VOICE_TOGGLE_ARGS: CompletionItem[] = [
   { name: "on", desc: "Turn this voice setting on" },
   { name: "off", desc: "Turn this voice setting off" },
+];
+
+const VOLUME_SUBCOMMAND_ARGS: CompletionItem[] = [
+  { name: "volume", desc: "Set local volume" },
+];
+
+const VOLUME_VALUE_ARGS: CompletionItem[] = [
+  { name: "100%", desc: "Full volume" },
+  { name: "75%", desc: "Three-quarter volume" },
+  { name: "50%", desc: "Half volume" },
+  { name: "25%", desc: "Quarter volume" },
+  { name: "0%", desc: "Silent" },
 ];
 
 const STATUS_ARGS: CompletionItem[] = [
@@ -116,6 +131,20 @@ function handleChannelsCommand(text: string, state: AppState): CommandResult {
   }
 
   return { type: "handled" };
+}
+
+function handleLocalVolumeCommand(text: string, state: AppState, kind: "mic" | "speaker"): CommandResult {
+  const parts = text.trim().split(/\s+/).filter(Boolean);
+  if (parts.length !== 3 || parts[1] !== "volume") {
+    return usage(state, `Usage: /${kind} volume <0-100>`);
+  }
+
+  const volume = parseVolumePercent(parts[2]);
+  if (volume === null) return usage(state, `Usage: /${kind} volume <0-100>`);
+  clearPrompt(state);
+  return kind === "mic"
+    ? { type: "mic_volume", volume }
+    : { type: "speaker_volume", volume };
 }
 
 const commands: SlashCommand[] = [
@@ -233,6 +262,26 @@ const commands: SlashCommand[] = [
       clearPrompt(state);
       return { type: "deafen", deafened: parsed };
     },
+  },
+  {
+    name: "/mic",
+    description: "Set local microphone volume",
+    args: VOLUME_SUBCOMMAND_ARGS,
+    getArgs: () => ({
+      "/mic": VOLUME_SUBCOMMAND_ARGS,
+      "/mic volume": VOLUME_VALUE_ARGS,
+    }),
+    handler: (text, state) => handleLocalVolumeCommand(text, state, "mic"),
+  },
+  {
+    name: "/speaker",
+    description: "Set local speaker/app volume",
+    args: VOLUME_SUBCOMMAND_ARGS,
+    getArgs: () => ({
+      "/speaker": VOLUME_SUBCOMMAND_ARGS,
+      "/speaker volume": VOLUME_VALUE_ARGS,
+    }),
+    handler: (text, state) => handleLocalVolumeCommand(text, state, "speaker"),
   },
   {
     name: "/status",

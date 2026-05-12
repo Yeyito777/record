@@ -4,13 +4,20 @@ import { fetchPreferredVoiceRegions } from "./regions";
 import { createDefaultVoiceAudioBackend } from "./audio-ffmpeg";
 import { DiscordVoiceGatewayConnection } from "./gateway";
 import { VoiceGatewayCloseError, type PendingVoiceJoin, type VoiceCallControllerOptions, type VoiceCallSession, type VoiceCallStartOptions, type VoiceCallStartResult, type VoiceCallTarget, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceServerUpdate, type VoiceStateRequest, type VoiceStateUpdate } from "./types";
+import { DEFAULT_LOCAL_VOLUME_PERCENT, type LocalAudioVolumes } from "../volume";
 
 export class VoiceCallController {
   private pending: PendingVoiceJoin | null = null;
   private active: VoiceCallSession | null = null;
   private recoveringSession: VoiceCallSession | null = null;
+  private localVolumes: LocalAudioVolumes;
 
-  constructor(private readonly options: VoiceCallControllerOptions) {}
+  constructor(private readonly options: VoiceCallControllerOptions) {
+    this.localVolumes = {
+      micVolume: options.localVolumes?.micVolume ?? DEFAULT_LOCAL_VOLUME_PERCENT,
+      speakerVolume: options.localVolumes?.speakerVolume ?? DEFAULT_LOCAL_VOLUME_PERCENT,
+    };
+  }
 
   get activeSession(): VoiceCallSession | null {
     return this.active;
@@ -114,6 +121,11 @@ export class VoiceCallController {
     return this.setSelfDeaf(!session.selfDeaf);
   }
 
+  setLocalVolumes(volumes: LocalAudioVolumes): void {
+    this.localVolumes = { ...volumes };
+    this.active?.gateway?.setLocalVolumes?.(this.localVolumes);
+  }
+
   handleVoiceStateUpdate(update: VoiceStateUpdate): void {
     if (update.userId !== this.options.selfUserId) return;
     const active = this.active;
@@ -211,9 +223,10 @@ export class VoiceCallController {
 
     const callbacks = this.gatewayCallbacks(session);
     const gateway = this.options.createGatewayConnection?.(gatewayData, callbacks)
-      ?? new DiscordVoiceGatewayConnection(gatewayData, createDefaultVoiceAudioBackend(), callbacks);
+      ?? new DiscordVoiceGatewayConnection(gatewayData, createDefaultVoiceAudioBackend(this.localVolumes), callbacks);
     session.gateway = gateway;
     gateway.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
+    gateway.setLocalVolumes?.(this.localVolumes);
     await gateway.connect();
   }
 

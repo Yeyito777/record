@@ -18,6 +18,7 @@ import { normalizeToken } from "./token";
 import type { ClipboardImageAttachment } from "./imageclipboard";
 import type { NoticeTone } from "./theme";
 import type { VoiceConnectionState } from "./voice";
+import { DEFAULT_LOCAL_VOLUME_PERCENT, type LocalAudioVolumes } from "./volume";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
 export type PresenceStatus = DiscordPresenceStatus;
@@ -111,6 +112,7 @@ export interface AppState {
   editTarget: EditTarget | null;
   messageDeletePending: MessageDeletePending | null;
   voiceCall: VoiceCallStatus | null;
+  audio: LocalAudioVolumes;
   roleIdsByGuildId: Record<string, string[]>;
   guildRolesByGuildId: Record<string, DiscordRole[]>;
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
@@ -157,6 +159,10 @@ export function createInitialState(
     editTarget: null,
     messageDeletePending: null,
     voiceCall: null,
+    audio: {
+      micVolume: DEFAULT_LOCAL_VOLUME_PERCENT,
+      speakerVolume: DEFAULT_LOCAL_VOLUME_PERCENT,
+    },
     roleIdsByGuildId: {},
     guildRolesByGuildId: {},
     memberRoleIdsByGuildId: {},

@@ -92,6 +92,13 @@ describe("voice backend", () => {
       "-i", "/tmp/voice.sdp",
     ]);
     expect(buildFfplayPlaybackArgs("/tmp/voice.sdp")).not.toContain("-nostdin");
+    expect(buildFfplayPlaybackArgs("/tmp/voice.sdp", 25)).toEqual([
+      "-nodisp",
+      "-loglevel", "error",
+      "-protocol_whitelist", "file,udp,rtp",
+      "-volume", "25",
+      "-i", "/tmp/voice.sdp",
+    ]);
   });
 
   test("builds native voice-engine capture args", () => {
@@ -127,6 +134,8 @@ describe("voice backend", () => {
     expect(args).toContain("-application");
     expect(args).toContain("voip");
     expect(args).toContain("rtp://127.0.0.1:43124");
+    expect(buildFfmpegCaptureArgs(43124, 50)).toContain("[0:a]volume=0.5,asplit=2[aout][meter]");
+    expect(buildFfmpegCaptureArgs(43124, 0)).toContain("[0:a]volume=0,asplit=2[aout][meter]");
   });
 
   test("resolves native voice engine from env or PATH", () => {

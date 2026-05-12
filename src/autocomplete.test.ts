@@ -257,6 +257,22 @@ describe("autocomplete", () => {
     ]);
   });
 
+  test("shows volume completions for mic and speaker commands", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "/mic volume ";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.matches.map((match) => match.name)).toEqual(["100%", "75%", "50%", "25%", "0%"]);
+
+    state.editor.buffer = "/speaker volume 7";
+    state.editor.cursor = state.editor.buffer.length;
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.matches.map((match) => match.name)).toEqual(["75%"]);
+  });
+
   test("tab-completes a single absolute file path match", () => {
     const dir = mkdtempSync(join(tmpdir(), "record-path-ac-test-"));
     writeFileSync(join(dir, "cat.png"), "png");

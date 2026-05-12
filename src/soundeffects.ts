@@ -10,6 +10,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { debugLog } from "./debuglog";
+import { DEFAULT_LOCAL_VOLUME_PERCENT, clampVolumePercent, volumePercentToLinear } from "./volume";
 
 export type SoundEffect =
   | "mute"
@@ -50,46 +51,64 @@ const SOUND_FILES: Record<SoundEffect, string> = {
 
 const SOUND_DIR = fileURLToPath(new URL("../assets/sounds/", import.meta.url));
 const COMMAND_AVAILABILITY = new Map<string, boolean>();
+let soundEffectVolume = DEFAULT_LOCAL_VOLUME_PERCENT;
+
+export function setSoundEffectVolume(volume: number): void {
+  soundEffectVolume = clampVolumePercent(volume);
+}
+
+export function getSoundEffectVolume(): number {
+  return soundEffectVolume;
+}
 
 export function soundEffectPath(effect: SoundEffect): string {
   return `${SOUND_DIR}${SOUND_FILES[effect]}`;
 }
 
-export function buildPwPlaySoundEffectPlaybackArgs(path: string): string[] {
-  return [
+export function buildPwPlaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+  const args = [
     "--media-role", "event",
     "--latency", "20ms",
-    path,
   ];
+  const normalizedVolume = clampVolumePercent(volume);
+  if (normalizedVolume !== DEFAULT_LOCAL_VOLUME_PERCENT) args.push("--volume", volumePercentToLinear(normalizedVolume).toFixed(2).replace(/0+$/, "").replace(/\.$/, ""));
+  args.push(path);
+  return args;
 }
 
-export function buildPaplaySoundEffectPlaybackArgs(path: string): string[] {
-  return [
+export function buildPaplaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+  const args = [
     "--client-name=Record",
     "--stream-name=Record sound effect",
     "--latency-msec=20",
-    path,
   ];
+  const normalizedVolume = clampVolumePercent(volume);
+  if (normalizedVolume !== DEFAULT_LOCAL_VOLUME_PERCENT) args.push(`--volume=${Math.round(volumePercentToLinear(normalizedVolume) * 65536)}`);
+  args.push(path);
+  return args;
 }
 
-export function buildFfplaySoundEffectPlaybackArgs(path: string): string[] {
-  return [
+export function buildFfplaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+  const args = [
     "-nodisp",
     "-autoexit",
     "-loglevel", "quiet",
-    path,
   ];
+  const normalizedVolume = clampVolumePercent(volume);
+  if (normalizedVolume !== DEFAULT_LOCAL_VOLUME_PERCENT) args.push("-volume", String(normalizedVolume));
+  args.push(path);
+  return args;
 }
 
-export function buildSoundEffectPlaybackArgs(path: string): string[] {
-  return buildFfplaySoundEffectPlaybackArgs(path);
+export function buildSoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+  return buildFfplaySoundEffectPlaybackArgs(path, volume);
 }
 
-export function buildSoundEffectPlaybackCommands(path: string): SoundEffectPlaybackCommand[] {
+export function buildSoundEffectPlaybackCommands(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): SoundEffectPlaybackCommand[] {
   return [
-    { command: "pw-play", args: buildPwPlaySoundEffectPlaybackArgs(path) },
-    { command: "paplay", args: buildPaplaySoundEffectPlaybackArgs(path) },
-    { command: "ffplay", args: buildFfplaySoundEffectPlaybackArgs(path) },
+    { command: "pw-play", args: buildPwPlaySoundEffectPlaybackArgs(path, volume) },
+    { command: "paplay", args: buildPaplaySoundEffectPlaybackArgs(path, volume) },
+    { command: "ffplay", args: buildFfplaySoundEffectPlaybackArgs(path, volume) },
   ];
 }
 
@@ -104,7 +123,7 @@ export function playSoundEffect(effect: SoundEffect): SoundEffectPlaybackHandle 
     return null;
   }
 
-  for (const { command, args } of buildSoundEffectPlaybackCommands(path)) {
+  for (const { command, args } of buildSoundEffectPlaybackCommands(path, soundEffectVolume)) {
     if (!commandAvailable(command)) {
       debugLog("sound.effect.player_unavailable", { effect, command });
       continue;
