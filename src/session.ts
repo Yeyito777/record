@@ -2302,7 +2302,8 @@ async function refreshLatestChannelMessages(
     persistChannelMessageCache(state, channelId);
 
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
-    setTimelineMessages(state.timeline, channelId, cacheEntry.messages, { hasOlder: cacheEntry.hasOlder });
+    const preserveScroll = !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll);
+    setTimelineMessages(state.timeline, channelId, cacheEntry.messages, { hasOlder: cacheEntry.hasOlder, preserveScroll });
     const latestMessage = cacheEntry.messages.at(-1);
     if (latestMessage) {
       markChannelRead(state, token, channelId, latestMessage.id);

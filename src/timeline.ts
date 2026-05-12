@@ -118,11 +118,13 @@ export function setTimelineMessages(
   timeline: TimelineState,
   channelId: string,
   messages: DiscordMessage[],
-  options: { hasOlder?: boolean } = {},
+  options: { hasOlder?: boolean; preserveScroll?: boolean } = {},
 ): void {
+  const preserveScroll = options.preserveScroll === true && timeline.channelId === channelId;
+  const previousScrollOffset = timeline.scrollOffset;
   timeline.channelId = channelId;
   timeline.messages = messages;
-  timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+  timeline.scrollOffset = preserveScroll ? previousScrollOffset : Number.MAX_SAFE_INTEGER;
   timeline.maxScroll = 0;
   timeline.loading = false;
   timeline.loadingOlder = false;
