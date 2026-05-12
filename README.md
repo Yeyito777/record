@@ -25,8 +25,9 @@ Controls:
 - `Ctrl+N`: toggle chat focus between prompt and history
 - `Shift+J` / `Shift+K`: jump the sidebar selection up/down from non-typing contexts
 - `j` / `k` or arrow keys: move in the focused pane
-- `Enter` in the sidebar: expand/collapse servers and categories, or open channels
+- `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
 - `Enter` on a server voice/stage channel: join that voice chat
+- `Shift+Enter` or `o` on a voice/stage channel: open its text chat without joining
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
 - `Enter` in the prompt: submit the current message or slash command

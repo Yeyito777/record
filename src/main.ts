@@ -931,6 +931,28 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       jumpSidebarSelectionToVisibleEdge(state.sidebar, state.channelList.channels, state.rows, "bottom", sidebarVisibilityOptions());
       scheduleRender();
       return true;
+    case "nav_open_text": {
+      const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      if (selected.kind !== "channel") {
+        scheduleRender();
+        return true;
+      }
+
+      const token = tokenOrWarn();
+      if (!token) return true;
+
+      ensureSidebarEntryGuildLoaded(selected.guildId);
+      const channel = state.channelList.channels.find((candidate) => candidate.id === selected.id)
+        ?? state.sidebar.cachedChannelsByGuildId[selected.guildId]?.find((candidate) => candidate.id === selected.id)
+        ?? null;
+      if (!channel) {
+        scheduleRender();
+        return true;
+      }
+
+      void loadChannelMessages(state, token, channel.id, { scheduleRender });
+      return true;
+    }
     case "nav_select": {
       const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       if (selectedBefore.kind === "folder" || selectedBefore.kind === "up") {

@@ -7,8 +7,8 @@ import {
   clearChannelList,
   findBrowsableChannel,
   findFirstBrowsableChannel,
+  findTimelineChannel,
   removeChannel,
-  setActiveChannel,
   setActiveChannelEntry,
   setChannelList,
   upsertChannel,
@@ -2218,7 +2218,7 @@ export async function loadChannelMessages(
   channelId: string,
   effects: SessionEffects,
 ): Promise<void> {
-  const channel = findBrowsableChannel(state.channelList.channels, channelId);
+  const channel = findTimelineChannel(state.channelList.channels, channelId);
   if (!channel) {
     setNotice(state, "That channel is not loaded yet.", "warning");
     effects.scheduleRender();
@@ -2227,7 +2227,7 @@ export async function loadChannelMessages(
 
   const requestId = ++state.timeline.requestId;
   clearNotificationsForChannel(state, channelId);
-  setActiveChannel(state.channelList, channelId);
+  setActiveChannelEntry(state.channelList, channel);
   if (state.replyTarget && state.replyTarget.channelId !== channelId) {
     state.replyTarget = null;
   }

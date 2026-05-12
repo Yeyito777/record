@@ -26,6 +26,7 @@ export type Action =
   | "nav_up"
   | "nav_down"
   | "nav_select"
+  | "nav_open_text"
   | "nav_prev_server"
   | "nav_next_server"
   | "nav_prev_category"
@@ -71,6 +72,7 @@ const GLOBAL_CHAR_BINDS: Record<string, Action> = {
 
 const NAV_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "enter": "nav_select",
+  "shift-enter": "nav_open_text",
   "up": "nav_up",
   "down": "nav_down",
 };
@@ -80,6 +82,7 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
   "char:k": "nav_up",
   "char:i": "focus_prompt",
   "char:a": "focus_prompt",
+  "char:o": "nav_open_text",
   "char:{": "nav_prev_server",
   "char:}": "nav_next_server",
   "char:[": "nav_prev_category",
