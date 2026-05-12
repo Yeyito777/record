@@ -5,7 +5,7 @@
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { flushDataCacheSync } from "./datacache";
 import { configPath, loadConfig, loadSavedLogins } from "./config";
-import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
+import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
 import {
   displayCursor,
@@ -1112,14 +1112,20 @@ function handleMemberListFocused(key: KeyEvent): boolean {
 function handlePromptFocused(key: KeyEvent): void {
   if (key.type === "backspace" && removeLastPendingImage()) return;
 
-  if (key.type === "tab" && state.autocomplete) {
-    cycleAutocomplete(state, 1);
+  if (key.type === "tab") {
+    if (state.autocomplete) {
+      cycleAutocomplete(state, 1);
+    } else {
+      tryPathComplete(state);
+    }
     scheduleRender();
     return;
   }
 
-  if (key.type === "backtab" && state.autocomplete) {
-    cycleAutocomplete(state, -1);
+  if (key.type === "backtab") {
+    if (state.autocomplete) {
+      cycleAutocomplete(state, -1);
+    }
     scheduleRender();
     return;
   }

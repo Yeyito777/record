@@ -45,6 +45,22 @@ describe("commands", () => {
     expect(state.editor.buffer).toBe("");
   });
 
+  test("parses /upload <file-path>", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+    const result = tryCommand("/upload ./screenshots/cat picture.png", state);
+
+    expect(result).toEqual({ type: "upload", path: "./screenshots/cat picture.png" });
+    expect(state.editor.buffer).toBe("");
+  });
+
+  test("rejects /upload without a path", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+    const result = tryCommand("/upload", state);
+
+    expect(result).toEqual({ type: "handled" });
+    expect(state.notice.text).toContain("Usage: /upload <file-path>");
+  });
+
   test("parses voice call commands", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
 
