@@ -476,6 +476,10 @@ export function newRemoteCallParticipantIds(
 
 function playCallJoinSoundOnce(channelId: string, userId: string, source: string): boolean {
   if (!userId) return false;
+  if (!automaticCallParticipantSoundsEnabled()) {
+    debugLog("call.participants.sound_skipped", { source, channelId, userId, action: "join", reason: "participant_sounds_disabled" });
+    return false;
+  }
   if (!isActiveRecordCallChannel(channelId)) {
     debugLog("call.participants.sound_skipped", { source, channelId, userId, action: "join", reason: "not_active_record_call" });
     return false;
@@ -503,6 +507,10 @@ function playCallJoinSoundForParticipants(channelId: string, userIds: readonly s
 function isActiveRecordCallChannel(channelId: string): boolean {
   const session = voiceCallController?.activeSession;
   return Boolean(session && session.target.channelId === channelId && session.state !== "ended" && session.state !== "error");
+}
+
+function automaticCallParticipantSoundsEnabled(): boolean {
+  return process.env.RECORD_CALL_PARTICIPANT_SOUNDS === "1";
 }
 
 function forgetCallJoinSound(channelId: string, userId: string): void {
@@ -811,7 +819,9 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
     clearSpeakingCallUser(update.userId);
     forgetCallJoinSound(channelId, update.userId);
     if (!wasDeparted && (wasKnown || wasFromCallMessage)) {
-      if (isActiveRecordCallChannel(channelId)) {
+      if (!automaticCallParticipantSoundsEnabled()) {
+        debugLog("call.participants.sound_skipped", { source: "voice_state", channelId, userId: update.userId, action: "leave", reason: "participant_sounds_disabled", wasKnown, wasFromCallMessage });
+      } else if (isActiveRecordCallChannel(channelId)) {
         debugLog("call.participants.sound", { source: "voice_state", channelId, userId: update.userId, action: "leave", effect: "callUserLeave", wasKnown, wasFromCallMessage });
         playSoundEffect("callUserLeave");
       } else {
