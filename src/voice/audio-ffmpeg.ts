@@ -12,6 +12,9 @@ import { NoopVoiceAudioBackend, type VoiceAudioBackend, type VoiceAudioContext }
 
 const VOICE_HELPER_SHUTDOWN_GRACE_MS = 1_500;
 const VOICE_CAPTURE_STARTUP_TIMEOUT_MS = 5_000;
+const PLAYBACK_PACE_DELAY_MS = parsePositiveInt(process.env.RECORD_PLAYBACK_PACE_DELAY_MS, 120);
+const PLAYBACK_PACER_IDLE_RESET_MS = 2_000;
+const PLAYBACK_PACER_MAX_DELTA_SAMPLES = 48_000 * 60;
 
 export function createDefaultVoiceAudioBackend(): VoiceAudioBackend {
   if (process.platform !== "linux") return new NoopVoiceAudioBackend();
@@ -22,6 +25,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private context: VoiceAudioContext | null = null;
   private captureSocket: UdpSocket | null = null;
   private playbackSocket: UdpSocket | null = null;
+  private readonly playbackPacersBySsrc = new Map<number, PlaybackPacer>();
   private captureProcess: ChildProcessWithoutNullStreams | null = null;
   private playbackProcess: ChildProcessWithoutNullStreams | null = null;
   private captureStartupTimer: ReturnType<typeof setTimeout> | null = null;
@@ -42,6 +46,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackEmptyPayloadCount = 0;
   private playbackDaveDropCount = 0;
   private playbackForwardedPacketCount = 0;
+  private playbackPacedPacketCount = 0;
+  private playbackPacerLateCount = 0;
+  private playbackPacerResetCount = 0;
   private playbackSendErrorCount = 0;
   private playbackWrongPayloadCount = 0;
   private playbackInvalidPacketCount = 0;
@@ -103,6 +110,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       try { this.playbackSocket.close(); } catch {}
       this.playbackSocket = null;
     }
+    for (const pacer of this.playbackPacersBySsrc.values()) pacer.dispose();
+    this.playbackPacersBySsrc.clear();
     terminateVoiceHelperProcess(this.captureProcess, "capture");
     this.captureProcess = null;
     terminateVoiceHelperProcess(this.playbackProcess, "playback");
@@ -249,12 +258,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     header.writeUInt16BE(parsed.sequence, 2);
     header.writeUInt32BE(parsed.timestamp, 4);
     header.writeUInt32BE(parsed.ssrc, 8);
-    this.playbackSocket.send(Buffer.concat([header, decodedPayload]), this.localPlaybackPort, "127.0.0.1", (error) => {
-      if (error) {
-        this.playbackSendErrorCount += 1;
-        debugLog("voice.playback.send_error", { error: error.message });
-      }
-    });
+    this.enqueuePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp, Buffer.concat([header, decodedPayload]));
     this.playbackForwardedPacketCount += 1;
     if (!this.playbackFirstPacketLogged) {
       this.playbackFirstPacketLogged = true;
@@ -272,6 +276,35 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.logPlaybackStats("forwarded");
   }
 
+  private enqueuePlaybackPacket(ssrc: number, sequence: number, timestamp: number, packet: Buffer): void {
+    let pacer = this.playbackPacersBySsrc.get(ssrc);
+    if (!pacer) {
+      pacer = new PlaybackPacer({
+        ssrc,
+        delayMs: PLAYBACK_PACE_DELAY_MS,
+        send: (pacedPacket) => this.sendPlaybackPacket(pacedPacket),
+        onLate: () => { this.playbackPacerLateCount += 1; },
+        onReset: (reason) => {
+          this.playbackPacerResetCount += 1;
+          debugLog("voice.playback.pacer_reset", { ssrc, reason, delayMs: PLAYBACK_PACE_DELAY_MS });
+        },
+      });
+      this.playbackPacersBySsrc.set(ssrc, pacer);
+    }
+    pacer.enqueue(sequence, timestamp, packet);
+  }
+
+  private sendPlaybackPacket(packet: Buffer): void {
+    if (!this.playbackSocket || this.localPlaybackPort === null) return;
+    this.playbackPacedPacketCount += 1;
+    this.playbackSocket.send(packet, this.localPlaybackPort, "127.0.0.1", (error) => {
+      if (error) {
+        this.playbackSendErrorCount += 1;
+        debugLog("voice.playback.send_error", { error: error.message });
+      }
+    });
+  }
+
   private resetPlaybackStats(): void {
     this.playbackPacketCount = 0;
     this.playbackParsedPacketCount = 0;
@@ -279,6 +312,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackEmptyPayloadCount = 0;
     this.playbackDaveDropCount = 0;
     this.playbackForwardedPacketCount = 0;
+    this.playbackPacedPacketCount = 0;
+    this.playbackPacerLateCount = 0;
+    this.playbackPacerResetCount = 0;
     this.playbackSendErrorCount = 0;
     this.playbackWrongPayloadCount = 0;
     this.playbackInvalidPacketCount = 0;
@@ -297,6 +333,10 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       packets: this.playbackPacketCount,
       parsedPackets: this.playbackParsedPacketCount,
       forwardedPackets: this.playbackForwardedPacketCount,
+      pacedPackets: this.playbackPacedPacketCount,
+      pacerLatePackets: this.playbackPacerLateCount,
+      pacerResets: this.playbackPacerResetCount,
+      pacerDelayMs: PLAYBACK_PACE_DELAY_MS,
       transportFailures: this.playbackTransportFailCount,
       daveDrops: this.playbackDaveDropCount,
       emptyPayloads: this.playbackEmptyPayloadCount,
@@ -515,6 +555,71 @@ function expandHome(value: string): string {
 
 function spawnVoiceHelper(command: string, args: string[]): ChildProcessWithoutNullStreams {
   return spawn(command, args, { detached: process.platform !== "win32" });
+}
+
+interface PlaybackPacerOptions {
+  ssrc: number;
+  delayMs: number;
+  send: (packet: Buffer) => void;
+  onLate: () => void;
+  onReset: (reason: string) => void;
+}
+
+class PlaybackPacer {
+  private baseTimestamp: number | null = null;
+  private baseWallMs = 0;
+  private lastReceivedAt = 0;
+  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+
+  constructor(private readonly options: PlaybackPacerOptions) {}
+
+  enqueue(_sequence: number, timestamp: number, packet: Buffer): void {
+    const now = Date.now();
+    if (this.baseTimestamp === null) {
+      this.resetBase(timestamp, now, "initial", false);
+    } else if (now - this.lastReceivedAt >= PLAYBACK_PACER_IDLE_RESET_MS) {
+      this.clearTimers();
+      this.resetBase(timestamp, now, "idle", true);
+    }
+    this.lastReceivedAt = now;
+
+    let deltaSamples = (timestamp - (this.baseTimestamp ?? timestamp)) >>> 0;
+    if (deltaSamples > PLAYBACK_PACER_MAX_DELTA_SAMPLES) {
+      this.clearTimers();
+      this.resetBase(timestamp, now, "timestamp_jump", true);
+      deltaSamples = 0;
+    }
+
+    const targetMs = this.baseWallMs + (deltaSamples / 48);
+    const delayMs = Math.max(0, Math.round(targetMs - now));
+    if (targetMs <= now) this.options.onLate();
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      this.options.send(packet);
+    }, delayMs);
+    timer.unref?.();
+    this.timers.add(timer);
+  }
+
+  dispose(): void {
+    this.clearTimers();
+  }
+
+  private resetBase(timestamp: number, now: number, reason: string, report: boolean): void {
+    this.baseTimestamp = timestamp >>> 0;
+    this.baseWallMs = now + this.options.delayMs;
+    if (report) this.options.onReset(reason);
+  }
+
+  private clearTimers(): void {
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+  }
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function terminateVoiceHelperProcess(child: ChildProcessWithoutNullStreams | null, reason: string): void {
