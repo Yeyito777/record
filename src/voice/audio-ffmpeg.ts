@@ -15,8 +15,10 @@ const VOICE_CAPTURE_STARTUP_TIMEOUT_MS = 5_000;
 const PLAYBACK_PACE_DELAY_MS = parsePositiveInt(process.env.RECORD_PLAYBACK_PACE_DELAY_MS, 240);
 const PLAYBACK_PACER_IDLE_RESET_MS = 2_000;
 const PLAYBACK_PACER_MAX_DELTA_SAMPLES = 48_000 * 60;
+const PLAYBACK_MAX_CONCEALMENT_PACKETS = parsePositiveInt(process.env.RECORD_PLAYBACK_MAX_CONCEALMENT_PACKETS, 10);
 const PLAYBACK_TRACE_DIR = process.env.RECORD_PLAYBACK_TRACE_DIR?.trim() || null;
 const PLAYBACK_PREROLL_FRAME_MS = 20;
+const PLAYBACK_LOSS_FILL_MODE = parsePlaybackLossFillMode(process.env.RECORD_PLAYBACK_LOSS_FILL_MODE);
 
 export function createDefaultVoiceAudioBackend(): VoiceAudioBackend {
   if (process.platform !== "linux") return new NoopVoiceAudioBackend();
@@ -57,6 +59,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackPacerResetCount = 0;
   private playbackPacerDroppedCount = 0;
   private playbackPrerollPacketCount = 0;
+  private playbackConcealmentPacketCount = 0;
   private playbackSendErrorCount = 0;
   private playbackWrongPayloadCount = 0;
   private playbackInvalidPacketCount = 0;
@@ -310,6 +313,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private sendPlaybackPacket(packet: Buffer, kind: PlaybackPacketKind = "audio"): void {
     if (!this.playbackSocket || this.localPlaybackPort === null) return;
     if (kind === "preroll") this.playbackPrerollPacketCount += 1;
+    else if (kind === "concealment") this.playbackConcealmentPacketCount += 1;
     else this.playbackPacedPacketCount += 1;
     this.writePlaybackTracePacket(packet);
     this.playbackSocket.send(packet, this.localPlaybackPort, "127.0.0.1", (error) => {
@@ -333,6 +337,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackPacerResetCount = 0;
     this.playbackPacerDroppedCount = 0;
     this.playbackPrerollPacketCount = 0;
+    this.playbackConcealmentPacketCount = 0;
     this.playbackSendErrorCount = 0;
     this.playbackWrongPayloadCount = 0;
     this.playbackInvalidPacketCount = 0;
@@ -358,6 +363,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       pacerDroppedPackets: this.playbackPacerDroppedCount,
       pacerResets: this.playbackPacerResetCount,
       prerollPackets: this.playbackPrerollPacketCount,
+      concealedPackets: this.playbackConcealmentPacketCount,
       pacerDelayMs: PLAYBACK_PACE_DELAY_MS,
       transportFailures: this.playbackTransportFailCount,
       daveDrops: this.playbackDaveDropCount,
@@ -773,12 +779,15 @@ interface PlaybackPacerOptions {
   onReset: (reason: string) => void;
 }
 
-type PlaybackPacketKind = "audio" | "preroll";
+type PlaybackPacketKind = "audio" | "preroll" | "concealment";
 
 class PlaybackPacer {
   private baseTimestamp: number | null = null;
   private baseWallMs = 0;
   private lastReceivedAt = 0;
+  private lastSourceSequence: number | null = null;
+  private lastSourceTimestamp: number | null = null;
+  private lastPayload: Buffer | null = null;
   private localBaseTimestamp = Math.floor(Math.random() * 0x100000000) >>> 0;
   private localBaseWallMs: number | null = null;
   private localSequence = Math.floor(Math.random() * 0x10000) & 0xffff;
@@ -799,6 +808,16 @@ class PlaybackPacer {
     }
     this.lastReceivedAt = now;
 
+    const sourceSequenceDelta = this.lastSourceSequence === null ? 1 : rtpSequenceDelta(_sequence, this.lastSourceSequence);
+    if (this.lastSourceSequence !== null && sourceSequenceDelta === 0) {
+      this.options.onDrop("duplicate_source_packet");
+      return;
+    }
+    if (this.lastSourceSequence !== null && sourceSequenceDelta >= 0x8000) {
+      this.options.onDrop("out_of_order_source_packet");
+      return;
+    }
+
     let deltaSamples = (timestamp - (this.baseTimestamp ?? timestamp)) >>> 0;
     if (deltaSamples > PLAYBACK_PACER_MAX_DELTA_SAMPLES) {
       this.clearTimers();
@@ -807,11 +826,15 @@ class PlaybackPacer {
       deltaSamples = 0;
     }
 
+    this.scheduleMissingSourcePackets(sourceSequenceDelta, now);
     const targetMs = this.baseWallMs + (deltaSamples / 48);
     const lateMs = Math.max(0, now - targetMs);
     const delayMs = Math.max(0, Math.ceil(targetMs - now));
     if (lateMs > 0) this.options.onLate(lateMs);
     this.schedulePayload(payload, targetMs, delayMs, "audio");
+    this.lastSourceSequence = _sequence & 0xffff;
+    this.lastSourceTimestamp = timestamp >>> 0;
+    this.lastPayload = payload;
   }
 
   dispose(): void {
@@ -821,8 +844,38 @@ class PlaybackPacer {
   private resetBase(timestamp: number, now: number, reason: string, report: boolean): void {
     this.baseTimestamp = timestamp >>> 0;
     this.baseWallMs = now + this.options.delayMs;
+    this.lastSourceSequence = null;
+    this.lastSourceTimestamp = null;
+    this.lastPayload = null;
     if (this.localBaseWallMs === null) this.localBaseWallMs = this.baseWallMs;
     if (report) this.options.onReset(reason);
+  }
+
+  private scheduleMissingSourcePackets(sourceSequenceDelta: number, now: number): void {
+    if (PLAYBACK_LOSS_FILL_MODE === "off") return;
+    if (this.lastSourceTimestamp === null || sourceSequenceDelta <= 1) return;
+    const missingPackets = sourceSequenceDelta - 1;
+    if (missingPackets > PLAYBACK_MAX_CONCEALMENT_PACKETS) {
+      this.options.onDrop("concealment_gap_too_large");
+      return;
+    }
+    const fillerPayload = this.concealmentPayload();
+    for (let index = 1; index <= missingPackets; index += 1) {
+      const missingTimestamp = (this.lastSourceTimestamp + (OPUS_RTP_CLOCK_INCREMENT * index)) >>> 0;
+      const targetMs = this.targetMsForSourceTimestamp(missingTimestamp);
+      const delayMs = Math.max(0, Math.ceil(targetMs - now));
+      this.schedulePayload(fillerPayload, targetMs, delayMs, "concealment");
+    }
+  }
+
+  private concealmentPayload(): Buffer {
+    if (PLAYBACK_LOSS_FILL_MODE === "repeat" && this.lastPayload && !this.lastPayload.equals(OPUS_SILENCE_FRAME)) return this.lastPayload;
+    return OPUS_SILENCE_FRAME;
+  }
+
+  private targetMsForSourceTimestamp(timestamp: number): number {
+    const deltaSamples = (timestamp - (this.baseTimestamp ?? timestamp)) >>> 0;
+    return this.baseWallMs + (deltaSamples / 48);
   }
 
   private schedulePreroll(now: number, firstAudioTargetMs: number): void {
@@ -875,6 +928,14 @@ function rtpSequenceDelta(sequence: number, previous: number): number {
 
 function rtpTimestampDelta(timestamp: number, previous: number): number {
   return ((timestamp >>> 0) - (previous >>> 0)) >>> 0;
+}
+
+type PlaybackLossFillMode = "repeat" | "silence" | "off";
+
+function parsePlaybackLossFillMode(value: string | undefined): PlaybackLossFillMode {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "silence" || normalized === "off" || normalized === "repeat") return normalized;
+  return "repeat";
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
