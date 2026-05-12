@@ -701,17 +701,26 @@ function syncAllSidebarVoiceMembers(state: AppState): void {
   syncSidebarVoiceMembersForChannels(state, callVoiceStatesByChannelId.keys());
 }
 
+function removeCallVoiceStateUser(state: AppState, userId: string, channelIds?: Iterable<string>): boolean {
+  const affectedChannelIds = new Set<string>();
+  const targets = channelIds ? Array.from(channelIds) : Array.from(callVoiceStatesByChannelId.keys());
+  for (const channelId of targets) {
+    const states = callVoiceStatesByChannelId.get(channelId);
+    if (!states) continue;
+    if (states.delete(userId)) affectedChannelIds.add(channelId);
+    if (states.size === 0) callVoiceStatesByChannelId.delete(channelId);
+  }
+  if (affectedChannelIds.size === 0) return false;
+  syncSidebarVoiceMembersForChannels(state, affectedChannelIds);
+  return true;
+}
+
 function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolean {
   const affectedChannelIds = new Set<string>();
   const channelId = update.channelId;
   if (!channelId) {
-    for (const [existingChannelId, states] of callVoiceStatesByChannelId.entries()) {
-      if (states.delete(update.userId)) affectedChannelIds.add(existingChannelId);
-      if (states.size === 0) callVoiceStatesByChannelId.delete(existingChannelId);
-    }
     clearSpeakingCallUser(update.userId);
-    syncSidebarVoiceMembersForChannels(state, affectedChannelIds);
-    return affectedChannelIds.size > 0;
+    return removeCallVoiceStateUser(state, update.userId);
   }
   for (const [existingChannelId, states] of callVoiceStatesByChannelId.entries()) {
     if (existingChannelId === channelId) continue;
@@ -1541,7 +1550,6 @@ function buildCallWidgetParticipants(state: AppState, session: VoiceCallSession)
 function syncCallWidget(state: AppState, session: VoiceCallSession | null): void {
   if (!session || session.state !== "ready") {
     if (!session || session.state === "ended" || session.state === "error") {
-      callVoiceStatesByChannelId.clear();
       clearAllSpeakingCallUsers();
     }
     callWidget.stop();
@@ -1554,6 +1562,8 @@ function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null):
   const hadActiveCall = Boolean(state.voiceCall);
   if (!session || session.state === "ended" || session.state === "error") {
     if (session?.target.channelId) {
+      const selfUserId = state.auth.user?.id;
+      if (selfUserId) removeCallVoiceStateUser(state, selfUserId, [session.target.channelId]);
       stopOutboundCallRingtone(session.target.channelId, session.state);
       callJoinSoundUserIdsByChannelId.delete(session.target.channelId);
     } else {
