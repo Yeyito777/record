@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -104,6 +104,20 @@ describe("voice backend", () => {
       "--bitrate", "96000",
       "--payload-type", "120",
       "--meter-stdout",
+    ]);
+  });
+
+  test("builds native voice-engine playback args", () => {
+    expect(buildVoiceEnginePlaybackArgs(43125, "/tmp/playback.ready")).toEqual([
+      "play-rtp",
+      "--rtp", "127.0.0.1:43125",
+      "--channels", "2",
+      "--payload-type", "120",
+      "--jitter-ms", "240",
+      "--idle-timeout-ms", "350",
+      "--max-plc-packets", "10",
+      "--output", "pipewire",
+      "--ready-file", "/tmp/playback.ready",
     ]);
   });
 

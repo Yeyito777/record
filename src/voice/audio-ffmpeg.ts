@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createSocket, type Socket as UdpSocket } from "dgram";
-import { accessSync, constants as fsConstants, createWriteStream, mkdirSync, mkdtempSync, rmSync, writeFileSync, type WriteStream } from "fs";
+import { accessSync, constants as fsConstants, createWriteStream, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, type WriteStream } from "fs";
 import { homedir, tmpdir } from "os";
 import { delimiter, join } from "path";
 
@@ -15,8 +15,12 @@ const VOICE_CAPTURE_STARTUP_TIMEOUT_MS = 5_000;
 const PLAYBACK_PACE_DELAY_MS = parsePositiveInt(process.env.RECORD_PLAYBACK_PACE_DELAY_MS, 240);
 const PLAYBACK_PACER_IDLE_RESET_MS = 2_000;
 const PLAYBACK_PACER_MAX_DELTA_SAMPLES = 48_000 * 60;
+const PLAYBACK_MAX_CONCEALMENT_PACKETS = parsePositiveInt(process.env.RECORD_PLAYBACK_MAX_CONCEALMENT_PACKETS, 10);
 const PLAYBACK_TRACE_DIR = process.env.RECORD_PLAYBACK_TRACE_DIR?.trim() || null;
 const PLAYBACK_PREROLL_FRAME_MS = 20;
+const PLAYBACK_LOSS_FILL_MODE = parsePlaybackLossFillMode(process.env.RECORD_PLAYBACK_LOSS_FILL_MODE);
+const PLAYBACK_BACKEND = parsePlaybackBackend(process.env.RECORD_PLAYBACK_BACKEND);
+const PLAYBACK_READY_TIMEOUT_MS = 1_000;
 
 export function createDefaultVoiceAudioBackend(): VoiceAudioBackend {
   if (process.platform !== "linux") return new NoopVoiceAudioBackend();
@@ -33,6 +37,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackTracePath: string | null = null;
   private captureProcess: ChildProcessWithoutNullStreams | null = null;
   private playbackProcess: ChildProcessWithoutNullStreams | null = null;
+  private playbackBackend: PlaybackBackend = "ffplay";
   private captureStartupTimer: ReturnType<typeof setTimeout> | null = null;
   private tempDir: string | null = null;
   private localPlaybackPort: number | null = null;
@@ -57,6 +62,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackPacerResetCount = 0;
   private playbackPacerDroppedCount = 0;
   private playbackPrerollPacketCount = 0;
+  private playbackConcealmentPacketCount = 0;
+  private playbackNativePacketCount = 0;
   private playbackSendErrorCount = 0;
   private playbackWrongPayloadCount = 0;
   private playbackInvalidPacketCount = 0;
@@ -86,12 +93,12 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       return;
     }
 
-    context.udp.on("message", this.handleDiscordPacket);
     this.resetPlaybackStats();
     await Promise.all([
       this.startPlayback(context),
       this.startCapture(context),
     ]);
+    if (this.context === context) context.udp.on("message", this.handleDiscordPacket);
   }
 
   stop(): void {
@@ -137,13 +144,18 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.localPlaybackPort = port;
     this.playbackSocket = createSocket("udp4");
     this.tempDir = mkdtempSync(join(tmpdir(), "record-voice-"));
+    const voiceEngine = resolveVoiceEngineCommand();
+    const useNativePlayback = shouldUseNativePlayback(voiceEngine);
     const sdpPath = join(this.tempDir, "voice.sdp");
-    writeFileSync(sdpPath, buildVoicePlaybackSdp(port));
+    const command = useNativePlayback && voiceEngine ? voiceEngine : "ffplay";
+    const readyPath = useNativePlayback ? join(this.tempDir, "playback.ready") : null;
+    const args = useNativePlayback ? buildVoiceEnginePlaybackArgs(port, readyPath ?? undefined) : buildFfplayPlaybackArgs(sdpPath);
+    this.playbackBackend = useNativePlayback ? "engine" : "ffplay";
+    if (!useNativePlayback) writeFileSync(sdpPath, buildVoicePlaybackSdp(port));
 
-    const args = buildFfplayPlaybackArgs(sdpPath);
-    debugLog("voice.playback.start", { port, sdpPath, args, codecChannels: 2 });
+    debugLog("voice.playback.start", { backend: this.playbackBackend, command, port, sdpPath: useNativePlayback ? null : sdpPath, args, codecChannels: 2 });
     this.startPlaybackTrace();
-    this.playbackProcess = spawnVoiceHelper("ffplay", args);
+    this.playbackProcess = spawnVoiceHelper(command, args);
     this.playbackProcess.stdin.end();
     const playbackErrorOutput = drainChildOutput(this.playbackProcess);
     this.playbackProcess.on("error", (error) => {
@@ -158,6 +170,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       context.onError(new Error(`Voice playback stopped${details ? `: ${details}` : "."}`));
       if (this.context === context) this.stop();
     });
+    if (readyPath) await waitForFile(readyPath, PLAYBACK_READY_TIMEOUT_MS);
   }
 
   private async startCapture(context: VoiceAudioContext): Promise<void> {
@@ -264,7 +277,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const gap = this.observePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp);
     if (gap) debugLog("voice.playback.sequence_gap", { ...gap });
 
-    this.enqueuePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp, decodedPayload);
+    if (this.playbackBackend === "engine") this.sendNativePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp, decodedPayload);
+    else this.enqueuePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp, decodedPayload);
     this.playbackForwardedPacketCount += 1;
     if (!this.playbackFirstPacketLogged) {
       this.playbackFirstPacketLogged = true;
@@ -307,9 +321,15 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     pacer.enqueue(sequence, timestamp, payload);
   }
 
+  private sendNativePlaybackPacket(ssrc: number, sequence: number, timestamp: number, payload: Buffer): void {
+    this.sendPlaybackPacket(buildPlainPlaybackRtpPacket(ssrc, sequence, timestamp, payload), "native");
+  }
+
   private sendPlaybackPacket(packet: Buffer, kind: PlaybackPacketKind = "audio"): void {
     if (!this.playbackSocket || this.localPlaybackPort === null) return;
     if (kind === "preroll") this.playbackPrerollPacketCount += 1;
+    else if (kind === "concealment") this.playbackConcealmentPacketCount += 1;
+    else if (kind === "native") this.playbackNativePacketCount += 1;
     else this.playbackPacedPacketCount += 1;
     this.writePlaybackTracePacket(packet);
     this.playbackSocket.send(packet, this.localPlaybackPort, "127.0.0.1", (error) => {
@@ -333,6 +353,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackPacerResetCount = 0;
     this.playbackPacerDroppedCount = 0;
     this.playbackPrerollPacketCount = 0;
+    this.playbackConcealmentPacketCount = 0;
+    this.playbackNativePacketCount = 0;
     this.playbackSendErrorCount = 0;
     this.playbackWrongPayloadCount = 0;
     this.playbackInvalidPacketCount = 0;
@@ -358,7 +380,10 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       pacerDroppedPackets: this.playbackPacerDroppedCount,
       pacerResets: this.playbackPacerResetCount,
       prerollPackets: this.playbackPrerollPacketCount,
+      concealedPackets: this.playbackConcealmentPacketCount,
+      nativePackets: this.playbackNativePacketCount,
       pacerDelayMs: PLAYBACK_PACE_DELAY_MS,
+      backend: this.playbackBackend,
       transportFailures: this.playbackTransportFailCount,
       daveDrops: this.playbackDaveDropCount,
       emptyPayloads: this.playbackEmptyPayloadCount,
@@ -715,6 +740,21 @@ export function buildVoiceEngineCaptureArgs(port: number): string[] {
   ];
 }
 
+export function buildVoiceEnginePlaybackArgs(port: number, readyFile?: string): string[] {
+  const args = [
+    "play-rtp",
+    "--rtp", `127.0.0.1:${port}`,
+    "--channels", "2",
+    "--payload-type", String(OPUS_PAYLOAD_TYPE),
+    "--jitter-ms", String(PLAYBACK_PACE_DELAY_MS),
+    "--idle-timeout-ms", "350",
+    "--max-plc-packets", "10",
+    "--output", "pipewire",
+  ];
+  if (readyFile) args.push("--ready-file", readyFile);
+  return args;
+}
+
 export function buildFfmpegCaptureArgs(port: number): string[] {
   return [
     "-nostdin",
@@ -764,6 +804,15 @@ function spawnVoiceHelper(command: string, args: string[]): ChildProcessWithoutN
   return spawn(command, args, { detached: process.platform !== "win32" });
 }
 
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (existsSync(path)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  debugLog("voice.playback.ready_timeout", { path, timeoutMs });
+}
+
 interface PlaybackPacerOptions {
   ssrc: number;
   delayMs: number;
@@ -773,12 +822,17 @@ interface PlaybackPacerOptions {
   onReset: (reason: string) => void;
 }
 
-type PlaybackPacketKind = "audio" | "preroll";
+type PlaybackBackend = "engine" | "ffplay";
+
+type PlaybackPacketKind = "audio" | "preroll" | "concealment" | "native";
 
 class PlaybackPacer {
   private baseTimestamp: number | null = null;
   private baseWallMs = 0;
   private lastReceivedAt = 0;
+  private lastSourceSequence: number | null = null;
+  private lastSourceTimestamp: number | null = null;
+  private lastPayload: Buffer | null = null;
   private localBaseTimestamp = Math.floor(Math.random() * 0x100000000) >>> 0;
   private localBaseWallMs: number | null = null;
   private localSequence = Math.floor(Math.random() * 0x10000) & 0xffff;
@@ -799,6 +853,16 @@ class PlaybackPacer {
     }
     this.lastReceivedAt = now;
 
+    const sourceSequenceDelta = this.lastSourceSequence === null ? 1 : rtpSequenceDelta(_sequence, this.lastSourceSequence);
+    if (this.lastSourceSequence !== null && sourceSequenceDelta === 0) {
+      this.options.onDrop("duplicate_source_packet");
+      return;
+    }
+    if (this.lastSourceSequence !== null && sourceSequenceDelta >= 0x8000) {
+      this.options.onDrop("out_of_order_source_packet");
+      return;
+    }
+
     let deltaSamples = (timestamp - (this.baseTimestamp ?? timestamp)) >>> 0;
     if (deltaSamples > PLAYBACK_PACER_MAX_DELTA_SAMPLES) {
       this.clearTimers();
@@ -807,11 +871,15 @@ class PlaybackPacer {
       deltaSamples = 0;
     }
 
+    this.scheduleMissingSourcePackets(sourceSequenceDelta, now);
     const targetMs = this.baseWallMs + (deltaSamples / 48);
     const lateMs = Math.max(0, now - targetMs);
     const delayMs = Math.max(0, Math.ceil(targetMs - now));
     if (lateMs > 0) this.options.onLate(lateMs);
     this.schedulePayload(payload, targetMs, delayMs, "audio");
+    this.lastSourceSequence = _sequence & 0xffff;
+    this.lastSourceTimestamp = timestamp >>> 0;
+    this.lastPayload = payload;
   }
 
   dispose(): void {
@@ -821,8 +889,38 @@ class PlaybackPacer {
   private resetBase(timestamp: number, now: number, reason: string, report: boolean): void {
     this.baseTimestamp = timestamp >>> 0;
     this.baseWallMs = now + this.options.delayMs;
+    this.lastSourceSequence = null;
+    this.lastSourceTimestamp = null;
+    this.lastPayload = null;
     if (this.localBaseWallMs === null) this.localBaseWallMs = this.baseWallMs;
     if (report) this.options.onReset(reason);
+  }
+
+  private scheduleMissingSourcePackets(sourceSequenceDelta: number, now: number): void {
+    if (PLAYBACK_LOSS_FILL_MODE === "off") return;
+    if (this.lastSourceTimestamp === null || sourceSequenceDelta <= 1) return;
+    const missingPackets = sourceSequenceDelta - 1;
+    if (missingPackets > PLAYBACK_MAX_CONCEALMENT_PACKETS) {
+      this.options.onDrop("concealment_gap_too_large");
+      return;
+    }
+    const fillerPayload = this.concealmentPayload();
+    for (let index = 1; index <= missingPackets; index += 1) {
+      const missingTimestamp = (this.lastSourceTimestamp + (OPUS_RTP_CLOCK_INCREMENT * index)) >>> 0;
+      const targetMs = this.targetMsForSourceTimestamp(missingTimestamp);
+      const delayMs = Math.max(0, Math.ceil(targetMs - now));
+      this.schedulePayload(fillerPayload, targetMs, delayMs, "concealment");
+    }
+  }
+
+  private concealmentPayload(): Buffer {
+    if (PLAYBACK_LOSS_FILL_MODE === "repeat" && this.lastPayload && !this.lastPayload.equals(OPUS_SILENCE_FRAME)) return this.lastPayload;
+    return OPUS_SILENCE_FRAME;
+  }
+
+  private targetMsForSourceTimestamp(timestamp: number): number {
+    const deltaSamples = (timestamp - (this.baseTimestamp ?? timestamp)) >>> 0;
+    return this.baseWallMs + (deltaSamples / 48);
   }
 
   private schedulePreroll(now: number, firstAudioTargetMs: number): void {
@@ -875,6 +973,28 @@ function rtpSequenceDelta(sequence: number, previous: number): number {
 
 function rtpTimestampDelta(timestamp: number, previous: number): number {
   return ((timestamp >>> 0) - (previous >>> 0)) >>> 0;
+}
+
+type PlaybackLossFillMode = "repeat" | "silence" | "off";
+
+function parsePlaybackLossFillMode(value: string | undefined): PlaybackLossFillMode {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "silence" || normalized === "off" || normalized === "repeat") return normalized;
+  return "repeat";
+}
+
+type PlaybackBackendPreference = "auto" | "engine" | "ffplay";
+
+function parsePlaybackBackend(value: string | undefined): PlaybackBackendPreference {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "engine" || normalized === "ffplay" || normalized === "auto") return normalized;
+  return "auto";
+}
+
+function shouldUseNativePlayback(voiceEngine: string | null): boolean {
+  if (PLAYBACK_BACKEND === "ffplay") return false;
+  if (!voiceEngine) return false;
+  return PLAYBACK_BACKEND === "engine" || PLAYBACK_BACKEND === "auto";
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
