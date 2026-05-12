@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
-import { buildFfplayPlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, stripDavePadding, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildVoiceEngineCaptureArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, NoopVoiceAudioBackend, resolveVoiceEngineCommand, stripDavePadding, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -89,6 +92,42 @@ describe("voice backend", () => {
       "-i", "/tmp/voice.sdp",
     ]);
     expect(buildFfplayPlaybackArgs("/tmp/voice.sdp")).not.toContain("-nostdin");
+  });
+
+  test("builds native voice-engine capture args", () => {
+    expect(buildVoiceEngineCaptureArgs(43123)).toEqual([
+      "capture-mic",
+      "--rtp", "127.0.0.1:43123",
+      "--mode", "voice",
+      "--device", "default",
+      "--channels", "2",
+      "--bitrate", "96000",
+      "--payload-type", "120",
+      "--meter-stdout",
+    ]);
+  });
+
+  test("keeps legacy ffmpeg capture args as fallback", () => {
+    const args = buildFfmpegCaptureArgs(43124);
+    expect(args.includes("ffmpeg")).toBe(false);
+    expect(args).toContain("-application");
+    expect(args).toContain("voip");
+    expect(args).toContain("rtp://127.0.0.1:43124");
+  });
+
+  test("resolves native voice engine from env or PATH", () => {
+    expect(resolveVoiceEngineCommand({ DISCORD_VOICE_ENGINE: "~/bin/voice-engine", PATH: "" })).toContain("/bin/voice-engine");
+    expect(resolveVoiceEngineCommand({ PATH: "" })).toBeNull();
+
+    const dir = mkdtempSync(join(tmpdir(), "record-voice-engine-test-"));
+    const engine = join(dir, "discord-voice-engine");
+    try {
+      writeFileSync(engine, "#!/bin/sh\nexit 0\n");
+      chmodSync(engine, 0o755);
+      expect(resolveVoiceEngineCommand({ PATH: dir })).toBe("discord-voice-engine");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("builds a stereo-compatible Opus playback SDP", () => {

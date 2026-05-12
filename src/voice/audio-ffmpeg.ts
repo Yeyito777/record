@@ -1,8 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createSocket, type Socket as UdpSocket } from "dgram";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { accessSync, constants as fsConstants, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { delimiter, join } from "path";
 
 import { debugLog } from "../debuglog";
 import { OPUS_PAYLOAD_TYPE, OPUS_RTP_CLOCK_INCREMENT, OPUS_SILENCE_FRAME, RTP_HEADER_LENGTH } from "./constants";
@@ -139,38 +139,25 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     socket.on("message", this.handleCapturePacket);
     const port = await bindUdp(socket, "127.0.0.1", 0);
 
-    debugLog("voice.capture.start", { input: "default", speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
-    this.captureProcess = spawn("ffmpeg", [
-      "-nostdin",
-      "-hide_banner",
-      "-loglevel", "error",
-      "-f", "pulse",
-      "-i", "default",
-      "-filter_complex", "[0:a]asplit=2[aout][meter]",
-      "-map", "[aout]",
-      "-ac", "2",
-      "-ar", "48000",
-      "-c:a", "libopus",
-      "-application", "voip",
-      "-frame_duration", "20",
-      "-payload_type", String(OPUS_PAYLOAD_TYPE),
-      "-f", "rtp",
-      `rtp://127.0.0.1:${port}`,
-      "-map", "[meter]",
-      "-ac", "1",
-      "-ar", "16000",
-      "-f", "s16le",
-      "pipe:1",
-    ]);
+    const voiceEngine = resolveVoiceEngineCommand();
+    if (voiceEngine) {
+      const args = buildVoiceEngineCaptureArgs(port);
+      debugLog("voice.capture.start", { backend: "discord-voice-engine", command: voiceEngine, args, input: "default", speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
+      this.captureProcess = spawn(voiceEngine, args);
+    } else {
+      const args = buildFfmpegCaptureArgs(port);
+      debugLog("voice.capture.start", { backend: "ffmpeg", command: "ffmpeg", args, input: "default", speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
+      this.captureProcess = spawn("ffmpeg", args);
+    }
     this.captureProcess.stdout.on("data", this.handleCapturePcm);
     const captureErrorOutput = drainChildStderr(this.captureProcess);
     this.captureProcess.on("error", (error) => {
-      debugLog("voice.capture.spawn_error", { error: error.message });
+      debugLog("voice.capture.spawn_error", { error: error.message, backend: voiceEngine ? "discord-voice-engine" : "ffmpeg" });
       context.onError(new Error(`Failed to start voice capture: ${error.message}`));
     });
     this.captureProcess.on("exit", (code, signal) => {
       const details = captureErrorOutput().trim();
-      debugLog("voice.capture.exit", { code, signal, details });
+      debugLog("voice.capture.exit", { code, signal, details, backend: voiceEngine ? "discord-voice-engine" : "ffmpeg" });
       if (code !== 0 && this.context === context) context.onError(new Error("Voice capture stopped; microphone audio is not being sent."));
     });
   }
@@ -427,6 +414,64 @@ export function buildVoicePlaybackSdp(port: number): string {
     `a=rtpmap:${OPUS_PAYLOAD_TYPE} opus/48000/2`,
     "",
   ].join("\n");
+}
+
+export function buildVoiceEngineCaptureArgs(port: number): string[] {
+  return [
+    "capture-mic",
+    "--rtp", `127.0.0.1:${port}`,
+    "--mode", "voice",
+    "--device", "default",
+    "--channels", "2",
+    "--bitrate", "96000",
+    "--payload-type", String(OPUS_PAYLOAD_TYPE),
+    "--meter-stdout",
+  ];
+}
+
+export function buildFfmpegCaptureArgs(port: number): string[] {
+  return [
+    "-nostdin",
+    "-hide_banner",
+    "-loglevel", "error",
+    "-f", "pulse",
+    "-i", "default",
+    "-filter_complex", "[0:a]asplit=2[aout][meter]",
+    "-map", "[aout]",
+    "-ac", "2",
+    "-ar", "48000",
+    "-c:a", "libopus",
+    "-application", "voip",
+    "-frame_duration", "20",
+    "-payload_type", String(OPUS_PAYLOAD_TYPE),
+    "-f", "rtp",
+    `rtp://127.0.0.1:${port}`,
+    "-map", "[meter]",
+    "-ac", "1",
+    "-ar", "16000",
+    "-f", "s16le",
+    "pipe:1",
+  ];
+}
+
+export function resolveVoiceEngineCommand(env: Record<string, string | undefined> = process.env, pathEnv = env.PATH): string | null {
+  const configured = env.DISCORD_VOICE_ENGINE?.trim();
+  if (configured) return expandHome(configured);
+  if (!pathEnv) return null;
+  for (const entry of pathEnv.split(delimiter)) {
+    const candidate = join(entry || ".", "discord-voice-engine");
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return "discord-voice-engine";
+    } catch {}
+  }
+  return null;
+}
+
+function expandHome(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
+  return value;
 }
 
 function drainChildOutput(child: ChildProcessWithoutNullStreams): () => string {
