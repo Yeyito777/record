@@ -13,6 +13,8 @@ import {
   setChannelList,
   upsertChannel,
 } from "./channels";
+import { statSync } from "fs";
+import { basename } from "path";
 import {
   DIRECT_MESSAGES_GUILD_ID,
   DIRECT_MESSAGES_GUILD_NAME,
@@ -85,6 +87,7 @@ import {
   upsertCachedChannelMessage,
 } from "./messagecache";
 import { debugLog } from "./debuglog";
+import { DISCORD_UPLOAD_LIMIT_BYTES, normalizeUploadPath, readLocalFileUploadInWorker, type LocalFileUpload } from "./fileupload";
 import { MemberListGatewayClient } from "./membergateway";
 import {
   cacheMemberList,
@@ -175,6 +178,13 @@ const INCOMING_CALL_RINGTONE_DEDUPE_MS = 15_000;
 const OUTBOUND_CALL_RINGTONE_MAX_MS = 15_000;
 const OUTBOUND_CALL_RINGTONE_REPEAT_MS = 2_500;
 const REMOTE_CALL_SPEAKING_IDLE_MS = 1_500;
+
+interface LocalMessageUpload {
+  filename: string;
+  mediaType: string;
+  base64: string;
+  sizeBytes: number;
+}
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
   const members: DiscordGuildMember[] = [];
@@ -2286,20 +2296,29 @@ function localReplyPreview(state: AppState, channelId: string): DiscordMessageRe
   };
 }
 
-function uploadOptionsForImages(images: ClipboardImageAttachment[]): SendMessageUpload[] {
-  return images.map((image) => ({
+function uploadFromClipboardImage(image: ClipboardImageAttachment): LocalMessageUpload {
+  return {
     filename: image.filename ?? "image.png",
     mediaType: image.mediaType,
     base64: image.base64,
+    sizeBytes: image.sizeBytes,
+  };
+}
+
+function uploadOptionsForFiles(files: LocalMessageUpload[]): SendMessageUpload[] {
+  return files.map((file) => ({
+    filename: file.filename,
+    mediaType: file.mediaType,
+    base64: file.base64,
   }));
 }
 
-function localAttachmentsForImages(images: ClipboardImageAttachment[]): DiscordMessageAttachment[] {
-  return images.map((image, index) => ({
+function localAttachmentsForFiles(files: LocalMessageUpload[]): DiscordMessageAttachment[] {
+  return files.map((file, index) => ({
     id: `local:${index}`,
-    filename: image.filename ?? "image.png",
-    contentType: image.mediaType,
-    size: image.sizeBytes,
+    filename: file.filename,
+    contentType: file.mediaType,
+    size: file.sizeBytes,
     url: "",
   }));
 }
@@ -2459,16 +2478,16 @@ export function sendCurrentChannelMessage(
   token: string | null,
   content: string,
   effects: SessionEffects,
-  options: { sendContent?: string; localMentionUsers?: DiscordGuildMember[] } = {},
+  options: { sendContent?: string; localMentionUsers?: DiscordGuildMember[]; uploads?: LocalMessageUpload[]; failureBuffer?: string; loadingNotice?: string; failureNoticePrefix?: string } = {},
 ): void {
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
   if (!token) {
-    setNotice(state, "Login first with /login <token|username>.", "warning");
+    setNotice(state, "Login first with /login <token|username>.", "warning", { statusLine: false });
     effects.scheduleRender();
     return;
   }
   if (!channelId) {
-    setNotice(state, "Open a channel before sending a message.", "warning");
+    setNotice(state, "Open a channel before sending a message.", "warning", { statusLine: false });
     effects.scheduleRender();
     return;
   }
@@ -2484,13 +2503,21 @@ export function sendCurrentChannelMessage(
   const replyOptions = activeReplyForChannel(state, channelId);
   const replyPreview = localReplyPreview(state, channelId);
   const pendingImages = [...state.pendingImages];
-  const uploads = uploadOptionsForImages(pendingImages);
-  const localAttachments = localAttachmentsForImages(pendingImages);
+  const messageUploads = [
+    ...pendingImages.map(uploadFromClipboardImage),
+    ...(options.uploads ?? []),
+  ];
+  const uploads = uploadOptionsForFiles(messageUploads);
+  const localAttachments = localAttachmentsForFiles(messageUploads);
   const sendContent = options.sendContent ?? content;
   clearPrompt(state);
   state.pendingImages = [];
   state.replyTarget = null;
-  setNotice(state, "", "muted");
+  if (options.loadingNotice) {
+    setNotice(state, options.loadingNotice, "muted", { loading: true, chat: false });
+  } else {
+    setNotice(state, "", "muted");
+  }
 
   const localMessage: DiscordMessage = {
     id: localMessageId,
@@ -2537,6 +2564,9 @@ export function sendCurrentChannelMessage(
         replaceTimelineMessage(state.timeline, localMessageId, message);
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
       }
+      if (options.loadingNotice && state.notice.text === options.loadingNotice) {
+        setNotice(state, "", "muted");
+      }
       maybeResortDirectMessages(state, channelId, message.id);
       effects.scheduleRender();
     } catch (error) {
@@ -2545,15 +2575,89 @@ export function sendCurrentChannelMessage(
       const failed = markTimelineMessageFailed(state.timeline, localMessageId, message) ?? cachedFailed;
       state.replyTarget = replyTarget;
       state.pendingImages = pendingImages;
-      state.editor.buffer = failed?.content ?? content;
+      state.editor.buffer = options.failureBuffer ?? failed?.content ?? content;
       state.editor.cursor = state.editor.buffer.length;
       if (state.timeline.channelId === channelId) {
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
       }
-      setNotice(state, "", "muted");
+      if (options.failureNoticePrefix) {
+        setNotice(state, `${options.failureNoticePrefix}: ${message}`, "warning", { statusLine: true, chat: false });
+      } else {
+        setNotice(state, "", "muted");
+      }
       effects.scheduleRender();
     }
   })();
+}
+
+function setUploadFailureNotice(state: AppState, effects: SessionEffects, message: string): void {
+  setNotice(state, `Upload failed: ${message}`, "warning", { statusLine: true, chat: false });
+  effects.scheduleRender();
+}
+
+function uploadFileInfo(path: string): { filename: string; needsCompression: boolean } {
+  const normalizedPath = normalizeUploadPath(path);
+  const stats = statSync(normalizedPath);
+  if (!stats.isFile()) throw new Error("Not a file.");
+  return {
+    filename: basename(normalizedPath),
+    needsCompression: stats.size > DISCORD_UPLOAD_LIMIT_BYTES,
+  };
+}
+
+export function uploadCurrentChannelFile(
+  state: AppState,
+  token: string | null,
+  path: string,
+  effects: SessionEffects,
+): void {
+  const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
+  if (!token) {
+    setUploadFailureNotice(state, effects, "Login first with /login <token|username>.");
+    return;
+  }
+  if (!channelId) {
+    setUploadFailureNotice(state, effects, "Open a channel before sending a message.");
+    return;
+  }
+
+  let info: { filename: string; needsCompression: boolean };
+  try {
+    info = uploadFileInfo(path);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setUploadFailureNotice(state, effects, message);
+    return;
+  }
+
+  const prepareAndSend = async (): Promise<void> => {
+    let upload: LocalFileUpload;
+    try {
+      upload = await readLocalFileUploadInWorker(path);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUploadFailureNotice(state, effects, message);
+      return;
+    }
+
+    sendCurrentChannelMessage(state, token, "", effects, {
+      uploads: [upload],
+      failureBuffer: `/upload ${path}`,
+      loadingNotice: `Uploading ${upload.filename}…`,
+      failureNoticePrefix: "Upload failed",
+    });
+  };
+
+  if (info.needsCompression) {
+    setNotice(state, `Compressing ${info.filename}…`, "muted", { loading: true, chat: false });
+    effects.scheduleRender();
+    void prepareAndSend();
+    return;
+  }
+
+  setNotice(state, `Uploading ${info.filename}…`, "muted", { loading: true, chat: false });
+  effects.scheduleRender();
+  void prepareAndSend();
 }
 
 export function startCurrentDirectMessageCall(state: AppState, effects: SessionEffects): void {

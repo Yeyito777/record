@@ -11,13 +11,16 @@ import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
 import { emojiCompletions, emojiQueryAtCursor } from "./emojis";
 import { MACRO_LIST, getMacroArgs } from "./macros";
 import { loadedMentionCandidates, mentionCandidateMatches, mentionQueryAtCursor } from "./mentions";
+import { readdirSync } from "fs";
+import { basename, dirname, resolve } from "path";
+import { homedir } from "os";
 
 export interface AutocompleteState {
-  type: "command" | "macro" | "replace";
+  type: "command" | "macro" | "path" | "replace";
   selection: number;
   prefix: string;
   matches: CompletionItem[];
-  /** Start offset for mid-message macro token completion. */
+  /** Start offset for mid-message macro and path token completion. */
   tokenStart?: number;
   /** Replacement range for mentions and emoji. */
   replaceStart?: number;
@@ -110,6 +113,11 @@ function getMentionMatches(state: AppState, query: string): CompletionItem[] {
 }
 
 export function updateAutocomplete(state: AppState): void {
+  // Path popup is dismissed on any typing — user must press Tab again.
+  if (state.autocomplete?.type === "path") {
+    state.autocomplete = null;
+  }
+
   const mentionQuery = mentionQueryAtCursor(state.editor.buffer, state.editor.cursor);
   if (mentionQuery) {
     const matches = getMentionMatches(state, mentionQuery.query);
@@ -186,12 +194,12 @@ function fillAutocomplete(state: AppState, name: string): void {
     return;
   }
 
-  if (autocomplete.type === "macro" && autocomplete.tokenStart !== undefined) {
+  if ((autocomplete.type === "macro" || autocomplete.type === "path") && autocomplete.tokenStart !== undefined) {
     const before = state.editor.buffer.slice(0, autocomplete.tokenStart);
     const after = state.editor.buffer.slice(state.editor.cursor);
     let fillText = name;
-    const lastSpace = autocomplete.prefix.lastIndexOf(" ");
-    if (lastSpace >= 0) {
+    const lastSpace = autocomplete.type === "macro" ? autocomplete.prefix.lastIndexOf(" ") : -1;
+    if (autocomplete.type === "macro" && lastSpace >= 0) {
       fillText = autocomplete.prefix.slice(0, lastSpace + 1) + name;
     }
     state.editor.buffer = before + fillText + after;
@@ -236,6 +244,10 @@ export function dismissAutocomplete(state: AppState): void {
       const after = state.editor.buffer.slice(state.editor.cursor);
       state.editor.buffer = before + autocomplete.prefix + after;
       state.editor.cursor = autocomplete.tokenStart + autocomplete.prefix.length;
+    } else if (autocomplete.type === "path") {
+      // Keep the currently completed/common-prefix path text. That mirrors the
+      // Exocortex TUI behavior and makes Escape a useful way to close the popup
+      // without undoing path progress.
     } else {
       state.editor.buffer = autocomplete.prefix;
       state.editor.cursor = state.editor.buffer.length;
@@ -247,4 +259,110 @@ export function dismissAutocomplete(state: AppState): void {
 
 export function acceptAutocomplete(state: AppState): void {
   state.autocomplete = null;
+}
+
+/**
+ * Try to tab-complete a path token at the cursor.
+ *
+ * Copied from Exocortex TUI's prompt autocomplete behavior: path completion is
+ * not live while typing; pressing Tab completes path-looking tokens (`~/`,
+ * `./`, `../`, `/...`). A single match fills directly. Multiple matches fill
+ * the first match and show the autocomplete popup for further Tab cycling.
+ */
+export function tryPathComplete(state: AppState): boolean {
+  const extracted = extractPathToken(state.editor.buffer, state.editor.cursor);
+  if (!extracted) return false;
+
+  const { token, start } = extracted;
+  const fsMatches = getFilesystemMatches(token);
+
+  // For /-prefixed tokens, also include macro matches, preserving Exocortex's
+  // behavior when Tab is used on a slash-looking token.
+  const macroMatches = token.startsWith("/") ? getMacroMatches(token) : [];
+  const matches = [...fsMatches, ...macroMatches];
+  if (matches.length === 0) return false;
+
+  const before = state.editor.buffer.slice(0, start);
+  const after = state.editor.buffer.slice(state.editor.cursor);
+
+  if (matches.length === 1) {
+    state.editor.buffer = before + matches[0].name + after;
+    state.editor.cursor = before.length + matches[0].name.length;
+    state.autocomplete = null;
+    return true;
+  }
+
+  state.editor.buffer = before + matches[0].name + after;
+  state.editor.cursor = before.length + matches[0].name.length;
+  state.autocomplete = {
+    type: "path",
+    selection: 0,
+    prefix: before + token + after,
+    tokenStart: start,
+    matches,
+  };
+  return true;
+}
+
+function extractPathToken(input: string, cursor: number): { token: string; start: number } | null {
+  const start = tokenStart(input, cursor);
+  const token = input.slice(start, cursor);
+  if (token.length === 0) return null;
+
+  if (
+    token.startsWith("~/")
+    || token.startsWith("./")
+    || token.startsWith("../")
+    || token === "~"
+    || (token.startsWith("/") && token.length > 1)
+  ) {
+    return { token, start };
+  }
+
+  return null;
+}
+
+function getFilesystemMatches(pathToken: string): CompletionItem[] {
+  if (pathToken === "~") {
+    return [{ name: "~/", desc: "dir" }];
+  }
+
+  const home = homedir();
+  let expanded = pathToken;
+  if (expanded === "~" || expanded.startsWith("~/")) {
+    expanded = home + expanded.slice(1);
+  }
+
+  let dir: string;
+  let prefix: string;
+  if (expanded.endsWith("/")) {
+    dir = resolve(expanded);
+    prefix = "";
+  } else {
+    dir = dirname(resolve(expanded));
+    prefix = basename(expanded);
+  }
+
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    const filtered = entries
+      .filter((entry) => entry.name.startsWith(prefix) && (prefix.startsWith(".") || !entry.name.startsWith(".")))
+      .sort((a, b) => {
+        const aDir = a.isDirectory() ? 0 : 1;
+        const bDir = b.isDirectory() ? 0 : 1;
+        if (aDir !== bDir) return aDir - bDir;
+        return a.name.localeCompare(b.name);
+      });
+
+    const tokenDir = pathToken.endsWith("/")
+      ? pathToken
+      : pathToken.slice(0, pathToken.length - prefix.length);
+
+    return filtered.map((entry) => {
+      const isDir = entry.isDirectory();
+      return { name: tokenDir + entry.name + (isDir ? "/" : ""), desc: isDir ? "dir" : "file" };
+    });
+  } catch {
+    return [];
+  }
 }

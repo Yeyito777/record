@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 import { resolveLoginCredential, submitCurrentBuffer, type AppEffects } from "./actions";
 import { createInitialState } from "./state";
@@ -15,6 +18,18 @@ const effects: AppEffects = {
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
+
+function waitForCondition(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (predicate()) return resolve();
+      if (Date.now() - start > timeoutMs) return reject(new Error("Timed out waiting for condition."));
+      setTimeout(check, 5);
+    };
+    check();
+  });
+}
 
 describe("submitCurrentBuffer", () => {
   test("resolves saved login usernames before validation", () => {
@@ -116,6 +131,56 @@ describe("submitCurrentBuffer", () => {
     expect(state.timeline.messages[0]?.localMentionUsers).toEqual([
       { id: "user-1", username: "zosa", displayName: "Zosa", bot: false, roleIds: ["role-1"] },
     ]);
+  });
+
+  test("/upload sends a local file as a multipart message attachment", async () => {
+    let requestedBody: BodyInit | null | undefined = null;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = init?.body;
+      return new Response(JSON.stringify({
+        id: "message-1",
+        channel_id: "channel-1",
+        guild_id: "guild-1",
+        type: 0,
+        content: "",
+        mentions: [],
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "self", username: "self", global_name: "Self" },
+        attachments: [{ id: "attachment-1", filename: "note.txt", content_type: "text/plain", size: 12, url: "https://cdn.example/note.txt" }],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const dir = mkdtempSync(join(tmpdir(), "record-upload-action-test-"));
+    const path = join(dir, "note.txt");
+    writeFileSync(path, "hello upload");
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.activeChannel = state.channelList.channels[0] ?? null;
+    state.timeline.channelId = "channel-1";
+    state.editor.buffer = `/upload ${path}`;
+
+    submitCurrentBuffer(state, effects);
+
+    expect(state.editor.buffer).toBe("");
+    await waitForCondition(() => state.timeline.messages.length > 0 && requestedBody instanceof FormData);
+    expect(state.timeline.messages[0]).toMatchObject({
+      content: "",
+      attachments: [{ filename: "note.txt", contentType: "text/plain", size: "hello upload".length }],
+    });
+    expect(requestedBody).toBeInstanceOf(FormData);
+    const form = requestedBody as unknown as FormData;
+    expect(JSON.parse(String(form.get("payload_json")))).toEqual({
+      content: "",
+      tts: false,
+      attachments: [{ id: "0", filename: "note.txt" }],
+    });
+    expect(form.get("files[0]")).toBeInstanceOf(Blob);
   });
 
   test("empty prompt submits while editing", () => {

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
-import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, updateAutocomplete } from "./autocomplete";
+import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { createInitialState } from "./state";
 
@@ -252,5 +255,54 @@ describe("autocomplete", () => {
       { name: "on", desc: "Show inaccessible channel rows" },
       { name: "off", desc: "Hide inaccessible channel rows" },
     ]);
+  });
+
+  test("tab-completes a single absolute file path match", () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-path-ac-test-"));
+    writeFileSync(join(dir, "cat.png"), "png");
+    const prefix = join(dir, "ca");
+
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = `/upload ${prefix}`;
+    state.editor.cursor = state.editor.buffer.length;
+
+    expect(tryPathComplete(state)).toBe(true);
+    expect(state.editor.buffer).toBe(`/upload ${join(dir, "cat.png")}`);
+    expect(state.editor.cursor).toBe(state.editor.buffer.length);
+    expect(state.autocomplete).toBeNull();
+  });
+
+  test("tab-completes path matches with directories first and cycles them", () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-path-ac-test-"));
+    mkdirSync(join(dir, "alpha-dir"));
+    writeFileSync(join(dir, "alpha-file.txt"), "hello");
+    const prefix = join(dir, "al");
+
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = `/upload ${prefix}`;
+    state.editor.cursor = state.editor.buffer.length;
+
+    expect(tryPathComplete(state)).toBe(true);
+    expect(state.autocomplete?.type).toBe("path");
+    expect(state.autocomplete?.matches).toEqual([
+      { name: `${join(dir, "alpha-dir")}/`, desc: "dir" },
+      { name: join(dir, "alpha-file.txt"), desc: "file" },
+    ]);
+    expect(state.editor.buffer).toBe(`/upload ${join(dir, "alpha-dir")}/`);
+
+    cycleAutocomplete(state, 1);
+    expect(state.editor.buffer).toBe(`/upload ${join(dir, "alpha-file.txt")}`);
+
+    dismissAutocomplete(state);
+    expect(state.editor.buffer).toBe(`/upload ${join(dir, "alpha-file.txt")}`);
+  });
+
+  test("does not tab-complete bare non-path tokens", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "/upload cat";
+    state.editor.cursor = state.editor.buffer.length;
+
+    expect(tryPathComplete(state)).toBe(false);
+    expect(state.editor.buffer).toBe("/upload cat");
   });
 });

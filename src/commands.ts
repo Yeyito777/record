@@ -23,6 +23,7 @@ export type CommandResult =
   | { type: "login"; credential: string }
   | { type: "logout" }
   | { type: "refresh" }
+  | { type: "upload"; path: string }
   | { type: "call" }
   | { type: "hangup" }
   | { type: "mute"; muted: boolean | null }
@@ -170,6 +171,21 @@ const commands: SlashCommand[] = [
       if (parts.length !== 1) return usage(state, "Usage: /refresh");
       clearPrompt(state);
       return { type: "refresh" };
+    },
+  },
+  {
+    name: "/upload",
+    description: "Upload a local file to the current channel",
+    handler: (text, state) => {
+      const match = text.match(/^\/upload(?:\s+([\s\S]+))?$/);
+      const path = match?.[1]?.trim() ?? "";
+      if (!path) {
+        setNotice(state, "Usage: /upload <file-path>", "warning", { statusLine: false });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      clearPrompt(state);
+      return { type: "upload", path };
     },
   },
   {

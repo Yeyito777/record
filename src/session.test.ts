@@ -1,4 +1,4 @@
-import { mkdtempSync } from "fs";
+import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute } from "./session";
+import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -609,6 +609,88 @@ describe("session", () => {
       content: "caption",
       localStatus: "pending",
       attachments: [{ filename: "image-1.png", contentType: "image/png", size: 4 }],
+    });
+  });
+
+  test("uploading a local file appends a pending attachment message", async () => {
+    globalThis.fetch = (async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    const dir = mkdtempSync(join(tmpdir(), "record-upload-session-test-"));
+    const path = join(dir, "note.txt");
+    writeFileSync(path, "hello upload");
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+
+    uploadCurrentChannelFile(state, "token-1", path, { scheduleRender: () => {} });
+
+    await waitForCondition(() => state.timeline.messages.length > 0);
+    expect(state.timeline.messages[0]).toMatchObject({
+      content: "",
+      localStatus: "pending",
+      attachments: [{ filename: "note.txt", contentType: "text/plain", size: "hello upload".length }],
+    });
+    expect(state.editor.buffer).toBe("");
+    expect(state.notice).toMatchObject({ text: "Uploading note.txt…", loading: true, statusLine: true, chat: false });
+  });
+
+  test("uploading a missing local file shows a warning", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.activeChannelId = "channel-1";
+
+    uploadCurrentChannelFile(state, "token-1", "/definitely/missing/file.txt", { scheduleRender: () => {} });
+
+    expect(state.notice.tone).toBe("warning");
+    expect(state.notice.text).toContain("Upload failed:");
+    expect(state.notice.statusLine).toBe(true);
+    expect(state.notice.chat).toBe(false);
+  });
+
+  test("uploading an oversized local file shows compressing feedback before upload", async () => {
+    globalThis.fetch = (async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    const dir = mkdtempSync(join(tmpdir(), "record-upload-session-test-"));
+    const path = join(dir, "huge.txt");
+    writeFileSync(path, "a".repeat(8 * 1024 * 1024 + 1));
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+
+    uploadCurrentChannelFile(state, "token-1", path, { scheduleRender: () => {} });
+
+    expect(state.notice).toMatchObject({ text: "Compressing huge.txt…", loading: true, statusLine: true, chat: false });
+
+    await waitForCondition(() => state.notice.text === "Uploading huge.txt.gz…");
+    expect(state.notice).toMatchObject({ text: "Uploading huge.txt.gz…", loading: true, statusLine: true, chat: false });
+  });
+
+  test("failed uploads show the error in the status line", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ message: "Missing Access" }), { status: 403 })) as unknown as typeof fetch;
+    const dir = mkdtempSync(join(tmpdir(), "record-upload-session-test-"));
+    const path = join(dir, "note.txt");
+    writeFileSync(path, "hello upload");
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+
+    uploadCurrentChannelFile(state, "token-1", path, { scheduleRender: () => {} });
+    await waitForCondition(() => state.notice.tone === "warning");
+
+    expect(state.notice).toMatchObject({
+      text: "Upload failed: Discord denied access to that resource.",
+      tone: "warning",
+      statusLine: true,
+      chat: false,
     });
   });
 
