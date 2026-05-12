@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildVoiceEngineCaptureArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, NoopVoiceAudioBackend, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildVoiceEngineCaptureArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -138,6 +138,33 @@ describe("voice backend", () => {
   test("detects Opus silence frames", () => {
     expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff, 0xfe]))).toBe(true);
     expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff]))).toBe(false);
+  });
+
+  test("tracks playback RTP sequence gaps objectively", () => {
+    const diagnostics = new PlaybackStreamDiagnostics(1234);
+    expect(diagnostics.observe(10, 0, 1_000)).toBeNull();
+    expect(diagnostics.observe(11, 960, 1_020)).toBeNull();
+    expect(diagnostics.observe(14, 3_840, 1_080)).toEqual({
+      ssrc: 1234,
+      previousSequence: 11,
+      sequence: 14,
+      missingPackets: 2,
+      timestampDelta: 2_880,
+      arrivalDeltaMs: 60,
+    });
+    expect(diagnostics.observe(13, 2_880, 1_085)).toBeNull();
+
+    expect(diagnostics.snapshot()).toMatchObject({
+      packets: 4,
+      firstSequence: 10,
+      lastSequence: 14,
+      sequenceMissingPackets: 2,
+      sequenceGapEvents: 1,
+      maxSequenceGapPackets: 2,
+      outOfOrderPackets: 1,
+      duplicatePackets: 0,
+      maxArrivalDeltaMs: 60,
+    });
   });
 
   test("strips repeated padding after DAVE media marker", () => {

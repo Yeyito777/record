@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { createSocket, type Socket as UdpSocket } from "dgram";
-import { accessSync, constants as fsConstants, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { accessSync, constants as fsConstants, createWriteStream, mkdirSync, mkdtempSync, rmSync, writeFileSync, type WriteStream } from "fs";
 import { homedir, tmpdir } from "os";
 import { delimiter, join } from "path";
 
@@ -15,6 +15,7 @@ const VOICE_CAPTURE_STARTUP_TIMEOUT_MS = 5_000;
 const PLAYBACK_PACE_DELAY_MS = parsePositiveInt(process.env.RECORD_PLAYBACK_PACE_DELAY_MS, 240);
 const PLAYBACK_PACER_IDLE_RESET_MS = 2_000;
 const PLAYBACK_PACER_MAX_DELTA_SAMPLES = 48_000 * 60;
+const PLAYBACK_TRACE_DIR = process.env.RECORD_PLAYBACK_TRACE_DIR?.trim() || null;
 
 export function createDefaultVoiceAudioBackend(): VoiceAudioBackend {
   if (process.platform !== "linux") return new NoopVoiceAudioBackend();
@@ -26,6 +27,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private captureSocket: UdpSocket | null = null;
   private playbackSocket: UdpSocket | null = null;
   private readonly playbackPacersBySsrc = new Map<number, PlaybackPacer>();
+  private readonly playbackDiagnosticsBySsrc = new Map<number, PlaybackStreamDiagnostics>();
+  private playbackTraceStream: WriteStream | null = null;
+  private playbackTracePath: string | null = null;
   private captureProcess: ChildProcessWithoutNullStreams | null = null;
   private playbackProcess: ChildProcessWithoutNullStreams | null = null;
   private captureStartupTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,6 +118,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     }
     for (const pacer of this.playbackPacersBySsrc.values()) pacer.dispose();
     this.playbackPacersBySsrc.clear();
+    this.stopPlaybackTrace();
     terminateVoiceHelperProcess(this.captureProcess, "capture");
     this.captureProcess = null;
     terminateVoiceHelperProcess(this.playbackProcess, "playback");
@@ -135,6 +140,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
 
     const args = buildFfplayPlaybackArgs(sdpPath);
     debugLog("voice.playback.start", { port, sdpPath, args, codecChannels: 2 });
+    this.startPlaybackTrace();
     this.playbackProcess = spawnVoiceHelper("ffplay", args);
     this.playbackProcess.stdin.end();
     const playbackErrorOutput = drainChildOutput(this.playbackProcess);
@@ -253,6 +259,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       return;
     }
     if (!decodedPayload.equals(OPUS_SILENCE_FRAME)) context.onIncomingAudio?.(parsed.ssrc);
+    const gap = this.observePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp);
+    if (gap) debugLog("voice.playback.sequence_gap", { ...gap });
 
     const header = Buffer.alloc(RTP_HEADER_LENGTH);
     header[0] = 0x80;
@@ -306,6 +314,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private sendPlaybackPacket(packet: Buffer): void {
     if (!this.playbackSocket || this.localPlaybackPort === null) return;
     this.playbackPacedPacketCount += 1;
+    this.writePlaybackTracePacket(packet);
     this.playbackSocket.send(packet, this.localPlaybackPort, "127.0.0.1", (error) => {
       if (error) {
         this.playbackSendErrorCount += 1;
@@ -332,6 +341,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackSelfDeafDropCount = 0;
     this.playbackFirstPacketLogged = false;
     this.lastPlaybackStatsAt = 0;
+    this.playbackDiagnosticsBySsrc.clear();
   }
 
   private logPlaybackStats(reason: string, force = false): void {
@@ -357,8 +367,57 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       wrongPayloads: this.playbackWrongPayloadCount,
       selfDeafDrops: this.playbackSelfDeafDropCount,
       sendErrors: this.playbackSendErrorCount,
+      streams: [...this.playbackDiagnosticsBySsrc.values()].map((stream) => stream.snapshot()),
+      tracePath: this.playbackTracePath,
       localPort: this.localPlaybackPort,
     });
+  }
+
+  private observePlaybackPacket(ssrc: number, sequence: number, timestamp: number): PlaybackSequenceGap | null {
+    let diagnostics = this.playbackDiagnosticsBySsrc.get(ssrc);
+    if (!diagnostics) {
+      diagnostics = new PlaybackStreamDiagnostics(ssrc);
+      this.playbackDiagnosticsBySsrc.set(ssrc, diagnostics);
+    }
+    return diagnostics.observe(sequence, timestamp);
+  }
+
+  private startPlaybackTrace(): void {
+    if (!PLAYBACK_TRACE_DIR || this.playbackTraceStream) return;
+    try {
+      mkdirSync(PLAYBACK_TRACE_DIR, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      this.playbackTracePath = join(PLAYBACK_TRACE_DIR, `record-playback-${stamp}-${process.pid}.jsonl`);
+      this.playbackTraceStream = createWriteStream(this.playbackTracePath, { flags: "a" });
+      debugLog("voice.playback.trace_start", { path: this.playbackTracePath });
+    } catch (error) {
+      this.playbackTraceStream = null;
+      this.playbackTracePath = null;
+      debugLog("voice.playback.trace_error", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  private stopPlaybackTrace(): void {
+    if (!this.playbackTraceStream) return;
+    const path = this.playbackTracePath;
+    try { this.playbackTraceStream.end(); } catch {}
+    this.playbackTraceStream = null;
+    this.playbackTracePath = null;
+    if (path) debugLog("voice.playback.trace_stop", { path });
+  }
+
+  private writePlaybackTracePacket(packet: Buffer): void {
+    const stream = this.playbackTraceStream;
+    if (!stream) return;
+    const parsed = parsePlainRtpPacket(packet);
+    if (!parsed || parsed.payloadType !== OPUS_PAYLOAD_TYPE || parsed.payload.length === 0) return;
+    stream.write(`${JSON.stringify({
+      t: Date.now(),
+      ssrc: parsed.ssrc,
+      sequence: parsed.sequence,
+      timestamp: parsed.timestamp,
+      payload: parsed.payload.toString("base64"),
+    })}\n`);
   }
 
   private forwardCapturePacket(packet: Buffer): void {
@@ -481,6 +540,132 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
 
 export function isOpusSilenceFrame(payload: Buffer): boolean {
   return payload.equals(OPUS_SILENCE_FRAME);
+}
+
+export interface PlaybackSequenceGap {
+  ssrc: number;
+  previousSequence: number;
+  sequence: number;
+  missingPackets: number;
+  timestampDelta: number | null;
+  arrivalDeltaMs: number | null;
+}
+
+export interface PlaybackStreamDiagnosticSnapshot {
+  ssrc: number;
+  packets: number;
+  firstSequence: number | null;
+  lastSequence: number | null;
+  firstTimestamp: number | null;
+  lastTimestamp: number | null;
+  sequenceMissingPackets: number;
+  sequenceGapEvents: number;
+  maxSequenceGapPackets: number;
+  duplicatePackets: number;
+  outOfOrderPackets: number;
+  timestampDiscontinuities: number;
+  maxTimestampStepSamples: number;
+  maxArrivalDeltaMs: number;
+  maxArrivalSkewMs: number;
+}
+
+export class PlaybackStreamDiagnostics {
+  private packets = 0;
+  private firstSequence: number | null = null;
+  private lastSequence: number | null = null;
+  private firstTimestamp: number | null = null;
+  private lastTimestamp: number | null = null;
+  private lastArrivalMs: number | null = null;
+  private sequenceMissingPackets = 0;
+  private sequenceGapEvents = 0;
+  private maxSequenceGapPackets = 0;
+  private duplicatePackets = 0;
+  private outOfOrderPackets = 0;
+  private timestampDiscontinuities = 0;
+  private maxTimestampStepSamples = 0;
+  private maxArrivalDeltaMs = 0;
+  private maxArrivalSkewMs = 0;
+
+  constructor(private readonly ssrc: number) {}
+
+  observe(sequence: number, timestamp: number, arrivalMs = Date.now()): PlaybackSequenceGap | null {
+    sequence &= 0xffff;
+    timestamp >>>= 0;
+    this.packets += 1;
+    if (this.firstSequence === null || this.lastSequence === null || this.firstTimestamp === null || this.lastTimestamp === null) {
+      this.firstSequence = sequence;
+      this.lastSequence = sequence;
+      this.firstTimestamp = timestamp;
+      this.lastTimestamp = timestamp;
+      this.lastArrivalMs = arrivalMs;
+      return null;
+    }
+
+    const previousSequence = this.lastSequence;
+    const previousTimestamp = this.lastTimestamp;
+    const previousArrivalMs = this.lastArrivalMs;
+    const sequenceDelta = rtpSequenceDelta(sequence, previousSequence);
+    const timestampDelta = rtpTimestampDelta(timestamp, previousTimestamp);
+    const arrivalDeltaMs = previousArrivalMs === null ? null : Math.max(0, arrivalMs - previousArrivalMs);
+
+    if (sequenceDelta === 0) {
+      this.duplicatePackets += 1;
+      return null;
+    }
+    if (sequenceDelta >= 0x8000) {
+      this.outOfOrderPackets += 1;
+      return null;
+    }
+
+    const expectedTimestampDelta = sequenceDelta * OPUS_RTP_CLOCK_INCREMENT;
+    if (timestampDelta !== expectedTimestampDelta) {
+      this.timestampDiscontinuities += 1;
+      this.maxTimestampStepSamples = Math.max(this.maxTimestampStepSamples, timestampDelta);
+    }
+    if (arrivalDeltaMs !== null) {
+      this.maxArrivalDeltaMs = Math.max(this.maxArrivalDeltaMs, Math.round(arrivalDeltaMs));
+      const expectedArrivalDeltaMs = timestampDelta / 48;
+      this.maxArrivalSkewMs = Math.max(this.maxArrivalSkewMs, Math.round(Math.abs(arrivalDeltaMs - expectedArrivalDeltaMs)));
+    }
+
+    this.lastSequence = sequence;
+    this.lastTimestamp = timestamp;
+    this.lastArrivalMs = arrivalMs;
+
+    if (sequenceDelta <= 1) return null;
+    const missingPackets = sequenceDelta - 1;
+    this.sequenceMissingPackets += missingPackets;
+    this.sequenceGapEvents += 1;
+    this.maxSequenceGapPackets = Math.max(this.maxSequenceGapPackets, missingPackets);
+    return {
+      ssrc: this.ssrc,
+      previousSequence,
+      sequence,
+      missingPackets,
+      timestampDelta,
+      arrivalDeltaMs: arrivalDeltaMs === null ? null : Math.round(arrivalDeltaMs),
+    };
+  }
+
+  snapshot(): PlaybackStreamDiagnosticSnapshot {
+    return {
+      ssrc: this.ssrc,
+      packets: this.packets,
+      firstSequence: this.firstSequence,
+      lastSequence: this.lastSequence,
+      firstTimestamp: this.firstTimestamp,
+      lastTimestamp: this.lastTimestamp,
+      sequenceMissingPackets: this.sequenceMissingPackets,
+      sequenceGapEvents: this.sequenceGapEvents,
+      maxSequenceGapPackets: this.maxSequenceGapPackets,
+      duplicatePackets: this.duplicatePackets,
+      outOfOrderPackets: this.outOfOrderPackets,
+      timestampDiscontinuities: this.timestampDiscontinuities,
+      maxTimestampStepSamples: this.maxTimestampStepSamples,
+      maxArrivalDeltaMs: this.maxArrivalDeltaMs,
+      maxArrivalSkewMs: this.maxArrivalSkewMs,
+    };
+  }
 }
 
 export function buildFfplayPlaybackArgs(sdpPath: string): string[] {
@@ -642,6 +827,14 @@ class PlaybackPacer {
 function isNewerRtpTimestamp(timestamp: number, previous: number): boolean {
   const delta = ((timestamp >>> 0) - (previous >>> 0)) >>> 0;
   return delta > 0 && delta < 0x80000000;
+}
+
+function rtpSequenceDelta(sequence: number, previous: number): number {
+  return ((sequence & 0xffff) - (previous & 0xffff)) & 0xffff;
+}
+
+function rtpTimestampDelta(timestamp: number, previous: number): number {
+  return ((timestamp >>> 0) - (previous >>> 0)) >>> 0;
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
