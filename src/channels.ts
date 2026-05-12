@@ -2,7 +2,7 @@
  * Guild channel data and active chat tracking.
  */
 
-import { DIRECT_MESSAGES_GUILD_ID, sortDirectMessageChannels, sortGuildChannels, type DiscordChannel } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, isMessageChannel, sortDirectMessageChannels, sortGuildChannels, type DiscordChannel } from "./discord";
 
 export interface ChannelListState {
   guildId: string | null;
@@ -25,7 +25,11 @@ export function createChannelListState(): ChannelListState {
 }
 
 export function isBrowsableChannel(channel: DiscordChannel): boolean {
-  return channel.type !== 4;
+  return isMessageChannel(channel);
+}
+
+export function isTimelineChannel(channel: DiscordChannel): boolean {
+  return isMessageChannel(channel) || isGuildVoiceChannel(channel);
 }
 
 export function clearChannelList(channelList: ChannelListState): void {
@@ -51,6 +55,11 @@ export function setChannelList(channelList: ChannelListState, guildId: string, c
 export function findBrowsableChannel(channels: DiscordChannel[], channelId: string | null): DiscordChannel | null {
   if (!channelId) return null;
   return channels.find((channel) => channel.id === channelId && isBrowsableChannel(channel)) ?? null;
+}
+
+export function findTimelineChannel(channels: DiscordChannel[], channelId: string | null): DiscordChannel | null {
+  if (!channelId) return null;
+  return channels.find((channel) => channel.id === channelId && isTimelineChannel(channel)) ?? null;
 }
 
 export function findFirstBrowsableChannel(channels: DiscordChannel[]): DiscordChannel | null {

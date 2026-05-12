@@ -281,6 +281,18 @@ describe("voice backend", () => {
         flags: 3,
       },
     });
+
+    expect(buildVoiceStatePayload({ guildId: "guild-1", channelId: "voice-1", selfMute: true, selfDeaf: false, selfVideo: false, preferredRegions: ["automatic"] })).toEqual({
+      op: 4,
+      d: {
+        guild_id: "guild-1",
+        channel_id: "voice-1",
+        self_mute: true,
+        self_deaf: false,
+        self_video: false,
+        flags: 3,
+      },
+    });
   });
 
   test("fetches ranked voice regions like Discord desktop", async () => {

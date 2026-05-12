@@ -8,7 +8,9 @@ const API_BASE = "https://discord.com/api/v9";
 const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) record/0.1.0 Safari/537.36";
 const REQUEST_TIMEOUT_MS = 15_000;
 const GUILD_PAGE_LIMIT = 200;
-const SIDEBAR_GUILD_CHANNEL_TYPES = new Set([0, 4, 5, 11, 12]);
+const GUILD_TEXT_CHANNEL_TYPES = new Set([0, 5, 11, 12]);
+const GUILD_VOICE_CHANNEL_TYPES = new Set([2, 13]);
+const SIDEBAR_GUILD_CHANNEL_TYPES = new Set([...GUILD_TEXT_CHANNEL_TYPES, 4, ...GUILD_VOICE_CHANNEL_TYPES]);
 const DIRECT_MESSAGE_CHANNEL_TYPES = new Set([1, 3]);
 
 export const DIRECT_MESSAGES_GUILD_ID = "@me::dms";
@@ -368,8 +370,17 @@ export function isDirectMessageChannel(channel: DiscordChannel | null): boolean 
   return channel ? DIRECT_MESSAGE_CHANNEL_TYPES.has(channel.type) : false;
 }
 
+export function isGuildVoiceChannel(channel: DiscordChannel | null): boolean {
+  return channel ? GUILD_VOICE_CHANNEL_TYPES.has(channel.type) : false;
+}
+
+export function isMessageChannel(channel: DiscordChannel | null): boolean {
+  return Boolean(channel && (isDirectMessageChannel(channel) || GUILD_TEXT_CHANNEL_TYPES.has(channel.type)));
+}
+
 export function formatChannelName(channel: DiscordChannel | null): string {
   if (!channel) return "#unknown";
+  if (isGuildVoiceChannel(channel)) return `🔊 ${channel.name}`;
   return isDirectMessageChannel(channel) ? channel.name : `#${channel.name}`;
 }
 

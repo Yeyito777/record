@@ -330,6 +330,32 @@ describe("sidebar state", () => {
     expect(rows[3]).toContain("7");
   });
 
+  test("renders voice channels with voice markers", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    sidebar.voiceMembersByChannelId = {
+      "voice-1": [
+        { userId: "user-1", displayName: "Alice" },
+        { userId: "me", displayName: "Me", self: true, muted: true },
+      ],
+    };
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+
+    const rows = renderSidebar(
+      sidebar,
+      [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }],
+      7,
+      false,
+    ).map(stripAnsiForTest);
+
+    expect(rows.join("\n")).toContain("🔊 Lounge");
+    expect(rows.join("\n")).toContain("• Alice");
+    expect(rows.join("\n")).toContain("• Me (you) 🔇");
+    expect(moveSidebarSelection(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }], 1)).toBeUndefined();
+    expect(buildSidebarEntries(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }])[sidebar.selectedIndex]?.kind).toBe("channel");
+  });
+
   test("marks channels with active typing", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);

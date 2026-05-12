@@ -10,7 +10,7 @@ import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
 import { expandMacros } from "./macros";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
-import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalSpeakerVolume, startCurrentDirectMessageCall, uploadCurrentChannelFile, type SessionEffects } from "./session";
+import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalSpeakerVolume, startCurrentVoiceCall, uploadCurrentChannelFile, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
@@ -174,7 +174,7 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       uploadCurrentChannelFile(state, state.auth.savedToken, result.path, effects);
       return true;
     case "call":
-      startCurrentDirectMessageCall(state, effects);
+      startCurrentVoiceCall(state, effects);
       return true;
     case "hangup":
       hangUpCurrentCall(state, effects);

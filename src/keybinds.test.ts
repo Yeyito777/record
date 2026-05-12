@@ -48,6 +48,11 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "char", char: "j" }, "navigation")).toBe("nav_down");
   });
 
+  test("navigation open-text bindings open channel text without selecting voice", () => {
+    expect(resolveAction({ type: "shift-enter" }, "navigation")).toBe("nav_open_text");
+    expect(resolveAction({ type: "char", char: "o" }, "navigation")).toBe("nav_open_text");
+  });
+
   test("navigation { and } jump between servers", () => {
     expect(resolveAction({ type: "char", char: "{" }, "navigation")).toBe("nav_prev_server");
     expect(resolveAction({ type: "char", char: "}" }, "navigation")).toBe("nav_next_server");

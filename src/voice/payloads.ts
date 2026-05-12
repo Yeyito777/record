@@ -33,18 +33,21 @@ export function buildVoiceStatePayload(request: VoiceStateRequest): unknown {
     };
   }
 
-  const preferredRegions = request.preferredRegions?.length ? request.preferredRegions : ["automatic"];
+  const data: Record<string, unknown> = {
+    guild_id: request.guildId,
+    channel_id: request.channelId,
+    self_mute: request.selfMute,
+    self_deaf: request.selfDeaf,
+    self_video: request.selfVideo,
+    flags: VOICE_FLAGS,
+  };
+  if (!request.guildId) {
+    const preferredRegions = request.preferredRegions?.length ? request.preferredRegions : ["automatic"];
+    data.preferred_regions = preferredRegions;
+    data.preferred_region = preferredRegions[0];
+  }
   return {
     op: 4,
-    d: {
-      guild_id: request.guildId,
-      channel_id: request.channelId,
-      self_mute: request.selfMute,
-      self_deaf: request.selfDeaf,
-      self_video: request.selfVideo,
-      preferred_regions: preferredRegions,
-      preferred_region: preferredRegions[0],
-      flags: VOICE_FLAGS,
-    },
+    d: data,
   };
 }

@@ -12,6 +12,7 @@ import {
   fetchGuildRoles,
   formatChannelName,
   isDirectMessageChannel,
+  isGuildVoiceChannel,
   mapDiscordMessagePatch,
   deleteChannelMessage,
   editChannelMessage,
@@ -203,6 +204,36 @@ describe("discord helpers", () => {
     expect(isDirectMessageChannel(dm)).toBe(true);
     expect(formatChannelName(dm)).toBe("Alice");
     expect(formatChannelName(guildChannel)).toBe("#general");
+  });
+
+  test("maps guild voice channels for the sidebar", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/guilds/guild-1/channels")) {
+        return new Response(JSON.stringify([{
+          id: "voice-1",
+          guild_id: "guild-1",
+          parent_id: null,
+          name: "Lounge",
+          position: 0,
+          type: 2,
+        }, {
+          id: "stage-1",
+          guild_id: "guild-1",
+          parent_id: null,
+          name: "Stage",
+          position: 1,
+          type: 13,
+        }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const channels = await fetchGuildChannels("token", "guild-1");
+
+    expect(channels.map((channel) => channel.id)).toEqual(["voice-1", "stage-1"]);
+    expect(channels.every(isGuildVoiceChannel)).toBe(true);
+    expect(formatChannelName(channels[0] ?? null)).toBe("🔊 Lounge");
   });
 
   test("fetches guilds without reading Discord sidebar settings", async () => {
