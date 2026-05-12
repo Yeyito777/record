@@ -330,6 +330,22 @@ describe("sidebar state", () => {
     expect(rows[3]).toContain("7");
   });
 
+  test("renders voice channels with voice markers", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+
+    const rows = renderSidebar(
+      sidebar,
+      [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }],
+      5,
+      false,
+    ).map(stripAnsiForTest);
+
+    expect(rows.join("\n")).toContain("🔊 Lounge");
+  });
+
   test("marks channels with active typing", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);

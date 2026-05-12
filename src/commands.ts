@@ -190,7 +190,7 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/call",
-    description: "Start a voice call in the current DM",
+    description: "Start a voice call in the current DM or selected voice channel",
     handler: (text, state) => {
       const parts = text.trim().split(/\s+/).filter(Boolean);
       if (parts.length !== 1) return usage(state, "Usage: /call");

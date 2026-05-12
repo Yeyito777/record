@@ -33,6 +33,7 @@ import {
   sortGuildsByOrder,
   ringDirectMessageCall,
   isDirectMessageChannel,
+  isGuildVoiceChannel,
   hydrateMissingReplyPreviewFromLookup,
   replyPreviewFromMessage,
   replyReferenceTarget,
@@ -2660,7 +2661,101 @@ export function uploadCurrentChannelFile(
   void prepareAndSend();
 }
 
-export function startCurrentDirectMessageCall(state: AppState, effects: SessionEffects): void {
+function selectedGuildVoiceChannel(state: AppState): DiscordChannel | null {
+  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
+  if (entry.kind !== "channel") return null;
+  const channel = state.channelList.channels.find((candidate) => candidate.id === entry.id)
+    ?? state.sidebar.cachedChannelsByGuildId[entry.guildId]?.find((candidate) => candidate.id === entry.id)
+    ?? null;
+  return isGuildVoiceChannel(channel) ? channel : null;
+}
+
+function rememberVoiceStateParticipants(state: AppState, channelId: string): void {
+  const voiceStates = callVoiceStatesByChannelId.get(channelId);
+  if (!voiceStates || voiceStates.size === 0) return;
+  rememberActiveCallParticipants(state, channelId, Array.from(voiceStates.keys()));
+}
+
+function startGuildVoiceChannelCall(state: AppState, token: string, channel: DiscordChannel, effects: SessionEffects): void {
+  if (!isGuildVoiceChannel(channel) || channel.guildId === DIRECT_MESSAGES_GUILD_ID) {
+    setNotice(state, "Select a server voice channel to join.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  if (!appGateway || appGatewayToken !== token) startAppGateway(state, token, effects);
+  const controller = ensureVoiceCallController(state, token, effects);
+  if (!controller) {
+    setNotice(state, "Discord gateway is still connecting; try again in a moment.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+
+  if (!knownCallParticipantsByChannelId.has(channel.id)) knownCallParticipantsByChannelId.set(channel.id, new Set());
+  rememberVoiceStateParticipants(state, channel.id);
+
+  const activeSession = controller.activeSession;
+  if (activeSession && activeSession.state !== "ended" && activeSession.state !== "error" && activeSession.target.channelId === channel.id) {
+    debugLog("voice_channel.command.noop", {
+      guildId: channel.guildId,
+      channelId: channel.id,
+      activeState: activeSession.state,
+      knownParticipants: Array.from(knownCallParticipantsByChannelId.get(channel.id) ?? []),
+    });
+    syncVoiceCallStatus(state, activeSession);
+    setNotice(state, "", "muted");
+    effects.scheduleRender();
+    return;
+  }
+
+  const guildName = state.sidebar.guilds.find((guild) => guild.id === channel.guildId)?.name;
+  const displayName = guildName ? `${guildName} / ${channel.name}` : channel.name;
+  const replacingActiveCall = Boolean(
+    activeSession
+      && activeSession.state !== "ended"
+      && activeSession.state !== "error"
+      && activeSession.target.channelId !== channel.id,
+  );
+
+  debugLog("voice_channel.command", {
+    guildId: channel.guildId,
+    channelId: channel.id,
+    replacingActiveCall,
+    knownParticipants: Array.from(knownCallParticipantsByChannelId.get(channel.id) ?? []),
+  });
+  setNotice(state, "", "muted");
+  effects.scheduleRender();
+
+  void controller.startCall({
+    guildId: channel.guildId,
+    channelId: channel.id,
+    recipientIds: [],
+    displayName,
+    ringRecipients: false,
+  }, { replaceActive: replacingActiveCall }).then(({ warnings }) => {
+    const remoteParticipants = remoteCallParticipantIds(state, channel.id);
+    if (remoteParticipants.length > 0) {
+      playCallJoinSoundForParticipants(channel.id, remoteParticipants, "existing_voice_channel_join");
+    }
+    if (warnings.length > 0) {
+      setNotice(state, `Voice connected, but ${warnings[0]}`, "warning", { chat: false });
+    } else {
+      setNotice(state, "", "muted");
+    }
+    effects.scheduleRender();
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "Call cancelled.") return;
+    setNotice(state, `Failed to join voice channel: ${message}`, "error", { chat: false });
+    effects.scheduleRender();
+  });
+}
+
+export function startCurrentVoiceCall(
+  state: AppState,
+  effects: SessionEffects,
+  options: { voiceChannel?: DiscordChannel | null } = {},
+): void {
   const token = state.auth.savedToken;
   if (!token || !state.auth.user) {
     setNotice(state, "Login required to start a call.", "warning");
@@ -2668,9 +2763,20 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     return;
   }
 
+  const explicitVoiceChannel = options.voiceChannel && isGuildVoiceChannel(options.voiceChannel) ? options.voiceChannel : null;
+  if (explicitVoiceChannel) {
+    startGuildVoiceChannelCall(state, token, explicitVoiceChannel, effects);
+    return;
+  }
+
   const channel = state.channelList.activeChannel;
   if (!channel || !isDirectMessageChannel(channel)) {
-    setNotice(state, "Open a DM to start a call.", "warning");
+    const selectedVoice = selectedGuildVoiceChannel(state);
+    if (selectedVoice) {
+      startGuildVoiceChannelCall(state, token, selectedVoice, effects);
+      return;
+    }
+    setNotice(state, "Open a DM or select a server voice channel to start a call.", "warning");
     effects.scheduleRender();
     return;
   }
@@ -2762,6 +2868,10 @@ export function startCurrentDirectMessageCall(state: AppState, effects: SessionE
     setNotice(state, `Failed to start call: ${message}`, "error", { chat: false });
     effects.scheduleRender();
   });
+}
+
+export function startCurrentDirectMessageCall(state: AppState, effects: SessionEffects): void {
+  startCurrentVoiceCall(state, effects);
 }
 
 export function hangUpCurrentCall(state: AppState, effects: SessionEffects): void {

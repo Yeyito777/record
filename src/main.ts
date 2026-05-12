@@ -52,6 +52,7 @@ import {
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
   persistSidebarFolders,
+  startCurrentVoiceCall,
   syncMemberListForCurrentChannel,
   toggleSelectedGuildMute,
 } from "./session";
@@ -110,7 +111,7 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { debugLog } from "./debuglog";
 import { pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
@@ -954,6 +955,13 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 
       if (entry.kind === "channel") {
         ensureSidebarEntryGuildLoaded(entry.guildId);
+        const channel = state.channelList.channels.find((candidate) => candidate.id === entry.id)
+          ?? state.sidebar.cachedChannelsByGuildId[entry.guildId]?.find((candidate) => candidate.id === entry.id)
+          ?? null;
+        if (channel && isGuildVoiceChannel(channel)) {
+          startCurrentVoiceCall(state, { scheduleRender }, { voiceChannel: channel });
+          return true;
+        }
         void loadChannelMessages(state, token, entry.id, { scheduleRender });
         return true;
       }

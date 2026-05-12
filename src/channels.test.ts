@@ -4,6 +4,7 @@ import {
   bumpDirectMessageChannel,
   createChannelListState,
   getActiveChannel,
+  isBrowsableChannel,
   setActiveChannel,
   setChannelList,
   upsertChannel,
@@ -64,5 +65,19 @@ describe("channel list state", () => {
     ]);
 
     expect(getActiveChannel(channels)?.id).toBe("1");
+  });
+
+  test("keeps guild voice channels selectable but not message-browsable", () => {
+    const voice = { id: "voice", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false };
+    const text = { id: "text", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 1, type: 0, nsfw: false };
+    const channels = createChannelListState();
+    setChannelList(channels, "guild-1", [voice, text]);
+
+    expect(isBrowsableChannel(voice)).toBe(false);
+    expect(isBrowsableChannel(text)).toBe(true);
+    setActiveChannel(channels, "voice");
+    expect(getActiveChannel(channels)).toBeNull();
+    setActiveChannel(channels, "text");
+    expect(getActiveChannel(channels)?.id).toBe("text");
   });
 });

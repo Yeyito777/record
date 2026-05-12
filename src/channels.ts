@@ -2,7 +2,7 @@
  * Guild channel data and active chat tracking.
  */
 
-import { DIRECT_MESSAGES_GUILD_ID, sortDirectMessageChannels, sortGuildChannels, type DiscordChannel } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, isMessageChannel, sortDirectMessageChannels, sortGuildChannels, type DiscordChannel } from "./discord";
 
 export interface ChannelListState {
   guildId: string | null;
@@ -25,7 +25,7 @@ export function createChannelListState(): ChannelListState {
 }
 
 export function isBrowsableChannel(channel: DiscordChannel): boolean {
-  return channel.type !== 4;
+  return isMessageChannel(channel);
 }
 
 export function clearChannelList(channelList: ChannelListState): void {

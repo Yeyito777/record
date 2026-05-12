@@ -1050,6 +1050,12 @@ function channelEntryLabel(channel: DiscordChannel, typingChannelIds: ReadonlySe
   return typingChannelIds.has(channel.id) ? `${name} ${typingFrame}` : name;
 }
 
+function channelEntryMarker(channelType: number | undefined): string {
+  if (channelType === 2) return "🔊 ";
+  if (channelType === 13) return "🎙 ";
+  return "# ";
+}
+
 function selectedEntrySnapshot(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions): Pick<SidebarEntry, "kind" | "id" | "guildId"> | null {
   const entry = getSelectedSidebarEntry(sidebar, channels, options);
   return entry.id ? { kind: entry.kind, id: entry.id, guildId: entry.guildId } : null;
@@ -2152,7 +2158,7 @@ function renderEntryRow(
     : entry.kind === "category"
       ? entry.expanded ? "▾ " : "▸ "
       : entry.kind === "channel"
-        ? "# "
+        ? channelEntryMarker(entry.channelType)
         : "";
   const rawLabel = entry.kind === "folder" ? `📁 ${entry.label}/ ${entry.childCount ?? 0}` : entry.label || "unnamed";
   const prefix = entry.kind === "channel" || entry.kind === "category" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
