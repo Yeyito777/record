@@ -105,6 +105,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private ready = false;
   private currentUserId: string | null = null;
   private guildChannelSubscription: GuildChannelSubscription | null = null;
+  private guildSubscriptions = new Set<string>();
   private currentPresenceStatus: DiscordPresenceStatus;
 
   constructor(
@@ -137,6 +138,13 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
     this.guildChannelSubscription = { guildId, channelId };
     this.sendGuildChannelSubscription();
+  }
+
+  subscribeToGuild(guildId: string | null | undefined): void {
+    if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return;
+    this.guildSubscriptions.add(guildId);
+    if (!this.ready) return;
+    this.sendGuildSubscription(guildId);
   }
 
   updatePresenceStatus(status: DiscordPresenceStatus): boolean {
@@ -242,6 +250,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
         this.callbacks.onVoiceStateUpdate?.(voiceState);
       }
       this.sendPresenceUpdate();
+      this.sendGuildSubscriptions();
       this.sendGuildChannelSubscription();
       return;
     }
@@ -251,7 +260,15 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.ready = true;
       debugLog("app_gateway.resumed", { hasSessionId: Boolean(this.sessionId) });
       this.sendPresenceUpdate();
+      this.sendGuildSubscriptions();
       this.sendGuildChannelSubscription();
+      return;
+    }
+
+    if (payload.t === "READY_SUPPLEMENTAL") {
+      for (const voiceState of extractReadyVoiceStates(payload.d)) {
+        this.callbacks.onVoiceStateUpdate?.(voiceState);
+      }
       return;
     }
 
@@ -490,6 +507,25 @@ export class AppGatewayClient implements VoiceSignalingClient {
     });
   }
 
+  private sendGuildSubscription(guildId: string): void {
+    this.send({
+      op: 37,
+      d: {
+        subscriptions: {
+          [guildId]: {
+            typing: true,
+            activities: true,
+            threads: true,
+          },
+        },
+      },
+    });
+  }
+
+  private sendGuildSubscriptions(): void {
+    for (const guildId of this.guildSubscriptions) this.sendGuildSubscription(guildId);
+  }
+
   private send(payload: unknown): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify(payload));
@@ -523,12 +559,14 @@ export function extractCurrentUserId(data: unknown): string | null {
 export function mapVoiceStateUpdate(data: unknown, fallbackGuildId: string | null = null): VoiceStateUpdate | null {
   if (!isObject(data) || typeof data.user_id !== "string") return null;
   const displayName = voiceStateDisplayName(data);
+  const roleIds = voiceStateRoleIds(data);
   return {
     userId: data.user_id,
     channelId: typeof data.channel_id === "string" ? data.channel_id : null,
     guildId: typeof data.guild_id === "string" ? data.guild_id : fallbackGuildId,
     sessionId: typeof data.session_id === "string" ? data.session_id : null,
     ...(displayName ? { displayName } : {}),
+    ...(roleIds ? { roleIds } : {}),
     selfMute: Boolean(data.self_mute),
     selfDeaf: Boolean(data.self_deaf),
     mute: Boolean(data.mute),
@@ -546,6 +584,12 @@ function voiceStateDisplayName(data: Record<string, any>): string | null {
     ?? displayNameField(user?.global_name)
     ?? displayNameField(user?.display_name)
     ?? displayNameField(user?.username);
+}
+
+function voiceStateRoleIds(data: Record<string, any>): string[] | null {
+  const member = isObject(data.member) ? data.member : null;
+  if (!member || !Array.isArray(member.roles)) return null;
+  return member.roles.filter((roleId): roleId is string => typeof roleId === "string");
 }
 
 export function extractGuildVoiceStates(data: unknown): VoiceStateUpdate[] {

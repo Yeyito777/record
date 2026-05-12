@@ -15,6 +15,19 @@ describe("app gateway helpers", () => {
     expect(sent).toEqual([{ op: 3, d: { status: "dnd", afk: false, since: 0, activities: [] } }]);
   });
 
+  test("dispatches voice states from READY_SUPPLEMENTAL", () => {
+    const updates: unknown[] = [];
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onVoiceStateUpdate: (update) => updates.push(update), onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+
+    client.handleMessage({ data: JSON.stringify({
+      op: 0,
+      t: "READY_SUPPLEMENTAL",
+      d: { guilds: [{ id: "guild-1", voice_states: [{ user_id: "user-1", channel_id: "voice-1", member: { user: { username: "alice", global_name: "Alice" }, roles: ["role-1"] } }] }] },
+    }) });
+
+    expect(updates).toEqual([{ userId: "user-1", channelId: "voice-1", guildId: "guild-1", sessionId: null, displayName: "Alice", roleIds: ["role-1"], selfMute: false, selfDeaf: false, mute: false, deaf: false }]);
+  });
+
   test("extracts initial unread DM notifications from READY read state", () => {
     const notifications = extractInitialNotifications({
       private_channels: [
@@ -92,7 +105,7 @@ describe("app gateway helpers", () => {
       user_id: "me",
       channel_id: "dm-1",
       session_id: "voice-session",
-      member: { nick: "Server Nick", user: { username: "yeyito", global_name: "Yeyito" } },
+      member: { nick: "Server Nick", roles: ["role-1"], user: { username: "yeyito", global_name: "Yeyito" } },
       self_mute: true,
       self_deaf: false,
       mute: false,
@@ -103,6 +116,7 @@ describe("app gateway helpers", () => {
       guildId: null,
       sessionId: "voice-session",
       displayName: "Yeyito",
+      roleIds: ["role-1"],
       selfMute: true,
       selfDeaf: false,
       mute: false,

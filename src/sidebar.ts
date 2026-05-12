@@ -89,6 +89,7 @@ export interface SidebarEntry {
   muted?: boolean;
   deafened?: boolean;
   self?: boolean;
+  color?: string;
   hidden?: boolean;
   selected: boolean;
   active: boolean;
@@ -103,6 +104,7 @@ export interface SidebarVoiceMember {
   muted?: boolean;
   deafened?: boolean;
   self?: boolean;
+  color?: string;
 }
 
 export interface SidebarVisibilityOptions {
@@ -880,6 +882,7 @@ function pushSidebarVoiceMemberEntry(
     muted: member.muted,
     deafened: member.deafened,
     self: member.self,
+    color: member.color,
     selected: false,
     active: false,
     expanded: false,
@@ -2205,7 +2208,9 @@ function renderEntryRow(
   const isVisual = itemKey !== null && visualKeys.has(itemKey);
   const bg = entry.selected || isVisual ? theme.sidebarSelBg : theme.sidebarBg;
   const isActive = entry.kind === "channel" ? entry.id === activeChannelId : entry.active;
-  const fg = entry.selected || isActive ? theme.text : theme.muted;
+  const fg = entry.kind === "voice-member" && entry.color
+    ? entry.color
+    : entry.selected || isActive ? theme.text : theme.muted;
   const indent = "  ".repeat(entry.depth);
   const selectPrefix = entry.selected ? "▸ " : isVisual ? "│ " : "  ";
   const marker = entry.kind === "guild"

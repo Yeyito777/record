@@ -8,6 +8,7 @@ export interface VoiceStateUpdate {
   guildId: string | null;
   sessionId: string | null;
   displayName?: string;
+  roleIds?: string[];
   selfMute: boolean;
   selfDeaf: boolean;
   mute: boolean;

@@ -142,7 +142,7 @@ import {
   setTimelineMessages,
 } from "./timeline";
 import { clearTypingUser, recordTypingStart } from "./typing";
-import { dmAuthorColor, theme } from "./theme";
+import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
 
 export interface SessionEffects {
@@ -173,6 +173,7 @@ const knownCallParticipantsByChannelId = new Map<string, Set<string>>();
 const departedCallParticipantsByChannelId = new Map<string, Set<string>>();
 interface TrackedCallVoiceState {
   displayName?: string;
+  roleIds?: string[];
   selfMute: boolean;
   selfDeaf: boolean;
   mute: boolean;
@@ -659,6 +660,16 @@ function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: 
   return true;
 }
 
+function sidebarVoiceMemberColor(state: AppState, channelId: string, userId: string, voiceState: TrackedCallVoiceState): string | undefined {
+  const guildId = state.channelList.channels.find((channel) => channel.id === channelId)?.guildId
+    ?? Object.entries(state.sidebar.cachedChannelsByGuildId).find(([, channels]) => channels.some((channel) => channel.id === channelId))?.[0]
+    ?? null;
+  if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return undefined;
+  const roleIds = voiceState.roleIds ?? state.memberRoleIdsByGuildId[guildId]?.[userId] ?? [];
+  const color = resolvePrimaryRoleColor(state.guildRolesByGuildId[guildId] ?? [], roleIds);
+  return color ? ansiTrueColor(color) : undefined;
+}
+
 function sidebarVoiceMemberFromState(state: AppState, channelId: string, userId: string, voiceState: TrackedCallVoiceState): SidebarVoiceMember {
   return {
     userId,
@@ -666,6 +677,7 @@ function sidebarVoiceMemberFromState(state: AppState, channelId: string, userId:
     muted: voiceState.selfMute || voiceState.mute,
     deafened: voiceState.selfDeaf || voiceState.deaf,
     self: userId === state.auth.user?.id,
+    color: sidebarVoiceMemberColor(state, channelId, userId, voiceState),
   };
 }
 
@@ -683,6 +695,10 @@ function syncSidebarVoiceMembersForChannel(state: AppState, channelId: string): 
 
 function syncSidebarVoiceMembersForChannels(state: AppState, channelIds: Iterable<string>): void {
   for (const channelId of channelIds) syncSidebarVoiceMembersForChannel(state, channelId);
+}
+
+function syncAllSidebarVoiceMembers(state: AppState): void {
+  syncSidebarVoiceMembersForChannels(state, callVoiceStatesByChannelId.keys());
 }
 
 function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolean {
@@ -705,16 +721,18 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
   const states = callVoiceStatesByChannelId.get(channelId) ?? new Map<string, TrackedCallVoiceState>();
   states.set(update.userId, {
     ...(update.displayName ? { displayName: update.displayName } : {}),
+    ...(update.roleIds ? { roleIds: update.roleIds } : {}),
     selfMute: update.selfMute,
     selfDeaf: update.selfDeaf,
     mute: update.mute,
     deaf: update.deaf,
   });
   callVoiceStatesByChannelId.set(channelId, states);
+  const rolesChanged = recordMemberRoleIds(state, update.guildId, update.userId, update.roleIds);
   if (update.selfMute || update.mute) clearSpeakingCallUser(update.userId);
   affectedChannelIds.add(channelId);
   syncSidebarVoiceMembersForChannels(state, affectedChannelIds);
-  return affectedChannelIds.size > 0;
+  return affectedChannelIds.size > 0 || rolesChanged;
 }
 
 function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }[] }): void {
@@ -1205,6 +1223,7 @@ export function loadGuildRolesInBackground(state: AppState, token: string, guild
     const accountId = currentAccountId(state);
     if (accountId) saveCachedGuildRoles(accountId, guildId, roles);
     state.memberRoleCacheVersion += 1;
+    syncAllSidebarVoiceMembers(state);
     effects.scheduleRender();
   }).catch(() => {
     // Role colors are opportunistic. Missing role metadata should not disrupt chat.
@@ -1471,6 +1490,10 @@ function latestTimelineMessageId(state: AppState, channelId: string): string | n
 function subscribeAppGatewayToActiveChannel(state: AppState): void {
   const channel = state.channelList.activeChannel;
   appGateway?.subscribeToGuildChannel(channel?.guildId, channel?.id);
+}
+
+function subscribeAppGatewayToGuild(guildId: string | null | undefined): void {
+  appGateway?.subscribeToGuild(guildId);
 }
 
 function callDisplayName(session: VoiceCallSession | null): string {
@@ -2057,6 +2080,7 @@ export async function loadGuildChannels(
   state.sidebar.expandedGuildId = guildId;
   state.sidebar.loadingGuildId = guildId;
   state.channelList.loading = true;
+  subscribeAppGatewayToGuild(guildId);
 
   const isDirectMessages = guildId === DIRECT_MESSAGES_GUILD_ID;
   let showedCachedChannels = false;
@@ -2788,10 +2812,7 @@ function startGuildVoiceChannelCall(state: AppState, token: string, channel: Dis
     displayName,
     ringRecipients: false,
   }, { replaceActive: replacingActiveCall }).then(({ warnings }) => {
-    const remoteParticipants = remoteCallParticipantIds(state, channel.id);
-    if (remoteParticipants.length > 0) {
-      playCallJoinSoundForParticipants(channel.id, remoteParticipants, "existing_voice_channel_join");
-    }
+    playSoundEffect("callJoin");
     if (warnings.length > 0) {
       setNotice(state, `Voice connected, but ${warnings[0]}`, "warning", { chat: false });
     } else {
