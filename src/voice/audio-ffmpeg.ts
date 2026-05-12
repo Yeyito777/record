@@ -10,6 +10,9 @@ import { dbToLinear, linearToDb, speakingIdleMs, speakingStartThresholdDb, speak
 import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parseDiscordRtpPacket, parsePlainRtpPacket, reserveUdpPort } from "./rtp";
 import { NoopVoiceAudioBackend, type VoiceAudioBackend, type VoiceAudioContext } from "./types";
 
+const VOICE_HELPER_SHUTDOWN_GRACE_MS = 1_500;
+const VOICE_CAPTURE_STARTUP_TIMEOUT_MS = 5_000;
+
 export function createDefaultVoiceAudioBackend(): VoiceAudioBackend {
   if (process.platform !== "linux") return new NoopVoiceAudioBackend();
   return new FfmpegRtpVoiceAudioBackend();
@@ -21,6 +24,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackSocket: UdpSocket | null = null;
   private captureProcess: ChildProcessWithoutNullStreams | null = null;
   private playbackProcess: ChildProcessWithoutNullStreams | null = null;
+  private captureStartupTimer: ReturnType<typeof setTimeout> | null = null;
   private tempDir: string | null = null;
   private localPlaybackPort: number | null = null;
   private sendSequence = 0;
@@ -44,6 +48,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackSelfDeafDropCount = 0;
   private playbackFirstPacketLogged = false;
   private lastPlaybackStatsAt = 0;
+  private captureHealthy = false;
   private pcmRemainder = Buffer.alloc(0);
   private lastInputLevelDb = -Infinity;
   // Coupled with discord-cli's transcription speech gate.  If the Record
@@ -92,14 +97,15 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       this.captureSocket = null;
     }
     this.captureProcess?.stdout.off("data", this.handleCapturePcm);
+    this.clearCaptureStartupTimer();
     this.pcmRemainder = Buffer.alloc(0);
     if (this.playbackSocket) {
       try { this.playbackSocket.close(); } catch {}
       this.playbackSocket = null;
     }
-    this.captureProcess?.kill("SIGTERM");
+    terminateVoiceHelperProcess(this.captureProcess, "capture");
     this.captureProcess = null;
-    this.playbackProcess?.kill("SIGTERM");
+    terminateVoiceHelperProcess(this.playbackProcess, "playback");
     this.playbackProcess = null;
     this.logPlaybackStats("stop", true);
     if (this.tempDir) {
@@ -118,18 +124,20 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
 
     const args = buildFfplayPlaybackArgs(sdpPath);
     debugLog("voice.playback.start", { port, sdpPath, args, codecChannels: 2 });
-    this.playbackProcess = spawn("ffplay", args);
+    this.playbackProcess = spawnVoiceHelper("ffplay", args);
     this.playbackProcess.stdin.end();
     const playbackErrorOutput = drainChildOutput(this.playbackProcess);
     this.playbackProcess.on("error", (error) => {
       debugLog("voice.playback.spawn_error", { error: error.message });
       context.onError(new Error(`Failed to start voice playback: ${error.message}`));
+      if (this.context === context) this.stop();
     });
     this.playbackProcess.on("exit", (code, signal) => {
       const details = playbackErrorOutput().trim();
       debugLog("voice.playback.exit", { code, signal, details, active: this.context === context });
-      if (this.context !== context || code === 0 || signal === "SIGTERM") return;
+      if (this.context !== context || code === 0 || signal === "SIGTERM" || signal === "SIGKILL") return;
       context.onError(new Error(`Voice playback stopped${details ? `: ${details}` : "."}`));
+      if (this.context === context) this.stop();
     });
   }
 
@@ -140,26 +148,52 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const port = await bindUdp(socket, "127.0.0.1", 0);
 
     const voiceEngine = resolveVoiceEngineCommand();
+    this.captureHealthy = false;
     if (voiceEngine) {
       const args = buildVoiceEngineCaptureArgs(port);
       debugLog("voice.capture.start", { backend: "discord-voice-engine", command: voiceEngine, args, input: "default", speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
-      this.captureProcess = spawn(voiceEngine, args);
+      this.captureProcess = spawnVoiceHelper(voiceEngine, args);
     } else {
       const args = buildFfmpegCaptureArgs(port);
       debugLog("voice.capture.start", { backend: "ffmpeg", command: "ffmpeg", args, input: "default", speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
-      this.captureProcess = spawn("ffmpeg", args);
+      this.captureProcess = spawnVoiceHelper("ffmpeg", args);
     }
+    this.armCaptureStartupTimer(context);
     this.captureProcess.stdout.on("data", this.handleCapturePcm);
     const captureErrorOutput = drainChildStderr(this.captureProcess);
     this.captureProcess.on("error", (error) => {
       debugLog("voice.capture.spawn_error", { error: error.message, backend: voiceEngine ? "discord-voice-engine" : "ffmpeg" });
       context.onError(new Error(`Failed to start voice capture: ${error.message}`));
+      if (this.context === context) this.stop();
     });
     this.captureProcess.on("exit", (code, signal) => {
       const details = captureErrorOutput().trim();
       debugLog("voice.capture.exit", { code, signal, details, backend: voiceEngine ? "discord-voice-engine" : "ffmpeg" });
-      if (code !== 0 && this.context === context) context.onError(new Error("Voice capture stopped; microphone audio is not being sent."));
+      this.clearCaptureStartupTimer();
+      if (signal === "SIGTERM" || signal === "SIGKILL") return;
+      if (code !== 0 && this.context === context) {
+        context.onError(new Error("Voice capture stopped; microphone audio is not being sent."));
+        if (this.context === context) this.stop();
+      }
     });
+  }
+
+  private armCaptureStartupTimer(context: VoiceAudioContext): void {
+    this.clearCaptureStartupTimer();
+    this.captureStartupTimer = setTimeout(() => {
+      if (this.context !== context || this.captureHealthy) return;
+      debugLog("voice.capture.startup_timeout", { timeoutMs: VOICE_CAPTURE_STARTUP_TIMEOUT_MS });
+      terminateVoiceHelperProcess(this.captureProcess, "capture_startup_timeout");
+      context.onError(new Error("Voice capture did not start; microphone audio helper was stopped to protect the desktop audio stack."));
+      if (this.context === context) this.stop();
+    }, VOICE_CAPTURE_STARTUP_TIMEOUT_MS);
+    this.captureStartupTimer.unref?.();
+  }
+
+  private clearCaptureStartupTimer(): void {
+    if (!this.captureStartupTimer) return;
+    clearTimeout(this.captureStartupTimer);
+    this.captureStartupTimer = null;
   }
 
   private forwardDiscordPacket(packet: Buffer): void {
@@ -275,6 +309,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   }
 
   private forwardCapturePacket(packet: Buffer): void {
+    this.captureHealthy = true;
+    this.clearCaptureStartupTimer();
     const context = this.context;
     if (!context) return;
     if (context.selfMute) {
@@ -320,6 +356,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   }
 
   private updateCaptureLevel(chunk: Buffer | string): void {
+    this.captureHealthy = true;
+    this.clearCaptureStartupTimer();
     const context = this.context;
     if (!context) return;
     if (context.selfMute) {
@@ -473,6 +511,35 @@ function expandHome(value: string): string {
   if (value === "~") return homedir();
   if (value.startsWith("~/")) return join(homedir(), value.slice(2));
   return value;
+}
+
+function spawnVoiceHelper(command: string, args: string[]): ChildProcessWithoutNullStreams {
+  return spawn(command, args, { detached: process.platform !== "win32" });
+}
+
+function terminateVoiceHelperProcess(child: ChildProcessWithoutNullStreams | null, reason: string): void {
+  if (!child) return;
+  const pid = child.pid;
+  const target = pid && process.platform !== "win32" ? -pid : pid;
+  if (!target) {
+    try { child.kill("SIGTERM"); } catch {}
+    return;
+  }
+  try {
+    process.kill(target, "SIGTERM");
+    debugLog("voice.helper.terminate", { reason, pid, target, signal: "SIGTERM" });
+  } catch (error) {
+    try { child.kill("SIGTERM"); } catch {}
+    debugLog("voice.helper.terminate_error", { reason, pid, target, error: error instanceof Error ? error.message : String(error) });
+  }
+  const killTimer = setTimeout(() => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    try {
+      process.kill(target, "SIGKILL");
+      debugLog("voice.helper.terminate", { reason, pid, target, signal: "SIGKILL" });
+    } catch {}
+  }, VOICE_HELPER_SHUTDOWN_GRACE_MS);
+  killTimer.unref?.();
 }
 
 function drainChildOutput(child: ChildProcessWithoutNullStreams): () => string {
