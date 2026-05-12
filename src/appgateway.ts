@@ -334,6 +334,9 @@ export class AppGatewayClient implements VoiceSignalingClient {
         case "GUILD_CREATE": {
           const guild = mapGatewayGuild(data);
           if (guild) this.callbacks.onGuildCreate?.(guild);
+          for (const voiceState of extractGuildVoiceStates(data)) {
+            this.callbacks.onVoiceStateUpdate?.(voiceState);
+          }
           break;
         }
         case "GUILD_UPDATE": {
@@ -537,22 +540,26 @@ function voiceStateDisplayName(data: Record<string, any>): string | null {
   const member = isObject(data.member) ? data.member : null;
   const memberUser = member && isObject(member.user) ? member.user : null;
   const user = isObject(data.user) ? data.user : null;
-  return displayNameField(member?.nick)
-    ?? displayNameField(memberUser?.global_name)
+  return displayNameField(memberUser?.global_name)
+    ?? displayNameField(memberUser?.display_name)
     ?? displayNameField(memberUser?.username)
     ?? displayNameField(user?.global_name)
+    ?? displayNameField(user?.display_name)
     ?? displayNameField(user?.username);
+}
+
+export function extractGuildVoiceStates(data: unknown): VoiceStateUpdate[] {
+  if (!isObject(data) || typeof data.id !== "string" || !Array.isArray(data.voice_states)) return [];
+  return data.voice_states
+    .map((rawVoiceState) => mapVoiceStateUpdate(rawVoiceState, data.id))
+    .filter((update): update is VoiceStateUpdate => update !== null);
 }
 
 export function extractReadyVoiceStates(data: unknown): VoiceStateUpdate[] {
   if (!isObject(data) || !Array.isArray(data.guilds)) return [];
   const updates: VoiceStateUpdate[] = [];
   for (const guild of data.guilds) {
-    if (!isObject(guild) || typeof guild.id !== "string" || !Array.isArray(guild.voice_states)) continue;
-    for (const rawVoiceState of guild.voice_states) {
-      const update = mapVoiceStateUpdate(rawVoiceState, guild.id);
-      if (update) updates.push(update);
-    }
+    updates.push(...extractGuildVoiceStates(guild));
   }
   return updates;
 }

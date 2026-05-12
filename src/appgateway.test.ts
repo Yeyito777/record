@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { AppGatewayClient, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
+import { AppGatewayClient, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -92,7 +92,7 @@ describe("app gateway helpers", () => {
       user_id: "me",
       channel_id: "dm-1",
       session_id: "voice-session",
-      member: { nick: "Yeyito" },
+      member: { nick: "Server Nick", user: { username: "yeyito", global_name: "Yeyito" } },
       self_mute: true,
       self_deaf: false,
       mute: false,
@@ -132,6 +132,25 @@ describe("app gateway helpers", () => {
       selfMute: false,
       selfDeaf: false,
       mute: true,
+      deaf: false,
+    }]);
+  });
+
+  test("extracts voice states from GUILD_CREATE payloads", () => {
+    expect(extractGuildVoiceStates({
+      id: "guild-1",
+      voice_states: [
+        { user_id: "user-1", channel_id: "voice-1", session_id: "session-1", member: { user: { username: "alice", global_name: "Alice" } } },
+      ],
+    })).toEqual([{
+      userId: "user-1",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "session-1",
+      displayName: "Alice",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
       deaf: false,
     }]);
   });
