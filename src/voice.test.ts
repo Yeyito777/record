@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildVoiceEngineCaptureArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -138,6 +138,12 @@ describe("voice backend", () => {
   test("detects Opus silence frames", () => {
     expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff, 0xfe]))).toBe(true);
     expect(isOpusSilenceFrame(Buffer.from([0xf8, 0xff]))).toBe(false);
+  });
+
+  test("builds local playback RTP packets", () => {
+    const packet = buildPlainPlaybackRtpPacket(0x11223344, 0x12345, 0x55667788, Buffer.from([1, 2, 3]));
+    expect([...packet.subarray(0, 12)]).toEqual([0x80, 120, 0x23, 0x45, 0x55, 0x66, 0x77, 0x88, 0x11, 0x22, 0x33, 0x44]);
+    expect([...packet.subarray(12)]).toEqual([1, 2, 3]);
   });
 
   test("tracks playback RTP sequence gaps objectively", () => {

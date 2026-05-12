@@ -16,6 +16,7 @@ const PLAYBACK_PACE_DELAY_MS = parsePositiveInt(process.env.RECORD_PLAYBACK_PACE
 const PLAYBACK_PACER_IDLE_RESET_MS = 2_000;
 const PLAYBACK_PACER_MAX_DELTA_SAMPLES = 48_000 * 60;
 const PLAYBACK_TRACE_DIR = process.env.RECORD_PLAYBACK_TRACE_DIR?.trim() || null;
+const PLAYBACK_PREROLL_FRAME_MS = 20;
 
 export function createDefaultVoiceAudioBackend(): VoiceAudioBackend {
   if (process.platform !== "linux") return new NoopVoiceAudioBackend();
@@ -55,6 +56,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackPacerMaxLateMs = 0;
   private playbackPacerResetCount = 0;
   private playbackPacerDroppedCount = 0;
+  private playbackPrerollPacketCount = 0;
   private playbackSendErrorCount = 0;
   private playbackWrongPayloadCount = 0;
   private playbackInvalidPacketCount = 0;
@@ -262,13 +264,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const gap = this.observePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp);
     if (gap) debugLog("voice.playback.sequence_gap", { ...gap });
 
-    const header = Buffer.alloc(RTP_HEADER_LENGTH);
-    header[0] = 0x80;
-    header[1] = OPUS_PAYLOAD_TYPE;
-    header.writeUInt16BE(parsed.sequence, 2);
-    header.writeUInt32BE(parsed.timestamp, 4);
-    header.writeUInt32BE(parsed.ssrc, 8);
-    this.enqueuePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp, Buffer.concat([header, decodedPayload]));
+    this.enqueuePlaybackPacket(parsed.ssrc, parsed.sequence, parsed.timestamp, decodedPayload);
     this.playbackForwardedPacketCount += 1;
     if (!this.playbackFirstPacketLogged) {
       this.playbackFirstPacketLogged = true;
@@ -286,13 +282,13 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.logPlaybackStats("forwarded");
   }
 
-  private enqueuePlaybackPacket(ssrc: number, sequence: number, timestamp: number, packet: Buffer): void {
+  private enqueuePlaybackPacket(ssrc: number, sequence: number, timestamp: number, payload: Buffer): void {
     let pacer = this.playbackPacersBySsrc.get(ssrc);
     if (!pacer) {
       pacer = new PlaybackPacer({
         ssrc,
         delayMs: PLAYBACK_PACE_DELAY_MS,
-        send: (pacedPacket) => this.sendPlaybackPacket(pacedPacket),
+        send: (pacedPacket, kind) => this.sendPlaybackPacket(pacedPacket, kind),
         onLate: (lateMs) => {
           this.playbackPacerLateCount += 1;
           this.playbackPacerMaxLateMs = Math.max(this.playbackPacerMaxLateMs, Math.round(lateMs));
@@ -308,12 +304,13 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       });
       this.playbackPacersBySsrc.set(ssrc, pacer);
     }
-    pacer.enqueue(sequence, timestamp, packet);
+    pacer.enqueue(sequence, timestamp, payload);
   }
 
-  private sendPlaybackPacket(packet: Buffer): void {
+  private sendPlaybackPacket(packet: Buffer, kind: PlaybackPacketKind = "audio"): void {
     if (!this.playbackSocket || this.localPlaybackPort === null) return;
-    this.playbackPacedPacketCount += 1;
+    if (kind === "preroll") this.playbackPrerollPacketCount += 1;
+    else this.playbackPacedPacketCount += 1;
     this.writePlaybackTracePacket(packet);
     this.playbackSocket.send(packet, this.localPlaybackPort, "127.0.0.1", (error) => {
       if (error) {
@@ -335,6 +332,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackPacerMaxLateMs = 0;
     this.playbackPacerResetCount = 0;
     this.playbackPacerDroppedCount = 0;
+    this.playbackPrerollPacketCount = 0;
     this.playbackSendErrorCount = 0;
     this.playbackWrongPayloadCount = 0;
     this.playbackInvalidPacketCount = 0;
@@ -359,6 +357,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       pacerMaxLateMs: this.playbackPacerMaxLateMs,
       pacerDroppedPackets: this.playbackPacerDroppedCount,
       pacerResets: this.playbackPacerResetCount,
+      prerollPackets: this.playbackPrerollPacketCount,
       pacerDelayMs: PLAYBACK_PACE_DELAY_MS,
       transportFailures: this.playbackTransportFailCount,
       daveDrops: this.playbackDaveDropCount,
@@ -540,6 +539,16 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
 
 export function isOpusSilenceFrame(payload: Buffer): boolean {
   return payload.equals(OPUS_SILENCE_FRAME);
+}
+
+export function buildPlainPlaybackRtpPacket(ssrc: number, sequence: number, timestamp: number, payload: Buffer): Buffer {
+  const header = Buffer.alloc(RTP_HEADER_LENGTH);
+  header[0] = 0x80;
+  header[1] = OPUS_PAYLOAD_TYPE;
+  header.writeUInt16BE(sequence & 0xffff, 2);
+  header.writeUInt32BE(timestamp >>> 0, 4);
+  header.writeUInt32BE(ssrc >>> 0, 8);
+  return Buffer.concat([header, payload]);
 }
 
 export interface PlaybackSequenceGap {
@@ -758,28 +767,35 @@ function spawnVoiceHelper(command: string, args: string[]): ChildProcessWithoutN
 interface PlaybackPacerOptions {
   ssrc: number;
   delayMs: number;
-  send: (packet: Buffer) => void;
+  send: (packet: Buffer, kind: PlaybackPacketKind) => void;
   onLate: (lateMs: number) => void;
   onDrop: (reason: string) => void;
   onReset: (reason: string) => void;
 }
 
+type PlaybackPacketKind = "audio" | "preroll";
+
 class PlaybackPacer {
   private baseTimestamp: number | null = null;
   private baseWallMs = 0;
   private lastReceivedAt = 0;
-  private lastSentTimestamp: number | null = null;
+  private localBaseTimestamp = Math.floor(Math.random() * 0x100000000) >>> 0;
+  private localBaseWallMs: number | null = null;
+  private localSequence = Math.floor(Math.random() * 0x10000) & 0xffff;
+  private lastSentLocalTimestamp: number | null = null;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(private readonly options: PlaybackPacerOptions) {}
 
-  enqueue(_sequence: number, timestamp: number, packet: Buffer): void {
+  enqueue(_sequence: number, timestamp: number, payload: Buffer): void {
     const now = Date.now();
     if (this.baseTimestamp === null) {
       this.resetBase(timestamp, now, "initial", false);
+      this.schedulePreroll(now, this.baseWallMs);
     } else if (now - this.lastReceivedAt >= PLAYBACK_PACER_IDLE_RESET_MS) {
       this.clearTimers();
       this.resetBase(timestamp, now, "idle", true);
+      this.schedulePreroll(now, this.baseWallMs);
     }
     this.lastReceivedAt = now;
 
@@ -787,6 +803,7 @@ class PlaybackPacer {
     if (deltaSamples > PLAYBACK_PACER_MAX_DELTA_SAMPLES) {
       this.clearTimers();
       this.resetBase(timestamp, now, "timestamp_jump", true);
+      this.schedulePreroll(now, this.baseWallMs);
       deltaSamples = 0;
     }
 
@@ -794,17 +811,7 @@ class PlaybackPacer {
     const lateMs = Math.max(0, now - targetMs);
     const delayMs = Math.max(0, Math.ceil(targetMs - now));
     if (lateMs > 0) this.options.onLate(lateMs);
-    const timer = setTimeout(() => {
-      this.timers.delete(timer);
-      if (this.lastSentTimestamp !== null && !isNewerRtpTimestamp(timestamp, this.lastSentTimestamp)) {
-        this.options.onDrop("out_of_order_after_pace");
-        return;
-      }
-      this.lastSentTimestamp = timestamp >>> 0;
-      this.options.send(packet);
-    }, delayMs);
-    timer.unref?.();
-    this.timers.add(timer);
+    this.schedulePayload(payload, targetMs, delayMs, "audio");
   }
 
   dispose(): void {
@@ -814,8 +821,41 @@ class PlaybackPacer {
   private resetBase(timestamp: number, now: number, reason: string, report: boolean): void {
     this.baseTimestamp = timestamp >>> 0;
     this.baseWallMs = now + this.options.delayMs;
-    this.lastSentTimestamp = null;
+    if (this.localBaseWallMs === null) this.localBaseWallMs = this.baseWallMs;
     if (report) this.options.onReset(reason);
+  }
+
+  private schedulePreroll(now: number, firstAudioTargetMs: number): void {
+    const frames = Math.floor(this.options.delayMs / PLAYBACK_PREROLL_FRAME_MS);
+    if (frames <= 0) return;
+    for (let index = 0; index < frames; index += 1) {
+      const targetMs = firstAudioTargetMs - ((frames - index) * PLAYBACK_PREROLL_FRAME_MS);
+      const delayMs = Math.max(0, Math.ceil(targetMs - now));
+      this.schedulePayload(OPUS_SILENCE_FRAME, targetMs, delayMs, "preroll");
+    }
+  }
+
+  private schedulePayload(payload: Buffer, targetMs: number, delayMs: number, kind: PlaybackPacketKind): void {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      const localTimestamp = this.localTimestampForTarget(targetMs);
+      if (this.lastSentLocalTimestamp !== null && !isNewerRtpTimestamp(localTimestamp, this.lastSentLocalTimestamp)) {
+        this.options.onDrop(`out_of_order_${kind}_after_pace`);
+        return;
+      }
+      this.lastSentLocalTimestamp = localTimestamp;
+      const packet = buildPlainPlaybackRtpPacket(this.options.ssrc, this.localSequence, localTimestamp, payload);
+      this.localSequence = (this.localSequence + 1) & 0xffff;
+      this.options.send(packet, kind);
+    }, delayMs);
+    timer.unref?.();
+    this.timers.add(timer);
+  }
+
+  private localTimestampForTarget(targetMs: number): number {
+    const baseWallMs = this.localBaseWallMs ?? targetMs;
+    const elapsedSamples = Math.round((targetMs - baseWallMs) * 48);
+    return (this.localBaseTimestamp + elapsedSamples) >>> 0;
   }
 
   private clearTimers(): void {
