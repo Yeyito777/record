@@ -43,7 +43,7 @@ import {
   showCursor,
 } from "./terminal";
 import { theme } from "./theme";
-import { isTimelineNearBottom, renderTimelineLines, setTimelineRenderContext } from "./timeline";
+import { renderTimelineLines, setTimelineRenderContext } from "./timeline";
 import { renderTopbar } from "./topbar";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
 
@@ -346,8 +346,9 @@ export function render(state: AppState): void {
   const oldCursorRow = state.historyCursor.row;
   const oldVisualAnchorRow = state.historyVisualAnchor.row;
   const pinHistoryToBottom = oldViewStart === Number.MAX_SAFE_INTEGER;
-  const pinPromptChromeToBottom = state.chatFocus === "prompt" && isTimelineNearBottom(oldViewStart, state.timeline.maxScroll);
-  const pinTypingToBottom = Boolean(typingLine) && isTimelineNearBottom(oldViewStart, state.timeline.maxScroll);
+  const wasPinnedToBottom = oldViewStart === Number.MAX_SAFE_INTEGER || oldViewStart >= state.timeline.maxScroll;
+  const pinPromptChromeToBottom = state.chatFocus === "prompt" && wasPinnedToBottom;
+  const pinTypingToBottom = Boolean(typingLine) && wasPinnedToBottom;
   if (pinPromptChromeToBottom || pinTypingToBottom) {
     state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
   }
