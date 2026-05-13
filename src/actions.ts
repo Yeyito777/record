@@ -10,7 +10,7 @@ import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
 import { expandMacros } from "./macros";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
-import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalSpeakerVolume, startCurrentVoiceCall, uploadCurrentChannelFile, type SessionEffects } from "./session";
+import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, uploadCurrentChannelFile, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
@@ -190,6 +190,9 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       return true;
     case "speaker_volume":
       setLocalSpeakerVolume(state, effects, result.volume);
+      return true;
+    case "noise_suppression":
+      setLocalNoiseSuppression(state, effects, result.mode);
       return true;
     case "status":
       setCurrentUserPresenceStatus(state, effects, result.status, (token, status) => setCurrentUserSettingsProtoStatus(token, status));

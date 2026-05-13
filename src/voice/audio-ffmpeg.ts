@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "os";
 import { delimiter, join } from "path";
 
 import { debugLog } from "../debuglog";
-import { DEFAULT_LOCAL_VOLUME_PERCENT, clampVolumePercent, volumePercentToFilterValue, type LocalAudioVolumes } from "../volume";
+import { DEFAULT_LOCAL_VOLUME_PERCENT, DEFAULT_NOISE_SUPPRESSION_MODE, clampVolumePercent, volumePercentToFilterValue, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
 import { OPUS_PAYLOAD_TYPE, OPUS_RTP_CLOCK_INCREMENT, OPUS_SILENCE_FRAME, RTP_HEADER_LENGTH } from "./constants";
 import { dbToLinear, linearToDb, speakingIdleMs, speakingStartThresholdDb, speakingStopThresholdDb } from "./env";
 import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parseDiscordRtpPacket, parsePlainRtpPacket, reserveUdpPort } from "./rtp";
@@ -23,10 +23,12 @@ const PLAYBACK_LOSS_FILL_MODE = parsePlaybackLossFillMode(process.env.RECORD_PLA
 const PLAYBACK_BACKEND = parsePlaybackBackend(process.env.RECORD_PLAYBACK_BACKEND);
 const PLAYBACK_READY_TIMEOUT_MS = 1_000;
 
-export function createDefaultVoiceAudioBackend(localVolumes?: LocalAudioVolumes): VoiceAudioBackend {
+export function createDefaultVoiceAudioBackend(localVolumes?: LocalAudioVolumes, noiseSuppression?: NoiseSuppressionMode): VoiceAudioBackend {
   if (process.platform !== "linux") return new NoopVoiceAudioBackend();
-  return new FfmpegRtpVoiceAudioBackend(localVolumes);
+  return new FfmpegRtpVoiceAudioBackend(localVolumes, noiseSuppression);
 }
+
+type CaptureBackend = "discord-voice-engine" | "ffmpeg";
 
 export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private context: VoiceAudioContext | null = null;
@@ -45,6 +47,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackSdpPath: string | null = null;
   private localCapturePort: number | null = null;
   private localVolumes: LocalAudioVolumes;
+  private noiseSuppression: NoiseSuppressionMode;
+  private captureBackend: CaptureBackend | null = null;
   private sendSequence = 0;
   private sendTimestamp = 0;
   private sendCounter = 0;
@@ -92,8 +96,9 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private readonly handleCapturePacket = (packet: Buffer): void => this.forwardCapturePacket(packet);
   private readonly handleCapturePcm = (chunk: Buffer | string): void => this.updateCaptureLevel(chunk);
 
-  constructor(localVolumes: LocalAudioVolumes = { micVolume: DEFAULT_LOCAL_VOLUME_PERCENT, speakerVolume: DEFAULT_LOCAL_VOLUME_PERCENT }) {
+  constructor(localVolumes: LocalAudioVolumes = { micVolume: DEFAULT_LOCAL_VOLUME_PERCENT, speakerVolume: DEFAULT_LOCAL_VOLUME_PERCENT }, noiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE) {
     this.localVolumes = normalizeLocalVolumes(localVolumes);
+    this.noiseSuppression = noiseSuppression;
   }
 
   async start(context: VoiceAudioContext): Promise<void> {
@@ -159,6 +164,18 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     if (speakerChanged) this.restartPlaybackProcess("volume_change");
   }
 
+  setNoiseSuppression(mode: NoiseSuppressionMode): void {
+    if (mode === this.noiseSuppression) return;
+    this.noiseSuppression = mode;
+    debugLog("voice.noise_suppression.set", { mode, backend: this.captureBackend });
+    if (!this.context) return;
+    if (this.captureBackend === "discord-voice-engine" && this.captureProcess && !this.captureProcess.stdin.destroyed) {
+      const ok = this.captureProcess.stdin.write(`noise-suppression ${mode}\n`);
+      if (ok) return;
+    }
+    this.restartCaptureProcess("noise_suppression_change");
+  }
+
   private async startPlayback(context: VoiceAudioContext): Promise<void> {
     const port = await reserveUdpPort();
     this.localPlaybackPort = port;
@@ -177,7 +194,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const useNativePlayback = !this.playbackForceFfplay && shouldUseNativePlayback(voiceEngine, speakerVolume);
     const command = useNativePlayback && voiceEngine ? voiceEngine : "ffplay";
     const readyPath = useNativePlayback ? join(this.tempDir, `playback-${Date.now()}.ready`) : null;
-    const args = useNativePlayback ? buildVoiceEnginePlaybackArgs(this.localPlaybackPort, readyPath ?? undefined) : buildFfplayPlaybackArgs(this.playbackSdpPath, speakerVolume);
+    const args = useNativePlayback ? buildVoiceEnginePlaybackArgs(this.localPlaybackPort, readyPath ?? undefined, process.pid) : buildFfplayPlaybackArgs(this.playbackSdpPath, speakerVolume);
     this.playbackBackend = useNativePlayback ? "engine" : "ffplay";
 
     debugLog("voice.playback.start", { backend: this.playbackBackend, command, port: this.localPlaybackPort, sdpPath: useNativePlayback ? null : this.playbackSdpPath, args, codecChannels: 2, speakerVolume, reason });
@@ -231,14 +248,15 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     const micVolume = this.localVolumes.micVolume;
     const useNativeCapture = shouldUseNativeCapture(voiceEngine, micVolume);
     this.captureHealthy = false;
-    const captureBackend = useNativeCapture && voiceEngine ? "discord-voice-engine" : "ffmpeg";
+    const captureBackend: CaptureBackend = useNativeCapture && voiceEngine ? "discord-voice-engine" : "ffmpeg";
+    this.captureBackend = captureBackend;
     if (captureBackend === "discord-voice-engine" && voiceEngine) {
-      const args = buildVoiceEngineCaptureArgs(port);
-      debugLog("voice.capture.start", { backend: captureBackend, command: voiceEngine, args, input: "default", micVolume, reason, speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
+      const args = buildVoiceEngineCaptureArgs(port, this.noiseSuppression, process.pid);
+      debugLog("voice.capture.start", { backend: captureBackend, command: voiceEngine, args, input: "default", micVolume, noiseSuppression: this.noiseSuppression, reason, speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
       this.captureProcess = spawnVoiceHelper(voiceEngine, args);
     } else {
-      const args = buildFfmpegCaptureArgs(port, micVolume);
-      debugLog("voice.capture.start", { backend: captureBackend, command: "ffmpeg", args, input: "default", micVolume, reason, speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
+      const args = buildFfmpegCaptureArgs(port, micVolume, this.noiseSuppression);
+      debugLog("voice.capture.start", { backend: captureBackend, command: "ffmpeg", args, input: "default", micVolume, noiseSuppression: this.noiseSuppression, reason, speakingStartThresholdDb: this.speakingStartThresholdDb, speakingStopThresholdDb: this.speakingStopThresholdDb, speakingIdleMs: this.speakingIdleMs });
       this.captureProcess = spawnVoiceHelper("ffmpeg", args);
     }
     this.armCaptureStartupTimer(context);
@@ -291,6 +309,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.clearCaptureStartupTimer();
     terminateVoiceHelperProcess(this.captureProcess, reason);
     this.captureProcess = null;
+    this.captureBackend = null;
   }
 
   private armCaptureStartupTimer(context: VoiceAudioContext): void {
@@ -902,8 +921,8 @@ export function buildVoicePlaybackSdp(port: number): string {
   ].join("\n");
 }
 
-export function buildVoiceEngineCaptureArgs(port: number): string[] {
-  return [
+export function buildVoiceEngineCaptureArgs(port: number, noiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE, parentPid?: number): string[] {
+  const args = [
     "capture-mic",
     "--rtp", `127.0.0.1:${port}`,
     "--mode", "voice",
@@ -911,11 +930,14 @@ export function buildVoiceEngineCaptureArgs(port: number): string[] {
     "--channels", "2",
     "--bitrate", "96000",
     "--payload-type", String(OPUS_PAYLOAD_TYPE),
+    "--noise-suppression", noiseSuppression,
     "--meter-stdout",
   ];
+  if (parentPid && parentPid > 0) args.push("--parent-pid", String(parentPid));
+  return args;
 }
 
-export function buildVoiceEnginePlaybackArgs(port: number, readyFile?: string): string[] {
+export function buildVoiceEnginePlaybackArgs(port: number, readyFile?: string, parentPid?: number): string[] {
   const args = [
     "play-rtp",
     "--rtp", `127.0.0.1:${port}`,
@@ -927,14 +949,17 @@ export function buildVoiceEnginePlaybackArgs(port: number, readyFile?: string): 
     "--output", "pipewire",
   ];
   if (readyFile) args.push("--ready-file", readyFile);
+  if (parentPid && parentPid > 0) args.push("--parent-pid", String(parentPid));
   return args;
 }
 
-export function buildFfmpegCaptureArgs(port: number, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+export function buildFfmpegCaptureArgs(port: number, volume = DEFAULT_LOCAL_VOLUME_PERCENT, noiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE): string[] {
   const normalizedVolume = clampVolumePercent(volume);
-  const captureFilter = normalizedVolume === DEFAULT_LOCAL_VOLUME_PERCENT
-    ? "[0:a]asplit=2[aout][meter]"
-    : `[0:a]volume=${volumePercentToFilterValue(normalizedVolume)},asplit=2[aout][meter]`;
+  const filters: string[] = [];
+  if (normalizedVolume !== DEFAULT_LOCAL_VOLUME_PERCENT) filters.push(`volume=${volumePercentToFilterValue(normalizedVolume)}`);
+  if (noiseSuppression === "simple") filters.push("afftdn=nr=12:nf=-50");
+  filters.push("asplit=2[aout][meter]");
+  const captureFilter = `[0:a]${filters.join(",")}`;
   return [
     "-nostdin",
     "-hide_banner",

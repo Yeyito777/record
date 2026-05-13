@@ -13,6 +13,7 @@ import {
   setChannelList,
   upsertChannel,
 } from "./channels";
+import { saveConfig } from "./config";
 import { statSync } from "fs";
 import { basename } from "path";
 import {
@@ -145,7 +146,7 @@ import {
 import { clearTypingUser, recordTypingStart } from "./typing";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
-import { clampVolumePercent } from "./volume";
+import { clampVolumePercent, type NoiseSuppressionMode } from "./volume";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -1762,6 +1763,7 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
     selfUserId,
     signaling: appGateway,
     localVolumes: state.audio,
+    noiseSuppression: state.noiseSuppression,
     ringRecipients: (channelId, recipientIds) => ringDirectMessageCall(token, channelId, recipientIds),
     onStateChange: (session) => {
       debugLog("voice.state", { state: session?.state ?? "idle", channelId: session?.target.channelId ?? null });
@@ -3190,6 +3192,18 @@ export function setLocalSpeakerVolume(state: AppState, effects: SessionEffects, 
   setSoundEffectVolume(next);
   voiceCallController?.setLocalVolumes({ micVolume: state.audio.micVolume, speakerVolume: next });
   setNotice(state, `Speaker volume set to ${next}%.`, "muted", { statusLine: false });
+  effects.scheduleRender();
+}
+
+export function setLocalNoiseSuppression(state: AppState, effects: SessionEffects, mode: NoiseSuppressionMode): void {
+  state.noiseSuppression = mode;
+  voiceCallController?.setNoiseSuppression(mode);
+  try {
+    saveConfig({ audio: { noiseSuppression: mode } });
+    setNotice(state, `Noise suppression set to ${mode}.`, "muted", { statusLine: false });
+  } catch (error) {
+    setNotice(state, `Noise suppression set to ${mode}, but saving failed: ${(error as Error).message}`, "warning", { statusLine: false });
+  }
   effects.scheduleRender();
 }
 

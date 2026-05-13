@@ -18,7 +18,7 @@ import { normalizeToken } from "./token";
 import type { ClipboardImageAttachment } from "./imageclipboard";
 import type { NoticeTone } from "./theme";
 import type { VoiceConnectionState } from "./voice";
-import { DEFAULT_LOCAL_VOLUME_PERCENT, type LocalAudioVolumes } from "./volume";
+import { DEFAULT_LOCAL_VOLUME_PERCENT, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "./volume";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
 export type PresenceStatus = DiscordPresenceStatus;
@@ -113,6 +113,7 @@ export interface AppState {
   messageDeletePending: MessageDeletePending | null;
   voiceCall: VoiceCallStatus | null;
   audio: LocalAudioVolumes;
+  noiseSuppression: NoiseSuppressionMode;
   roleIdsByGuildId: Record<string, string[]>;
   guildRolesByGuildId: Record<string, DiscordRole[]>;
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
@@ -128,7 +129,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean } = {},
+  options: { showHiddenChannels?: boolean; noiseSuppression?: NoiseSuppressionMode } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -163,6 +164,7 @@ export function createInitialState(
       micVolume: DEFAULT_LOCAL_VOLUME_PERCENT,
       speakerVolume: DEFAULT_LOCAL_VOLUME_PERCENT,
     },
+    noiseSuppression: options.noiseSuppression ?? DEFAULT_NOISE_SUPPRESSION_MODE,
     roleIdsByGuildId: {},
     guildRolesByGuildId: {},
     memberRoleIdsByGuildId: {},

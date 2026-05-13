@@ -10,7 +10,7 @@ import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
 import { THEME_NAMES, setTheme, type ThemeName } from "./theme";
-import { parseVolumePercent } from "./volume";
+import { parseNoiseSuppressionMode, parseVolumePercent, type NoiseSuppressionMode } from "./volume";
 
 export interface CompletionItem {
   name: string;
@@ -31,6 +31,7 @@ export type CommandResult =
   | { type: "deafen"; deafened: boolean | null }
   | { type: "mic_volume"; volume: number }
   | { type: "speaker_volume"; volume: number }
+  | { type: "noise_suppression"; mode: NoiseSuppressionMode }
   | { type: "status"; status: DiscordPresenceStatus }
   | { type: "theme_changed" };
 
@@ -73,6 +74,11 @@ const VOLUME_VALUE_ARGS: CompletionItem[] = [
   { name: "50%", desc: "Half volume" },
   { name: "25%", desc: "Quarter volume" },
   { name: "0%", desc: "Silent" },
+];
+
+const NOISE_SUPPRESSION_ARGS: CompletionItem[] = [
+  { name: "off", desc: "Disable local microphone noise suppression" },
+  { name: "simple", desc: "Use low-latency RNNoise suppression" },
 ];
 
 const STATUS_ARGS: CompletionItem[] = [
@@ -282,6 +288,19 @@ const commands: SlashCommand[] = [
       "/speaker volume": VOLUME_VALUE_ARGS,
     }),
     handler: (text, state) => handleLocalVolumeCommand(text, state, "speaker"),
+  },
+  {
+    name: "/noise-suppression",
+    description: "Set local microphone noise suppression",
+    args: NOISE_SUPPRESSION_ARGS,
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length !== 2) return usage(state, "Usage: /noise-suppression <off|simple>");
+      const mode = parseNoiseSuppressionMode(parts[1]);
+      if (!mode) return usage(state, "Usage: /noise-suppression <off|simple>");
+      clearPrompt(state);
+      return { type: "noise_suppression", mode };
+    },
   },
   {
     name: "/status",

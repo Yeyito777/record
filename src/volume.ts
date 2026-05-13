@@ -3,10 +3,31 @@
  */
 
 export const DEFAULT_LOCAL_VOLUME_PERCENT = 100;
+export const DEFAULT_NOISE_SUPPRESSION_MODE: NoiseSuppressionMode = "off";
+
+export type NoiseSuppressionMode = "off" | "simple";
 
 export interface LocalAudioVolumes {
   micVolume: number;
   speakerVolume: number;
+}
+
+export function parseNoiseSuppressionMode(value: string | undefined): NoiseSuppressionMode | null {
+  switch (value?.trim().toLowerCase()) {
+    case "off":
+    case "none":
+    case "0":
+    case "false":
+      return "off";
+    case "simple":
+    case "rnnoise":
+    case "on":
+    case "1":
+    case "true":
+      return "simple";
+    default:
+      return null;
+  }
 }
 
 export function clampVolumePercent(value: number): number {

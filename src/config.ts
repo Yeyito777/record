@@ -31,12 +31,19 @@ export interface ChannelsConfig {
   showHidden?: boolean;
 }
 
+export interface AudioConfig {
+  /** Local microphone noise suppression mode. */
+  noiseSuppression?: "off" | "simple";
+}
+
 export interface RecordConfig {
   token?: string;
   /** Open-on-enter commands for links and file/attachment targets. */
   openers?: OpenersConfig;
   /** Sidebar/channel display preferences. */
   channels?: ChannelsConfig;
+  /** Local audio capture/playback preferences. */
+  audio?: AudioConfig;
   /** Preserve unknown future/user keys. */
   [key: string]: unknown;
 }

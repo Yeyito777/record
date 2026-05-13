@@ -110,8 +110,12 @@ describe("voice backend", () => {
       "--channels", "2",
       "--bitrate", "96000",
       "--payload-type", "120",
+      "--noise-suppression", "off",
       "--meter-stdout",
     ]);
+    expect(buildVoiceEngineCaptureArgs(43123, "simple")).toContain("simple");
+    expect(buildVoiceEngineCaptureArgs(43123, "off", 1234)).toContain("--parent-pid");
+    expect(buildVoiceEngineCaptureArgs(43123, "off", 1234)).toContain("1234");
   });
 
   test("builds native voice-engine playback args", () => {
@@ -126,6 +130,8 @@ describe("voice backend", () => {
       "--output", "pipewire",
       "--ready-file", "/tmp/playback.ready",
     ]);
+    expect(buildVoiceEnginePlaybackArgs(43125, undefined, 1234)).toContain("--parent-pid");
+    expect(buildVoiceEnginePlaybackArgs(43125, undefined, 1234)).toContain("1234");
   });
 
   test("keeps legacy ffmpeg capture args as fallback", () => {
@@ -136,6 +142,7 @@ describe("voice backend", () => {
     expect(args).toContain("rtp://127.0.0.1:43124");
     expect(buildFfmpegCaptureArgs(43124, 50)).toContain("[0:a]volume=0.5,asplit=2[aout][meter]");
     expect(buildFfmpegCaptureArgs(43124, 0)).toContain("[0:a]volume=0,asplit=2[aout][meter]");
+    expect(buildFfmpegCaptureArgs(43124, 100, "simple")).toContain("[0:a]afftdn=nr=12:nf=-50,asplit=2[aout][meter]");
   });
 
   test("resolves native voice engine from env or PATH", () => {
