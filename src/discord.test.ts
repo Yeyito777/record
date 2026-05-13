@@ -426,7 +426,7 @@ describe("discord helpers", () => {
         content: "hello",
         timestamp: "2026-01-01T12:00:00.000Z",
         edited_timestamp: null,
-        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        author: { id: "user-1", username: "tester", global_name: "Tester", avatar: "avatar-1" },
         member: { roles: ["role-1", "role-2"] },
         attachments: [],
         embeds: [],
@@ -436,6 +436,7 @@ describe("discord helpers", () => {
     const messages = await fetchChannelMessages("token", "channel-1", 50);
 
     expect(messages[0]?.author.roleIds).toEqual(["role-1", "role-2"]);
+    expect(messages[0]?.author.avatar).toBe("avatar-1");
   });
 
   test("uses real display names instead of server nicknames for message authors", async () => {

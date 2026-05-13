@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
+import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -1006,6 +1006,37 @@ describe("session", () => {
       ["friend", "other", "newcomer"],
       [],
     )).toEqual(["friend", "other", "newcomer"]);
+  });
+
+  test("hydrates generic voice sidebar members from requested guild member chunks", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "voice", topic: null, position: 0, type: 2, nsfw: false }];
+    const effects = { renders: 0, scheduleRender: () => { effects.renders += 1; } };
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "123456789012345678",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "session-1",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.displayName).toBe("Someone");
+
+    handleGuildMembersChunk(state, effects, "guild-1", [
+      { id: "123456789012345678", username: "alice", displayName: "Alice", bot: false, avatar: "avatar-1", roleIds: ["role-1"] },
+    ]);
+
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.displayName).toBe("Alice");
+    expect(state.memberList.cache.get("guild-1:voice-1")?.[0]).toMatchObject({ id: "123456789012345678", displayName: "Alice", avatar: "avatar-1" });
+    expect(state.memberRoleIdsByGuildId["guild-1"]?.["123456789012345678"]).toEqual(["role-1"]);
+
+    clearReadOnlyClient(state);
   });
 
   test("detects newly added remote call participants", () => {

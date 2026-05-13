@@ -160,6 +160,7 @@ const MESSAGE_CACHE_FRESH_MS = 2 * 60 * 1000;
 const replyPreviewRestFetchKeys = new Set<string>();
 const MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS = 7_000;
 const MEMBER_LIST_SUBSCRIBE_RETRIES = 2;
+const VOICE_MEMBER_HYDRATION_RETRY_MS = 30_000;
 const PRESENCE_STATUS_PERSIST_RETRIES = 3;
 const PRESENCE_STATUS_PERSIST_RETRY_DELAY_MS = 3_000;
 
@@ -185,6 +186,9 @@ const callVoiceStatesByChannelId = new Map<string, Map<string, TrackedCallVoiceS
 const callJoinSoundUserIdsByChannelId = new Map<string, Set<string>>();
 const speakingCallUserIds = new Set<string>();
 const speakingCallTimersByUserId = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingVoiceMemberHydrationKeys = new Set<string>();
+const pendingVoiceMemberHydrationTargets = new Map<string, Set<string>>();
+const pendingVoiceMemberHydrationTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const outboundCallRingtonesByChannelId = new Map<string, SoundEffectPlaybackHandle>();
 const INCOMING_CALL_RINGTONE_DEDUPE_MS = 15_000;
 const OUTBOUND_CALL_RINGTONE_MAX_MS = 15_000;
@@ -234,6 +238,7 @@ export function disconnectAppGateway(): void {
   departedCallParticipantsByChannelId.clear();
   callJoinSoundUserIdsByChannelId.clear();
   clearAllSpeakingCallUsers();
+  clearVoiceMemberHydrationState();
   callWidget.stop();
   appGateway?.disconnect();
   appGateway = null;
@@ -338,6 +343,17 @@ function avatarHashForUser(state: AppState, channelId: string, userId: string): 
     const cached = members.find((member) => member.id === userId)?.avatar;
     if (cached) return cached;
   }
+  const fromTimeline = state.timeline.channelId === channelId
+    ? state.timeline.messages.find((message) => message.author.id === userId)?.author.avatar
+    : null;
+  if (fromTimeline) return fromTimeline;
+  const fromCachedChannelMessages = state.messageCacheByChannelId[channelId]?.messages
+    .find((message) => message.author.id === userId)?.author.avatar;
+  if (fromCachedChannelMessages) return fromCachedChannelMessages;
+  for (const entry of Object.values(state.messageCacheByChannelId)) {
+    const fromCachedMessage = entry.messages.find((message) => message.author.id === userId)?.author.avatar;
+    if (fromCachedMessage) return fromCachedMessage;
+  }
   return null;
 }
 
@@ -412,6 +428,12 @@ function maybeResortDirectMessages(state: AppState, channelId: string, messageId
 function guildIdForChannel(state: AppState, message: DiscordMessage): string | null {
   return message.guildId
     ?? state.channelList.channels.find((channel) => channel.id === message.channelId)?.guildId
+    ?? null;
+}
+
+function guildIdForChannelId(state: AppState, channelId: string): string | null {
+  return state.channelList.channels.find((channel) => channel.id === channelId)?.guildId
+    ?? Object.entries(state.sidebar.cachedChannelsByGuildId).find(([, channels]) => channels.some((channel) => channel.id === channelId))?.[0]
     ?? null;
 }
 
@@ -637,6 +659,13 @@ function clearAllSpeakingCallUsers(): void {
   speakingCallUserIds.clear();
 }
 
+function clearVoiceMemberHydrationState(): void {
+  for (const timer of pendingVoiceMemberHydrationTimers.values()) clearTimeout(timer);
+  pendingVoiceMemberHydrationTimers.clear();
+  pendingVoiceMemberHydrationKeys.clear();
+  pendingVoiceMemberHydrationTargets.clear();
+}
+
 function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: VoiceCallSession, userId: string, speaking: boolean): boolean {
   const wasSpeaking = speakingCallUserIds.has(userId);
   if (speaking) {
@@ -713,6 +742,120 @@ function warmCachedMemberLists(state: AppState, accountId: string): void {
   }
 }
 
+function voiceMemberHydrationKey(guildId: string, userId: string): string {
+  return `${guildId}:${userId}`;
+}
+
+function rememberVoiceMemberHydrationTarget(guildId: string, userId: string, channelId: string): void {
+  const key = voiceMemberHydrationKey(guildId, userId);
+  const targets = pendingVoiceMemberHydrationTargets.get(key) ?? new Set<string>();
+  targets.add(channelId);
+  pendingVoiceMemberHydrationTargets.set(key, targets);
+}
+
+function clearPendingVoiceMemberHydration(guildId: string, userId: string): void {
+  const key = voiceMemberHydrationKey(guildId, userId);
+  pendingVoiceMemberHydrationKeys.delete(key);
+  pendingVoiceMemberHydrationTargets.delete(key);
+  const timer = pendingVoiceMemberHydrationTimers.get(key);
+  if (timer) clearTimeout(timer);
+  pendingVoiceMemberHydrationTimers.delete(key);
+}
+
+function markVoiceMemberHydrationPending(guildId: string, userId: string): void {
+  const key = voiceMemberHydrationKey(guildId, userId);
+  pendingVoiceMemberHydrationKeys.add(key);
+  if (pendingVoiceMemberHydrationTimers.has(key)) return;
+  const timer = setTimeout(() => {
+    pendingVoiceMemberHydrationKeys.delete(key);
+    pendingVoiceMemberHydrationTimers.delete(key);
+  }, VOICE_MEMBER_HYDRATION_RETRY_MS);
+  timer.unref?.();
+  pendingVoiceMemberHydrationTimers.set(key, timer);
+}
+
+function needsVoiceMemberHydration(state: AppState, channelId: string, userId: string): boolean {
+  const voiceState = callVoiceStatesByChannelId.get(channelId)?.get(userId);
+  const hasName = Boolean(voiceState?.displayName && !isRawUserIdDisplayName(voiceState.displayName, userId))
+    || displayNameForUser(state, channelId, userId, userId) !== "Someone";
+  const hasAvatar = Boolean(avatarHashForUser(state, channelId, userId));
+  const hasHydratedMember = state.memberList.members.some((member) => member.id === userId)
+    || Array.from(state.memberList.cache.values()).some((members) => members.some((member) => member.id === userId));
+  return !hasName || (!hasAvatar && !hasHydratedMember);
+}
+
+function maybeRequestVoiceMemberHydration(state: AppState, guildId: string | null | undefined, channelId: string, userIds: readonly string[]): void {
+  const token = state.auth.savedToken;
+  if (!token || !guildId || guildId === DIRECT_MESSAGES_GUILD_ID || userIds.length === 0) return;
+  const uniqueUnknownUserIds = Array.from(new Set(userIds.filter((userId) => userId && userId !== state.auth.user?.id)))
+    .filter((userId) => needsVoiceMemberHydration(state, channelId, userId));
+  if (uniqueUnknownUserIds.length === 0) return;
+
+  const toRequest: string[] = [];
+  for (const userId of uniqueUnknownUserIds) {
+    rememberVoiceMemberHydrationTarget(guildId, userId, channelId);
+    const key = voiceMemberHydrationKey(guildId, userId);
+    if (!pendingVoiceMemberHydrationKeys.has(key)) toRequest.push(userId);
+  }
+  if (toRequest.length === 0) return;
+
+  const requested = appGateway?.requestGuildMembers(guildId, toRequest) ?? false;
+  debugLog("voice.member_hydration.request", { guildId, channelId, requested, count: toRequest.length });
+  if (!requested) return;
+  for (const userId of toRequest) markVoiceMemberHydrationPending(guildId, userId);
+}
+
+function mergeMemberIntoChannelMemberCache(state: AppState, guildId: string, channelId: string, member: DiscordGuildMember): boolean {
+  const existing = getCachedMemberList(state.memberList, guildId, channelId) ?? [];
+  const existingIndex = existing.findIndex((entry) => entry.id === member.id);
+  const next = existingIndex >= 0 ? existing.map((entry, index) => index === existingIndex ? { ...entry, ...member } : entry) : [...existing, member];
+  const changed = existingIndex < 0 || JSON.stringify(existing[existingIndex]) !== JSON.stringify(next[existingIndex]);
+  if (!changed) return false;
+
+  cacheMemberList(state.memberList, guildId, channelId, next);
+  if (state.memberList.guildId === guildId && state.memberList.channelId === channelId) {
+    state.memberList.members = next;
+  }
+  const accountId = currentAccountId(state);
+  if (accountId) saveCachedMemberList(accountId, guildId, channelId, next);
+  return true;
+}
+
+function channelIdsForHydratedVoiceMember(state: AppState, guildId: string, userId: string): string[] {
+  const key = voiceMemberHydrationKey(guildId, userId);
+  const targets = new Set(pendingVoiceMemberHydrationTargets.get(key) ?? []);
+  for (const [channelId, voiceStates] of callVoiceStatesByChannelId.entries()) {
+    if (!voiceStates.has(userId)) continue;
+    if (guildIdForChannelId(state, channelId) === guildId) targets.add(channelId);
+  }
+  return Array.from(targets);
+}
+
+export function handleGuildMembersChunk(state: AppState, effects: SessionEffects, guildId: string, members: readonly DiscordGuildMember[]): void {
+  let changed = false;
+  for (const member of members) {
+    const channelIds = channelIdsForHydratedVoiceMember(state, guildId, member.id);
+    clearPendingVoiceMemberHydration(guildId, member.id);
+    changed = recordMemberRoleIds(state, guildId, member.id, member.roleIds) || changed;
+
+    for (const channelId of channelIds) {
+      const voiceState = callVoiceStatesByChannelId.get(channelId)?.get(member.id);
+      if (voiceState && (!voiceState.displayName || isRawUserIdDisplayName(voiceState.displayName, member.id))) {
+        voiceState.displayName = member.displayName;
+        changed = true;
+      }
+      changed = mergeMemberIntoChannelMemberCache(state, guildId, channelId, member) || changed;
+    }
+  }
+
+  if (!changed) return;
+  syncAllSidebarVoiceMembers(state);
+  const activeSession = voiceCallController?.activeSession;
+  if (activeSession && activeSession.target.guildId === guildId) syncVoiceCallStatus(state, activeSession);
+  debugLog("voice.member_hydration.applied", { guildId, count: members.length });
+  effects.scheduleRender();
+}
+
 function removeCallVoiceStateUser(state: AppState, userId: string, channelIds?: Iterable<string>): boolean {
   const affectedChannelIds = new Set<string>();
   const targets = channelIds ? Array.from(channelIds) : Array.from(callVoiceStatesByChannelId.keys());
@@ -753,6 +896,7 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
   if (update.selfMute || update.mute) clearSpeakingCallUser(update.userId);
   affectedChannelIds.add(channelId);
   syncSidebarVoiceMembersForChannels(state, affectedChannelIds);
+  maybeRequestVoiceMemberHydration(state, update.guildId ?? guildIdForChannelId(state, channelId), channelId, [update.userId]);
   return affectedChannelIds.size > 0 || rolesChanged;
 }
 
@@ -769,6 +913,7 @@ function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: str
   }
   callVoiceStatesByChannelId.set(event.channelId, states);
   syncSidebarVoiceMembersForChannel(state, event.channelId);
+  maybeRequestVoiceMemberHydration(state, guildIdForChannelId(state, event.channelId), event.channelId, event.voiceStates.map((voiceState) => voiceState.userId));
 }
 
 function syncCallParticipantSounds(state: AppState, channelId: string, voiceStateUserIds: readonly string[]): boolean {
@@ -936,6 +1081,15 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
   });
   if (changed) syncVoiceCallStatus(state, activeSession);
   return changed;
+}
+
+export function handleVoiceStateUpdate(state: AppState, effects: SessionEffects, update: VoiceStateUpdate): void {
+  const voiceMembersChanged = updateCallVoiceState(state, update);
+  voiceCallController?.handleVoiceStateUpdate(update);
+  const activeSession = voiceCallController?.activeSession;
+  const changed = handleCallVoiceStateUpdate(state, update);
+  if (!changed && activeSession?.target.channelId === update.channelId) syncVoiceCallStatus(state, activeSession);
+  if (changed || voiceMembersChanged) effects.scheduleRender();
 }
 
 function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
@@ -1547,7 +1701,7 @@ function buildCallWidgetParticipants(state: AppState, session: VoiceCallSession)
     const voiceState = voiceStates?.get(userId);
     participants.push({
       id: userId,
-      name: displayNameForUser(state, channelId, userId, userId),
+      name: voiceState?.displayName ?? displayNameForUser(state, channelId, userId, userId),
       avatarUrl: discordAvatarUrl(userId, avatarHashForUser(state, channelId, userId), null),
       textColor: callWidgetTextColorForUser(state, session.target.guildId, channelId, userId),
       speaking: speakingCallUserIds.has(userId),
@@ -1706,17 +1860,11 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       }
       effects.scheduleRender();
     },
-    onVoiceStateUpdate: (update) => {
-      const voiceMembersChanged = updateCallVoiceState(state, update);
-      voiceCallController?.handleVoiceStateUpdate(update);
-      const activeSession = voiceCallController?.activeSession;
-      const changed = handleCallVoiceStateUpdate(state, update);
-      if (!changed && activeSession?.target.channelId === update.channelId) syncVoiceCallStatus(state, activeSession);
-      if (changed || voiceMembersChanged) effects.scheduleRender();
-    },
+    onVoiceStateUpdate: (update) => handleVoiceStateUpdate(state, effects, update),
     onVoiceServerUpdate: (update) => {
       voiceCallController?.handleVoiceServerUpdate(update);
     },
+    onGuildMembersChunk: (guildId, members) => handleGuildMembersChunk(state, effects, guildId, members),
     onCallCreate: (event) => {
       handleCallGatewayEvent(state, event.channelId, event.ringingUserIds);
       rememberCallGatewayVoiceStates(state, event);

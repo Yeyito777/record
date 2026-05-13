@@ -17,6 +17,7 @@ import {
   type DiscordMessage,
   type DiscordMessagePatch,
   type DiscordMessageResponse,
+  type DiscordGuildMember,
   type DiscordPresenceStatus,
 } from "./discord";
 import { debugLog } from "./debuglog";
@@ -75,6 +76,7 @@ export interface AppGatewayCallbacks {
   onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
   onCurrentUserGuildRoles?: (guildId: string, roleIds: string[]) => void;
+  onGuildMembersChunk?: (guildId: string, members: DiscordGuildMember[]) => void;
   onReadyGuilds?: (guilds: DiscordGuild[]) => void;
   onGuildCreate?: (guild: DiscordGuild) => void;
   onGuildUpdate?: (guild: DiscordGuild) => void;
@@ -157,6 +159,24 @@ export class AppGatewayClient implements VoiceSignalingClient {
   requestVoiceState(request: VoiceStateRequest): boolean {
     if (!this.isReady()) return false;
     this.send(buildVoiceStatePayload(request));
+    return true;
+  }
+
+  requestGuildMembers(guildId: string, userIds: readonly string[]): boolean {
+    const ids = Array.from(new Set(userIds.filter((userId) => typeof userId === "string" && userId.trim())));
+    if (!this.isReady() || !guildId || ids.length === 0) return false;
+    this.send({
+      op: 8,
+      d: {
+        guild_id: [guildId],
+        query: null,
+        limit: ids.length,
+        presences: false,
+        user_ids: ids,
+        nonce: `record-members-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      },
+    });
+    debugLog("app_gateway.request_members", { guildId, count: ids.length });
     return true;
   }
 
@@ -403,6 +423,11 @@ export class AppGatewayClient implements VoiceSignalingClient {
           this.callbacks.onCurrentUserGuildRoles?.(data.guild_id, data.roles.filter((roleId): roleId is string => typeof roleId === "string"));
           break;
         }
+        case "GUILD_MEMBERS_CHUNK": {
+          const chunk = mapGuildMembersChunk(data);
+          if (chunk) this.callbacks.onGuildMembersChunk?.(chunk.guildId, chunk.members);
+          break;
+        }
         case "USER_GUILD_SETTINGS_UPDATE": {
           if (!isObject(data) || typeof data.guild_id !== "string" || typeof data.muted !== "boolean") break;
           this.callbacks.onGuildMuteSetting?.(data.guild_id, data.muted);
@@ -583,7 +608,8 @@ function voiceStateDisplayName(data: Record<string, any>): string | null {
     ?? displayNameField(memberUser?.username)
     ?? displayNameField(user?.global_name)
     ?? displayNameField(user?.display_name)
-    ?? displayNameField(user?.username);
+    ?? displayNameField(user?.username)
+    ?? displayNameField(member?.nick);
 }
 
 function voiceStateRoleIds(data: Record<string, any>): string[] | null {
@@ -647,6 +673,41 @@ function mapCallGatewayVoiceState(data: unknown): CallGatewayVoiceState | null {
     selfDeaf: Boolean(data.self_deaf),
     mute: Boolean(data.mute),
     deaf: Boolean(data.deaf),
+  };
+}
+
+export function mapGuildMembersChunk(data: unknown): { guildId: string; members: DiscordGuildMember[] } | null {
+  if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.members)) return null;
+  return {
+    guildId: data.guild_id,
+    members: data.members.map(mapGatewayMember).filter((member): member is DiscordGuildMember => member !== null),
+  };
+}
+
+function mapGatewayMember(data: unknown): DiscordGuildMember | null {
+  if (!isObject(data)) return null;
+  const user = isObject(data.user) ? data.user : null;
+  const userId = typeof user?.id === "string" ? user.id : typeof data.user_id === "string" ? data.user_id : null;
+  if (!userId) return null;
+
+  const username = displayNameField(user?.username)
+    ?? displayNameField(user?.global_name)
+    ?? displayNameField(user?.display_name)
+    ?? displayNameField(data.nick)
+    ?? userId;
+  const displayName = displayNameField(user?.global_name)
+    ?? displayNameField(user?.display_name)
+    ?? displayNameField(user?.username)
+    ?? displayNameField(data.nick)
+    ?? username;
+
+  return {
+    id: userId,
+    username,
+    displayName,
+    bot: Boolean(user?.bot),
+    ...(typeof user?.avatar === "string" ? { avatar: user.avatar } : {}),
+    roleIds: Array.isArray(data.roles) ? data.roles.filter((roleId): roleId is string => typeof roleId === "string") : undefined,
   };
 }
 

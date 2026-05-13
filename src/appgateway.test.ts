@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { AppGatewayClient, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
+import { AppGatewayClient, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapGuildMembersChunk, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -13,6 +13,27 @@ describe("app gateway helpers", () => {
     expect(client.updatePresenceStatus("dnd")).toBe(true);
 
     expect(sent).toEqual([{ op: 3, d: { status: "dnd", afk: false, since: 0, activities: [] } }]);
+  });
+
+  test("requests specific guild members over the gateway", () => {
+    const sent: unknown[] = [];
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    client.ready = true;
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+
+    expect(client.requestGuildMembers("guild-1", ["user-1", "user-1", "user-2"])).toBe(true);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      op: 8,
+      d: {
+        guild_id: ["guild-1"],
+        query: null,
+        limit: 2,
+        presences: false,
+        user_ids: ["user-1", "user-2"],
+      },
+    });
   });
 
   test("dispatches voice states from READY_SUPPLEMENTAL", () => {
@@ -127,6 +148,35 @@ describe("app gateway helpers", () => {
       token: "voice-token",
       endpoint: "voice.example",
       guildId: null,
+    });
+  });
+
+  test("uses voice-state member nicknames when no user object is present", () => {
+    expect(mapVoiceStateUpdate({
+      user_id: "user-1",
+      channel_id: "voice-1",
+      member: { nick: "Server Nick", roles: ["role-1"] },
+    })).toMatchObject({
+      userId: "user-1",
+      channelId: "voice-1",
+      displayName: "Server Nick",
+      roleIds: ["role-1"],
+    });
+  });
+
+  test("maps requested guild member chunks", () => {
+    expect(mapGuildMembersChunk({
+      guild_id: "guild-1",
+      members: [
+        { user: { id: "user-1", username: "alice", global_name: "Alice", avatar: "avatar-1" }, roles: ["role-1"] },
+        { user_id: "user-2", nick: "Nickname Only", roles: [] },
+      ],
+    })).toEqual({
+      guildId: "guild-1",
+      members: [
+        { id: "user-1", username: "alice", displayName: "Alice", bot: false, avatar: "avatar-1", roleIds: ["role-1"] },
+        { id: "user-2", username: "Nickname Only", displayName: "Nickname Only", bot: false, roleIds: [] },
+      ],
     });
   });
 

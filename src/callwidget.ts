@@ -55,9 +55,38 @@ export function discordAvatarUrl(userId: string, avatarHash: string | null | und
   return `https://cdn.discordapp.com/embed/avatars/${defaultDiscordAvatarIndex(userId, discriminator)}.png`;
 }
 
+export function isDefaultDiscordAvatarUrl(url: string | null | undefined): boolean {
+  return typeof url === "string" && /^https:\/\/cdn\.discordapp\.com\/embed\/avatars\/[0-5]\.png$/.test(url);
+}
+
+export function callWidgetAvatarKind(url: string | null | undefined): "custom" | "default" | "empty" {
+  if (!url) return "empty";
+  return isDefaultDiscordAvatarUrl(url) ? "default" : "custom";
+}
+
+export function stabilizeCallWidgetParticipantAvatars(
+  participants: readonly CallWidgetParticipant[],
+  knownCustomAvatarUrlsByUserId: Map<string, string>,
+): CallWidgetParticipant[] {
+  let changed = false;
+  const stable = participants.map((participant) => {
+    const kind = callWidgetAvatarKind(participant.avatarUrl);
+    if (kind === "custom") {
+      knownCustomAvatarUrlsByUserId.set(participant.id, participant.avatarUrl);
+      return participant;
+    }
+    const remembered = knownCustomAvatarUrlsByUserId.get(participant.id);
+    if (!remembered) return participant;
+    changed = true;
+    return { ...participant, avatarUrl: remembered };
+  });
+  return changed ? stable : [...participants];
+}
+
 export class CallWidgetController {
   private proc: WidgetProcess | null = null;
   private closed = false;
+  private readonly knownCustomAvatarUrlsByUserId = new Map<string, string>();
 
   constructor(private readonly options: CallWidgetControllerOptions = {}) {}
 
@@ -69,7 +98,12 @@ export class CallWidgetController {
     }
     const proc = this.ensureProcess();
     if (!proc) return;
-    this.write({ type: "update", participants });
+    const stableParticipants = stabilizeCallWidgetParticipantAvatars(participants, this.knownCustomAvatarUrlsByUserId);
+    const stabilized = stableParticipants
+      .filter((participant, index) => participant.avatarUrl !== participants[index]?.avatarUrl)
+      .map((participant) => ({ id: participant.id, name: participant.name }));
+    if (stabilized.length > 0) debugLog("call.widget.avatar_stabilized", { participants: stabilized });
+    this.write({ type: "update", participants: stableParticipants });
   }
 
   stop(): void {
@@ -137,6 +171,15 @@ export class CallWidgetController {
           ? participants
               .filter((participant): participant is { id?: unknown; name?: unknown; speaking?: unknown } => Boolean(participant) && typeof participant === "object" && Boolean((participant as { speaking?: unknown }).speaking))
               .map((participant) => ({ id: String(participant.id ?? ""), name: String(participant.name ?? "") }))
+          : [],
+        avatars: participants
+          ? participants
+              .filter((participant): participant is { id?: unknown; name?: unknown; avatarUrl?: unknown } => Boolean(participant) && typeof participant === "object")
+              .map((participant) => ({
+                id: String(participant.id ?? ""),
+                name: String(participant.name ?? ""),
+                kind: callWidgetAvatarKind(typeof participant.avatarUrl === "string" ? participant.avatarUrl : null),
+              }))
           : [],
       });
     } catch (error) {

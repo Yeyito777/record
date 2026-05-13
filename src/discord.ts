@@ -319,6 +319,7 @@ export interface DiscordMessage {
     username: string;
     displayName: string;
     bot: boolean;
+    avatar?: string;
     roleIds?: string[];
   };
   reply: DiscordMessageReply | null;
@@ -898,6 +899,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
       username: message.author.username,
       displayName: userDisplayName(message.author),
       bot: Boolean(message.author.bot),
+      ...(message.author.avatar ? { avatar: message.author.avatar } : {}),
       roleIds: message.member?.roles?.filter((roleId): roleId is string => typeof roleId === "string"),
     } : undefined,
     reply: hasReplyFields
