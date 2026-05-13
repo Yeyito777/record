@@ -47,9 +47,9 @@ typedef struct {
 /* Whale theme colors from vimbrowser/docs/design.md. */
 static const ThemeColor COLOR_ACCENT = RGB_COLOR(0x1d, 0x9b, 0xf0);
 static const ThemeColor COLOR_USER_BG = RGB_COLOR(0x09, 0x0d, 0x35);
-static const ThemeColor COLOR_SIDEBAR_SEL = RGB_COLOR(0x0f, 0x19, 0x3c);
 static const ThemeColor COLOR_BORDER_FOCUSED = RGB_COLOR(0x1c, 0x94, 0xe5);
 static const ThemeColor COLOR_BORDER_UNFOCUSED = RGB_COLOR(0x55, 0x55, 0x55);
+static const double USER_BG_IDLE_ALPHA = 0.5;
 
 typedef struct {
   char *id;
@@ -221,9 +221,19 @@ static void set_source_theme(cairo_t *cr, ThemeColor color) {
   cairo_set_source_rgb(cr, color.r, color.g, color.b);
 }
 
+static void set_source_theme_alpha(cairo_t *cr, ThemeColor color, double alpha) {
+  cairo_set_source_rgba(cr, color.r, color.g, color.b, alpha);
+}
+
 static void fill_rect(cairo_t *cr, double x, double y, double w, double h, ThemeColor color) {
   cairo_rectangle(cr, x, y, w, h);
   set_source_theme(cr, color);
+  cairo_fill(cr);
+}
+
+static void fill_rect_alpha(cairo_t *cr, double x, double y, double w, double h, ThemeColor color, double alpha) {
+  cairo_rectangle(cr, x, y, w, h);
+  set_source_theme_alpha(cr, color, alpha);
   cairo_fill(cr);
 }
 
@@ -579,7 +589,8 @@ static void render(void) {
     double y = content_y + i * (row_h + ROW_GAP);
     double row_x = content_x;
 
-    fill_rect(cr, row_x, y, row_w, row_h, p->speaking ? COLOR_SIDEBAR_SEL : COLOR_USER_BG);
+    if (p->speaking) fill_rect(cr, row_x, y, row_w, row_h, COLOR_USER_BG);
+    else fill_rect_alpha(cr, row_x, y, row_w, row_h, COLOR_USER_BG, USER_BG_IDLE_ALPHA);
     stroke_rect(cr, row_x, y, row_w, row_h, p->speaking ? COLOR_BORDER_FOCUSED : COLOR_BORDER_UNFOCUSED, 1.0);
 
     double avatar_x = row_x + ROW_PADDING_X;
