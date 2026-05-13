@@ -25,11 +25,14 @@ interface MacroDef {
 
 const KAOMOJI = {
   generic: "(・∀・)",
-  happy: "ヽ(・∀・)ﾉ",
+  happy: "ヽ(o＾▽＾o)ノ",
   sad: "(╥﹏╥)",
-  angry: "(╬ಠ益ಠ)",
+  angry: "(╬ Ò﹏Ó)",
   flustered: "(⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)",
   embarassed: "(⁄ ⁄•⁄ω⁄•⁄ ⁄)",
+  what: "(・・ ) ?",
+  wave: "(｡･ω･)ﾉﾞ",
+  sleepy: "(－ω－)",
 } as const;
 
 const MACROS: MacroDef[] = [
@@ -43,6 +46,9 @@ const MACROS: MacroDef[] = [
       { name: "angry", desc: KAOMOJI.angry, expansion: KAOMOJI.angry },
       { name: "flustered", desc: KAOMOJI.flustered, expansion: KAOMOJI.flustered },
       { name: "embarassed", desc: KAOMOJI.embarassed, expansion: KAOMOJI.embarassed },
+      { name: "what", desc: KAOMOJI.what, expansion: KAOMOJI.what },
+      { name: "wave", desc: KAOMOJI.wave, expansion: KAOMOJI.wave },
+      { name: "sleepy", desc: KAOMOJI.sleepy, expansion: KAOMOJI.sleepy },
     ],
   },
 ];

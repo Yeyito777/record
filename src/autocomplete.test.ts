@@ -225,7 +225,7 @@ describe("autocomplete", () => {
     updateAutocomplete(state);
 
     expect(state.autocomplete?.type).toBe("macro");
-    expect(state.autocomplete?.matches).toEqual([{ name: "happy", desc: "ヽ(・∀・)ﾉ" }]);
+    expect(state.autocomplete?.matches).toEqual([{ name: "happy", desc: "ヽ(o＾▽＾o)ノ" }]);
     cycleAutocomplete(state, 1);
     expect(state.editor.buffer).toBe("hello /kao happy");
   });

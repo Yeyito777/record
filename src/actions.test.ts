@@ -69,7 +69,7 @@ describe("submitCurrentBuffer", () => {
         channel_id: "channel-1",
         guild_id: "guild-1",
         type: 0,
-        content: "ヽ(・∀・)ﾉ friend",
+        content: "ヽ(o＾▽＾o)ノ friend",
         mentions: [],
         timestamp: "2026-01-01T12:00:00.000Z",
         edited_timestamp: null,
@@ -89,8 +89,8 @@ describe("submitCurrentBuffer", () => {
 
     submitCurrentBuffer(state, effects);
 
-    expect(JSON.parse(requestedBody).content).toBe("ヽ(・∀・)ﾉ friend");
-    expect(state.timeline.messages[0]?.content).toBe("ヽ(・∀・)ﾉ friend");
+    expect(JSON.parse(requestedBody).content).toBe("ヽ(o＾▽＾o)ノ friend");
+    expect(state.timeline.messages[0]?.content).toBe("ヽ(o＾▽＾o)ノ friend");
   });
 
   test("converts loaded @mentions before sending", () => {
