@@ -84,6 +84,28 @@ describe("render", () => {
     expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll);
   });
 
+  test("prompt-focused one-line history scroll is not auto-pinned back to bottom", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 80;
+    state.rows = 10;
+    setTimelineMessages(state.timeline, "channel-1", [
+      message("1", "first"),
+      message("2", "second"),
+      message("3", "third"),
+      message("4", "fourth"),
+      message("5", "fifth"),
+      message("6", "sixth"),
+    ]);
+    captureRender(state);
+    expect(state.chatFocus).toBe("prompt");
+    expect(state.timeline.maxScroll).toBeGreaterThan(1);
+
+    state.timeline.scrollOffset = state.timeline.maxScroll - 1;
+    captureRender(state);
+
+    expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll - 1);
+  });
+
   test("renders pending images between prompt separator and prompt line", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.cols = 80;
