@@ -59,6 +59,7 @@ import {
   loadCachedGuildRoles,
   loadCachedSidebarFolders,
   loadCachedMemberList,
+  loadCachedMemberLists,
   loadCachedMemberRoles,
   loadCachedNotifications,
   saveCachedChannelMessages,
@@ -700,6 +701,16 @@ function syncSidebarVoiceMembersForChannels(state: AppState, channelIds: Iterabl
 
 function syncAllSidebarVoiceMembers(state: AppState): void {
   syncSidebarVoiceMembersForChannels(state, callVoiceStatesByChannelId.keys());
+}
+
+function warmCachedMemberLists(state: AppState, accountId: string): void {
+  for (const [key, members] of Object.entries(loadCachedMemberLists(accountId))) {
+    const separator = key.indexOf(":");
+    if (separator <= 0 || separator >= key.length - 1) continue;
+    const guildId = key.slice(0, separator);
+    const channelId = key.slice(separator + 1);
+    cacheMemberList(state.memberList, guildId, channelId, members);
+  }
 }
 
 function removeCallVoiceStateUser(state: AppState, userId: string, channelIds?: Iterable<string>): boolean {
@@ -1841,6 +1852,7 @@ function loadMemberListPlaceholder(state: AppState, guildId: string | null, chan
   if (cached) {
     cacheMemberList(state.memberList, guildId, channelId, cached);
     setMemberListMembers(state.memberList, guildId, channelId, cached, state.auth.user?.id ?? null);
+    syncAllSidebarVoiceMembers(state);
     return;
   }
 
@@ -1916,6 +1928,7 @@ export function syncMemberListForCurrentChannel(state: AppState, effects: Sessio
         debugLog("member_list.members", { guildId, channelId, requestId, attempt, count: members.length });
         const roleIdsChanged = recordMemberListRoleIds(state, guildId, members);
         cacheMemberList(state.memberList, guildId, channelId, members);
+        syncAllSidebarVoiceMembers(state);
         const accountId = currentAccountId(state);
         if (accountId) saveCachedMemberList(accountId, guildId, channelId, members);
         if (state.memberList.open) {
@@ -2008,7 +2021,9 @@ export async function bootstrapReadOnlyClient(
     state.guildRolesByGuildId = loadCachedGuildRoles(accountId);
     state.memberRoleIdsByGuildId = loadCachedMemberRoles(accountId);
     state.messageCacheByChannelId = loadCachedChannelMessages(accountId);
+    warmCachedMemberLists(state, accountId);
     state.memberRoleCacheVersion += 1;
+    syncAllSidebarVoiceMembers(state);
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
       setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
       applySidebarFolderLayout(state.sidebar, cachedSidebarFolders);

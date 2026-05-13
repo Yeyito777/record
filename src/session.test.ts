@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder } from "./datacache";
+import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
 import { createInitialState, focusSidebar } from "./state";
@@ -271,6 +271,28 @@ describe("session", () => {
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
     expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", "guild-2", "guild-new"]);
     expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual([DIRECT_MESSAGES_GUILD_NAME, "One Fresh", "Two Fresh", "New"]);
+  });
+
+  test("bootstrap warms persisted member lists for voice participant name fallback", async () => {
+    saveCachedMemberList("self", "guild-1", "voice-1", [
+      { id: "user-1", username: "alice", displayName: "Alice", bot: false },
+    ]);
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/channels")) return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.endsWith("/users/@me/guilds")) return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.endsWith("/gateway")) return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+
+    await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+
+    expect(state.memberList.cache.get("guild-1:voice-1")).toEqual([
+      { id: "user-1", username: "alice", displayName: "Alice", bot: false },
+    ]);
   });
 
   test("bootstrap applies the local account-scoped guild order", async () => {

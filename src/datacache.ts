@@ -406,6 +406,13 @@ export function loadCachedMemberList(accountId: string, guildId: string, channel
   return loadCacheFile().accounts[accountId]?.memberLists?.[memberListCacheKey(guildId, channelId)] ?? null;
 }
 
+export function loadCachedMemberLists(accountId: string): Record<string, DiscordGuildMember[]> {
+  const cached = loadCacheFile().accounts[accountId]?.memberLists ?? {};
+  return Object.fromEntries(
+    Object.entries(cached).map(([key, members]) => [key, members.map((member) => ({ ...member }))]),
+  );
+}
+
 export function loadCachedChannelMessages(accountId: string): ChannelMessageCache {
   const cached = loadCacheFile().accounts[accountId]?.channelMessages ?? {};
   return Object.fromEntries(Object.entries(cached).map(([channelId, entry]) => {
