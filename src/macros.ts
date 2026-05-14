@@ -27,6 +27,7 @@ const KAOMOJI = {
   generic: "(・∀・)",
   happy: "ヽ(o＾▽＾o)ノ",
   sad: "(╥﹏╥)",
+  worried: "(´-﹏-；)",
   angry: "(╬ Ò﹏Ó)",
   flustered: "(⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)",
   embarassed: "(⁄ ⁄•⁄ω⁄•⁄ ⁄)",
@@ -43,6 +44,7 @@ const MACROS: MacroDef[] = [
     args: [
       { name: "happy", desc: KAOMOJI.happy, expansion: KAOMOJI.happy },
       { name: "sad", desc: KAOMOJI.sad, expansion: KAOMOJI.sad },
+      { name: "worried", desc: KAOMOJI.worried, expansion: KAOMOJI.worried },
       { name: "angry", desc: KAOMOJI.angry, expansion: KAOMOJI.angry },
       { name: "flustered", desc: KAOMOJI.flustered, expansion: KAOMOJI.flustered },
       { name: "embarassed", desc: KAOMOJI.embarassed, expansion: KAOMOJI.embarassed },
