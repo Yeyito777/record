@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import { render } from "./render";
-import { createInitialState } from "./state";
+import { createInitialState, focusHistory } from "./state";
 import { setTimelineMessages } from "./timeline";
 import { theme } from "./theme";
 import type { DiscordMessage } from "./discord";
+import { recordTypingStart } from "./typing";
 
 function message(id: string, content: string): DiscordMessage {
   const numericId = Number(id);
@@ -82,6 +83,42 @@ describe("render", () => {
 
     expect(state.timeline.maxScroll).toBe(baselineMaxScroll + 1);
     expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll);
+  });
+
+  test("typing indicator bumps an unpinned history viewport instead of covering its bottom row", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 80;
+    state.rows = 12;
+    state.auth.user = {
+      id: "viewer",
+      username: "viewer",
+      globalName: null,
+      discriminator: "0",
+      avatar: null,
+      bot: false,
+      email: null,
+      verified: null,
+    };
+    setTimelineMessages(state.timeline, "channel-1", [
+      message("1", "first"),
+      message("2", "second"),
+      message("3", "third"),
+      message("4", "fourth"),
+      message("5", "fifth"),
+      message("6", "sixth"),
+      message("7", "seventh"),
+      message("8", "eighth"),
+    ]);
+    captureRender(state);
+    focusHistory(state);
+    state.timeline.scrollOffset = 5;
+    captureRender(state);
+    const offsetBeforeTyping = state.timeline.scrollOffset;
+
+    recordTypingStart(state.typing, "channel-1", { id: "other-user", displayName: "Alice" }, Date.now());
+    captureRender(state);
+
+    expect(state.timeline.scrollOffset).toBe(offsetBeforeTyping + 1);
   });
 
   test("prompt-focused one-line history scroll is not auto-pinned back to bottom", () => {

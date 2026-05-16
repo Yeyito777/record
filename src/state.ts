@@ -107,6 +107,7 @@ export interface AppState {
   timeline: TimelineState;
   messageCacheByChannelId: ChannelMessageCache;
   typing: TypingState;
+  lastTypingRowCount: number;
   notifications: NotificationState;
   replyTarget: ReplyTarget | null;
   editTarget: EditTarget | null;
@@ -155,6 +156,7 @@ export function createInitialState(
     timeline: createTimelineState(),
     messageCacheByChannelId: {},
     typing: createTypingState(),
+    lastTypingRowCount: 0,
     notifications: createNotificationState(),
     replyTarget: null,
     editTarget: null,

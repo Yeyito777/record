@@ -114,7 +114,7 @@ import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { debugLog } from "./debuglog";
-import { pruneTypingState } from "./typing";
+import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
 import { downloadAttachment, openTargetDetached, type AttachmentDownloadProgress } from "./openable";
 
@@ -344,16 +344,24 @@ function timelinePageSize(): number {
   const mainW = Math.max(1, state.cols - sidebarW - memberListW);
   const statusHeight = renderStatusLine(state, mainW).height;
   const bottomStatusRows = statusHeight > 0 ? statusHeight + 1 : 0;
+  const imageIndicatorRows = state.pendingImages.length > 0 ? 1 : 0;
   const maxInputWidth = Math.max(1, mainW - PROMPT_PREFIX_WIDTH);
   const input = getInputLines(
     state.editor.buffer,
     displayCursor(state.editor),
     maxInputWidth,
-    Math.max(1, Math.min(MAX_PROMPT_ROWS, state.rows - 3 - bottomStatusRows)),
+    Math.max(1, Math.min(MAX_PROMPT_ROWS, state.rows - 3 - bottomStatusRows - imageIndicatorRows)),
     state.editor.scroll,
   );
-  const promptSeparatorRow = Math.max(3, state.rows - Math.max(1, input.lines.length) - bottomStatusRows);
-  return Math.max(1, promptSeparatorRow - 3);
+  const inputRowCount = Math.max(1, input.lines.length);
+  const promptSeparatorRow = Math.max(3, state.rows - inputRowCount - bottomStatusRows - imageIndicatorRows);
+  const activeTypingUsers = getTypingUsers(
+    state.typing,
+    state.channelList.activeChannelId ?? state.timeline.channelId,
+    state.auth.user?.id ?? null,
+  );
+  const typingRowCount = formatTypingUsers(activeTypingUsers) ? 1 : 0;
+  return Math.max(1, promptSeparatorRow - 3 - typingRowCount);
 }
 
 function maybeLoadOlderHistory(): void {

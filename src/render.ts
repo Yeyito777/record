@@ -176,6 +176,14 @@ function renderLineWithDeleteForeground(line: string): string {
   return plain.length > 0 ? `${theme.messageDeleteFg}${plain}${theme.reset}` : line;
 }
 
+function sameLineAnchors(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
 function renderHistoryViewportLine(
   state: AppState,
   rawLine: string,
@@ -337,6 +345,7 @@ export function render(state: AppState): void {
   );
   const typingLine = formatTypingUsers(activeTypingUsers);
   const typingRowCount = typingLine ? 1 : 0;
+  const previousTypingRowCount = state.lastTypingRowCount;
   const bodyRows = Math.max(0, promptSeparatorRow - bodyTop - typingRowCount);
   const typingRow = promptSeparatorRow - typingRowCount;
   const bodyInnerWidth = Math.max(0, mainW - 2);
@@ -376,6 +385,16 @@ export function render(state: AppState): void {
       row: remapRenderedRow(oldVisualAnchorRow, oldAnchors, anchorIndex),
     };
   }
+
+  const typingRowsDelta = typingRowCount - previousTypingRowCount;
+  if (historyFocused
+    && typingRowsDelta !== 0
+    && !wasPinnedToBottom
+    && oldAnchors.length > 0
+    && sameLineAnchors(oldAnchors, timeline.lineAnchors)) {
+    state.timeline.scrollOffset = Math.max(0, Math.min(state.timeline.scrollOffset + typingRowsDelta, timeline.maxScroll));
+  }
+  state.lastTypingRowCount = typingRowCount;
 
   state.historyLineAnchors = timeline.lineAnchors;
   state.historyLines = timeline.allLines;
