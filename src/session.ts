@@ -1424,7 +1424,10 @@ function persistSidebarGuilds(state: AppState, options: { order?: boolean } = {}
   const guilds = sidebarCachedGuilds(state.sidebar);
   saveCachedGuilds(accountId, guilds);
   if (options.order ?? true) saveCachedGuildOrder(accountId, guilds.map((guild) => guild.id));
-  saveCachedSidebarFolders(accountId, sidebarFolderLayout(state.sidebar));
+  const layout = sidebarFolderLayout(state.sidebar);
+  const cachedLayout = layout.folders.length === 0 ? loadCachedSidebarFolders(accountId) : null;
+  if (cachedLayout && cachedLayout.folders.length > 0) return;
+  saveCachedSidebarFolders(accountId, layout);
 }
 
 export function persistSidebarFolders(state: AppState): void {
@@ -2143,6 +2146,8 @@ export async function bootstrapReadOnlyClient(
 ): Promise<void> {
   const requestId = ++state.sidebar.requestId;
   const accountId = currentAccountId(state);
+  let cachedSidebarFolders: ReturnType<typeof loadCachedSidebarFolders> = null;
+  let appliedCachedSidebarFolders = false;
   const previousExpandedGuildId = state.sidebar.expandedGuildId;
   const previousActiveGuildId = state.sidebar.activeGuildId;
   const previousChannelListGuildId = state.channelList.guildId;
@@ -2161,7 +2166,7 @@ export async function bootstrapReadOnlyClient(
     ensureGuildOrderSync(state, effects);
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
     const cachedGuildOrder = loadCachedGuildOrder(accountId);
-    const cachedSidebarFolders = loadCachedSidebarFolders(accountId);
+    cachedSidebarFolders = loadCachedSidebarFolders(accountId);
     const cachedGuilds = sortGuildsByOrder(loadCachedGuilds(accountId) ?? [], cachedGuildOrder);
     setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, cachedDirectMessages);
     for (const guild of cachedGuilds) {
@@ -2177,6 +2182,7 @@ export async function bootstrapReadOnlyClient(
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
       setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
       applySidebarFolderLayout(state.sidebar, cachedSidebarFolders);
+      appliedCachedSidebarFolders = true;
       applyCachedNotifications(state);
       state.sidebar.expandedGuildId = previousExpandedGuildId;
       state.sidebar.activeGuildId = previousActiveGuildId;
@@ -2206,6 +2212,10 @@ export async function bootstrapReadOnlyClient(
 
     state.sidebar.loading = false;
     mergeRestGuilds(state, directMessages, guilds, guildOrder);
+    if (cachedSidebarFolders && !appliedCachedSidebarFolders) {
+      applySidebarFolderLayout(state.sidebar, cachedSidebarFolders);
+      appliedCachedSidebarFolders = true;
+    }
     setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, directMessages);
     state.sidebar.expandedGuildId = liveExpandedGuildId;
     state.sidebar.activeGuildId = liveActiveGuildId;

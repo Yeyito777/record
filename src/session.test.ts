@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { loadCachedGuildOrder, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList } from "./datacache";
+import { loadCachedGuildOrder, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
 import { createInitialState, focusSidebar } from "./state";
@@ -324,6 +324,42 @@ describe("session", () => {
 
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
     expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-2", "guild-1", "guild-3"]);
+  });
+
+  test("bootstrap preserves local folders when the guild cache is cold", async () => {
+    saveCachedSidebarFolders("self", {
+      folders: [{ id: "folder-1", name: "Friends", parentId: null, pinned: false, sortOrder: 1 }],
+      guildPlacements: {
+        "guild-1": { folderId: "folder-1", pinned: false, sortOrder: 0 },
+        "guild-2": { folderId: null, pinned: false, sortOrder: 2 },
+      },
+    });
+
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/channels")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/users/@me/guilds")) {
+        return new Response(JSON.stringify([
+          { id: "guild-1", name: "One", icon: null },
+          { id: "guild-2", name: "Two", icon: null },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/gateway")) {
+        return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+
+    await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+
+    expect(state.sidebar.folders.map((folder) => folder.name)).toEqual(["Friends"]);
+    expect(state.sidebar.guildPlacements["guild-1"]?.folderId).toBe("folder-1");
+    expect(loadCachedSidebarFolders("self")?.folders.map((folder) => folder.name)).toEqual(["Friends"]);
   });
 
   test("cached channels fetch missing current-user roles before immediate visibility filtering", async () => {

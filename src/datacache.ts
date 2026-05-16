@@ -2,7 +2,7 @@
  * Per-account stale-while-revalidate cache for read-only Discord data.
  */
 
-import { mkdirSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from "fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "fs";
 import { writeFile } from "fs/promises";
 import { dirname, join } from "path";
 
@@ -152,9 +152,8 @@ async function flushCacheFile(): Promise<void> {
   cacheDirty = false;
   saveInFlight = true;
   try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const compact = compactCacheForDisk(cache);
-    await writeFile(path, `${JSON.stringify(compact)}\n`, { mode: 0o600 });
+    await writeJsonFileAtomic(path, `${JSON.stringify(compact)}\n`);
   } catch {
     // Cache persistence is opportunistic; UI responsiveness is more important.
     cacheDirty = true;
@@ -167,6 +166,18 @@ async function flushCacheFile(): Promise<void> {
   }
 }
 
+async function writeJsonFileAtomic(path: string, contents: string): Promise<void> {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tempPath, contents, { mode: 0o600 });
+    renameSync(tempPath, path);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
+}
+
 export function flushDataCacheSync(): void {
   if (saveTimer) {
     clearTimeout(saveTimer);
@@ -176,9 +187,8 @@ export function flushDataCacheSync(): void {
 
   const path = cacheMemoPath ?? cachePath();
   try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const compact = compactCacheForDisk(cacheMemo);
-    writeFileSync(path, `${JSON.stringify(compact)}\n`, { mode: 0o600 });
+    writeJsonFileAtomicSync(path, `${JSON.stringify(compact)}\n`);
     cacheDirty = false;
     saveAgain = false;
   } catch {
@@ -232,11 +242,16 @@ export function saveCachedGuilds(accountId: string, guilds: DiscordGuild[]): voi
   saveCacheFile(cache);
 }
 
-function writeJsonFileAtomic(path: string, contents: string): void {
+function writeJsonFileAtomicSync(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tempPath, contents, { mode: 0o600 });
-  renameSync(tempPath, path);
+  try {
+    writeFileSync(tempPath, contents, { mode: 0o600 });
+    renameSync(tempPath, path);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
 }
 
 export function loadCachedGuildOrder(accountId: string): string[] | null {
@@ -257,7 +272,7 @@ export function saveCachedGuildOrder(accountId: string, guildIds: readonly strin
     guildIds: uniqueStringList(guildIds),
     savedAt: Date.now(),
   };
-  writeJsonFileAtomic(guildOrderPath(accountId), `${JSON.stringify(file)}\n`);
+  writeJsonFileAtomicSync(guildOrderPath(accountId), `${JSON.stringify(file)}\n`);
 }
 
 function parseSidebarFolderLayout(value: unknown): SidebarFolderLayout | null {
@@ -304,7 +319,7 @@ export function loadCachedSidebarFolders(accountId: string): SidebarFolderLayout
 
 export function saveCachedSidebarFolders(accountId: string, layout: SidebarFolderLayout): void {
   const file: SidebarFoldersCacheFile = { version: CACHE_VERSION, accountId, layout, savedAt: Date.now() };
-  writeJsonFileAtomic(sidebarFoldersPath(accountId), `${JSON.stringify(file)}\n`);
+  writeJsonFileAtomicSync(sidebarFoldersPath(accountId), `${JSON.stringify(file)}\n`);
 }
 
 export function watchCachedGuildOrder(accountId: string, onChange: (guildOrder: string[] | null) => void): () => void {
