@@ -4,7 +4,7 @@ import { fetchPreferredVoiceRegions } from "./regions";
 import { createDefaultVoiceAudioBackend } from "./audio-ffmpeg";
 import { DiscordVoiceGatewayConnection } from "./gateway";
 import { VoiceGatewayCloseError, type PendingVoiceJoin, type VoiceCallControllerOptions, type VoiceCallSession, type VoiceCallStartOptions, type VoiceCallStartResult, type VoiceCallTarget, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceServerUpdate, type VoiceStateRequest, type VoiceStateUpdate } from "./types";
-import { DEFAULT_LOCAL_VOLUME_PERCENT, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
+import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
 
 export class VoiceCallController {
   private pending: PendingVoiceJoin | null = null;
@@ -15,8 +15,8 @@ export class VoiceCallController {
 
   constructor(private readonly options: VoiceCallControllerOptions) {
     this.localVolumes = {
-      micVolume: options.localVolumes?.micVolume ?? DEFAULT_LOCAL_VOLUME_PERCENT,
-      speakerVolume: options.localVolumes?.speakerVolume ?? DEFAULT_LOCAL_VOLUME_PERCENT,
+      micVolume: options.localVolumes?.micVolume ?? DEFAULT_LOCAL_GAIN_DB,
+      speakerVolume: options.localVolumes?.speakerVolume ?? DEFAULT_LOCAL_GAIN_DB,
     };
     this.noiseSuppression = options.noiseSuppression ?? DEFAULT_NOISE_SUPPRESSION_MODE;
   }

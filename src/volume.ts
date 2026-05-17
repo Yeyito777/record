@@ -1,8 +1,9 @@
 /**
- * Local in-app volume helpers.
+ * Local in-app gain helpers. Gains are expressed in decibels where 0 dB is
+ * neutral/default, negative values attenuate, and positive values boost.
  */
 
-export const DEFAULT_LOCAL_VOLUME_PERCENT = 100;
+export const DEFAULT_LOCAL_GAIN_DB = 0;
 export const DEFAULT_NOISE_SUPPRESSION_MODE: NoiseSuppressionMode = "off";
 
 export type NoiseSuppressionMode = "off" | "simple";
@@ -30,24 +31,30 @@ export function parseNoiseSuppressionMode(value: string | undefined): NoiseSuppr
   }
 }
 
-export function clampVolumePercent(value: number): number {
-  if (!Number.isFinite(value)) return DEFAULT_LOCAL_VOLUME_PERCENT;
-  return Math.max(0, Math.min(100, Math.trunc(value)));
+export function normalizeGainDb(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_LOCAL_GAIN_DB;
+  return value;
 }
 
-export function parseVolumePercent(value: string | undefined): number | null {
+export function parseGainDb(value: string | undefined): number | null {
   if (value === undefined) return null;
-  const match = value.trim().match(/^([+-]?\d+)%?$/);
+  const match = value.trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:\s*dB)?$/i);
   if (!match) return null;
-  return clampVolumePercent(Number.parseInt(match[1] ?? "", 10));
+  const gain = Number.parseFloat(match[1] ?? "");
+  if (!Number.isFinite(gain)) return null;
+  return normalizeGainDb(gain);
 }
 
-export function volumePercentToLinear(volume: number): number {
-  return clampVolumePercent(volume) / 100;
+export function formatGainDb(gain: number): string {
+  const normalized = normalizeGainDb(gain);
+  if (Number.isInteger(normalized)) return String(normalized);
+  return String(normalized).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-export function volumePercentToFilterValue(volume: number): string {
-  const linear = volumePercentToLinear(volume);
-  if (Number.isInteger(linear)) return String(linear);
-  return linear.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+export function formatGainDbWithUnit(gain: number): string {
+  return `${formatGainDb(gain)}dB`;
+}
+
+export function gainDbToLinear(gain: number): number {
+  return 10 ** (normalizeGainDb(gain) / 20);
 }

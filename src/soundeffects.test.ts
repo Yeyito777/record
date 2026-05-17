@@ -43,19 +43,19 @@ describe("sound effects", () => {
     ]);
   });
 
-  test("builds local-volume playback args", () => {
-    expect(buildPwPlaySoundEffectPlaybackArgs("/tmp/sound.mp3", 50)).toEqual([
+  test("builds local-gain playback args", () => {
+    expect(buildPwPlaySoundEffectPlaybackArgs("/tmp/sound.mp3", -6)).toEqual([
       "--media-role", "event",
       "--latency", "20ms",
-      "--volume", "0.5",
+      "--volume", "0.5012",
       "/tmp/sound.mp3",
     ]);
-    expect(buildPaplaySoundEffectPlaybackArgs("/tmp/sound.mp3", 50)).toContain("--volume=32768");
-    expect(buildFfplaySoundEffectPlaybackArgs("/tmp/sound.mp3", 25)).toEqual([
+    expect(buildPaplaySoundEffectPlaybackArgs("/tmp/sound.mp3", -6)).toContain("--volume=32846");
+    expect(buildFfplaySoundEffectPlaybackArgs("/tmp/sound.mp3", 6)).toEqual([
       "-nodisp",
       "-autoexit",
       "-loglevel", "quiet",
-      "-volume", "25",
+      "-af", "volume=6dB",
       "/tmp/sound.mp3",
     ]);
   });

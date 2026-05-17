@@ -10,7 +10,7 @@ import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
 import { THEME_NAMES, setTheme, type ThemeName } from "./theme";
-import { parseNoiseSuppressionMode, parseVolumePercent, type NoiseSuppressionMode } from "./volume";
+import { DEFAULT_LOCAL_GAIN_DB, formatGainDbWithUnit, parseGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
 
 export interface CompletionItem {
   name: string;
@@ -65,15 +65,7 @@ const VOICE_TOGGLE_ARGS: CompletionItem[] = [
 ];
 
 const VOLUME_SUBCOMMAND_ARGS: CompletionItem[] = [
-  { name: "volume", desc: "Set local volume" },
-];
-
-const VOLUME_VALUE_ARGS: CompletionItem[] = [
-  { name: "100%", desc: "Full volume" },
-  { name: "75%", desc: "Three-quarter volume" },
-  { name: "50%", desc: "Half volume" },
-  { name: "25%", desc: "Quarter volume" },
-  { name: "0%", desc: "Silent" },
+  { name: "volume", desc: "Set/show local gain" },
 ];
 
 const NOISE_SUPPRESSION_ARGS: CompletionItem[] = [
@@ -141,12 +133,20 @@ function handleChannelsCommand(text: string, state: AppState): CommandResult {
 
 function handleLocalVolumeCommand(text: string, state: AppState, kind: "mic" | "speaker"): CommandResult {
   const parts = text.trim().split(/\s+/).filter(Boolean);
-  if (parts.length !== 3 || parts[1] !== "volume") {
-    return usage(state, `Usage: /${kind} volume <0-100>`);
+  if ((parts.length !== 2 && parts.length !== 3) || parts[1] !== "volume") {
+    return usage(state, `Usage: /${kind} volume [gain]`);
   }
 
-  const volume = parseVolumePercent(parts[2]);
-  if (volume === null) return usage(state, `Usage: /${kind} volume <0-100>`);
+  if (parts.length === 2) {
+    const current = kind === "mic" ? state.audio.micVolume : state.audio.speakerVolume;
+    const label = kind === "mic" ? "Microphone record gain" : "Speaker playback gain";
+    setNotice(state, `${label}: ${formatGainDbWithUnit(current)}`, "muted", { statusLine: true, chat: false });
+    clearPrompt(state);
+    return { type: "handled" };
+  }
+
+  const volume = parts[2]?.toLowerCase() === "reset" ? DEFAULT_LOCAL_GAIN_DB : parseGainDb(parts[2]);
+  if (volume === null) return usage(state, `Usage: /${kind} volume [gain]`);
   clearPrompt(state);
   return kind === "mic"
     ? { type: "mic_volume", volume }
@@ -271,21 +271,19 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/mic",
-    description: "Set local microphone volume",
+    description: "Set/show local microphone gain",
     args: VOLUME_SUBCOMMAND_ARGS,
     getArgs: () => ({
       "/mic": VOLUME_SUBCOMMAND_ARGS,
-      "/mic volume": VOLUME_VALUE_ARGS,
     }),
     handler: (text, state) => handleLocalVolumeCommand(text, state, "mic"),
   },
   {
     name: "/speaker",
-    description: "Set local speaker/app volume",
+    description: "Set/show local speaker/app gain",
     args: VOLUME_SUBCOMMAND_ARGS,
     getArgs: () => ({
       "/speaker": VOLUME_SUBCOMMAND_ARGS,
-      "/speaker volume": VOLUME_VALUE_ARGS,
     }),
     handler: (text, state) => handleLocalVolumeCommand(text, state, "speaker"),
   },

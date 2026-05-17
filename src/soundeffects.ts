@@ -10,7 +10,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { debugLog } from "./debuglog";
-import { DEFAULT_LOCAL_VOLUME_PERCENT, clampVolumePercent, volumePercentToLinear } from "./volume";
+import { DEFAULT_LOCAL_GAIN_DB, formatGainDb, gainDbToLinear, normalizeGainDb } from "./volume";
 
 export type SoundEffect =
   | "mute"
@@ -51,10 +51,10 @@ const SOUND_FILES: Record<SoundEffect, string> = {
 
 const SOUND_DIR = fileURLToPath(new URL("../assets/sounds/", import.meta.url));
 const COMMAND_AVAILABILITY = new Map<string, boolean>();
-let soundEffectVolume = DEFAULT_LOCAL_VOLUME_PERCENT;
+let soundEffectVolume = DEFAULT_LOCAL_GAIN_DB;
 
 export function setSoundEffectVolume(volume: number): void {
-  soundEffectVolume = clampVolumePercent(volume);
+  soundEffectVolume = normalizeGainDb(volume);
 }
 
 export function getSoundEffectVolume(): number {
@@ -65,46 +65,46 @@ export function soundEffectPath(effect: SoundEffect): string {
   return `${SOUND_DIR}${SOUND_FILES[effect]}`;
 }
 
-export function buildPwPlaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+export function buildPwPlaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_GAIN_DB): string[] {
   const args = [
     "--media-role", "event",
     "--latency", "20ms",
   ];
-  const normalizedVolume = clampVolumePercent(volume);
-  if (normalizedVolume !== DEFAULT_LOCAL_VOLUME_PERCENT) args.push("--volume", volumePercentToLinear(normalizedVolume).toFixed(2).replace(/0+$/, "").replace(/\.$/, ""));
+  const normalizedVolume = normalizeGainDb(volume);
+  if (normalizedVolume !== DEFAULT_LOCAL_GAIN_DB) args.push("--volume", gainDbToLinear(normalizedVolume).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""));
   args.push(path);
   return args;
 }
 
-export function buildPaplaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+export function buildPaplaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_GAIN_DB): string[] {
   const args = [
     "--client-name=Record",
     "--stream-name=Record sound effect",
     "--latency-msec=20",
   ];
-  const normalizedVolume = clampVolumePercent(volume);
-  if (normalizedVolume !== DEFAULT_LOCAL_VOLUME_PERCENT) args.push(`--volume=${Math.round(volumePercentToLinear(normalizedVolume) * 65536)}`);
+  const normalizedVolume = normalizeGainDb(volume);
+  if (normalizedVolume !== DEFAULT_LOCAL_GAIN_DB) args.push(`--volume=${Math.round(gainDbToLinear(normalizedVolume) * 65536)}`);
   args.push(path);
   return args;
 }
 
-export function buildFfplaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+export function buildFfplaySoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_GAIN_DB): string[] {
   const args = [
     "-nodisp",
     "-autoexit",
     "-loglevel", "quiet",
   ];
-  const normalizedVolume = clampVolumePercent(volume);
-  if (normalizedVolume !== DEFAULT_LOCAL_VOLUME_PERCENT) args.push("-volume", String(normalizedVolume));
+  const normalizedVolume = normalizeGainDb(volume);
+  if (normalizedVolume !== DEFAULT_LOCAL_GAIN_DB) args.push("-af", `volume=${formatGainDb(normalizedVolume)}dB`);
   args.push(path);
   return args;
 }
 
-export function buildSoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): string[] {
+export function buildSoundEffectPlaybackArgs(path: string, volume = DEFAULT_LOCAL_GAIN_DB): string[] {
   return buildFfplaySoundEffectPlaybackArgs(path, volume);
 }
 
-export function buildSoundEffectPlaybackCommands(path: string, volume = DEFAULT_LOCAL_VOLUME_PERCENT): SoundEffectPlaybackCommand[] {
+export function buildSoundEffectPlaybackCommands(path: string, volume = DEFAULT_LOCAL_GAIN_DB): SoundEffectPlaybackCommand[] {
   return [
     { command: "pw-play", args: buildPwPlaySoundEffectPlaybackArgs(path, volume) },
     { command: "paplay", args: buildPaplaySoundEffectPlaybackArgs(path, volume) },

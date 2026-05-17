@@ -18,7 +18,7 @@ import { normalizeToken } from "./token";
 import type { ClipboardImageAttachment } from "./imageclipboard";
 import type { NoticeTone } from "./theme";
 import type { VoiceConnectionState } from "./voice";
-import { DEFAULT_LOCAL_VOLUME_PERCENT, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "./volume";
+import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "./volume";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
 export type PresenceStatus = DiscordPresenceStatus;
@@ -163,8 +163,8 @@ export function createInitialState(
     messageDeletePending: null,
     voiceCall: null,
     audio: {
-      micVolume: DEFAULT_LOCAL_VOLUME_PERCENT,
-      speakerVolume: DEFAULT_LOCAL_VOLUME_PERCENT,
+      micVolume: DEFAULT_LOCAL_GAIN_DB,
+      speakerVolume: DEFAULT_LOCAL_GAIN_DB,
     },
     noiseSuppression: options.noiseSuppression ?? DEFAULT_NOISE_SUPPRESSION_MODE,
     roleIdsByGuildId: {},

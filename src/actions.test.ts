@@ -133,24 +133,24 @@ describe("submitCurrentBuffer", () => {
     ]);
   });
 
-  test("local volume commands update app state without requiring login", () => {
+  test("local gain commands update app state without requiring login", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
-    state.editor.buffer = "/mic volume 25%";
+    state.editor.buffer = "/mic volume -20";
     state.editor.cursor = state.editor.buffer.length;
 
     submitCurrentBuffer(state, effects);
 
-    expect(state.audio.micVolume).toBe(25);
+    expect(state.audio.micVolume).toBe(-20);
     expect(state.editor.buffer).toBe("");
-    expect(state.notice.text).toBe("Microphone volume set to 25%.");
+    expect(state.notice.text).toBe("Microphone record gain set to -20dB.");
     expect(state.notice.statusLine).toBe(false);
 
-    state.editor.buffer = "/speaker volume 150";
+    state.editor.buffer = "/speaker volume 6";
     state.editor.cursor = state.editor.buffer.length;
     submitCurrentBuffer(state, effects);
 
-    expect(state.audio.speakerVolume).toBe(100);
-    expect(state.notice.text).toBe("Speaker volume set to 100%.");
+    expect(state.audio.speakerVolume).toBe(6);
+    expect(state.notice.text).toBe("Speaker playback gain set to 6dB.");
     expect(state.notice.statusLine).toBe(false);
   });
 

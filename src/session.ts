@@ -146,7 +146,7 @@ import {
 import { clearTypingUser, recordTypingStart } from "./typing";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
-import { clampVolumePercent, type NoiseSuppressionMode } from "./volume";
+import { formatGainDbWithUnit, normalizeGainDb, type NoiseSuppressionMode } from "./volume";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -3189,19 +3189,19 @@ export function setCurrentCallDeaf(state: AppState, effects: SessionEffects, dea
 }
 
 export function setLocalMicVolume(state: AppState, effects: SessionEffects, volume: number): void {
-  const next = clampVolumePercent(volume);
+  const next = normalizeGainDb(volume);
   state.audio.micVolume = next;
   voiceCallController?.setLocalVolumes({ micVolume: next, speakerVolume: state.audio.speakerVolume });
-  setNotice(state, `Microphone volume set to ${next}%.`, "muted", { statusLine: false });
+  setNotice(state, `Microphone record gain set to ${formatGainDbWithUnit(next)}.`, "muted", { statusLine: false });
   effects.scheduleRender();
 }
 
 export function setLocalSpeakerVolume(state: AppState, effects: SessionEffects, volume: number): void {
-  const next = clampVolumePercent(volume);
+  const next = normalizeGainDb(volume);
   state.audio.speakerVolume = next;
   setSoundEffectVolume(next);
   voiceCallController?.setLocalVolumes({ micVolume: state.audio.micVolume, speakerVolume: next });
-  setNotice(state, `Speaker volume set to ${next}%.`, "muted", { statusLine: false });
+  setNotice(state, `Speaker playback gain set to ${formatGainDbWithUnit(next)}.`, "muted", { statusLine: false });
   effects.scheduleRender();
 }
 

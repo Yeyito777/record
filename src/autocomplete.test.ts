@@ -257,20 +257,20 @@ describe("autocomplete", () => {
     ]);
   });
 
-  test("shows volume completions for mic and speaker commands", () => {
+  test("does not show fixed gain completions for mic and speaker volume commands", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editor.buffer = "/mic volume ";
     state.editor.cursor = state.editor.buffer.length;
 
     updateAutocomplete(state);
 
-    expect(state.autocomplete?.matches.map((match) => match.name)).toEqual(["100%", "75%", "50%", "25%", "0%"]);
+    expect(state.autocomplete).toBeNull();
 
     state.editor.buffer = "/speaker volume 7";
     state.editor.cursor = state.editor.buffer.length;
     updateAutocomplete(state);
 
-    expect(state.autocomplete?.matches.map((match) => match.name)).toEqual(["75%"]);
+    expect(state.autocomplete).toBeNull();
   });
 
   test("tab-completes a single absolute file path match", () => {

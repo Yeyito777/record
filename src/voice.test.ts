@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfmpegCaptureArgs, buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -92,11 +92,11 @@ describe("voice backend", () => {
       "-i", "/tmp/voice.sdp",
     ]);
     expect(buildFfplayPlaybackArgs("/tmp/voice.sdp")).not.toContain("-nostdin");
-    expect(buildFfplayPlaybackArgs("/tmp/voice.sdp", 25)).toEqual([
+    expect(buildFfplayPlaybackArgs("/tmp/voice.sdp", -12)).toEqual([
       "-nodisp",
       "-loglevel", "error",
       "-protocol_whitelist", "file,udp,rtp",
-      "-volume", "25",
+      "-af", "volume=-12dB",
       "-i", "/tmp/voice.sdp",
     ]);
   });
@@ -111,11 +111,13 @@ describe("voice backend", () => {
       "--bitrate", "96000",
       "--payload-type", "120",
       "--noise-suppression", "off",
+      "--gain-db", "0",
       "--meter-stdout",
     ]);
     expect(buildVoiceEngineCaptureArgs(43123, "simple")).toContain("simple");
-    expect(buildVoiceEngineCaptureArgs(43123, "off", 1234)).toContain("--parent-pid");
-    expect(buildVoiceEngineCaptureArgs(43123, "off", 1234)).toContain("1234");
+    expect(buildVoiceEngineCaptureArgs(43123, "off", -20)).toContain("-20");
+    expect(buildVoiceEngineCaptureArgs(43123, "off", 0, 1234)).toContain("--parent-pid");
+    expect(buildVoiceEngineCaptureArgs(43123, "off", 0, 1234)).toContain("1234");
   });
 
   test("builds native voice-engine playback args", () => {
@@ -132,17 +134,6 @@ describe("voice backend", () => {
     ]);
     expect(buildVoiceEnginePlaybackArgs(43125, undefined, 1234)).toContain("--parent-pid");
     expect(buildVoiceEnginePlaybackArgs(43125, undefined, 1234)).toContain("1234");
-  });
-
-  test("keeps legacy ffmpeg capture args as fallback", () => {
-    const args = buildFfmpegCaptureArgs(43124);
-    expect(args.includes("ffmpeg")).toBe(false);
-    expect(args).toContain("-application");
-    expect(args).toContain("voip");
-    expect(args).toContain("rtp://127.0.0.1:43124");
-    expect(buildFfmpegCaptureArgs(43124, 50)).toContain("[0:a]volume=0.5,asplit=2[aout][meter]");
-    expect(buildFfmpegCaptureArgs(43124, 0)).toContain("[0:a]volume=0,asplit=2[aout][meter]");
-    expect(buildFfmpegCaptureArgs(43124, 100, "simple")).toContain("[0:a]afftdn=nr=12:nf=-50,asplit=2[aout][meter]");
   });
 
   test("resolves native voice engine from env or PATH", () => {
