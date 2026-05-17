@@ -54,6 +54,7 @@ import {
   loadChannelMessages,
   loadChannelMessagesAround,
   loadGuildChannels,
+  loadLatestChannelMessages,
   loadNewerChannelMessages,
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
@@ -558,6 +559,33 @@ function jumpToReplyTargetAtHistoryCursor(): boolean {
     scheduleRender();
   })();
   return true;
+}
+
+function jumpToChannelBottom(): void {
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+
+  state.historyCursorPendingVisibleBottom = true;
+  state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+
+  if (!state.timeline.hasNewer || !token || !channelId) {
+    placeHistoryCursorAtVisibleBottom(state, timelinePageSize());
+    ensureHistoryCursorVisible(state, timelinePageSize());
+    scheduleRender();
+    return;
+  }
+
+  void (async () => {
+    const loaded = await loadLatestChannelMessages(state, token, channelId, effects);
+    if (!running) return;
+    if (loaded) {
+      refreshHistorySnapshot();
+      placeHistoryCursorAtVisibleBottom(state, timelinePageSize());
+      ensureHistoryCursorVisible(state, timelinePageSize());
+    }
+    scheduleRender();
+  })();
+  scheduleRender();
 }
 
 function summarizeReplyMessage(message: DiscordMessage): string {
@@ -1099,6 +1127,11 @@ function handleHistoryFocused(key: KeyEvent): boolean {
 
   if (state.editor.mode === "normal" && key.type === "char" && key.char === "e" && selectedMessageCanBeEdited(selectedHistoryMessage())) {
     startEditSelectedHistoryMessage();
+    return true;
+  }
+
+  if (state.editor.mode === "normal" && key.type === "char" && key.char === "G") {
+    jumpToChannelBottom();
     return true;
   }
 

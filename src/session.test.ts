@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedGuildOrder, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
+import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -516,6 +516,45 @@ describe("session", () => {
     expect(state.timeline.loading).toBe(false);
     expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["from rest"]);
     expect(state.messageCacheByChannelId["channel-1"]?.messages.map((entry) => entry.content)).toEqual(["from rest"]);
+  });
+
+  test("loading latest channel messages clears newer pagination after an around jump", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/channels/channel-1/messages?")) {
+        return new Response(JSON.stringify([{
+          id: "9",
+          channel_id: "channel-1",
+          guild_id: "guild-1",
+          type: 0,
+          content: "latest",
+          timestamp: "2026-01-01T12:09:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/ack")) {
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.timeline.channelId = "channel-1";
+    state.timeline.messages = [message("1", "around target")];
+    state.timeline.hasNewer = true;
+
+    const loaded = await loadLatestChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
+
+    expect(loaded).toBe(true);
+    expect(state.timeline.hasNewer).toBe(false);
+    expect(state.timeline.loading).toBe(false);
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["latest"]);
   });
 
   test("loading a channel hydrates missing reply previews with a direct message fetch", async () => {

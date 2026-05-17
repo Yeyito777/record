@@ -2583,6 +2583,50 @@ export async function loadNewerChannelMessages(
   }
 }
 
+export async function loadLatestChannelMessages(
+  state: AppState,
+  token: string,
+  channelId: string,
+  effects: SessionEffects,
+): Promise<boolean> {
+  if (state.timeline.channelId !== channelId) return false;
+
+  const requestId = ++state.timeline.requestId;
+  state.timeline.loading = true;
+  state.timeline.loadingNewer = false;
+  effects.scheduleRender();
+
+  try {
+    const fetchedMessages = await fetchChannelMessages(token, channelId, MESSAGE_PAGE_LIMIT);
+    const guildId = state.channelList.activeChannel?.guildId ?? null;
+    const withGuildIds = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
+    const { messages } = hydrateMissingReplyPreviewsFromKnownMessages(state, withGuildIds);
+    recordMessagesRoleIds(state, messages, guildId);
+    const cacheEntry = setCachedChannelMessages(state.messageCacheByChannelId, channelId, messages, {
+      hasOlder: messages.length >= MESSAGE_PAGE_LIMIT,
+      updatedAt: Date.now(),
+      replace: false,
+    });
+    persistChannelMessageCache(state, channelId);
+
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return false;
+    setTimelineMessages(state.timeline, channelId, cacheEntry.messages, { hasOlder: cacheEntry.hasOlder, hasNewer: false });
+    const latestMessage = cacheEntry.messages.at(-1);
+    if (latestMessage) markChannelRead(state, token, channelId, latestMessage.id);
+    cacheEntry.messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
+    return true;
+  } catch (error) {
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return false;
+    state.timeline.loading = false;
+    setNotice(state, error instanceof Error ? error.message : String(error), "error");
+    return false;
+  } finally {
+    if (requestId === state.timeline.requestId && state.timeline.channelId === channelId) {
+      effects.scheduleRender();
+    }
+  }
+}
+
 export async function loadChannelMessagesAround(
   state: AppState,
   token: string,
