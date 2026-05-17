@@ -34,6 +34,8 @@ export interface ChannelsConfig {
 export interface AudioConfig {
   /** Local microphone noise suppression mode. */
   noiseSuppression?: "off" | "simple";
+  /** Local microphone capture gain in dB. 0 dB is neutral/default. */
+  micGainDb?: number;
 }
 
 export interface RecordConfig {
@@ -145,7 +147,14 @@ function loadConfigIfPresent(): RecordConfig {
 }
 
 export function saveConfig(config: RecordConfig): void {
-  writeSecureJson(configPath(), { ...loadConfigIfPresent(), ...config });
+  const existing = loadConfigIfPresent();
+  writeSecureJson(configPath(), {
+    ...existing,
+    ...config,
+    ...(existing.openers || config.openers ? { openers: { ...existing.openers, ...config.openers } } : {}),
+    ...(existing.channels || config.channels ? { channels: { ...existing.channels, ...config.channels } } : {}),
+    ...(existing.audio || config.audio ? { audio: { ...existing.audio, ...config.audio } } : {}),
+  });
 }
 
 export function saveSavedLogins(savedLogins: SavedLogins): void {

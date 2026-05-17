@@ -130,7 +130,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean; noiseSuppression?: NoiseSuppressionMode } = {},
+  options: { showHiddenChannels?: boolean; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -163,7 +163,7 @@ export function createInitialState(
     messageDeletePending: null,
     voiceCall: null,
     audio: {
-      micVolume: DEFAULT_LOCAL_GAIN_DB,
+      micVolume: options.micGainDb ?? DEFAULT_LOCAL_GAIN_DB,
       speakerVolume: DEFAULT_LOCAL_GAIN_DB,
     },
     noiseSuppression: options.noiseSuppression ?? DEFAULT_NOISE_SUPPRESSION_MODE,

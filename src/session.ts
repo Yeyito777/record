@@ -3192,7 +3192,12 @@ export function setLocalMicVolume(state: AppState, effects: SessionEffects, volu
   const next = normalizeGainDb(volume);
   state.audio.micVolume = next;
   voiceCallController?.setLocalVolumes({ micVolume: next, speakerVolume: state.audio.speakerVolume });
-  setNotice(state, `Microphone record gain set to ${formatGainDbWithUnit(next)}.`, "muted", { statusLine: false });
+  try {
+    saveConfig({ audio: { micGainDb: next } });
+    setNotice(state, `Microphone record gain set to ${formatGainDbWithUnit(next)}.`, "muted", { statusLine: false });
+  } catch (error) {
+    setNotice(state, `Microphone record gain set to ${formatGainDbWithUnit(next)}, but saving failed: ${(error as Error).message}`, "warning", { statusLine: false });
+  }
   effects.scheduleRender();
 }
 

@@ -4,9 +4,11 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { resolveLoginCredential, submitCurrentBuffer, type AppEffects } from "./actions";
+import { loadConfig } from "./config";
 import { createInitialState } from "./state";
 
 const originalFetch = globalThis.fetch;
+const originalXdg = process.env.XDG_CONFIG_HOME;
 
 const effects: AppEffects = {
   scheduleRender: () => {},
@@ -17,6 +19,8 @@ const effects: AppEffects = {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  if (originalXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = originalXdg;
 });
 
 function waitForCondition(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -134,6 +138,7 @@ describe("submitCurrentBuffer", () => {
   });
 
   test("local gain commands update app state without requiring login", () => {
+    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-action-config-test-"));
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editor.buffer = "/mic volume -20";
     state.editor.cursor = state.editor.buffer.length;
@@ -144,6 +149,7 @@ describe("submitCurrentBuffer", () => {
     expect(state.editor.buffer).toBe("");
     expect(state.notice.text).toBe("Microphone record gain set to -20dB.");
     expect(state.notice.statusLine).toBe(false);
+    expect(loadConfig().audio?.micGainDb).toBe(-20);
 
     state.editor.buffer = "/speaker volume 6";
     state.editor.cursor = state.editor.buffer.length;

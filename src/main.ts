@@ -5,7 +5,7 @@
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { flushDataCacheSync } from "./datacache";
 import { configPath, loadConfig, loadSavedLogins } from "./config";
-import { DEFAULT_NOISE_SUPPRESSION_MODE, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
+import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, normalizeGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
 import {
@@ -126,6 +126,7 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 let initialToken: string | null = null;
 let initialShowHiddenChannels = false;
 let initialNoiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE;
+let initialMicGainDb = DEFAULT_LOCAL_GAIN_DB;
 let initialSavedLogins: Record<string, string> = {};
 const startupWarnings: string[] = [];
 
@@ -134,6 +135,7 @@ try {
   initialToken = config.token ? normalizeToken(config.token) : null;
   initialShowHiddenChannels = config.channels?.showHidden === true;
   initialNoiseSuppression = parseNoiseSuppressionMode(config.audio?.noiseSuppression) ?? DEFAULT_NOISE_SUPPRESSION_MODE;
+  initialMicGainDb = normalizeGainDb(config.audio?.micGainDb ?? DEFAULT_LOCAL_GAIN_DB);
 } catch (error) {
   const err = error as NodeJS.ErrnoException;
   if (err.code !== "ENOENT") {
@@ -150,7 +152,7 @@ try {
   }
 }
 
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, noiseSuppression: initialNoiseSuppression });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb });
 if (startupWarnings.length > 0) {
   setNotice(state, startupWarnings.join("\n"), "warning");
 }
