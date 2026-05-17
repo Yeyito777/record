@@ -116,6 +116,24 @@ describe("commands", () => {
     expect(getCommandArgs(state)["/speaker volume"]).toBeUndefined();
   });
 
+  test("shows current noise suppression when no mode is provided", () => {
+    const state = createInitialState("token", "/tmp/record-config.json", {}, { noiseSuppression: "simple" });
+
+    expect(tryCommand("/noise-suppression", state)).toEqual({ type: "handled" });
+    expect(state.notice).toMatchObject({
+      text: "Noise suppression: simple",
+      statusLine: true,
+      chat: false,
+    });
+  });
+
+  test("parses noise suppression modes", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand("/noise-suppression off", state)).toEqual({ type: "noise_suppression", mode: "off" });
+    expect(tryCommand("/noise-suppression simple", state)).toEqual({ type: "noise_suppression", mode: "simple" });
+  });
+
   test("parses /status presence values", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
 
@@ -127,12 +145,24 @@ describe("commands", () => {
     expect(tryCommand("/status 4", state)).toEqual({ type: "status", status: "invisible" });
   });
 
+  test("shows current /status presence when no status is provided", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+    state.auth.presenceStatus = "idle";
+
+    expect(tryCommand("/status", state)).toEqual({ type: "handled" });
+    expect(state.notice).toMatchObject({
+      text: "Presence: idle",
+      statusLine: true,
+      chat: false,
+    });
+  });
+
   test("rejects invalid /status values", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
     const result = tryCommand("/status busy", state);
 
     expect(result).toEqual({ type: "handled" });
-    expect(state.notice.text).toContain("Usage: /status <online|idle|dnd|invisible>");
+    expect(state.notice.text).toContain("Usage: /status [online|idle|dnd|invisible]");
   });
 
   test("suggests /status args", () => {
@@ -192,6 +222,20 @@ describe("commands", () => {
 
       expect(result).toEqual({ type: "theme_changed" });
       expect(state.notice.text).toContain("Theme set to whale");
+    });
+  });
+
+  test("shows current /theme when no theme is provided", () => {
+    withTempConfigHome(() => {
+      const state = createInitialState(null, "/tmp/record-config.json");
+
+      expect(tryCommand("/theme cerberus", state)).toEqual({ type: "theme_changed" });
+      expect(tryCommand("/theme", state)).toEqual({ type: "handled" });
+      expect(state.notice).toMatchObject({
+        text: "Theme: cerberus",
+        statusLine: true,
+        chat: false,
+      });
     });
   });
 

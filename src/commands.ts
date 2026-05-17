@@ -9,7 +9,7 @@ import { DISCORD_PRESENCE_STATUSES, type DiscordPresenceStatus } from "./discord
 import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
-import { THEME_NAMES, setTheme, type ThemeName } from "./theme";
+import { THEME_NAMES, setTheme, theme, type ThemeName } from "./theme";
 import { DEFAULT_LOCAL_GAIN_DB, formatGainDbWithUnit, parseGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
 
 export interface CompletionItem {
@@ -289,26 +289,36 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/noise-suppression",
-    description: "Set local microphone noise suppression",
+    description: "Set/show local microphone noise suppression",
     args: NOISE_SUPPRESSION_ARGS,
     handler: (text, state) => {
       const parts = text.trim().split(/\s+/).filter(Boolean);
-      if (parts.length !== 2) return usage(state, "Usage: /noise-suppression <off|simple>");
+      if (parts.length === 1) {
+        setNotice(state, `Noise suppression: ${state.noiseSuppression}`, "muted", { statusLine: true, chat: false });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      if (parts.length !== 2) return usage(state, "Usage: /noise-suppression [off|simple]");
       const mode = parseNoiseSuppressionMode(parts[1]);
-      if (!mode) return usage(state, "Usage: /noise-suppression <off|simple>");
+      if (!mode) return usage(state, "Usage: /noise-suppression [off|simple]");
       clearPrompt(state);
       return { type: "noise_suppression", mode };
     },
   },
   {
     name: "/status",
-    description: "Set your Discord presence",
+    description: "Set/show your Discord presence",
     args: STATUS_ARGS,
     handler: (text, state) => {
       const parts = text.trim().split(/\s+/).filter(Boolean);
-      if (parts.length !== 2) return usage(state, `Usage: /status <${DISCORD_PRESENCE_STATUSES.join("|")}>`);
+      if (parts.length === 1) {
+        setNotice(state, `Presence: ${state.auth.presenceStatus ?? "unknown"}`, "muted", { statusLine: true, chat: false });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      if (parts.length !== 2) return usage(state, `Usage: /status [${DISCORD_PRESENCE_STATUSES.join("|")}]`);
       const status = parsePresenceStatus(parts[1]?.toLowerCase());
-      if (!status) return usage(state, `Usage: /status <${DISCORD_PRESENCE_STATUSES.join("|")}>`);
+      if (!status) return usage(state, `Usage: /status [${DISCORD_PRESENCE_STATUSES.join("|")}]`);
       clearPrompt(state);
       return { type: "status", status };
     },
@@ -325,11 +335,16 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/theme",
-    description: "Switch the active theme",
+    description: "Set/show the active theme",
     args: THEME_NAMES.map((name) => ({ name, desc: `${name} theme` })),
     handler: (text, state) => {
       const parts = text.trim().split(/\s+/).filter(Boolean);
-      if (parts.length !== 2) return usage(state, `Usage: /theme <${THEME_NAMES.join("|")}>`);
+      if (parts.length === 1) {
+        setNotice(state, `Theme: ${theme.name}`, "muted", { statusLine: true, chat: false });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      if (parts.length !== 2) return usage(state, `Usage: /theme [${THEME_NAMES.join("|")}]`);
       const name = parts[1] as ThemeName;
       if (!THEME_NAMES.includes(name)) {
         return usage(state, `Unknown theme: ${parts[1]}. Available: ${THEME_NAMES.join(", ")}`);
