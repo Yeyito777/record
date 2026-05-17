@@ -12,6 +12,7 @@ const GUILD_TEXT_CHANNEL_TYPES = new Set([0, 5, 11, 12]);
 const GUILD_VOICE_CHANNEL_TYPES = new Set([2, 13]);
 const SIDEBAR_GUILD_CHANNEL_TYPES = new Set([...GUILD_TEXT_CHANNEL_TYPES, 4, ...GUILD_VOICE_CHANNEL_TYPES]);
 const DIRECT_MESSAGE_CHANNEL_TYPES = new Set([1, 3]);
+const MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE = 6;
 
 export const DIRECT_MESSAGES_GUILD_ID = "@me::dms";
 export const DIRECT_MESSAGES_GUILD_NAME = "Direct Messages";
@@ -606,6 +607,24 @@ function summarizeReplyPreview(
   return summarizeInlineMessageParts(content, attachments, embeds, stickerNames);
 }
 
+function mapSystemMessageContent(message: Pick<DiscordMessageResponse, "type">): string | null {
+  switch (message.type) {
+    case MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE:
+      return "📌 Pinned a message to this channel.";
+    default:
+      return null;
+  }
+}
+
+function mapDiscordMessageContent(message: Partial<DiscordMessageResponse>): string | undefined {
+  if (typeof message.content !== "string") return undefined;
+  return mapSystemMessageContent(message) ?? message.content;
+}
+
+function messageReferenceIsReply(message: DiscordMessageResponse): boolean {
+  return message.type !== MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE;
+}
+
 function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
   return {
     type: embed.type ?? null,
@@ -618,6 +637,8 @@ function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
 }
 
 export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessageReply | null {
+  if (!messageReferenceIsReply(message)) return null;
+
   const referenceChannelId = message.message_reference?.channel_id ?? message.channel_id;
 
   if (message.referenced_message) {
@@ -883,7 +904,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     channelId: message.channel_id,
     guildId: message.guild_id,
     type: message.type,
-    content: typeof message.content === "string" ? message.content : undefined,
+    content: mapDiscordMessageContent(message),
     mentionEveryone: message.mention_everyone,
     mentionRoleIds: message.mention_roles,
     mentionUserIds: message.mentions?.map((mention) => mention.id),
@@ -906,6 +927,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
       ? mapReplyPreview({
         id: message.id,
         channel_id: message.channel_id,
+        type: message.type,
         content: message.content ?? "",
         timestamp: message.timestamp ?? new Date(0).toISOString(),
         edited_timestamp: message.edited_timestamp ?? null,

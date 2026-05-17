@@ -852,6 +852,32 @@ describe("discord helpers", () => {
     });
   });
 
+  test("renders channel pin system messages instead of deleted reply previews", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "pin-1",
+          channel_id: "channel-1",
+          type: 6,
+          content: "",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          message_reference: { message_id: "message-0", channel_id: "channel-1" },
+          referenced_message: null,
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.type).toBe(6);
+    expect(messages[0]?.content).toBe("📌 Pinned a message to this channel.");
+    expect(messages[0]?.reply).toBeNull();
+  });
+
   test("hydrates missing reply previews from messages returned in the same page", async () => {
     globalThis.fetch = (async () => {
       return new Response(JSON.stringify([
