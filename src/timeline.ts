@@ -704,11 +704,13 @@ function renderMessage(
     nowMs,
     contentColor,
   );
+  const reactionLines = wrapReactionSummary(message, width);
   if (content === "") {
     const lines = [
       ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
       ...headerLines,
       `${theme.dim}(empty message)${theme.reset}`,
+      ...reactionLines.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ];
     return {
       lines,
@@ -716,9 +718,10 @@ function renderMessage(
         ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
         ...headerAnchors,
         `msg:${message.id}:empty`,
+        ...reactionLines.map((line) => `msg:${message.id}:reactions:${line.visualIndex}`),
       ],
       lineBackgrounds: messageLineBackgrounds(lines, messageBackground),
-      wrapContinuation: [...replyPreview.map((line) => line.wrapContinuation), ...headerWrapContinuation, false],
+      wrapContinuation: [...replyPreview.map((line) => line.wrapContinuation), ...headerWrapContinuation, false, ...reactionLines.map((line) => line.wrapContinuation)],
     };
   }
 
@@ -729,6 +732,7 @@ function renderMessage(
     ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ...headerLines,
     ...wrappedContent.map((line) => `${contentColor}${line.text}${theme.reset}`),
+    ...reactionLines.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
   ];
   return {
@@ -737,6 +741,7 @@ function renderMessage(
       ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
       ...headerAnchors,
       ...wrappedContent.map((line) => `msg:${message.id}:content:${line.visualIndex}`),
+      ...reactionLines.map((line) => `msg:${message.id}:reactions:${line.visualIndex}`),
       ...failureLines.map((line) => `msg:${message.id}:failure:${line.visualIndex}`),
     ],
     lineBackgrounds: messageLineBackgrounds(lines, messageBackground),
@@ -744,6 +749,7 @@ function renderMessage(
       ...replyPreview.map((line) => line.wrapContinuation),
       ...headerWrapContinuation,
       ...wrappedContent.map((line) => line.wrapContinuation),
+      ...reactionLines.map((line) => line.wrapContinuation),
       ...failureLines.map((line) => line.wrapContinuation),
     ],
   };
@@ -819,6 +825,24 @@ function wrapFailureMessage(message: DiscordMessage, width: number): WrappedLine
     wrapContinuation: visualIndex > 0,
     visualIndex,
   }));
+}
+
+function wrapReactionSummary(message: DiscordMessage, width: number): WrappedLine[] {
+  const reactions = message.reactions?.filter((reaction) => reaction.count > 0) ?? [];
+  if (reactions.length === 0) return [];
+  const summary = `╰─ ${reactions.map(formatReactionChip).join("  ")}`;
+  return wrapPlainText(summary, width).map((line, visualIndex) => ({
+    text: line,
+    wrapContinuation: visualIndex > 0,
+    visualIndex,
+  }));
+}
+
+function formatReactionChip(reaction: NonNullable<DiscordMessage["reactions"]>[number]): string {
+  const emoji = reaction.emoji.id
+    ? `:${reaction.emoji.name}:`
+    : reaction.emoji.name;
+  return `${emoji} ${reaction.count}`;
 }
 
 function summarizeMessage(
@@ -1282,6 +1306,9 @@ function messageRenderFingerprint(
   const embedKey = (message.embeds ?? [])
     .map((embed) => [embed.type ?? "", embed.providerName ?? "", embed.authorName ?? "", embed.title ?? "", embed.url ?? "", embed.description ?? ""].join("\u0002"))
     .join("\u0000");
+  const reactionKey = (message.reactions ?? [])
+    .map((reaction) => [reaction.emoji.id ?? "", reaction.emoji.name, reaction.emoji.animated ? "1" : "0", String(reaction.count), reaction.me ? "1" : "0"].join("\u0002"))
+    .join("\u0000");
   const replyKey = message.reply
     ? [
       message.reply.messageId ?? "",
@@ -1318,6 +1345,7 @@ function messageRenderFingerprint(
     stickerKey,
     String(message.embedsCount),
     embedKey,
+    reactionKey,
     message.localStatus ?? "",
     message.localError ?? "",
     message.localSendContent ?? "",

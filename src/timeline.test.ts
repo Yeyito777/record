@@ -30,6 +30,7 @@ function message(
     guildId?: string | null;
     roleIds?: string[];
     mentionUsers?: DiscordMessage["mentionUsers"];
+    reactions?: DiscordMessage["reactions"];
   } = {},
 ): DiscordMessage {
   return {
@@ -56,6 +57,7 @@ function message(
     attachments: [],
     stickerNames: [],
     embedsCount: 0,
+    reactions: options.reactions ?? [],
   };
 }
 
@@ -153,6 +155,28 @@ describe("timeline rendering", () => {
     expect(plainLines[0]).toBe("");
     expect(plainLines.some((line) => line.includes("⠋ Loading messages…"))).toBe(true);
     expect(plainLines.at(-1) ?? "").toContain("from gateway");
+  });
+
+  test("renders reactions as emoji chips under messages", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "reactable", {
+      reactions: [
+        { count: 2, me: true, emoji: { id: null, name: "👍", animated: false } },
+        { count: 1, me: false, emoji: { id: "emoji-1", name: "blobcat", animated: false } },
+      ],
+    })]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines).toContain("reactable");
+    expect(plainLines).toContain("╰─ 👍 2 :blobcat: 1");
   });
 
   test("shows a top loader while fetching older messages", () => {

@@ -49,6 +49,25 @@ describe("app gateway helpers", () => {
     expect(updates).toEqual([{ userId: "user-1", channelId: "voice-1", guildId: "guild-1", sessionId: null, displayName: "Alice", roleIds: ["role-1"], selfMute: false, selfDeaf: false, mute: false, deaf: false }]);
   });
 
+  test("dispatches message reaction gateway events as message patches", () => {
+    const patches: unknown[] = [];
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: (patch) => patches.push(patch), onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    client.currentUserId = "viewer";
+
+    client.handleMessage({ data: JSON.stringify({
+      op: 0,
+      t: "MESSAGE_REACTION_ADD",
+      d: { message_id: "message-1", channel_id: "channel-1", user_id: "viewer", emoji: { id: null, name: "👍" } },
+    }) });
+
+    expect(patches).toEqual([{
+      id: "message-1",
+      channelId: "channel-1",
+      guildId: undefined,
+      reactionUpdate: { type: "add", emoji: { id: null, name: "👍", animated: false }, me: true },
+    }]);
+  });
+
   test("extracts initial unread DM notifications from READY read state", () => {
     const notifications = extractInitialNotifications({
       private_channels: [

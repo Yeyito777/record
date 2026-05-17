@@ -208,6 +208,19 @@ export interface DiscordMessageResponse {
   attachments?: DiscordAttachmentResponse[];
   embeds?: DiscordEmbedResponse[];
   sticker_items?: DiscordStickerItemResponse[];
+  reactions?: DiscordMessageReactionResponse[];
+}
+
+export interface DiscordMessageReactionEmojiResponse {
+  id?: string | null;
+  name?: string | null;
+  animated?: boolean;
+}
+
+export interface DiscordMessageReactionResponse {
+  count?: number;
+  me?: boolean;
+  emoji?: DiscordMessageReactionEmojiResponse | null;
 }
 
 export interface DiscordIdentity {
@@ -301,6 +314,24 @@ export interface DiscordMessageCall {
   participantIds: string[];
 }
 
+export interface DiscordMessageReactionEmoji {
+  id: string | null;
+  name: string;
+  animated: boolean;
+}
+
+export interface DiscordMessageReaction {
+  emoji: DiscordMessageReactionEmoji;
+  count: number;
+  me: boolean;
+}
+
+export type DiscordMessageReactionUpdate =
+  | { type: "add"; emoji: DiscordMessageReactionEmoji; me: boolean }
+  | { type: "remove"; emoji: DiscordMessageReactionEmoji; me: boolean }
+  | { type: "clearEmoji"; emoji: DiscordMessageReactionEmoji }
+  | { type: "clear" };
+
 export type DiscordMessageLocalStatus = "pending" | "failed";
 
 export interface DiscordMessage {
@@ -329,6 +360,7 @@ export interface DiscordMessage {
   stickerNames: string[];
   embedsCount: number;
   embeds?: DiscordMessageEmbed[];
+  reactions?: DiscordMessageReaction[];
   localStatus?: DiscordMessageLocalStatus;
   localError?: string;
   /** Actual content sent to Discord when it differs from the friendly local prompt text. */
@@ -358,6 +390,8 @@ export interface DiscordMessagePatch {
   stickerNames?: string[];
   embedsCount?: number;
   embeds?: DiscordMessageEmbed[];
+  reactions?: DiscordMessageReaction[];
+  reactionUpdate?: DiscordMessageReactionUpdate;
 }
 
 export function formatDiscordDisplayName(user: DiscordIdentity): string {
@@ -633,6 +667,125 @@ function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
     description: embed.description ?? null,
     providerName: embed.provider?.name ?? null,
     authorName: embed.author?.name ?? null,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function mapDiscordReactionEmoji(emoji: unknown): DiscordMessageReactionEmoji | null {
+  if (!isRecord(emoji)) return null;
+  const id = typeof emoji.id === "string" && emoji.id.trim() ? emoji.id : null;
+  const name = typeof emoji.name === "string" && emoji.name.trim()
+    ? emoji.name
+    : id;
+  if (!name) return null;
+  return {
+    id,
+    name,
+    animated: emoji.animated === true,
+  };
+}
+
+function mapDiscordReaction(reaction: DiscordMessageReactionResponse): DiscordMessageReaction | null {
+  const emoji = mapDiscordReactionEmoji(reaction.emoji);
+  if (!emoji) return null;
+  const count = typeof reaction.count === "number" && Number.isFinite(reaction.count)
+    ? Math.max(0, Math.floor(reaction.count))
+    : 0;
+  if (count <= 0) return null;
+  return {
+    emoji,
+    count,
+    me: reaction.me === true,
+  };
+}
+
+function mapDiscordReactions(reactions: DiscordMessageReactionResponse[] | undefined): DiscordMessageReaction[] | undefined {
+  if (reactions === undefined) return undefined;
+  return reactions
+    .map(mapDiscordReaction)
+    .filter((reaction): reaction is DiscordMessageReaction => reaction !== null);
+}
+
+function reactionKey(emoji: DiscordMessageReactionEmoji): string {
+  return emoji.id ? `id:${emoji.id}` : `name:${emoji.name}`;
+}
+
+function sameReactionEmoji(left: DiscordMessageReactionEmoji, right: DiscordMessageReactionEmoji): boolean {
+  return reactionKey(left) === reactionKey(right);
+}
+
+function cloneReaction(reaction: DiscordMessageReaction): DiscordMessageReaction {
+  return { ...reaction, emoji: { ...reaction.emoji } };
+}
+
+function applyDiscordReactionUpdate(
+  reactions: readonly DiscordMessageReaction[] | undefined,
+  update: DiscordMessageReactionUpdate,
+): DiscordMessageReaction[] {
+  if (update.type === "clear") return [];
+
+  const next = (reactions ?? []).map(cloneReaction);
+  const index = next.findIndex((reaction) => sameReactionEmoji(reaction.emoji, update.emoji));
+
+  if (update.type === "clearEmoji") {
+    return index >= 0 ? next.filter((_, reactionIndex) => reactionIndex !== index) : next;
+  }
+
+  if (update.type === "add") {
+    if (index >= 0) {
+      const existing = next[index]!;
+      next[index] = { ...existing, count: existing.count + 1, me: existing.me || update.me };
+    } else {
+      next.push({ emoji: { ...update.emoji }, count: 1, me: update.me });
+    }
+    return next;
+  }
+
+  if (index < 0) return next;
+  const existing = next[index]!;
+  const count = existing.count - 1;
+  if (count <= 0) {
+    next.splice(index, 1);
+  } else {
+    next[index] = { ...existing, count, me: update.me ? false : existing.me };
+  }
+  return next;
+}
+
+export function mapDiscordMessageReactionPatch(
+  data: unknown,
+  type: DiscordMessageReactionUpdate["type"],
+  currentUserId: string | null | undefined = null,
+): DiscordMessagePatch | null {
+  if (!isRecord(data) || typeof data.message_id !== "string" || typeof data.channel_id !== "string") return null;
+  const base = {
+    id: data.message_id,
+    channelId: data.channel_id,
+    guildId: typeof data.guild_id === "string" ? data.guild_id : undefined,
+  };
+
+  if (type === "clear") {
+    return { ...base, reactionUpdate: { type } };
+  }
+
+  const emoji = mapDiscordReactionEmoji(data.emoji);
+  if (!emoji) return null;
+
+  if (type === "clearEmoji") {
+    return { ...base, reactionUpdate: { type, emoji } };
+  }
+
+  const userId = typeof data.user_id === "string" ? data.user_id : null;
+  return {
+    ...base,
+    reactionUpdate: {
+      type,
+      emoji,
+      me: Boolean(currentUserId && userId === currentUserId),
+    },
   };
 }
 
@@ -959,6 +1112,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     stickerNames: message.sticker_items?.map((sticker) => sticker.name),
     embedsCount: message.embeds?.length,
     embeds: message.embeds?.map(mapDiscordEmbed),
+    reactions: mapDiscordReactions(message.reactions),
   };
 }
 
@@ -985,6 +1139,11 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
     stickerNames: patch.stickerNames ?? message.stickerNames,
     embedsCount: patch.embedsCount ?? message.embedsCount,
     embeds: patch.embeds ?? message.embeds,
+    reactions: patch.reactions !== undefined
+      ? patch.reactions
+      : patch.reactionUpdate
+        ? applyDiscordReactionUpdate(message.reactions, patch.reactionUpdate)
+        : message.reactions,
   };
 }
 
@@ -1015,6 +1174,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     stickerNames: patch.stickerNames ?? [],
     embedsCount: patch.embedsCount ?? 0,
     embeds: patch.embeds ?? [],
+    reactions: patch.reactions ?? [],
   };
 }
 

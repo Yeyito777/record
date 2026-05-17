@@ -16,6 +16,7 @@ import {
   isDirectMessageChannel,
   isGuildVoiceChannel,
   mapDiscordMessagePatch,
+  mapDiscordMessageReactionPatch,
   deleteChannelMessage,
   editChannelMessage,
   sendChannelMessage,
@@ -445,6 +446,76 @@ describe("discord helpers", () => {
     const replyMessage = messages.find((message) => message.id === "message-2");
     expect(stickerMessage?.stickerNames).toEqual(["catjam"]);
     expect(replyMessage?.reply?.summary).toBe("[sticker] catjam");
+  });
+
+  test("maps message reactions from REST payloads", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "reactable",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+          reactions: [
+            { count: 3, me: true, emoji: { id: null, name: "👍" } },
+            { count: 1, me: false, emoji: { id: "emoji-1", name: "blobcat", animated: true } },
+          ],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.reactions).toEqual([
+      { count: 3, me: true, emoji: { id: null, name: "👍", animated: false } },
+      { count: 1, me: false, emoji: { id: "emoji-1", name: "blobcat", animated: true } },
+    ]);
+  });
+
+  test("applies gateway reaction add and remove patches", () => {
+    const existing = {
+      id: "message-1",
+      channelId: "channel-1",
+      type: 0,
+      content: "old",
+      mentionEveryone: false,
+      mentionRoleIds: [],
+      mentionUserIds: [],
+      timestamp: Date.parse("2026-01-01T12:00:00.000Z"),
+      editedTimestamp: null,
+      author: { id: "user-1", username: "tester", displayName: "Tester", bot: false },
+      reply: null,
+      call: null,
+      attachments: [],
+      stickerNames: [],
+      embedsCount: 0,
+      reactions: [{ count: 1, me: false, emoji: { id: null, name: "👍", animated: false } }],
+    };
+
+    const addPatch = mapDiscordMessageReactionPatch({
+      message_id: "message-1",
+      channel_id: "channel-1",
+      user_id: "viewer",
+      emoji: { id: null, name: "👍" },
+    }, "add", "viewer");
+    const added = applyDiscordMessagePatch(existing, addPatch!);
+
+    expect(added.reactions).toEqual([{ count: 2, me: true, emoji: { id: null, name: "👍", animated: false } }]);
+
+    const removePatch = mapDiscordMessageReactionPatch({
+      message_id: "message-1",
+      channel_id: "channel-1",
+      user_id: "viewer",
+      emoji: { id: null, name: "👍" },
+    }, "remove", "viewer");
+
+    expect(applyDiscordMessagePatch(added, removePatch!).reactions).toEqual([
+      { count: 1, me: false, emoji: { id: null, name: "👍", animated: false } },
+    ]);
   });
 
   test("maps Discord call payloads", async () => {
