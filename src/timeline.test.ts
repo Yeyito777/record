@@ -9,6 +9,7 @@ import {
   renderTimelineLines,
   setTimelineMessages,
   setTimelineRenderContext,
+  startLoadingNewerMessages,
   startLoadingOlderMessages,
 } from "./timeline";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
@@ -169,6 +170,22 @@ describe("timeline rendering", () => {
     );
 
     expect(rendered.lines[0]).toContain("⠋ Loading older messages…");
+  });
+
+  test("shows a bottom loader while fetching newer messages", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("1", "older")], { hasNewer: true });
+    startLoadingNewerMessages(timeline);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.allLines.at(-1)).toContain("⠋ Loading newer messages…");
   });
 
   test("prepending older messages shifts scroll to preserve the current viewport", () => {

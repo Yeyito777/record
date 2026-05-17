@@ -4,7 +4,9 @@ import {
   DIRECT_MESSAGES_GUILD_ID,
   acceptDiscordInvite,
   ackChannelMessage,
+  fetchChannelMessagesAfter,
   fetchChannelMessages,
+  fetchChannelMessagesAround,
   applyDiscordMessagePatch,
   fetchDirectMessages,
   fetchGuilds,
@@ -340,6 +342,64 @@ describe("discord helpers", () => {
       summary: "hello there · 📎 cat.png • 123 B · ↳ Example: Cat story",
       mentionRoleIds: ["role-1"],
     });
+  });
+
+  test("fetches a chunk around a target message id", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify([
+        {
+          id: "message-2",
+          channel_id: "channel-1",
+          content: "newer",
+          timestamp: "2026-01-01T12:02:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        },
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "target",
+          timestamp: "2026-01-01T12:01:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessagesAround("token", "channel-1", "message-1", 25);
+
+    expect(requests).toEqual(["https://discord.com/api/v9/channels/channel-1/messages?limit=25&around=message-1"]);
+    expect(messages.map((message) => message.id)).toEqual(["message-1", "message-2"]);
+  });
+
+  test("fetches messages after a known message id", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify([
+        {
+          id: "message-3",
+          channel_id: "channel-1",
+          content: "newest",
+          timestamp: "2026-01-01T12:03:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessagesAfter("token", "channel-1", 25, "message-2");
+
+    expect(requests).toEqual(["https://discord.com/api/v9/channels/channel-1/messages?limit=25&after=message-2"]);
+    expect(messages.map((message) => message.id)).toEqual(["message-3"]);
   });
 
   test("maps sticker-only messages and reply previews", async () => {

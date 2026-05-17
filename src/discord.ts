@@ -1022,6 +1022,29 @@ export async function fetchChannelMessages(
   return resolveReplyPreviewsFromMessages(messages.map(mapDiscordMessage).reverse());
 }
 
+export async function fetchChannelMessagesAfter(
+  token: string,
+  channelId: string,
+  limit = 50,
+  after?: string,
+): Promise<DiscordMessage[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (after) query.set("after", after);
+  const messages = await apiGetJson<DiscordMessageResponse[]>(token, `/channels/${channelId}/messages?${query.toString()}`);
+  return resolveReplyPreviewsFromMessages(messages.map(mapDiscordMessage).reverse());
+}
+
+export async function fetchChannelMessagesAround(
+  token: string,
+  channelId: string,
+  messageId: string,
+  limit = 50,
+): Promise<DiscordMessage[]> {
+  const query = new URLSearchParams({ limit: String(limit), around: messageId });
+  const messages = await apiGetJson<DiscordMessageResponse[]>(token, `/channels/${channelId}/messages?${query.toString()}`);
+  return resolveReplyPreviewsFromMessages(messages.map(mapDiscordMessage).reverse());
+}
+
 export interface SendMessageReplyOptions {
   messageId: string;
   channelId: string;

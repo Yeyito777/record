@@ -22,6 +22,8 @@ import {
   ackChannelMessage,
   fetchChannelMessage,
   fetchChannelMessages,
+  fetchChannelMessagesAfter,
+  fetchChannelMessagesAround,
   editChannelMessage,
   deleteChannelMessage,
   fetchDirectMessages,
@@ -128,8 +130,10 @@ import {
   type SidebarVoiceMember,
 } from "./sidebar";
 import {
+  appendTimelineMessages,
   appendTimelineMessage,
   clearTimeline,
+  finishLoadingNewerMessages,
   finishLoadingOlderMessages,
   insertTimelineMessageAt,
   isTimelineNearBottom,
@@ -2536,6 +2540,86 @@ export async function loadOlderChannelMessages(
     finishLoadingOlderMessages(state.timeline, state.timeline.hasOlder);
     setNotice(state, error instanceof Error ? error.message : String(error), "error");
     effects.scheduleRender();
+  }
+}
+
+export async function loadNewerChannelMessages(
+  state: AppState,
+  token: string,
+  channelId: string,
+  effects: SessionEffects,
+): Promise<void> {
+  const newestMessageId = state.timeline.messages.at(-1)?.id;
+  if (!newestMessageId || state.timeline.channelId !== channelId) {
+    finishLoadingNewerMessages(state.timeline, false);
+    effects.scheduleRender();
+    return;
+  }
+
+  const existingIds = new Set(state.timeline.messages.map((message) => message.id));
+  const requestId = ++state.timeline.requestId;
+
+  try {
+    const newerMessages = await fetchChannelMessagesAfter(token, channelId, MESSAGE_PAGE_LIMIT, newestMessageId);
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
+
+    const guildId = state.channelList.activeChannel?.guildId ?? null;
+    const dedupedWithGuildIds = newerMessages
+      .filter((message) => !existingIds.has(message.id))
+      .map((message) => withMessageGuildId(message, guildId));
+    const { messages: deduped } = hydrateMissingReplyPreviewsFromKnownMessages(state, dedupedWithGuildIds);
+    const hasNewer = newerMessages.length >= MESSAGE_PAGE_LIMIT;
+    recordMessagesRoleIds(state, deduped, guildId);
+    setCachedChannelMessages(state.messageCacheByChannelId, channelId, deduped, { updatedAt: Date.now(), replace: false, latestFetched: false });
+    persistChannelMessageCache(state, channelId);
+    appendTimelineMessages(state.timeline, deduped, { hasNewer });
+    deduped.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
+    effects.scheduleRender();
+  } catch (error) {
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
+    finishLoadingNewerMessages(state.timeline, state.timeline.hasNewer);
+    setNotice(state, error instanceof Error ? error.message : String(error), "error");
+    effects.scheduleRender();
+  }
+}
+
+export async function loadChannelMessagesAround(
+  state: AppState,
+  token: string,
+  channelId: string,
+  messageId: string,
+  effects: SessionEffects,
+): Promise<boolean> {
+  if (state.timeline.channelId !== channelId) return false;
+
+  const requestId = ++state.timeline.requestId;
+  state.timeline.loading = true;
+  effects.scheduleRender();
+
+  try {
+    const fetchedMessages = await fetchChannelMessagesAround(token, channelId, messageId, MESSAGE_PAGE_LIMIT);
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return false;
+
+    const guildId = state.channelList.activeChannel?.guildId ?? null;
+    const withGuildIds = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
+    const { messages } = hydrateMissingReplyPreviewsFromKnownMessages(state, withGuildIds);
+    const hasOlder = messages.length >= MESSAGE_PAGE_LIMIT;
+    const hasNewer = messages.length >= MESSAGE_PAGE_LIMIT;
+    recordMessagesRoleIds(state, messages, guildId);
+    setCachedChannelMessages(state.messageCacheByChannelId, channelId, messages, { hasOlder, updatedAt: Date.now(), replace: false, latestFetched: false });
+    persistChannelMessageCache(state, channelId);
+    setTimelineMessages(state.timeline, channelId, messages, { hasOlder, hasNewer });
+    messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
+    return messages.some((message) => message.id === messageId);
+  } catch (error) {
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return false;
+    state.timeline.loading = false;
+    setNotice(state, error instanceof Error ? error.message : String(error), "error", { statusLine: false, chat: true });
+    return false;
+  } finally {
+    if (requestId === state.timeline.requestId && state.timeline.channelId === channelId) {
+      effects.scheduleRender();
+    }
   }
 }
 
