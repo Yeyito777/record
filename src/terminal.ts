@@ -10,7 +10,9 @@ export const hideCursor = `${ESC}?25l`;
 export const showCursor = `${ESC}?25h`;
 export const enableBracketedPaste = `${ESC}?2004h`;
 export const disableBracketedPaste = `${ESC}?2004l`;
-export const enableKittyKeyboard = `${ESC}>1u`;
+// Push kitty keyboard mode: disambiguate + report event types + all keys + associated text.
+// The event-type flag is what lets hold-to-talk see space releases.
+export const enableKittyKeyboard = `${ESC}>27u`;
 export const disableKittyKeyboard = `${ESC}<u`;
 export const clearLine = `${ESC}2K`;
 export const cursorBlock = `${ESC}2 q`;

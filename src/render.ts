@@ -46,6 +46,7 @@ import { theme } from "./theme";
 import { renderTimelineLines, setTimelineRenderContext } from "./timeline";
 import { renderTopbar } from "./topbar";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
+import { voiceMessagePromptText } from "./voice-message";
 
 function renderImageIndicator(state: AppState, width: number): string {
   const images = state.pendingImages;
@@ -321,10 +322,13 @@ export function render(state: AppState): void {
   const bottomStatusRows = statusHeight > 0 ? statusHeight + 1 : 0;
   const imageIndicatorRows = state.pendingImages.length > 0 ? 1 : 0;
 
+  const voicePromptText = state.voiceMessagePrompt ? voiceMessagePromptText(state.voiceMessagePrompt) : null;
+  const promptBuffer = voicePromptText ?? state.editor.buffer;
+  const promptCursor = voicePromptText ? promptBuffer.length : displayCursor(state.editor);
   const maxInputWidth = Math.max(1, mainW - PROMPT_PREFIX_WIDTH);
   const input = getInputLines(
-    state.editor.buffer,
-    displayCursor(state.editor),
+    promptBuffer,
+    promptCursor,
     maxInputWidth,
     Math.max(1, Math.min(MAX_PROMPT_ROWS, rows - 3 - bottomStatusRows - imageIndicatorRows)),
     state.editor.scroll,
@@ -461,8 +465,8 @@ export function render(state: AppState): void {
     emitMemberListCol(imageIndicatorRow);
   }
 
-  const offsets = wrappedLineOffsets(state.editor.buffer, maxInputWidth);
-  const promptInVisual = promptFocused && (state.editor.mode === "visual" || state.editor.mode === "visual-line");
+  const offsets = wrappedLineOffsets(promptBuffer, maxInputWidth);
+  const promptInVisual = !voicePromptText && promptFocused && (state.editor.mode === "visual" || state.editor.mode === "visual-line");
   const selection = promptInVisual
     ? getVisualRange(state.editor.buffer, state.editor.visualAnchor, state.editor.cursor, state.editor.mode)
     : null;
@@ -486,7 +490,9 @@ export function render(state: AppState): void {
       );
     } else {
       lineContent = `${theme.text}${input.lines[i] ?? ""}${theme.reset}`;
-      if (state.editor.buffer.length > 0) {
+      if (voicePromptText) {
+        lineContent = `${theme.muted}${input.lines[i] ?? ""}${theme.reset}`;
+      } else if (state.editor.buffer.length > 0) {
         lineContent = highlightPromptViewport(input.lines[i] ?? "", state.editor.buffer, offsets[input.scrollOffset + i] ?? 0, state);
       }
     }

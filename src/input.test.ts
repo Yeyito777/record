@@ -59,6 +59,11 @@ describe("input parser", () => {
     expect(parseInput("\x1b[13;2u")).toEqual([{ type: "shift-enter" }]);
   });
 
+  test("parses kitty all-key printable presses and releases", () => {
+    expect(parseInput("\x1b[97;1:1;97u")).toEqual([{ type: "char", char: "a", event: "press" }]);
+    expect(parseInput("\x1b[32;1:3;32u")).toEqual([{ type: "char", char: " ", event: "release" }]);
+  });
+
   test("parses st ctrl-number-row symbol function keys", () => {
     expect(parseInput("\x1b[1;2Q")).toEqual([{ type: "f14" }]);
     expect(parseInput("\x1b[1;2R")).toEqual([{ type: "f15" }]);

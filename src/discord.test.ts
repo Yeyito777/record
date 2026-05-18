@@ -813,6 +813,53 @@ describe("discord helpers", () => {
     expect(message.attachments[0]?.filename).toBe("image-1.png");
   });
 
+  test("posts Discord voice-message metadata with the upload", async () => {
+    let requestedBody: BodyInit | null | undefined = null;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = init?.body;
+      return new Response(JSON.stringify({
+        id: "message-voice",
+        channel_id: "channel-1",
+        type: 0,
+        content: "",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        attachments: [{
+          id: "attachment-1",
+          filename: "voice-message.ogg",
+          content_type: "audio/ogg",
+          size: 4,
+          url: "https://cdn.example/voice-message.ogg",
+          duration_secs: 1.25,
+          waveform: "AAAA",
+        }],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const message = await sendChannelMessage("token", "channel-1", "", {
+      flags: 8192,
+      uploads: [{
+        filename: "voice-message.ogg",
+        mediaType: "audio/ogg",
+        base64: Buffer.from("test").toString("base64"),
+        durationSecs: 1.25,
+        waveform: "AAAA",
+      }],
+    });
+
+    const form = requestedBody as unknown as FormData;
+    expect(JSON.parse(String(form.get("payload_json")))).toEqual({
+      content: "",
+      tts: false,
+      flags: 8192,
+      attachments: [{ id: "0", filename: "voice-message.ogg", duration_secs: 1.25, waveform: "AAAA" }],
+    });
+    expect(message.attachments[0]?.durationSecs).toBe(1.25);
+    expect(message.attachments[0]?.waveform).toBe("AAAA");
+  });
+
   test("omits guild_id when sending a direct-message reply", async () => {
     let requestedBody = "";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

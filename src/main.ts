@@ -59,6 +59,7 @@ import {
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
   persistSidebarFolders,
+  sendCurrentChannelVoiceMessage,
   startCurrentVoiceCall,
   syncMemberListForCurrentChannel,
   toggleSelectedGuildMute,
@@ -123,6 +124,7 @@ import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
 import { downloadAttachment, openTargetDetached, type AttachmentDownloadProgress } from "./openable";
+import { createVoiceMessageController } from "./voice-message-controller";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("record needs an interactive TTY.");
@@ -221,6 +223,8 @@ function scheduleRender(): void {
     render(state);
   }, 16);
 }
+
+let voiceMessageController: ReturnType<typeof createVoiceMessageController> | null = null;
 
 function clearNoticeLater(text: string, delayMs: number): void {
   setTimeout(() => {
@@ -1337,6 +1341,9 @@ function handleKey(key: KeyEvent): void {
     return;
   }
 
+  if (voiceMessageController?.handleKey(key)) return;
+  if (key.event === "release") return;
+
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.sidebar.prompt) {
     handleSidebarFocused(key);
     return;
@@ -1406,6 +1413,7 @@ function cleanup(): void {
     renderTimer = null;
   }
   stopLoadingAnimation();
+  voiceMessageController?.cleanup();
   disconnectMemberListGateway();
   disconnectAppGateway();
   flushDataCacheSync();
@@ -1419,6 +1427,10 @@ const effects: AppEffects = {
   applyThemeCursor,
   bootstrapSession,
 };
+
+voiceMessageController = createVoiceMessageController(state, scheduleRender, {
+  sendVoiceMessage: (clip) => sendCurrentChannelVoiceMessage(state, state.auth.savedToken, clip, effects),
+});
 
 async function main(): Promise<void> {
   setupTerminal();

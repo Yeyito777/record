@@ -18,6 +18,7 @@ import { normalizeToken } from "./token";
 import type { ClipboardImageAttachment } from "./imageclipboard";
 import type { NoticeTone } from "./theme";
 import type { VoiceConnectionState } from "./voice";
+import type { VoiceMessagePromptState } from "./voice-message";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "./volume";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
@@ -113,6 +114,7 @@ export interface AppState {
   editTarget: EditTarget | null;
   messageDeletePending: MessageDeletePending | null;
   voiceCall: VoiceCallStatus | null;
+  voiceMessagePrompt: VoiceMessagePromptState | null;
   audio: LocalAudioVolumes;
   noiseSuppression: NoiseSuppressionMode;
   roleIdsByGuildId: Record<string, string[]>;
@@ -162,6 +164,7 @@ export function createInitialState(
     editTarget: null,
     messageDeletePending: null,
     voiceCall: null,
+    voiceMessagePrompt: null,
     audio: {
       micVolume: options.micGainDb ?? DEFAULT_LOCAL_GAIN_DB,
       speakerVolume: DEFAULT_LOCAL_GAIN_DB,

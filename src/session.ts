@@ -103,6 +103,7 @@ import {
   setMemberListMessage,
 } from "./memberlist";
 import type { AppState } from "./state";
+import { VOICE_MESSAGE_FLAG, type VoiceMessageClip } from "./voice-message";
 import {
   clearChannelNotifications,
   clearGuildNotifications,
@@ -205,6 +206,8 @@ interface LocalMessageUpload {
   mediaType: string;
   base64: string;
   sizeBytes: number;
+  durationSecs?: number;
+  waveform?: string;
 }
 
 function buildDirectMessageMemberList(state: AppState): DiscordGuildMember[] {
@@ -2706,6 +2709,8 @@ function uploadOptionsForFiles(files: LocalMessageUpload[]): SendMessageUpload[]
     filename: file.filename,
     mediaType: file.mediaType,
     base64: file.base64,
+    durationSecs: file.durationSecs,
+    waveform: file.waveform,
   }));
 }
 
@@ -2716,6 +2721,8 @@ function localAttachmentsForFiles(files: LocalMessageUpload[]): DiscordMessageAt
     contentType: file.mediaType,
     size: file.sizeBytes,
     url: "",
+    durationSecs: file.durationSecs,
+    waveform: file.waveform,
   }));
 }
 
@@ -2874,7 +2881,7 @@ export function sendCurrentChannelMessage(
   token: string | null,
   content: string,
   effects: SessionEffects,
-  options: { sendContent?: string; localMentionUsers?: DiscordGuildMember[]; uploads?: LocalMessageUpload[]; failureBuffer?: string; loadingNotice?: string; failureNoticePrefix?: string } = {},
+  options: { sendContent?: string; localMentionUsers?: DiscordGuildMember[]; uploads?: LocalMessageUpload[]; failureBuffer?: string; loadingNotice?: string; failureNoticePrefix?: string; messageFlags?: number } = {},
 ): void {
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
   if (!token) {
@@ -2951,7 +2958,7 @@ export function sendCurrentChannelMessage(
 
   void (async () => {
     try {
-      const sentMessage = await sendChannelMessage(token, channelId, sendContent, { reply: replyOptions, uploads });
+      const sentMessage = await sendChannelMessage(token, channelId, sendContent, { reply: replyOptions, uploads, flags: options.messageFlags });
       const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, localMessageId, message);
@@ -3054,6 +3061,19 @@ export function uploadCurrentChannelFile(
   setNotice(state, `Uploading ${info.filename}…`, "muted", { loading: true, chat: false });
   effects.scheduleRender();
   void prepareAndSend();
+}
+
+export function sendCurrentChannelVoiceMessage(
+  state: AppState,
+  token: string | null,
+  clip: VoiceMessageClip,
+  effects: SessionEffects,
+): void {
+  sendCurrentChannelMessage(state, token, "", effects, {
+    uploads: [clip],
+    messageFlags: VOICE_MESSAGE_FLAG,
+    failureBuffer: "",
+  });
 }
 
 function selectedGuildVoiceChannel(state: AppState): DiscordChannel | null {

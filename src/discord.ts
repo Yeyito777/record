@@ -148,6 +148,8 @@ export interface DiscordAttachmentResponse {
   content_type?: string | null;
   size: number;
   url: string;
+  duration_secs?: number;
+  waveform?: string;
 }
 
 export interface DiscordMessageReferenceResponse {
@@ -269,6 +271,8 @@ export interface DiscordMessageAttachment {
   contentType: string | null;
   size: number;
   url: string;
+  durationSecs?: number;
+  waveform?: string;
 }
 
 export interface DiscordMessageEmbed {
@@ -1108,6 +1112,8 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
       contentType: attachment.content_type ?? null,
       size: attachment.size,
       url: attachment.url,
+      durationSecs: attachment.duration_secs,
+      waveform: attachment.waveform,
     })),
     stickerNames: message.sticker_items?.map((sticker) => sticker.name),
     embedsCount: message.embeds?.length,
@@ -1238,11 +1244,14 @@ export interface SendMessageUpload {
   filename: string;
   mediaType: string;
   base64: string;
+  durationSecs?: number;
+  waveform?: string;
 }
 
 export interface SendMessageOptions {
   reply?: SendMessageReplyOptions | null;
   uploads?: SendMessageUpload[];
+  flags?: number;
 }
 
 export async function sendChannelMessage(
@@ -1285,6 +1294,7 @@ export async function deleteChannelMessage(token: string, channelId: string, mes
 
 function buildSendMessagePayload(content: string, options: SendMessageOptions): Record<string, unknown> {
   const body: Record<string, unknown> = { content, tts: false };
+  if (options.flags !== undefined) body.flags = options.flags;
   const reply = options.reply;
   if (reply) {
     const reference: Record<string, string> = {
@@ -1303,10 +1313,15 @@ function buildSendMessagePayload(content: string, options: SendMessageOptions): 
 
   const uploads = options.uploads ?? [];
   if (uploads.length > 0) {
-    body.attachments = uploads.map((upload, index) => ({
-      id: String(index),
-      filename: upload.filename,
-    }));
+    body.attachments = uploads.map((upload, index) => {
+      const attachment: Record<string, unknown> = {
+        id: String(index),
+        filename: upload.filename,
+      };
+      if (upload.durationSecs !== undefined) attachment.duration_secs = upload.durationSecs;
+      if (upload.waveform !== undefined) attachment.waveform = upload.waveform;
+      return attachment;
+    });
   }
 
   return body;
