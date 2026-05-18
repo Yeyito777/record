@@ -147,7 +147,6 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     const args = [
       ...this.command.slice(1),
       "--audio-port", String(audioPort),
-      "--video-ssrc", String(context.videoSsrc),
       "--audio-ssrc", String(context.ssrc),
       "--parent-pid", String(process.pid),
     ];

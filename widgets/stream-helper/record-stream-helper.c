@@ -27,9 +27,7 @@ struct geometry {
 };
 
 struct options {
-    int video_port;
     int audio_port;
-    unsigned video_ssrc;
     unsigned audio_ssrc;
     pid_t parent_pid;
 };
@@ -50,7 +48,7 @@ static void on_signal(int sig)
 static void usage(FILE *out)
 {
     fprintf(out,
-        "Usage: record-stream-helper --audio-port PORT [--video-ssrc SSRC] --audio-ssrc SSRC [--parent-pid PID]\n"
+        "Usage: record-stream-helper --audio-port PORT --audio-ssrc SSRC [--parent-pid PID]\n"
         "\n"
         "Captures the first X11 monitor and default PulseAudio/PipeWire monitor,\n"
         "writes Annex-B H.264 video to stdout, sends Opus RTP to localhost,\n"
@@ -145,12 +143,8 @@ static int parse_options(int argc, char **argv, struct options *opts)
         if (!strcmp(arg, "--help") || !strcmp(arg, "-h")) {
             usage(stdout);
             exit(0);
-        } else if (!strcmp(arg, "--video-port") && i + 1 < argc) {
-            if (parse_int(argv[++i], &opts->video_port) < 0) return -1;
         } else if (!strcmp(arg, "--audio-port") && i + 1 < argc) {
             if (parse_int(argv[++i], &opts->audio_port) < 0) return -1;
-        } else if (!strcmp(arg, "--video-ssrc") && i + 1 < argc) {
-            if (parse_uint(argv[++i], &opts->video_ssrc) < 0) return -1;
         } else if (!strcmp(arg, "--audio-ssrc") && i + 1 < argc) {
             if (parse_uint(argv[++i], &opts->audio_ssrc) < 0) return -1;
         } else if (!strcmp(arg, "--parent-pid") && i + 1 < argc) {
