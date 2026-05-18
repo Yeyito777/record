@@ -3358,6 +3358,7 @@ export function startCurrentStream(state: AppState, effects: SessionEffects): vo
 
   void controller.start().then(() => {
     if (streamController !== controller) return;
+    playSoundEffect("streamStarted");
     setNotice(state, "Streaming first monitor with desktop audio.", "success", { chat: false });
     effects.scheduleRender();
   }).catch((error) => {

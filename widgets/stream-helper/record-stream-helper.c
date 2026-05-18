@@ -219,16 +219,19 @@ static Window create_overlay_window(Display *dpy, Window root, int x, int y, uns
 
 static void position_border_windows(Display *dpy, Window border[4], int screen_w, int screen_h, const struct geometry *geo)
 {
-    int left_x = geo->x > 0 ? geo->x - 2 : geo->x;
-    int right_x = geo->x + geo->w < screen_w ? geo->x + geo->w : geo->x + geo->w - 2;
-    int top_y = geo->y > 0 ? geo->y - 2 : geo->y;
-    int bottom_y = geo->y + geo->h < screen_h ? geo->y + geo->h : geo->y + geo->h - 2;
-    int horiz_w = geo->w + (geo->x > 0 ? 2 : 0) + (geo->x + geo->w < screen_w ? 2 : 0);
-    if (horiz_w < 2) horiz_w = 2;
-    XMoveResizeWindow(dpy, border[0], left_x, top_y, (unsigned)horiz_w, 2);
-    XMoveResizeWindow(dpy, border[1], left_x, bottom_y, (unsigned)horiz_w, 2);
-    XMoveResizeWindow(dpy, border[2], left_x, geo->y, 2, (unsigned)(geo->h > 0 ? geo->h : 2));
-    XMoveResizeWindow(dpy, border[3], right_x, geo->y, 2, (unsigned)(geo->h > 0 ? geo->h : 2));
+    (void)screen_w;
+    (void)screen_h;
+    const int thickness = 2;
+    int width = geo->w > thickness ? geo->w : thickness;
+    int height = geo->h > thickness ? geo->h : thickness;
+    int left_x = geo->x;
+    int right_x = geo->x + width - thickness;
+    int top_y = geo->y;
+    int bottom_y = geo->y + height - thickness;
+    XMoveResizeWindow(dpy, border[0], left_x, top_y, (unsigned)width, thickness);
+    XMoveResizeWindow(dpy, border[1], left_x, bottom_y, (unsigned)width, thickness);
+    XMoveResizeWindow(dpy, border[2], left_x, top_y, thickness, (unsigned)height);
+    XMoveResizeWindow(dpy, border[3], right_x, top_y, thickness, (unsigned)height);
     for (int i = 0; i < 4; ++i)
         XMapRaised(dpy, border[i]);
 }
