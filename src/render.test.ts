@@ -155,6 +155,17 @@ describe("render", () => {
     expect(output.indexOf("📎 Image pasted")).toBeLessThan(output.indexOf("I\x1b["));
   });
 
+  test("renders voice-message listening prompt in the theme accent color", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 80;
+    state.rows = 10;
+    state.voiceMessagePrompt = { phase: "recording", frameIndex: 0 };
+
+    const output = captureRender(state);
+
+    expect(output).toContain(`${theme.accent}⠋ Listening…${theme.reset}`);
+  });
+
   test("keeps status notices out of populated chat history", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.cols = 100;

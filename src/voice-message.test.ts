@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   analyzePcmWavForDiscordVoiceMessage,
+  buildFfmpegVoiceMessageEncodeArgs,
   buildDiscordVoiceWaveformFromSamples,
   chooseLinuxVoiceMessageRecorderCommand,
   voiceMessagePromptText,
@@ -41,6 +42,11 @@ describe("voice message helpers", () => {
     expect(chooseLinuxVoiceMessageRecorderCommand((command) => command === "arecord", "/tmp/in.wav")?.command).toBe("arecord");
     expect(chooseLinuxVoiceMessageRecorderCommand((command) => command === "ffmpeg", "/tmp/in.wav")?.command).toBe("ffmpeg");
     expect(chooseLinuxVoiceMessageRecorderCommand(() => false, "/tmp/in.wav")).toBeNull();
+  });
+
+  test("applies configured mic gain when encoding Ogg Opus", () => {
+    expect(buildFfmpegVoiceMessageEncodeArgs("/tmp/in.wav", "/tmp/out.ogg", 6)).toContain("volume=6dB");
+    expect(buildFfmpegVoiceMessageEncodeArgs("/tmp/in.wav", "/tmp/out.ogg", 0)).not.toContain("-af");
   });
 
   test("builds Discord waveform data and duration from PCM WAV", () => {

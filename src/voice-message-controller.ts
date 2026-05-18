@@ -42,7 +42,7 @@ export function createVoiceMessageController(
   scheduleRender: () => void,
   deps: VoiceMessageControllerDeps,
 ): VoiceMessageController {
-  const startRecorder = deps.startRecorder ?? (() => VoiceMessageRecorder.start());
+  const startRecorder = deps.startRecorder ?? (() => VoiceMessageRecorder.start(state.audio.micVolume));
   const now = deps.now ?? (() => Date.now());
   const session: VoiceMessageSession = {
     recorder: null,

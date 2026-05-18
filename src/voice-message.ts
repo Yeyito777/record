@@ -2,6 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from "child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { DEFAULT_LOCAL_GAIN_DB, formatGainDb, normalizeGainDb } from "./volume";
 
 export type VoiceMessagePromptPhase = "recording" | "sending";
 
@@ -199,11 +200,9 @@ export function analyzePcmWavForDiscordVoiceMessage(buffer: Buffer): { durationS
   };
 }
 
-function encodeOggOpus(inputPath: string, outputPath: string): void {
-  if (!commandExists("ffmpeg")) {
-    throw new Error("Voice messages require ffmpeg to encode Discord-compatible Ogg Opus audio.");
-  }
-  const result = spawnSync("ffmpeg", [
+export function buildFfmpegVoiceMessageEncodeArgs(inputPath: string, outputPath: string, micGainDb = DEFAULT_LOCAL_GAIN_DB): string[] {
+  const normalizedGain = normalizeGainDb(micGainDb);
+  return [
     "-hide_banner",
     "-loglevel",
     "error",
@@ -217,6 +216,7 @@ function encodeOggOpus(inputPath: string, outputPath: string): void {
     "1",
     "-ar",
     String(CAPTURE_SAMPLE_RATE),
+    ...(normalizedGain !== DEFAULT_LOCAL_GAIN_DB ? ["-af", `volume=${formatGainDb(normalizedGain)}dB`] : []),
     "-c:a",
     "libopus",
     "-application",
@@ -224,7 +224,14 @@ function encodeOggOpus(inputPath: string, outputPath: string): void {
     "-b:a",
     "64k",
     outputPath,
-  ], { timeout: ENCODE_TIMEOUT_MS, encoding: "utf8" });
+  ];
+}
+
+function encodeOggOpus(inputPath: string, outputPath: string, micGainDb = DEFAULT_LOCAL_GAIN_DB): void {
+  if (!commandExists("ffmpeg")) {
+    throw new Error("Voice messages require ffmpeg to encode Discord-compatible Ogg Opus audio.");
+  }
+  const result = spawnSync("ffmpeg", buildFfmpegVoiceMessageEncodeArgs(inputPath, outputPath, micGainDb), { timeout: ENCODE_TIMEOUT_MS, encoding: "utf8" });
 
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -239,14 +246,16 @@ export class VoiceMessageRecorder {
   private readonly oggPath: string;
   private readonly tmpDir: string;
   private readonly exitPromise: Promise<void>;
+  private readonly micGainDb: number;
   private stderr = "";
   private finished = false;
 
-  private constructor(child: ChildProcess, wavPath: string, oggPath: string, tmpDir: string) {
+  private constructor(child: ChildProcess, wavPath: string, oggPath: string, tmpDir: string, micGainDb = DEFAULT_LOCAL_GAIN_DB) {
     this.child = child;
     this.wavPath = wavPath;
     this.oggPath = oggPath;
     this.tmpDir = tmpDir;
+    this.micGainDb = normalizeGainDb(micGainDb);
     this.child.stderr?.on("data", (chunk: Buffer | string) => {
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       this.stderr = (this.stderr + text).slice(-4000);
@@ -257,7 +266,7 @@ export class VoiceMessageRecorder {
     });
   }
 
-  static start(): VoiceMessageRecorder {
+  static start(micGainDb = DEFAULT_LOCAL_GAIN_DB): VoiceMessageRecorder {
     if (process.platform !== "linux") {
       throw new Error(`Voice messages are currently only implemented for Linux (got ${process.platform}).`);
     }
@@ -270,7 +279,7 @@ export class VoiceMessageRecorder {
       throw new Error("Voice messages require pw-record, arecord, or ffmpeg to capture audio.");
     }
     const child = spawn(recorder.command, recorder.args, { stdio: ["ignore", "ignore", "pipe"] });
-    return new VoiceMessageRecorder(child, wavPath, oggPath, tmpDir);
+    return new VoiceMessageRecorder(child, wavPath, oggPath, tmpDir, micGainDb);
   }
 
   async stop(): Promise<VoiceMessageClip> {
@@ -312,7 +321,7 @@ export class VoiceMessageRecorder {
         throw new Error(this.stderr.trim() || "captured audio file was empty");
       }
       const analysis = analyzePcmWavForDiscordVoiceMessage(wavBytes);
-      encodeOggOpus(this.wavPath, this.oggPath);
+      encodeOggOpus(this.wavPath, this.oggPath, this.micGainDb);
       const stats = statSync(this.oggPath);
       if (!stats.isFile() || stats.size <= 0) throw new Error("encoded voice message was empty");
       const oggBytes = readFileSync(this.oggPath);

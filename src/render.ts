@@ -491,7 +491,7 @@ export function render(state: AppState): void {
     } else {
       lineContent = `${theme.text}${input.lines[i] ?? ""}${theme.reset}`;
       if (voicePromptText) {
-        lineContent = `${theme.muted}${input.lines[i] ?? ""}${theme.reset}`;
+        lineContent = `${theme.accent}${input.lines[i] ?? ""}${theme.reset}`;
       } else if (state.editor.buffer.length > 0) {
         lineContent = highlightPromptViewport(input.lines[i] ?? "", state.editor.buffer, offsets[input.scrollOffset + i] ?? 0, state);
       }
