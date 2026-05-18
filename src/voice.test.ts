@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceStateRequest } from "./voice";
+import { buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -679,6 +679,52 @@ describe("voice backend", () => {
     controller.handleVoiceServerUpdate({ token: "voice-token-2", endpoint: "voice2.example", guildId: null });
 
     await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true && controller.activeSession?.state === "ready");
+    expect(errors).toEqual([]);
+  });
+
+  test("recovers abnormal voice gateway closes without leaving the active call", async () => {
+    const signaling = new FakeSignaling();
+    const gateways: FakeGateway[] = [];
+    const joinData: VoiceGatewayJoinData[] = [];
+    const errors: string[] = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      retryDelayMs: 0,
+      createGatewayConnection: (data, callbacks) => {
+        joinData.push(data);
+        const gateway = new FakeGateway(callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+      onError: (error) => errors.push(error.message),
+    });
+
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session-1",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-1", endpoint: "voice1.example", guildId: null });
+    await started;
+
+    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(1006, "Connection ended."));
+
+    await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true && controller.activeSession?.state === "ready");
+    expect(signaling.leaves).toBe(0);
+    expect(signaling.requests).toHaveLength(1);
+    expect(joinData).toEqual([
+      { guildId: "dm-1", channelId: "dm-1", userId: "me", sessionId: "voice-session-1", token: "voice-token-1", endpoint: "voice1.example" },
+      { guildId: "dm-1", channelId: "dm-1", userId: "me", sessionId: "voice-session-1", token: "voice-token-1", endpoint: "voice1.example" },
+    ]);
     expect(errors).toEqual([]);
   });
 

@@ -1,4 +1,4 @@
-import { VOICE_GATEWAY_REJOIN_ATTEMPTS, VOICE_GATEWAY_REJOIN_DELAY_MS, VOICE_READY_TIMEOUT_MS, VOICE_SIGNALING_READY_RETRY_MS, VOICE_SIGNALING_READY_TIMEOUT_MS } from "./constants";
+import { VOICE_GATEWAY_ABNORMAL_CLOSE_CODE, VOICE_GATEWAY_REJOIN_ATTEMPTS, VOICE_GATEWAY_REJOIN_DELAY_MS, VOICE_READY_TIMEOUT_MS, VOICE_SIGNALING_READY_RETRY_MS, VOICE_SIGNALING_READY_TIMEOUT_MS } from "./constants";
 import { isRecoverableVoiceGatewayClose, isTerminalVoiceGatewayClose } from "./errors";
 import { fetchPreferredVoiceRegions } from "./regions";
 import { createDefaultVoiceAudioBackend } from "./audio-ffmpeg";
@@ -213,12 +213,12 @@ export class VoiceCallController {
     }
   }
 
-  private async connectSessionGateway(session: VoiceCallSession): Promise<void> {
+  private async connectSessionGateway(session: VoiceCallSession, cachedGatewayData?: VoiceGatewayJoinData): Promise<void> {
     if (this.active !== session) throw new Error("Call cancelled.");
     session.state = "signaling";
     this.emitState();
 
-    const gatewayData = await this.requestGatewayDataWhenSignalingReady(session, {
+    const gatewayData = cachedGatewayData ?? await this.requestGatewayDataWhenSignalingReady(session, {
       guildId: session.target.guildId,
       channelId: session.target.channelId,
       selfMute: session.selfMute,
@@ -228,6 +228,7 @@ export class VoiceCallController {
     });
     if (this.active !== session) throw new Error("Call cancelled.");
     session.sessionId = gatewayData.sessionId;
+    session.lastJoinData = gatewayData;
     session.state = "connecting";
     this.emitState();
 
@@ -269,6 +270,27 @@ export class VoiceCallController {
 
   private async recoverVoiceGateway(session: VoiceCallSession, cause: VoiceGatewayCloseError): Promise<void> {
     let lastError: Error = cause;
+    const reusableJoinData = shouldReuseVoiceJoinData(cause) ? session.lastJoinData : null;
+    if (reusableJoinData) {
+      try {
+        await this.prepareVoiceGatewayRejoin(session, { leaveVoice: false });
+        await this.connectSessionGateway(session, reusableJoinData);
+        if (this.active !== session) return;
+        session.state = "ready";
+        this.emitState();
+        return;
+      } catch (error) {
+        const asErr = error instanceof Error ? error : new Error(String(error));
+        lastError = asErr;
+        session.gateway?.disconnect();
+        session.gateway = null;
+        if (!isRecoverableVoiceGatewayClose(asErr)) {
+          if (this.active === session) this.failSession(session, asErr);
+          return;
+        }
+      }
+    }
+
     for (let attempt = 0; attempt < VOICE_GATEWAY_REJOIN_ATTEMPTS; attempt++) {
       if (this.active !== session) return;
       try {
@@ -290,13 +312,13 @@ export class VoiceCallController {
     if (this.active === session) this.failSession(session, lastError);
   }
 
-  private async prepareVoiceGatewayRejoin(session: VoiceCallSession): Promise<void> {
+  private async prepareVoiceGatewayRejoin(session: VoiceCallSession, options: { leaveVoice?: boolean } = {}): Promise<void> {
     if (this.pending) this.clearPending(new Error("Retrying Discord voice gateway."));
     session.gateway?.disconnect();
     session.gateway = null;
     session.state = "signaling";
     this.emitState();
-    this.options.signaling.leaveVoice();
+    if (options.leaveVoice !== false) this.options.signaling.leaveVoice();
     const delay = Math.max(0, this.options.retryDelayMs ?? VOICE_GATEWAY_REJOIN_DELAY_MS);
     if (delay > 0) await sleep(delay);
   }
@@ -372,4 +394,8 @@ export class VoiceCallController {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldReuseVoiceJoinData(error: VoiceGatewayCloseError): boolean {
+  return error.code === VOICE_GATEWAY_ABNORMAL_CLOSE_CODE || /connection ended|abnormal/i.test(error.closeReason);
 }

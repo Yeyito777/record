@@ -100,6 +100,7 @@ export interface VoiceCallSession {
   selfMute: boolean;
   selfDeaf: boolean;
   sessionId?: string | null;
+  lastJoinData?: VoiceGatewayJoinData | null;
 }
 
 export interface VoiceCallStartResult {
