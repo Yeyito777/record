@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+HELPER="$ROOT/widgets/stream-helper/record-stream-helper"
+if [[ ! -x "$HELPER" ]]; then
+  "$ROOT/scripts/build-stream-helper" >&2
+fi
+exec "$HELPER" "$@"

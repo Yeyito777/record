@@ -39,6 +39,7 @@ export class VoiceCallController {
       startedAt: Date.now(),
       selfMute: false,
       selfDeaf: false,
+      sessionId: null,
     };
     this.active = session;
     this.emitState();
@@ -140,6 +141,7 @@ export class VoiceCallController {
       const changed = active.selfMute !== update.selfMute || active.selfDeaf !== update.selfDeaf;
       active.selfMute = update.selfMute;
       active.selfDeaf = update.selfDeaf;
+      if (update.sessionId) active.sessionId = update.sessionId;
       if (changed) {
         active.gateway?.setSelfVoiceState?.({ selfMute: active.selfMute, selfDeaf: active.selfDeaf });
         this.emitState();
@@ -225,6 +227,7 @@ export class VoiceCallController {
       preferredRegions: session.target.preferredRegions,
     });
     if (this.active !== session) throw new Error("Call cancelled.");
+    session.sessionId = gatewayData.sessionId;
     session.state = "connecting";
     this.emitState();
 

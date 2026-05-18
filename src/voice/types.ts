@@ -53,6 +53,21 @@ export interface VoiceGatewayJoinData {
   sessionId: string;
   token: string;
   endpoint: string;
+  video?: boolean;
+  daveChannelId?: string;
+  maxDaveProtocolVersion?: number;
+}
+
+export interface VoiceGatewayOutboundStream {
+  type: "screen" | "video";
+  rid: string;
+  quality: number;
+  ssrc?: number;
+  rtxSsrc?: number;
+  active?: boolean;
+  maxBitrate?: number;
+  maxFramerate?: number;
+  maxResolution?: { width: number; height: number };
 }
 
 export interface VoiceGatewayConnection {
@@ -84,6 +99,7 @@ export interface VoiceCallSession {
   startedAt: number;
   selfMute: boolean;
   selfDeaf: boolean;
+  sessionId?: string | null;
 }
 
 export interface VoiceCallStartResult {
@@ -126,7 +142,15 @@ export interface VoiceAudioContext {
   selfMute: boolean;
   selfDeaf: boolean;
   sendSpeaking: (speaking: boolean) => void;
+  sendSpeakingFlags?: (flags: number) => void;
+  videoSsrc?: number;
+  videoRtxSsrc?: number;
+  videoPayloadType?: number;
+  sendVideo?: () => void;
+  sendOpusFrame?: (payload: Buffer, frameDurationMs: number) => void;
+  sendEncodedVideoFrame?: (payload: Buffer, frameDurationMs: number, keyframe?: boolean) => void;
   encodeOutgoingOpus?: (payload: Buffer) => Buffer | null;
+  encodeOutgoingVideo?: (payload: Buffer, codec?: "H264" | "VP8" | "VP9" | "H265" | "AV1") => Buffer | null;
   decodeIncomingOpus?: (ssrc: number, payload: Buffer) => Buffer | null;
   onIncomingAudio?: (ssrc: number) => void;
   onError: (error: Error) => void;

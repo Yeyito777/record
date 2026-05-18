@@ -65,6 +65,7 @@ describe("commands", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
 
     expect(tryCommand("/call", state)).toEqual({ type: "call" });
+    expect(tryCommand("/stream", state)).toEqual({ type: "stream" });
     expect(tryCommand("/hangup", state)).toEqual({ type: "hangup" });
     expect(tryCommand("/mute", state)).toEqual({ type: "mute", muted: null });
     expect(tryCommand("/mute on", state)).toEqual({ type: "mute", muted: true });

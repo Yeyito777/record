@@ -82,6 +82,20 @@ describe("voice backend", () => {
 
     const defaultPayload = buildVoiceIdentifyPayload(joinData) as { d: { max_dave_protocol_version: number } };
     expect(defaultPayload.d.max_dave_protocol_version).toBeGreaterThan(0);
+
+    expect(buildVoiceIdentifyPayload({ ...joinData, video: true }, 1)).toEqual({
+      op: 0,
+      d: {
+        server_id: "dm-1",
+        channel_id: "dm-1",
+        user_id: "me",
+        session_id: "voice-session",
+        token: "voice-token",
+        video: true,
+        max_dave_protocol_version: 1,
+        streams: [{ type: "screen", rid: "100", quality: 100, active: true, max_framerate: 30 }],
+      },
+    });
   });
 
   test("builds ffplay playback args accepted by ffplay", () => {
