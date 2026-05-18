@@ -14,6 +14,11 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+enum video_encoder {
+    VIDEO_ENCODER_X264,
+    VIDEO_ENCODER_VAAPI,
+};
+
 struct geometry {
     int x;
     int y;
@@ -31,6 +36,8 @@ struct options {
 
 static volatile sig_atomic_t running = 1;
 static pid_t ffmpeg_pid = -1;
+static enum video_encoder active_encoder = VIDEO_ENCODER_X264;
+static int allow_encoder_fallback = 0;
 
 static void on_signal(int sig)
 {
@@ -48,7 +55,62 @@ static void usage(FILE *out)
         "Captures the first X11 monitor and default PulseAudio/PipeWire monitor,\n"
         "writes Annex-B H.264 video to stdout, sends Opus RTP to localhost,\n"
         "and draws a purple outline around\n"
-        "the captured monitor.\n");
+        "the captured monitor.\n"
+        "\n"
+        "Environment:\n"
+        "  RECORD_STREAM_ENCODER=auto|x264|vaapi (default: auto)\n");
+}
+
+static const char *encoder_name(enum video_encoder encoder)
+{
+    return encoder == VIDEO_ENCODER_VAAPI ? "vaapi" : "x264";
+}
+
+static int ffmpeg_encoder_available(const char *needle)
+{
+    FILE *pipe = popen("ffmpeg -hide_banner -encoders 2>/dev/null", "r");
+    char line[512];
+    int found = 0;
+    if (!pipe)
+        return 0;
+    while (fgets(line, sizeof(line), pipe)) {
+        if (strstr(line, needle)) {
+            found = 1;
+            break;
+        }
+    }
+    pclose(pipe);
+    return found;
+}
+
+static int vaapi_supported(void)
+{
+    const char *device = getenv("RECORD_STREAM_VAAPI_DEVICE");
+    if (!device || !*device)
+        device = "/dev/dri/renderD128";
+    return access(device, R_OK | W_OK) == 0 && ffmpeg_encoder_available("h264_vaapi");
+}
+
+static enum video_encoder select_video_encoder(int *allow_fallback)
+{
+    const char *requested = getenv("RECORD_STREAM_ENCODER");
+    int have_vaapi;
+    *allow_fallback = 0;
+    if (!requested || !*requested || !strcmp(requested, "auto")) {
+        *allow_fallback = 1;
+        return vaapi_supported() ? VIDEO_ENCODER_VAAPI : VIDEO_ENCODER_X264;
+    }
+    if (!strcmp(requested, "vaapi") || !strcmp(requested, "amd") || !strcmp(requested, "gpu")) {
+        *allow_fallback = 1;
+        have_vaapi = vaapi_supported();
+        if (!have_vaapi)
+            fprintf(stderr, "record-stream-helper: VAAPI requested but unavailable; falling back to x264\n");
+        return have_vaapi ? VIDEO_ENCODER_VAAPI : VIDEO_ENCODER_X264;
+    }
+    if (!strcmp(requested, "x264") || !strcmp(requested, "cpu") || !strcmp(requested, "software"))
+        return VIDEO_ENCODER_X264;
+    fprintf(stderr, "record-stream-helper: unknown RECORD_STREAM_ENCODER=%s; falling back to x264\n", requested);
+    return VIDEO_ENCODER_X264;
 }
 
 static int parse_uint(const char *text, unsigned *out)
@@ -195,13 +257,16 @@ static int first_monitor_geometry(Display *dpy, int screen, struct geometry *geo
     return geo->w > 0 && geo->h > 0 ? 0 : -1;
 }
 
-static int start_ffmpeg(const struct options *opts, const struct geometry *geo)
+static int start_ffmpeg(const struct options *opts, const struct geometry *geo, enum video_encoder encoder)
 {
     char audio_port[32], audio_ssrc[32];
     char video_size[64], display_input[128], audio_url[128];
+    const char *vaapi_device = getenv("RECORD_STREAM_VAAPI_DEVICE");
     const char *display = getenv("DISPLAY");
     if (!display || !*display)
         display = ":0";
+    if (!vaapi_device || !*vaapi_device)
+        vaapi_device = "/dev/dri/renderD128";
 
     snprintf(audio_port, sizeof(audio_port), "%d", opts->audio_port);
     snprintf(audio_ssrc, sizeof(audio_ssrc), "%u", opts->audio_ssrc);
@@ -213,27 +278,112 @@ static int start_ffmpeg(const struct options *opts, const struct geometry *geo)
     if (pid < 0)
         return -1;
     if (pid == 0) {
-        execlp("ffmpeg", "ffmpeg",
-               "-hide_banner", "-loglevel", "warning", "-nostdin",
-               "-f", "x11grab", "-draw_mouse", "1", "-framerate", "30",
-               "-video_size", video_size, "-i", display_input,
-               "-f", "pulse", "-i", "@DEFAULT_MONITOR@",
-               "-map", "0:v:0", "-an",
-               "-vf", "scale=1280:-2",
-               "-c:v", "libx264", "-preset", "faster", "-tune", "zerolatency",
-               "-profile:v", "baseline", "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30", "-bf", "0", "-forced-idr", "1",
-               "-b:v", "6500k", "-maxrate", "6500k", "-bufsize", "3250k",
-               "-x264-params", "aud=1:repeat-headers=1:scenecut=0:ref=1:sliced-threads=0:slices=1",
-               "-bsf:v", "filter_units=remove_types=6",
-               "-f", "h264", "pipe:1",
-               "-map", "1:a:0", "-vn",
-               "-c:a", "libopus", "-ar", "48000", "-ac", "2", "-b:a", "96k",
-               "-payload_type", "120", "-ssrc", audio_ssrc, "-f", "rtp", audio_url,
-               (char *)NULL);
+        const char *args[128];
+        int n = 0;
+        args[n++] = "ffmpeg";
+        args[n++] = "-hide_banner";
+        args[n++] = "-loglevel";
+        args[n++] = "warning";
+        args[n++] = "-nostdin";
+        if (encoder == VIDEO_ENCODER_VAAPI) {
+            args[n++] = "-vaapi_device";
+            args[n++] = vaapi_device;
+        }
+        args[n++] = "-f";
+        args[n++] = "x11grab";
+        args[n++] = "-draw_mouse";
+        args[n++] = "1";
+        args[n++] = "-framerate";
+        args[n++] = "30";
+        args[n++] = "-video_size";
+        args[n++] = video_size;
+        args[n++] = "-i";
+        args[n++] = display_input;
+        args[n++] = "-f";
+        args[n++] = "pulse";
+        args[n++] = "-i";
+        args[n++] = "@DEFAULT_MONITOR@";
+        args[n++] = "-map";
+        args[n++] = "0:v:0";
+        args[n++] = "-an";
+        args[n++] = "-vf";
+        args[n++] = encoder == VIDEO_ENCODER_VAAPI ? "scale=1280:-2,format=nv12,hwupload" : "scale=1280:-2";
+        if (encoder == VIDEO_ENCODER_VAAPI) {
+            args[n++] = "-c:v";
+            args[n++] = "h264_vaapi";
+            args[n++] = "-profile:v";
+            args[n++] = "constrained_baseline";
+            args[n++] = "-level";
+            args[n++] = "3.1";
+            args[n++] = "-g";
+            args[n++] = "30";
+            args[n++] = "-bf";
+            args[n++] = "0";
+            args[n++] = "-idr_interval";
+            args[n++] = "0";
+            args[n++] = "-rc_mode";
+            args[n++] = "VBR";
+            args[n++] = "-aud";
+            args[n++] = "1";
+        } else {
+            args[n++] = "-c:v";
+            args[n++] = "libx264";
+            args[n++] = "-preset";
+            args[n++] = "faster";
+            args[n++] = "-tune";
+            args[n++] = "zerolatency";
+            args[n++] = "-profile:v";
+            args[n++] = "baseline";
+            args[n++] = "-pix_fmt";
+            args[n++] = "yuv420p";
+            args[n++] = "-g";
+            args[n++] = "30";
+            args[n++] = "-keyint_min";
+            args[n++] = "30";
+            args[n++] = "-bf";
+            args[n++] = "0";
+            args[n++] = "-forced-idr";
+            args[n++] = "1";
+            args[n++] = "-x264-params";
+            args[n++] = "aud=1:repeat-headers=1:scenecut=0:ref=1:sliced-threads=0:slices=1";
+        }
+        args[n++] = "-b:v";
+        args[n++] = encoder == VIDEO_ENCODER_VAAPI ? "4500k" : "6500k";
+        args[n++] = "-maxrate";
+        args[n++] = encoder == VIDEO_ENCODER_VAAPI ? "4500k" : "6500k";
+        args[n++] = "-bufsize";
+        args[n++] = encoder == VIDEO_ENCODER_VAAPI ? "2250k" : "3250k";
+        args[n++] = "-bsf:v";
+        args[n++] = "filter_units=remove_types=6";
+        args[n++] = "-f";
+        args[n++] = "h264";
+        args[n++] = "pipe:1";
+        args[n++] = "-map";
+        args[n++] = "1:a:0";
+        args[n++] = "-vn";
+        args[n++] = "-c:a";
+        args[n++] = "libopus";
+        args[n++] = "-ar";
+        args[n++] = "48000";
+        args[n++] = "-ac";
+        args[n++] = "2";
+        args[n++] = "-b:a";
+        args[n++] = "96k";
+        args[n++] = "-payload_type";
+        args[n++] = "120";
+        args[n++] = "-ssrc";
+        args[n++] = audio_ssrc;
+        args[n++] = "-f";
+        args[n++] = "rtp";
+        args[n++] = audio_url;
+        args[n] = NULL;
+        execvp("ffmpeg", (char *const *)args);
         fprintf(stderr, "record-stream-helper: failed to exec ffmpeg: %s\n", strerror(errno));
         _exit(127);
     }
     ffmpeg_pid = pid;
+    active_encoder = encoder;
+    fprintf(stderr, "record-stream-helper: started ffmpeg encoder=%s\n", encoder_name(encoder));
     return 0;
 }
 
@@ -245,6 +395,7 @@ int main(int argc, char **argv)
     Window root;
     Window border[4] = {0, 0, 0, 0};
     struct geometry geo;
+    enum video_encoder selected_encoder;
     unsigned long pixel;
     int exit_status = 0;
 
@@ -252,6 +403,7 @@ int main(int argc, char **argv)
         usage(stderr);
         return 2;
     }
+    selected_encoder = select_video_encoder(&allow_encoder_fallback);
 
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
@@ -283,7 +435,7 @@ int main(int argc, char **argv)
     if (running) {
         position_border_windows(dpy, border, DisplayWidth(dpy, screen), DisplayHeight(dpy, screen), &geo);
         XFlush(dpy);
-        if (start_ffmpeg(&opts, &geo) < 0) {
+        if (start_ffmpeg(&opts, &geo, selected_encoder) < 0) {
             fprintf(stderr, "record-stream-helper: failed to start ffmpeg: %s\n", strerror(errno));
             running = 0;
             exit_status = 1;
@@ -305,11 +457,24 @@ int main(int argc, char **argv)
         if (ffmpeg_pid > 0) {
             pid_t waited = waitpid(ffmpeg_pid, &status, WNOHANG);
             if (waited == ffmpeg_pid) {
+                int failed = 0;
                 ffmpeg_pid = -1;
-                if (WIFEXITED(status))
+                if (WIFEXITED(status)) {
                     exit_status = WEXITSTATUS(status);
-                else if (WIFSIGNALED(status))
+                    failed = exit_status != 0;
+                } else if (WIFSIGNALED(status)) {
                     exit_status = 128 + WTERMSIG(status);
+                    failed = 1;
+                }
+                if (failed && allow_encoder_fallback && active_encoder == VIDEO_ENCODER_VAAPI) {
+                    fprintf(stderr, "record-stream-helper: ffmpeg VAAPI encoder failed with status %d; falling back to x264\n", exit_status);
+                    allow_encoder_fallback = 0;
+                    exit_status = 0;
+                    if (start_ffmpeg(&opts, &geo, VIDEO_ENCODER_X264) == 0)
+                        continue;
+                    fprintf(stderr, "record-stream-helper: failed to start x264 fallback: %s\n", strerror(errno));
+                    exit_status = 1;
+                }
                 running = 0;
             }
         }
