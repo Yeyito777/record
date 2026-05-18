@@ -19,7 +19,10 @@ import {
 import {
   ensureHistoryCursorVisible,
   handleHistoryVimKey,
+  jumpHistoryCursorToMessage,
+  jumpHistoryCursorToReplyTarget,
   placeHistoryCursorAtVisibleBottom,
+  replyTargetAtHistoryCursor,
   scrollHistoryPageWithCursor,
   scrollHistoryViewportSticky,
   scrollHistoryWithCursor,
@@ -49,7 +52,10 @@ import {
   disconnectMemberListGateway,
   deleteMessage,
   loadChannelMessages,
+  loadChannelMessagesAround,
   loadGuildChannels,
+  loadLatestChannelMessages,
+  loadNewerChannelMessages,
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
   persistSidebarFolders,
@@ -111,7 +117,7 @@ import {
   showCursor,
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
-import { hasActiveTimelineCall, moveTimelineScroll, shouldLoadOlderMessages, startLoadingOlderMessages } from "./timeline";
+import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
@@ -180,6 +186,7 @@ function hasActiveLoadingIndicator(): boolean {
     || state.channelList.loading
     || state.timeline.loading
     || state.timeline.loadingOlder
+    || state.timeline.loadingNewer
     || hasActiveTimelineCall(state.timeline)
     || Boolean(state.voiceCall)
     || Object.keys(state.typing.byChannelId).length > 0;
@@ -376,10 +383,22 @@ function maybeLoadOlderHistory(): void {
   void loadOlderChannelMessages(state, token, channelId, timelineContentWidth(), { scheduleRender });
 }
 
+function maybeLoadNewerHistory(): void {
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+  if (!token || !channelId || !shouldLoadNewerMessages(state.timeline)) return;
+
+  startLoadingNewerMessages(state.timeline);
+  scheduleRender();
+  void loadNewerChannelMessages(state, token, channelId, { scheduleRender });
+}
+
 function scrollTimeline(delta: number): void {
   moveTimelineScroll(state.timeline, delta);
   if (delta <= 0) {
     maybeLoadOlderHistory();
+  } else {
+    maybeLoadNewerHistory();
   }
   ackCurrentChannelIfAtBottom(state);
   scheduleRender();
@@ -410,6 +429,7 @@ function scrollFocusedPanel(delta: number, visibleRows: number, mode: "cursor" |
       scrollHistoryWithCursor(state, dir, Math.abs(delta), visibleRows);
     }
     if (delta <= 0) maybeLoadOlderHistory();
+    if (delta > 0) maybeLoadNewerHistory();
     scheduleRender();
     return;
   }
@@ -433,6 +453,7 @@ function scrollFocusedPanelLine(delta: number): void {
   if (state.chatFocus === "history") {
     scrollHistoryViewportSticky(state, delta < 0 ? 1 : -1, timelinePageSize());
     if (delta <= 0) maybeLoadOlderHistory();
+    if (delta > 0) maybeLoadNewerHistory();
     scheduleRender();
     return;
   }
@@ -483,6 +504,88 @@ function selectedHistoryMessage(): DiscordMessage | null {
   const bound = state.historyMessageBounds.find((entry) => row >= entry.start && row < entry.end);
   if (!bound) return null;
   return state.timeline.messages.find((message) => message.id === bound.messageId) ?? null;
+}
+
+function refreshHistorySnapshot(): void {
+  setTimelineRenderContext(
+    state.timeline,
+    state.auth.user?.id ?? null,
+    state.channelList.activeChannel?.guildId === DIRECT_MESSAGES_GUILD_ID,
+    state.guildRolesByGuildId,
+    state.memberRoleIdsByGuildId,
+    state.memberRoleCacheVersion,
+    state.channelList.activeChannel?.guildId ?? null,
+  );
+
+  const timelineNotice = state.timeline.messages.length === 0 && state.timeline.channelId === null
+    ? state.notice
+    : { ...state.notice, chat: false };
+  const timeline = renderTimelineLines(state.timeline, timelineContentWidth(), timelinePageSize(), timelineNotice, state.loadingFrameIndex);
+  state.historyLineAnchors = timeline.lineAnchors;
+  state.historyLines = timeline.allLines;
+  state.historyLineBackgrounds = timeline.lineBackgrounds;
+  state.historyWrapContinuation = timeline.wrapContinuation;
+  state.historyMessageBounds = timeline.messageBounds;
+}
+
+function jumpToReplyTargetAtHistoryCursor(): boolean {
+  const target = replyTargetAtHistoryCursor(state);
+  if (!target) return false;
+
+  if (target.channelId !== state.timeline.channelId) {
+    scheduleRender();
+    return true;
+  }
+
+  if (jumpHistoryCursorToReplyTarget(state, timelinePageSize())) {
+    scheduleRender();
+    return true;
+  }
+
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+  if (!token || !channelId) {
+    scheduleRender();
+    return true;
+  }
+
+  void (async () => {
+    const loaded = await loadChannelMessagesAround(state, token, channelId, target.messageId, effects);
+    if (!running) return;
+    if (loaded) {
+      refreshHistorySnapshot();
+      jumpHistoryCursorToMessage(state, target.messageId, timelinePageSize());
+    }
+    scheduleRender();
+  })();
+  return true;
+}
+
+function jumpToChannelBottom(): void {
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+
+  state.historyCursorPendingVisibleBottom = true;
+  state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+
+  if (!state.timeline.hasNewer || !token || !channelId) {
+    placeHistoryCursorAtVisibleBottom(state, timelinePageSize());
+    ensureHistoryCursorVisible(state, timelinePageSize());
+    scheduleRender();
+    return;
+  }
+
+  void (async () => {
+    const loaded = await loadLatestChannelMessages(state, token, channelId, effects);
+    if (!running) return;
+    if (loaded) {
+      refreshHistorySnapshot();
+      placeHistoryCursorAtVisibleBottom(state, timelinePageSize());
+      ensureHistoryCursorVisible(state, timelinePageSize());
+    }
+    scheduleRender();
+  })();
+  scheduleRender();
 }
 
 function summarizeReplyMessage(message: DiscordMessage): string {
@@ -1027,8 +1130,16 @@ function handleHistoryFocused(key: KeyEvent): boolean {
     return true;
   }
 
+  if (state.editor.mode === "normal" && key.type === "char" && key.char === "G") {
+    jumpToChannelBottom();
+    return true;
+  }
+
   if (handleHistoryVimKey(state, key, timelinePageSize())) {
-    if (state.chatFocus === "history") maybeLoadOlderHistory();
+    if (state.chatFocus === "history") {
+      maybeLoadOlderHistory();
+      maybeLoadNewerHistory();
+    }
     scheduleRender();
     return true;
   }
@@ -1053,9 +1164,12 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       return true;
     case "nav_down":
       scrollHistoryWithCursor(state, -1, 1, timelinePageSize());
+      maybeLoadNewerHistory();
       scheduleRender();
       return true;
     case "nav_select": {
+      if (jumpToReplyTargetAtHistoryCursor()) return true;
+
       const attachment = attachmentAtHistoryCursor(state);
       if (attachment) {
         setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true, chat: false });

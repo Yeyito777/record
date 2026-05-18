@@ -73,6 +73,47 @@ export function buildLineAnchorIndex(anchors: string[]): Map<string, number> {
   return index;
 }
 
+export interface HistoryReplyTarget {
+  messageId: string;
+  channelId: string;
+}
+
+function messageIdFromReplyAnchor(anchor: string | undefined): string | null {
+  const match = /^msg:(.+):reply:\d+$/.exec(anchor ?? "");
+  return match?.[1] ?? null;
+}
+
+export function replyTargetAtHistoryCursor(state: AppState): HistoryReplyTarget | null {
+  const replyMessageId = messageIdFromReplyAnchor(state.historyLineAnchors[state.historyCursor.row]);
+  if (!replyMessageId) return null;
+
+  const message = state.timeline.messages.find((candidate) => candidate.id === replyMessageId);
+  const targetMessageId = message?.reply?.messageId;
+  if (!message || !targetMessageId) return null;
+
+  return {
+    messageId: targetMessageId,
+    channelId: message.reply?.channelId ?? message.channelId,
+  };
+}
+
+export function jumpHistoryCursorToMessage(state: AppState, messageId: string, visibleRows: number): boolean {
+  const bound = state.historyMessageBounds.find((entry) => entry.messageId === messageId);
+  if (!bound) return false;
+
+  state.historyCursor = { row: bound.contentStart, col: clampHistoryCol(0, state.historyLines, bound.contentStart) };
+  state.historyVisualAnchor = { ...state.historyCursor };
+  state.historyCursorPendingVisibleBottom = false;
+  ensureHistoryCursorVisible(state, visibleRows);
+  return true;
+}
+
+export function jumpHistoryCursorToReplyTarget(state: AppState, visibleRows: number): HistoryReplyTarget | null {
+  const target = replyTargetAtHistoryCursor(state);
+  if (!target) return null;
+  return jumpHistoryCursorToMessage(state, target.messageId, visibleRows) ? target : null;
+}
+
 export function remapRenderedRow(oldRow: number, oldAnchors: string[], newAnchorIndex: Map<string, number>): number {
   if (oldAnchors.length === 0) return 0;
   const clamped = Math.max(0, Math.min(oldRow, oldAnchors.length - 1));

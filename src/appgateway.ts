@@ -10,6 +10,7 @@ import {
   mapDirectMessageChannel,
   mapDiscordMessage,
   mapDiscordMessagePatch,
+  mapDiscordMessageReactionPatch,
   mapGuildChannel,
   type DiscordChannel,
   type DiscordGuild,
@@ -390,6 +391,21 @@ export class AppGatewayClient implements VoiceSignalingClient {
           if (!isObject(data) || typeof data.id !== "string" || typeof data.channel_id !== "string") break;
           this.callbacks.onMessageUpdate(mapDiscordMessagePatch(data as Partial<DiscordMessageResponse> & { id: string; channel_id: string }));
           break;
+        case "MESSAGE_REACTION_ADD":
+          this.handleMessageReactionUpdate(data, "add");
+          break;
+        case "MESSAGE_REACTION_ADD_MANY":
+          this.handleMessageReactionAddMany(data);
+          break;
+        case "MESSAGE_REACTION_REMOVE":
+          this.handleMessageReactionUpdate(data, "remove");
+          break;
+        case "MESSAGE_REACTION_REMOVE_ALL":
+          this.handleMessageReactionUpdate(data, "clear");
+          break;
+        case "MESSAGE_REACTION_REMOVE_EMOJI":
+          this.handleMessageReactionUpdate(data, "clearEmoji");
+          break;
         case "MESSAGE_DELETE": {
           if (!isObject(data) || typeof data.id !== "string" || typeof data.channel_id !== "string") break;
           this.callbacks.onMessageDelete(data.channel_id, data.id);
@@ -501,6 +517,26 @@ export class AppGatewayClient implements VoiceSignalingClient {
       }
     } catch (error) {
       this.callbacks.onError?.(asError(error, `Failed to handle Discord gateway event ${type ?? "unknown"}.`));
+    }
+  }
+
+  private handleMessageReactionUpdate(data: unknown, type: "add" | "remove" | "clear" | "clearEmoji"): void {
+    const patch = mapDiscordMessageReactionPatch(data, type, this.currentUserId);
+    if (patch) this.callbacks.onMessageUpdate(patch);
+  }
+
+  private handleMessageReactionAddMany(data: unknown): void {
+    if (!isObject(data) || !Array.isArray(data.reactions)) return;
+    for (const reaction of data.reactions) {
+      if (!isObject(reaction) || !Array.isArray(reaction.users)) continue;
+      for (const userId of reaction.users) {
+        const patch = mapDiscordMessageReactionPatch({
+          ...data,
+          user_id: userId,
+          emoji: reaction.emoji,
+        }, "add", this.currentUserId);
+        if (patch) this.callbacks.onMessageUpdate(patch);
+      }
     }
   }
 

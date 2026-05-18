@@ -4,13 +4,37 @@ import {
   buildLineAnchorIndex,
   getHistoryVisualSelection,
   handleHistoryVimKey,
+  jumpHistoryCursorToReplyTarget,
   placeHistoryCursorAtVisibleBottom,
+  replyTargetAtHistoryCursor,
   remapRenderedRow,
   scrollHistoryPageWithCursor,
   scrollHistoryViewportSticky,
   scrollHistoryWithCursor,
 } from "./historycursor";
+import type { DiscordMessage } from "./discord";
 import { createInitialState } from "./state";
+
+function message(id: string, content: string, reply: DiscordMessage["reply"] = null): DiscordMessage {
+  return {
+    id,
+    channelId: "channel-1",
+    guildId: "guild-1",
+    type: 0,
+    content,
+    mentionEveryone: false,
+    mentionRoleIds: [],
+    mentionUserIds: [],
+    timestamp: Date.parse("2025-01-01T00:00:00Z"),
+    editedTimestamp: null,
+    author: { id: `author-${id}`, username: `user-${id}`, displayName: `User ${id}`, bot: false },
+    reply,
+    call: null,
+    attachments: [],
+    stickerNames: [],
+    embedsCount: 0,
+  };
+}
 
 describe("history cursor", () => {
   test("places the cursor at the visible bottom of the current viewport", () => {
@@ -39,6 +63,52 @@ describe("history cursor", () => {
     expect(remapRenderedRow(0, oldAnchors, index)).toBe(3);
     expect(remapRenderedRow(1, oldAnchors, index)).toBe(4);
     expect(remapRenderedRow(2, oldAnchors, index)).toBe(5);
+  });
+
+  test("resolves and jumps from a rendered reply preview to its original message", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.chatFocus = "history";
+    state.timeline.channelId = "channel-1";
+    state.timeline.messages = [
+      message("original", "hello"),
+      message("reply", "replying", {
+        messageId: "original",
+        channelId: "channel-1",
+        authorId: "author-original",
+        authorDisplayName: "Original Author",
+        timestamp: Date.parse("2025-01-01T00:00:00Z"),
+        summary: "hello",
+      }),
+    ];
+    state.historyLines = [
+      "Original Author 00:00",
+      "hello",
+      "",
+      "↱ Original Author: hello",
+      "Reply Author 00:01",
+      "replying",
+    ];
+    state.historyLineAnchors = [
+      "msg:original:header",
+      "msg:original:content:0",
+      "msg:original:gap",
+      "msg:reply:reply:0",
+      "msg:reply:header",
+      "msg:reply:content:0",
+    ];
+    state.historyMessageBounds = [
+      { messageId: "original", start: 0, end: 2, contentStart: 0, contentEnd: 2 },
+      { messageId: "reply", start: 3, end: 6, contentStart: 3, contentEnd: 6 },
+    ];
+    state.historyCursor = { row: 3, col: 0 };
+    state.timeline.scrollOffset = 3;
+    state.timeline.maxScroll = 3;
+
+    expect(replyTargetAtHistoryCursor(state)).toEqual({ messageId: "original", channelId: "channel-1" });
+    expect(jumpHistoryCursorToReplyTarget(state, 3)).toEqual({ messageId: "original", channelId: "channel-1" });
+
+    expect(state.historyCursor).toEqual({ row: 0, col: 0 });
+    expect(state.timeline.scrollOffset).toBe(0);
   });
 
   test("line scrolling keeps the history cursor sticky until it would leave the viewport", () => {

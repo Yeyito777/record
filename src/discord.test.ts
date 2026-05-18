@@ -4,7 +4,9 @@ import {
   DIRECT_MESSAGES_GUILD_ID,
   acceptDiscordInvite,
   ackChannelMessage,
+  fetchChannelMessagesAfter,
   fetchChannelMessages,
+  fetchChannelMessagesAround,
   applyDiscordMessagePatch,
   fetchDirectMessages,
   fetchGuilds,
@@ -14,6 +16,7 @@ import {
   isDirectMessageChannel,
   isGuildVoiceChannel,
   mapDiscordMessagePatch,
+  mapDiscordMessageReactionPatch,
   deleteChannelMessage,
   editChannelMessage,
   sendChannelMessage,
@@ -342,6 +345,64 @@ describe("discord helpers", () => {
     });
   });
 
+  test("fetches a chunk around a target message id", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify([
+        {
+          id: "message-2",
+          channel_id: "channel-1",
+          content: "newer",
+          timestamp: "2026-01-01T12:02:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        },
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "target",
+          timestamp: "2026-01-01T12:01:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessagesAround("token", "channel-1", "message-1", 25);
+
+    expect(requests).toEqual(["https://discord.com/api/v9/channels/channel-1/messages?limit=25&around=message-1"]);
+    expect(messages.map((message) => message.id)).toEqual(["message-1", "message-2"]);
+  });
+
+  test("fetches messages after a known message id", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify([
+        {
+          id: "message-3",
+          channel_id: "channel-1",
+          content: "newest",
+          timestamp: "2026-01-01T12:03:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessagesAfter("token", "channel-1", 25, "message-2");
+
+    expect(requests).toEqual(["https://discord.com/api/v9/channels/channel-1/messages?limit=25&after=message-2"]);
+    expect(messages.map((message) => message.id)).toEqual(["message-3"]);
+  });
+
   test("maps sticker-only messages and reply previews", async () => {
     globalThis.fetch = (async () => {
       return new Response(JSON.stringify([
@@ -385,6 +446,76 @@ describe("discord helpers", () => {
     const replyMessage = messages.find((message) => message.id === "message-2");
     expect(stickerMessage?.stickerNames).toEqual(["catjam"]);
     expect(replyMessage?.reply?.summary).toBe("[sticker] catjam");
+  });
+
+  test("maps message reactions from REST payloads", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "reactable",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+          reactions: [
+            { count: 3, me: true, emoji: { id: null, name: "👍" } },
+            { count: 1, me: false, emoji: { id: "emoji-1", name: "blobcat", animated: true } },
+          ],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.reactions).toEqual([
+      { count: 3, me: true, emoji: { id: null, name: "👍", animated: false } },
+      { count: 1, me: false, emoji: { id: "emoji-1", name: "blobcat", animated: true } },
+    ]);
+  });
+
+  test("applies gateway reaction add and remove patches", () => {
+    const existing = {
+      id: "message-1",
+      channelId: "channel-1",
+      type: 0,
+      content: "old",
+      mentionEveryone: false,
+      mentionRoleIds: [],
+      mentionUserIds: [],
+      timestamp: Date.parse("2026-01-01T12:00:00.000Z"),
+      editedTimestamp: null,
+      author: { id: "user-1", username: "tester", displayName: "Tester", bot: false },
+      reply: null,
+      call: null,
+      attachments: [],
+      stickerNames: [],
+      embedsCount: 0,
+      reactions: [{ count: 1, me: false, emoji: { id: null, name: "👍", animated: false } }],
+    };
+
+    const addPatch = mapDiscordMessageReactionPatch({
+      message_id: "message-1",
+      channel_id: "channel-1",
+      user_id: "viewer",
+      emoji: { id: null, name: "👍" },
+    }, "add", "viewer");
+    const added = applyDiscordMessagePatch(existing, addPatch!);
+
+    expect(added.reactions).toEqual([{ count: 2, me: true, emoji: { id: null, name: "👍", animated: false } }]);
+
+    const removePatch = mapDiscordMessageReactionPatch({
+      message_id: "message-1",
+      channel_id: "channel-1",
+      user_id: "viewer",
+      emoji: { id: null, name: "👍" },
+    }, "remove", "viewer");
+
+    expect(applyDiscordMessagePatch(added, removePatch!).reactions).toEqual([
+      { count: 1, me: false, emoji: { id: null, name: "👍", animated: false } },
+    ]);
   });
 
   test("maps Discord call payloads", async () => {
@@ -790,6 +921,32 @@ describe("discord helpers", () => {
       timestamp: null,
       summary: "Deleted message",
     });
+  });
+
+  test("renders channel pin system messages instead of deleted reply previews", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "pin-1",
+          channel_id: "channel-1",
+          type: 6,
+          content: "",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          message_reference: { message_id: "message-0", channel_id: "channel-1" },
+          referenced_message: null,
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.type).toBe(6);
+    expect(messages[0]?.content).toBe("📌 Pinned a message to this channel.");
+    expect(messages[0]?.reply).toBeNull();
   });
 
   test("hydrates missing reply previews from messages returned in the same page", async () => {
