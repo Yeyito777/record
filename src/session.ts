@@ -3395,6 +3395,7 @@ export function stopCurrentStream(state: AppState, effects: SessionEffects, opti
   controller.stop("command");
   appGateway?.deleteStream(controller.streamKey);
   if (!options.silent) {
+    playSoundEffect("streamEnded");
     setNotice(state, "Stream stopped.", "muted", { chat: false });
     effects.scheduleRender();
   }

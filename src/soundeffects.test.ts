@@ -68,5 +68,6 @@ describe("sound effects", () => {
     expect(soundEffectPath("callUserLeave")).toEndWith("/assets/sounds/discord-user-leave.mp3");
     expect(soundEffectPath("callLeave")).toEndWith("/assets/sounds/discord-disconnect.mp3");
     expect(soundEffectPath("streamStarted")).toEndWith("/assets/sounds/discord-stream-started.mp3");
+    expect(soundEffectPath("streamEnded")).toEndWith("/assets/sounds/discord-stream-ended.mp3");
   });
 });
