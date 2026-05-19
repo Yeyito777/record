@@ -2,3 +2,4 @@ node_modules
 .worktrees/
 config/
 widgets/call-widget/record-call-widget
+widgets/stream-helper/record-stream-helper

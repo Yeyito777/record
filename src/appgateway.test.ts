@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { AppGatewayClient, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapGuildMembersChunk, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
+import { AppGatewayClient, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -34,6 +34,23 @@ describe("app gateway helpers", () => {
         user_ids: ["user-1", "user-2"],
       },
     });
+  });
+
+  test("sends stream create and delete requests over the gateway", () => {
+    const sent: unknown[] = [];
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    client.ready = true;
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+
+    expect(client.createStream({ type: "guild", guildId: "guild-1", channelId: "voice-1", preferredRegion: "us-east" })).toBe(true);
+    expect(client.setStreamPaused("guild:guild-1:voice-1:me", false)).toBe(true);
+    expect(client.deleteStream("guild:guild-1:voice-1:me")).toBe(true);
+
+    expect(sent).toEqual([
+      { op: 18, d: { type: "guild", guild_id: "guild-1", channel_id: "voice-1", preferred_region: "us-east" } },
+      { op: 22, d: { stream_key: "guild:guild-1:voice-1:me", paused: false } },
+      { op: 19, d: { stream_key: "guild:guild-1:voice-1:me" } },
+    ]);
   });
 
   test("dispatches voice states from READY_SUPPLEMENTAL", () => {
@@ -264,6 +281,33 @@ describe("app gateway helpers", () => {
       ringing: ["user-2"],
       voice_states: [],
     })?.isActive).toBe(false);
+  });
+
+  test("maps stream gateway events", () => {
+    expect(mapStreamCreateEvent({
+      stream_key: "guild:guild-1:voice-1:me",
+      rtc_server_id: "stream-server-1",
+      rtc_channel_id: "stream-channel-1",
+      region: "us-east",
+      viewer_ids: ["viewer-1"],
+      paused: false,
+    })).toEqual({
+      streamKey: "guild:guild-1:voice-1:me",
+      rtcServerId: "stream-server-1",
+      rtcChannelId: "stream-channel-1",
+      region: "us-east",
+      viewerIds: ["viewer-1"],
+      paused: false,
+    });
+    expect(mapStreamServerUpdateEvent({
+      stream_key: "guild:guild-1:voice-1:me",
+      token: "stream-token",
+      endpoint: "stream.example",
+    })).toEqual({ streamKey: "guild:guild-1:voice-1:me", token: "stream-token", endpoint: "stream.example" });
+    expect(mapStreamDeleteEvent({
+      stream_key: "guild:guild-1:voice-1:me",
+      reason: "stream_ended",
+    })).toEqual({ streamKey: "guild:guild-1:voice-1:me", reason: "stream_ended", unavailable: false });
   });
 
   test("extracts guilds from READY", () => {

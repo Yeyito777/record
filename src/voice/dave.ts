@@ -1,4 +1,4 @@
-import { DAVE_PROTOCOL_VERSION, DAVESession, MediaType, type ProposalsOperationType } from "@snazzah/davey";
+import { Codec, DAVE_PROTOCOL_VERSION, DAVESession, MediaType, type ProposalsOperationType } from "@snazzah/davey";
 
 import { debugLog } from "../debuglog";
 import { OPUS_SILENCE_FRAME } from "./constants";
@@ -98,6 +98,21 @@ export class DaveVoiceEncryption {
       return this.session.encryptOpus(payload);
     } catch (error) {
       this.reportMediaError(asError(error, "Failed to DAVE-encrypt outgoing voice audio."));
+      return null;
+    }
+  }
+
+  encodeOutgoingVideo(payload: Buffer, codecName: "H264" | "VP8" | "VP9" | "H265" | "AV1" = "H264"): Buffer | null {
+    if (payload.length === 0) return payload;
+    if (this.protocolVersion === 0) return payload;
+    if (!this.session?.ready) {
+      this.logMediaDebug("video_encrypt_passthrough_not_ready", { protocolVersion: this.protocolVersion, payloadBytes: payload.length, users: this.safeUserIds() });
+      return payload;
+    }
+    try {
+      return this.session.encrypt(MediaType.VIDEO, videoCodec(codecName), payload);
+    } catch (error) {
+      this.reportMediaError(asError(error, "Failed to DAVE-encrypt outgoing stream video."));
       return null;
     }
   }
@@ -339,5 +354,17 @@ export class DaveVoiceEncryption {
 
   private reportError(error: Error): void {
     this.options.onError?.(error);
+  }
+}
+
+function videoCodec(codecName: "H264" | "VP8" | "VP9" | "H265" | "AV1"): Codec {
+  switch (codecName) {
+    case "VP8": return Codec.VP8;
+    case "VP9": return Codec.VP9;
+    case "H265": return Codec.H265;
+    case "AV1": return Codec.AV1;
+    case "H264":
+    default:
+      return Codec.H264;
   }
 }

@@ -26,6 +26,7 @@ export type CommandResult =
   | { type: "refresh" }
   | { type: "upload"; path: string }
   | { type: "call" }
+  | { type: "stream" }
   | { type: "hangup" }
   | { type: "mute"; muted: boolean | null }
   | { type: "deafen"; deafened: boolean | null }
@@ -231,6 +232,16 @@ const commands: SlashCommand[] = [
       if (parts.length !== 1) return usage(state, "Usage: /call");
       clearPrompt(state);
       return { type: "call" };
+    },
+  },
+  {
+    name: "/stream",
+    description: "Toggle first-monitor screen sharing in the current call",
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length !== 1) return usage(state, "Usage: /stream");
+      clearPrompt(state);
+      return { type: "stream" };
     },
   },
   {

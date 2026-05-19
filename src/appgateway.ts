@@ -66,6 +66,27 @@ export interface CallGatewayEvent {
   isActive: boolean;
 }
 
+export interface StreamCreateEvent {
+  streamKey: string;
+  rtcServerId: string;
+  rtcChannelId: string;
+  region: string | null;
+  viewerIds: string[];
+  paused: boolean;
+}
+
+export interface StreamServerUpdateEvent {
+  streamKey: string;
+  token: string;
+  endpoint: string | null;
+}
+
+export interface StreamDeleteEvent {
+  streamKey: string;
+  reason: string;
+  unavailable: boolean;
+}
+
 export interface AppGatewayCallbacks {
   onInitialNotifications: (notifications: InitialNotification[]) => void;
   onVoiceStateUpdate?: (update: VoiceStateUpdate) => void;
@@ -73,6 +94,9 @@ export interface AppGatewayCallbacks {
   onCallCreate?: (event: CallGatewayEvent) => void;
   onCallUpdate?: (event: CallGatewayEvent) => void;
   onCallDelete?: (channelId: string) => void;
+  onStreamCreate?: (event: StreamCreateEvent) => void;
+  onStreamServerUpdate?: (event: StreamServerUpdateEvent) => void;
+  onStreamDelete?: (event: StreamDeleteEvent) => void;
   onGuildMuteSettings?: (mutedByGuildId: Record<string, boolean>) => void;
   onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
@@ -160,6 +184,30 @@ export class AppGatewayClient implements VoiceSignalingClient {
   requestVoiceState(request: VoiceStateRequest): boolean {
     if (!this.isReady()) return false;
     this.send(buildVoiceStatePayload(request));
+    return true;
+  }
+
+  createStream(request: { type: "call" | "guild"; guildId: string | null; channelId: string; preferredRegion?: string | null }): boolean {
+    if (!this.isReady()) return false;
+    const data: Record<string, unknown> = {
+      type: request.type,
+      guild_id: request.guildId,
+      channel_id: request.channelId,
+    };
+    if (request.preferredRegion) data.preferred_region = request.preferredRegion;
+    this.send({ op: 18, d: data });
+    return true;
+  }
+
+  deleteStream(streamKey: string): boolean {
+    if (!this.isReady()) return false;
+    this.send({ op: 19, d: { stream_key: streamKey } });
+    return true;
+  }
+
+  setStreamPaused(streamKey: string, paused: boolean): boolean {
+    if (!this.isReady()) return false;
+    this.send({ op: 22, d: { stream_key: streamKey, paused } });
     return true;
   }
 
@@ -432,6 +480,21 @@ export class AppGatewayClient implements VoiceSignalingClient {
           this.callbacks.onCallDelete?.(data.channel_id);
           break;
         }
+        case "STREAM_CREATE": {
+          const event = mapStreamCreateEvent(data);
+          if (event) this.callbacks.onStreamCreate?.(event);
+          break;
+        }
+        case "STREAM_SERVER_UPDATE": {
+          const event = mapStreamServerUpdateEvent(data);
+          if (event) this.callbacks.onStreamServerUpdate?.(event);
+          break;
+        }
+        case "STREAM_DELETE": {
+          const event = mapStreamDeleteEvent(data);
+          if (event) this.callbacks.onStreamDelete?.(event);
+          break;
+        }
         case "GUILD_MEMBER_UPDATE": {
           if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.roles)) break;
           const user = isObject(data.user) ? data.user : null;
@@ -696,6 +759,41 @@ export function mapCallGatewayEvent(data: unknown): CallGatewayEvent | null {
     voiceStateUserIds,
     voiceStates,
     isActive: typeof data.message_id === "string" || voiceStateUserIds.length > 0,
+  };
+}
+
+export function mapStreamCreateEvent(data: unknown): StreamCreateEvent | null {
+  if (!isObject(data) || typeof data.stream_key !== "string") return null;
+  const rtcServerId = snowflakeToString(data.rtc_server_id);
+  const rtcChannelId = snowflakeToString(data.rtc_channel_id);
+  if (!rtcServerId || !rtcChannelId) return null;
+  return {
+    streamKey: data.stream_key,
+    rtcServerId,
+    rtcChannelId,
+    region: typeof data.region === "string" ? data.region : null,
+    viewerIds: Array.isArray(data.viewer_ids)
+      ? data.viewer_ids.map(snowflakeToString).filter((id): id is string => Boolean(id))
+      : [],
+    paused: Boolean(data.paused),
+  };
+}
+
+export function mapStreamServerUpdateEvent(data: unknown): StreamServerUpdateEvent | null {
+  if (!isObject(data) || typeof data.stream_key !== "string" || typeof data.token !== "string") return null;
+  return {
+    streamKey: data.stream_key,
+    token: data.token,
+    endpoint: typeof data.endpoint === "string" ? data.endpoint : null,
+  };
+}
+
+export function mapStreamDeleteEvent(data: unknown): StreamDeleteEvent | null {
+  if (!isObject(data) || typeof data.stream_key !== "string") return null;
+  return {
+    streamKey: data.stream_key,
+    reason: typeof data.reason === "string" ? data.reason : "unknown",
+    unavailable: Boolean(data.unavailable),
   };
 }
 

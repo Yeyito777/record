@@ -151,6 +151,7 @@ import {
 import { clearTypingUser, recordTypingStart } from "./typing";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
+import { ScreenStreamController } from "./streamcontroller";
 import { formatGainDbWithUnit, normalizeGainDb, type NoiseSuppressionMode } from "./volume";
 
 export interface SessionEffects {
@@ -175,6 +176,7 @@ let memberListGatewayToken: string | null = null;
 let appGateway: AppGatewayClient | null = null;
 let appGatewayToken: string | null = null;
 let voiceCallController: VoiceCallController | null = null;
+let streamController: ScreenStreamController | null = null;
 let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | null = null;
 const callWidget = new CallWidgetController();
 const recentIncomingCallRingtones = new Map<string, number>();
@@ -240,6 +242,8 @@ export function disconnectMemberListGateway(): void {
 }
 
 export function disconnectAppGateway(): void {
+  streamController?.stop("gateway_disconnect");
+  streamController = null;
   voiceCallController?.disconnect();
   voiceCallController = null;
   callVoiceStatesByChannelId.clear();
@@ -1903,6 +1907,12 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       syncCallWidget(state, null);
       effects.scheduleRender();
     },
+    onStreamCreate: (event) => streamController?.handleCreate(event),
+    onStreamServerUpdate: (event) => streamController?.handleServerUpdate(event),
+    onStreamDelete: (event) => {
+      streamController?.handleDelete(event);
+      if (streamController?.streamKey === event.streamKey) streamController = null;
+    },
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
     onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
     onMessageDelete: (channelId, messageId) => {
@@ -3293,11 +3303,101 @@ export function hangUpCurrentCall(state: AppState, effects: SessionEffects): voi
     return;
   }
 
+  stopCurrentStream(state, effects, { silent: true });
   stopOutboundCallRingtone(voiceCallController.activeSession.target.channelId, "hangup");
   voiceCallController.leave();
   state.voiceCall = null;
   setNotice(state, "", "muted");
   effects.scheduleRender();
+}
+
+export function toggleCurrentStream(state: AppState, effects: SessionEffects): void {
+  if (streamController) {
+    stopCurrentStream(state, effects);
+    return;
+  }
+  startCurrentStream(state, effects);
+}
+
+export function startCurrentStream(state: AppState, effects: SessionEffects): void {
+  const token = state.auth.savedToken;
+  const selfUserId = state.auth.user?.id;
+  if (!token || !selfUserId) {
+    setNotice(state, "Login required to stream.", "warning");
+    effects.scheduleRender();
+    return;
+  }
+  const session = voiceCallController?.activeSession;
+  if (!session || session.state !== "ready") {
+    setNotice(state, "Join a call before starting /stream.", "warning", { chat: false });
+    effects.scheduleRender();
+    return;
+  }
+  if (!session.sessionId) {
+    setNotice(state, "Discord voice session is still connecting; try /stream again in a moment.", "warning", { chat: false });
+    effects.scheduleRender();
+    return;
+  }
+  if (!appGateway || appGatewayToken !== token || !appGateway.isReady()) {
+    setNotice(state, "Discord gateway is still connecting; try again in a moment.", "warning", { chat: false });
+    effects.scheduleRender();
+    return;
+  }
+
+  const type = session.target.guildId ? "guild" : "call";
+  const streamKey = session.target.guildId
+    ? `guild:${session.target.guildId}:${session.target.channelId}:${selfUserId}`
+    : `call:${session.target.channelId}:${selfUserId}`;
+  const controller = new ScreenStreamController(streamKey, session, selfUserId, effects, (error) => {
+    setNotice(state, `Stream: ${error.message}`, "warning", { chat: false });
+  });
+  streamController = controller;
+  setNotice(state, "Starting screen stream…", "muted", { loading: true, chat: false });
+  effects.scheduleRender();
+
+  if (!appGateway.createStream({
+    type,
+    guildId: session.target.guildId,
+    channelId: session.target.channelId,
+    preferredRegion: session.target.preferredRegions?.[0] ?? null,
+  })) {
+    streamController = null;
+    setNotice(state, "Discord gateway is not ready to create a stream.", "warning", { chat: false });
+    effects.scheduleRender();
+    return;
+  }
+  appGateway.setStreamPaused(streamKey, false);
+
+  void controller.start().then(() => {
+    if (streamController !== controller) return;
+    playSoundEffect("streamStarted");
+    setNotice(state, "Streaming first monitor with desktop audio.", "success", { chat: false });
+    effects.scheduleRender();
+  }).catch((error) => {
+    if (streamController === controller) streamController = null;
+    appGateway?.deleteStream(streamKey);
+    const message = error instanceof Error ? error.message : String(error);
+    setNotice(state, `Failed to start stream: ${message}`, "error", { chat: false });
+    effects.scheduleRender();
+  });
+}
+
+export function stopCurrentStream(state: AppState, effects: SessionEffects, options: { silent?: boolean } = {}): void {
+  const controller = streamController;
+  if (!controller) {
+    if (!options.silent) {
+      setNotice(state, "No active stream.", "muted", { chat: false });
+      effects.scheduleRender();
+    }
+    return;
+  }
+  streamController = null;
+  controller.stop("command");
+  appGateway?.deleteStream(controller.streamKey);
+  if (!options.silent) {
+    setNotice(state, "Stream stopped.", "muted", { chat: false });
+    effects.scheduleRender();
+  }
 }
 
 export function setCurrentCallMute(state: AppState, effects: SessionEffects, muted: boolean | null): void {

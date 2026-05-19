@@ -21,7 +21,8 @@ export type SoundEffect =
   | "callCalling"
   | "callJoin"
   | "callUserLeave"
-  | "callLeave";
+  | "callLeave"
+  | "streamStarted";
 
 export interface SoundEffectPlaybackCommand {
   command: string;
@@ -47,6 +48,7 @@ const SOUND_FILES: Record<SoundEffect, string> = {
   callJoin: "discord-user-join.mp3",
   callUserLeave: "discord-user-leave.mp3",
   callLeave: "discord-disconnect.mp3",
+  streamStarted: "discord-stream-started.mp3",
 };
 
 const SOUND_DIR = fileURLToPath(new URL("../assets/sounds/", import.meta.url));
