@@ -5,4 +5,201 @@ HELPER="$ROOT/widgets/stream-helper/record-stream-helper"
 if [[ ! -x "$HELPER" ]]; then
   "$ROOT/scripts/build-stream-helper" >&2
 fi
-exec "$HELPER" "$@"
+
+# When streaming with soundshare, capturing @DEFAULT_MONITOR@ includes Record's
+# own Discord voice playback, so the people in the call hear themselves.  Build a
+# temporary Pulse/PipeWire mix sink instead: non-call app audio is moved into the
+# mix and looped back to the real speakers, while Record/voice playback stays on
+# the real sink and is therefore not present in the mix monitor captured by
+# ffmpeg.  Set RECORD_STREAM_AUDIO_ISOLATION=off to use the old default-monitor
+# capture path.
+STREAM_MIX_SINK=""
+STREAM_MIX_MODULE=""
+STREAM_LOOPBACK_MODULE=""
+STREAM_ORIGINAL_SINK=""
+STREAM_ORIGINAL_SINK_INDEX=""
+STREAM_RECONCILER_PID=""
+STREAM_HELPER_PID=""
+
+stream_audio_isolation_enabled() {
+  case "${RECORD_STREAM_AUDIO_ISOLATION:-on}" in
+    0|false|False|FALSE|off|Off|OFF|no|No|NO) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+pactl_quiet() {
+  pactl "$@" >/dev/null 2>&1
+}
+
+sink_index_by_name() {
+  local name="$1"
+  pactl list short sinks 2>/dev/null | awk -v name="$name" '$2 == name { print $1; exit }'
+}
+
+list_sink_inputs() {
+  pactl list sink-inputs 2>/dev/null | awk '
+    function value(line) { sub(/^.*= "/, "", line); sub(/"$/, "", line); return line }
+    function flush() {
+      if (id != "") printf "%s\t%s\t%s\t%s\t%s\t%s\n", id, sink, app, binary, media, node
+    }
+    /^Sink Input #/ { flush(); id = substr($3, 2); sink = ""; app = ""; binary = ""; media = ""; node = ""; next }
+    /^\tSink:/ { sink = $2; next }
+    /^\t\tapplication.name = / { app = value($0); next }
+    /^\t\tapplication.process.binary = / { binary = value($0); next }
+    /^\t\tmedia.name = / { media = value($0); next }
+    /^\t\tnode.name = / { node = value($0); next }
+    END { flush() }
+  '
+}
+
+is_call_or_helper_sink_input() {
+  local app="${1,,}"
+  local binary="${2,,}"
+  local media="${3,,}"
+  local node="${4,,}"
+  [[ "$app" == *discord-voice-engine* ]] && return 0
+  [[ "$binary" == *discord-voice-engine* ]] && return 0
+  [[ "$media" == *discord\ voice\ playback* ]] && return 0
+  [[ "$media" == *record\ discord\ voice* ]] && return 0
+  # ffplay is only used by Record as a fallback voice playback backend here; do
+  # not put it in the stream mix or it can echo remote call audio.
+  [[ "$app" == *ffplay* || "$binary" == *ffplay* ]] && return 0
+  # The loopback that mirrors the temporary mix to the real sink must never be
+  # moved back into the mix, or it feeds itself.
+  [[ "$media" == *loopback* ]] && return 0
+  # module-combine-sink creates an output sink-input on the real speaker sink.
+  # Moving that sink-input into the mix would create feedback/buzzing.
+  if [[ -n "$STREAM_MIX_SINK" ]]; then
+    [[ "$media" == *"${STREAM_MIX_SINK,,}"* ]] && return 0
+    [[ "$node" == *"${STREAM_MIX_SINK,,}"* ]] && return 0
+  fi
+  return 1
+}
+
+reconcile_stream_audio_routes() {
+  local mix_index="$1"
+  local original_sink="$2"
+  local original_index="$3"
+  while IFS=$'\t' read -r input_id sink_id app binary media node; do
+    [[ -z "$input_id" ]] && continue
+    if is_call_or_helper_sink_input "$app" "$binary" "$media" "$node"; then
+      if [[ "$sink_id" == "$mix_index" ]]; then
+        pactl_quiet move-sink-input "$input_id" "$original_sink" || true
+      fi
+    else
+      # Only steal desktop audio that is actually on the captured/default speaker
+      # sink.  Do not unexpectedly reroute unrelated HDMI/headset/special sinks.
+      if [[ "$sink_id" == "$original_index" ]]; then
+        pactl_quiet move-sink-input "$input_id" "$STREAM_MIX_SINK" || true
+      fi
+    fi
+  done < <(list_sink_inputs)
+}
+
+cleanup_stream_audio_mix() {
+  local status=$?
+  if [[ -n "$STREAM_HELPER_PID" ]]; then
+    kill "$STREAM_HELPER_PID" >/dev/null 2>&1 || true
+    wait "$STREAM_HELPER_PID" >/dev/null 2>&1 || true
+    STREAM_HELPER_PID=""
+  fi
+  if [[ -n "$STREAM_RECONCILER_PID" ]]; then
+    kill "$STREAM_RECONCILER_PID" >/dev/null 2>&1 || true
+    wait "$STREAM_RECONCILER_PID" >/dev/null 2>&1 || true
+    STREAM_RECONCILER_PID=""
+  fi
+  if [[ -n "$STREAM_MIX_SINK" && -n "$STREAM_ORIGINAL_SINK" ]]; then
+    local mix_index
+    mix_index="$(sink_index_by_name "$STREAM_MIX_SINK" || true)"
+    if [[ -n "$mix_index" ]]; then
+      while IFS=$'\t' read -r input_id sink_id _app _binary _media; do
+        [[ -n "$input_id" && "$sink_id" == "$mix_index" ]] || continue
+        pactl_quiet move-sink-input "$input_id" "$STREAM_ORIGINAL_SINK" || true
+      done < <(list_sink_inputs)
+    fi
+  fi
+  if [[ -n "$STREAM_LOOPBACK_MODULE" ]]; then
+    pactl_quiet unload-module "$STREAM_LOOPBACK_MODULE" || true
+    STREAM_LOOPBACK_MODULE=""
+  fi
+  if [[ -n "$STREAM_MIX_MODULE" ]]; then
+    pactl_quiet unload-module "$STREAM_MIX_MODULE" || true
+    STREAM_MIX_MODULE=""
+  fi
+  trap - EXIT INT TERM HUP
+  return "$status"
+}
+
+setup_stream_audio_mix() {
+  stream_audio_isolation_enabled || return 1
+  command -v pactl >/dev/null 2>&1 || return 1
+  STREAM_ORIGINAL_SINK="$(pactl get-default-sink 2>/dev/null || true)"
+  [[ -n "$STREAM_ORIGINAL_SINK" ]] || return 1
+  STREAM_ORIGINAL_SINK_INDEX="$(sink_index_by_name "$STREAM_ORIGINAL_SINK" || true)"
+  [[ -n "$STREAM_ORIGINAL_SINK_INDEX" ]] || return 1
+
+  STREAM_MIX_SINK="record_stream_mix_$$"
+  STREAM_MIX_MODULE="$(pactl load-module module-combine-sink \
+    sink_name="$STREAM_MIX_SINK" \
+    slaves="$STREAM_ORIGINAL_SINK" \
+    sink_properties="device.description=Record_Stream_Mix" 2>/dev/null || true)"
+  if [[ -z "$STREAM_MIX_MODULE" ]]; then
+    STREAM_MIX_MODULE="$(pactl load-module module-null-sink \
+      sink_name="$STREAM_MIX_SINK" \
+      sink_properties="device.description=Record_Stream_Mix" 2>/dev/null || true)"
+    [[ -n "$STREAM_MIX_MODULE" ]] || { STREAM_MIX_SINK=""; return 1; }
+    STREAM_LOOPBACK_MODULE="$(pactl load-module module-loopback \
+      source="${STREAM_MIX_SINK}.monitor" \
+      sink="$STREAM_ORIGINAL_SINK" \
+      latency_msec=20 2>/dev/null || true)"
+    if [[ -z "$STREAM_LOOPBACK_MODULE" ]]; then
+      pactl_quiet unload-module "$STREAM_MIX_MODULE" || true
+      STREAM_MIX_MODULE=""
+      STREAM_MIX_SINK=""
+      return 1
+    fi
+  fi
+
+  local mix_index
+  mix_index="$(sink_index_by_name "$STREAM_MIX_SINK" || true)"
+  if [[ -z "$mix_index" ]]; then
+    cleanup_stream_audio_mix || true
+    return 1
+  fi
+
+  reconcile_stream_audio_routes "$mix_index" "$STREAM_ORIGINAL_SINK" "$STREAM_ORIGINAL_SINK_INDEX"
+  (
+    while true; do
+      sleep 1
+      reconcile_stream_audio_routes "$mix_index" "$STREAM_ORIGINAL_SINK" "$STREAM_ORIGINAL_SINK_INDEX"
+    done
+  ) &
+  STREAM_RECONCILER_PID=$!
+  export RECORD_STREAM_AUDIO_SOURCE="${STREAM_MIX_SINK}.monitor"
+  export RECORD_STREAM_AUDIO_MIX_SINK="$STREAM_MIX_SINK"
+  export RECORD_STREAM_AUDIO_ORIGINAL_SINK="$STREAM_ORIGINAL_SINK"
+  trap cleanup_stream_audio_mix EXIT INT TERM HUP
+  echo "record-stream-helper: soundshare audio isolated via ${STREAM_MIX_SINK}.monitor; call playback stays on ${STREAM_ORIGINAL_SINK}" >&2
+  return 0
+}
+
+if setup_stream_audio_mix; then
+  if [[ -n "${RECORD_STREAM_AUDIO_ISOLATION_TEST_COMMAND:-}" ]]; then
+    set +e
+    bash -lc "$RECORD_STREAM_AUDIO_ISOLATION_TEST_COMMAND"
+    test_status=$?
+    set -e
+    exit "$test_status"
+  fi
+  "$HELPER" "$@" &
+  STREAM_HELPER_PID=$!
+  set +e
+  wait "$STREAM_HELPER_PID"
+  helper_status=$?
+  set -e
+  STREAM_HELPER_PID=""
+  exit "$helper_status"
+else
+  exec "$HELPER" "$@"
+fi
