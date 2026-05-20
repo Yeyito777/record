@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+TMPDIR="$(mktemp -d -t record-stream-audio-test.XXXXXX)"
+OLD_DEFAULT="$(pactl get-default-sink)"
+TEST_SINK="record_stream_test_speaker_$$"
+TEST_SINK_MODULE=""
+
+cleanup() {
+  set +e
+  pactl set-default-sink "$OLD_DEFAULT" >/dev/null 2>&1
+  for input in $(pactl list sink-inputs 2>/dev/null | awk -v sink="$(pactl list short sinks 2>/dev/null | awk -v name="$TEST_SINK" '$2 == name { print $1; exit }')" '
+    /^Sink Input #/ { id = substr($3, 2); next }
+    /^\tSink:/ && $2 == sink { print id }
+  '); do
+    pactl move-sink-input "$input" "$OLD_DEFAULT" >/dev/null 2>&1 || true
+  done
+  if [[ -n "$TEST_SINK_MODULE" ]]; then
+    pactl unload-module "$TEST_SINK_MODULE" >/dev/null 2>&1 || true
+  fi
+  pactl list short sinks 2>/dev/null | awk '{print $2}' | grep '^record_stream_.*_'"$$"'$' | while read -r sink; do
+    :
+  done
+  rm -rf "$TMPDIR"
+}
+trap cleanup EXIT INT TERM HUP
+
+TEST_SINK_MODULE="$(pactl load-module module-null-sink sink_name="$TEST_SINK" sink_properties="device.description=Record_Stream_Test_Speaker" 2>/dev/null)"
+pactl set-default-sink "$TEST_SINK"
+
+python3 - "$TMPDIR/desktop.wav" "$TMPDIR/call.wav" <<'PY'
+import math, struct, sys, wave
+rate=48000
+def write(path, freq):
+    dur=5.0
+    amp=0.35
+    n=int(rate*dur)
+    with wave.open(path,'wb') as w:
+        w.setnchannels(2); w.setsampwidth(2); w.setframerate(rate)
+        frames=bytearray()
+        for i in range(n):
+            s=int(amp*32767*math.sin(2*math.pi*freq*i/rate))
+            frames += struct.pack('<hh', s, s)
+        w.writeframes(frames)
+write(sys.argv[1], 440.0)
+write(sys.argv[2], 880.0)
+PY
+
+cat > "$TMPDIR/inside.sh" <<'INSIDE'
+#!/usr/bin/env bash
+set -euo pipefail
+REC_PID=""
+record_raw() {
+  local source="$1"
+  local out="$2"
+  parec --record --raw --format=s16le --rate=48000 --channels=2 --device="$source" > "$out" &
+  REC_PID=$!
+}
+stop_recorder() {
+  local pid="$1"
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+}
+
+wait_for_route() {
+  # The production reconciler runs once per second; give it two chances.
+  sleep 1.8
+}
+
+mix_source="$RECORD_STREAM_AUDIO_SOURCE"
+orig_source="${RECORD_STREAM_AUDIO_ORIGINAL_SINK}.monitor"
+orig_sink="$RECORD_STREAM_AUDIO_ORIGINAL_SINK"
+
+echo "inside: mix_source=$mix_source orig_sink=$orig_sink" >&2
+
+record_raw "$mix_source" "$TEST_DIR/mix_desktop.raw"
+mix_rec="$REC_PID"
+record_raw "$orig_source" "$TEST_DIR/orig_desktop.raw"
+orig_rec="$REC_PID"
+sleep 0.3
+paplay --device="$orig_sink" --volume=65536 --client-name=record-audio-isolation-test-desktop --stream-name=desktop-audio --property=module-stream-restore.id=record-audio-isolation-test-desktop-$$ "$TEST_DIR/desktop.wav" &
+desktop_pid=$!
+wait_for_route
+sleep 2.5
+stop_recorder "$mix_rec"
+stop_recorder "$orig_rec"
+wait "$desktop_pid" >/dev/null 2>&1 || true
+
+record_raw "$mix_source" "$TEST_DIR/mix_call.raw"
+mix_rec="$REC_PID"
+record_raw "$orig_source" "$TEST_DIR/orig_call.raw"
+orig_rec="$REC_PID"
+sleep 0.3
+paplay --device="$orig_sink" --volume=65536 --client-name=discord-voice-engine --stream-name="Discord voice playback" --property=module-stream-restore.id=record-audio-isolation-test-call-$$ "$TEST_DIR/call.wav" &
+call_pid=$!
+wait_for_route
+sleep 2.5
+stop_recorder "$mix_rec"
+stop_recorder "$orig_rec"
+wait "$call_pid" >/dev/null 2>&1 || true
+INSIDE
+chmod +x "$TMPDIR/inside.sh"
+
+TEST_DIR="$TMPDIR" RECORD_STREAM_AUDIO_ISOLATION_TEST_COMMAND="$TMPDIR/inside.sh" "$ROOT/scripts/run-stream-helper" --help >/tmp/record-stream-audio-isolation-test.out 2>"$TMPDIR/wrapper.err"
+cat "$TMPDIR/wrapper.err" >&2
+
+python3 - "$TMPDIR" <<'PY'
+import math, os, sys
+import numpy as np
+rate=48000
+root=sys.argv[1]
+
+def analyze(name):
+    path=os.path.join(root, name)
+    data=np.fromfile(path, dtype='<i2')
+    if data.size == 0:
+        return {'rms': 0.0, 'freq': 0.0, 'samples': 0}
+    data=data.reshape((-1,2)).astype(np.float32).mean(axis=1) / 32768.0
+    # Drop the first 100 ms to avoid route/capture transients.
+    if data.size > rate//10:
+        data=data[rate//10:]
+    rms=float(np.sqrt(np.mean(data*data))) if data.size else 0.0
+    if rms < 1e-5 or data.size < 1024:
+        return {'rms': rms, 'freq': 0.0, 'samples': int(data.size)}
+    window=np.hanning(data.size)
+    spectrum=np.fft.rfft(data*window)
+    freqs=np.fft.rfftfreq(data.size, 1/rate)
+    idx=int(np.argmax(np.abs(spectrum[1:]))+1)
+    return {'rms': rms, 'freq': float(freqs[idx]), 'samples': int(data.size)}
+
+results={name: analyze(name) for name in ['mix_desktop.raw','orig_desktop.raw','mix_call.raw','orig_call.raw']}
+for name, result in results.items():
+    print(f"{name}: rms={result['rms']:.4f} freq={result['freq']:.1f} samples={result['samples']}")
+
+def require(cond, message):
+    if not cond:
+        raise SystemExit(message)
+
+require(results['mix_desktop.raw']['rms'] > 0.05, 'desktop audio was not captured by stream mix')
+require(abs(results['mix_desktop.raw']['freq'] - 440.0) < 8.0, 'stream mix desktop audio is distorted or wrong frequency')
+require(results['orig_desktop.raw']['rms'] > 0.05, 'desktop audio was not audible on original sink')
+require(abs(results['orig_desktop.raw']['freq'] - 440.0) < 8.0, 'original sink desktop audio is distorted or wrong frequency')
+require(results['orig_call.raw']['rms'] > 0.05, 'call playback was not audible on original sink')
+require(abs(results['orig_call.raw']['freq'] - 880.0) < 8.0, 'original sink call playback is distorted or wrong frequency')
+require(results['mix_call.raw']['rms'] < 0.01, 'call playback leaked into stream mix')
+print('stream audio isolation smoke test passed')
+PY

@@ -56,7 +56,8 @@ static void usage(FILE *out)
         "the captured monitor.\n"
         "\n"
         "Environment:\n"
-        "  RECORD_STREAM_ENCODER=auto|x264|vaapi (default: auto)\n");
+        "  RECORD_STREAM_ENCODER=auto|x264|vaapi (default: auto)\n"
+        "  RECORD_STREAM_AUDIO_SOURCE=<pulse-source> (default: @DEFAULT_MONITOR@)\n");
 }
 
 static const char *encoder_name(enum video_encoder encoder)
@@ -259,11 +260,14 @@ static int start_ffmpeg(const struct options *opts, const struct geometry *geo, 
     char audio_port[32], audio_ssrc[32];
     char video_size[64], display_input[128], audio_url[128];
     const char *vaapi_device = getenv("RECORD_STREAM_VAAPI_DEVICE");
+    const char *audio_source = getenv("RECORD_STREAM_AUDIO_SOURCE");
     const char *display = getenv("DISPLAY");
     if (!display || !*display)
         display = ":0";
     if (!vaapi_device || !*vaapi_device)
         vaapi_device = "/dev/dri/renderD128";
+    if (!audio_source || !*audio_source)
+        audio_source = "@DEFAULT_MONITOR@";
 
     snprintf(audio_port, sizeof(audio_port), "%d", opts->audio_port);
     snprintf(audio_ssrc, sizeof(audio_ssrc), "%u", opts->audio_ssrc);
@@ -299,7 +303,7 @@ static int start_ffmpeg(const struct options *opts, const struct geometry *geo, 
         args[n++] = "-f";
         args[n++] = "pulse";
         args[n++] = "-i";
-        args[n++] = "@DEFAULT_MONITOR@";
+        args[n++] = audio_source;
         args[n++] = "-map";
         args[n++] = "0:v:0";
         args[n++] = "-an";
@@ -380,7 +384,7 @@ static int start_ffmpeg(const struct options *opts, const struct geometry *geo, 
     }
     ffmpeg_pid = pid;
     active_encoder = encoder;
-    fprintf(stderr, "record-stream-helper: started ffmpeg encoder=%s\n", encoder_name(encoder));
+    fprintf(stderr, "record-stream-helper: started ffmpeg encoder=%s audio_source=%s\n", encoder_name(encoder), audio_source);
     return 0;
 }
 
