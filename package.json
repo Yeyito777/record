@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "@lng2004/node-datachannel": "^0.32.0-20260202",
-    "@snazzah/davey": "^0.1.11"
+    "@snazzah/davey": "^0.1.11",
+    "discord-emoji": "2.5.3"
   },
   "trustedDependencies": [
     "@lng2004/node-datachannel"

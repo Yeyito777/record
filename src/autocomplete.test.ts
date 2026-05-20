@@ -5,6 +5,7 @@ import { join } from "path";
 
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
+import { emojiCompletions } from "./emojis";
 import { createInitialState } from "./state";
 
 describe("autocomplete", () => {
@@ -112,6 +113,27 @@ describe("autocomplete", () => {
     updateAutocomplete(state);
 
     expect(state.autocomplete?.matches.slice(0, 4).map((match) => match.desc)).toEqual([":sob:", ":joy:", ":rofl:", ":skull:"]);
+  });
+
+  test("includes Discord emoji pack entries missing from the preferred emoji list", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "flowers :wilted_fl";
+    state.editor.cursor = state.editor.buffer.length;
+
+    updateAutocomplete(state);
+
+    expect(state.autocomplete?.matches[0]).toMatchObject({ name: "🥀", desc: ":wilted_flower:" });
+    cycleAutocomplete(state, 1);
+    expect(state.editor.buffer).toBe("flowers 🥀");
+  });
+
+  test("omits noisy Discord emoji variants from autocomplete", () => {
+    expect(emojiCompletions("flag_us")).toEqual([]);
+    expect(emojiCompletions("thumbsup_tone")).toEqual([]);
+  });
+
+  test("keeps common person gesture emoji like shrug", () => {
+    expect(emojiCompletions("shrug")[0]).toMatchObject({ name: "🤷", desc: ":shrug:" });
   });
 
   test("places broadcast and role mentions after user mentions", () => {

@@ -7,6 +7,7 @@
 
 import type { CompletionItem } from "./commands";
 import { theme } from "./theme";
+import { activity, food, nature, objects, people, symbols, travel } from "discord-emoji";
 
 export interface EmojiCandidate {
   emoji: string;
@@ -23,7 +24,7 @@ export interface EmojiQuery {
 const EMOJI_BOUNDARY_RE = /(^|[\s([{])(:([A-Za-z0-9_+-]*))$/;
 const EMOJI_QUERY_RE = /[^a-z0-9_+-]/g;
 
-const EMOJI_CANDIDATES: EmojiCandidate[] = [
+const PREFERRED_EMOJI_CANDIDATES: EmojiCandidate[] = [
   { emoji: "😭", name: "sob", aliases: ["loudly_crying", "crying"] },
   { emoji: "😂", name: "joy", aliases: ["tears_of_joy", "laughing"] },
   { emoji: "🤣", name: "rofl", aliases: ["rolling_on_the_floor_laughing"] },
@@ -352,12 +353,133 @@ const EMOJI_CANDIDATES: EmojiCandidate[] = [
   { emoji: "⚪", name: "white_circle" },
 ];
 
+type DiscordEmojiGroupName = "people" | "nature" | "food" | "activity" | "travel" | "objects" | "symbols";
+type DiscordEmojiGroup = { name: DiscordEmojiGroupName; entries: Record<string, string> };
+
+const DISCORD_EMOJI_GROUPS: DiscordEmojiGroup[] = [
+  { name: "people", entries: people },
+  { name: "nature", entries: nature },
+  { name: "food", entries: food },
+  { name: "activity", entries: activity },
+  { name: "travel", entries: travel },
+  { name: "objects", entries: objects },
+  { name: "symbols", entries: symbols },
+];
+
+const SKIN_TONE_NAME_RE = /(?:^|_)tone[1-5](?:_|$)|skin_tone/;
+const SKIN_TONE_EMOJI_RE = /[\u{1F3FB}-\u{1F3FF}]/u;
+const PERSON_VARIANT_RE = /^(?:person|woman|man|women|men|people|family|couple|couplekiss|kiss_(?:woman|man|ww|mm))/;
+const GENDERED_OR_PERSON_ACTIVITY_RE = /^(?:person|woman|man|women|men|people)_|_(?:woman|man|women|men)$/;
+const ACTIVITY_PLAYER_RE = /^(?:lifter|weight_lifter|basketball_player|golfer|surfer|swimmer|rowboat|bicyclist|mountain_bicyclist|juggling|juggler|runner|walking|levitate)/;
+const COMMON_PEOPLE_RE = /(?:face|smil|grin|laugh|joy|tear|relax|relieved|blush|innocent|wink|heart_eyes|kissing|yum|tongue|zany|eyebrow|monocle|nerd|sunglasses|disguised|star_struck|partying|smirk|unamused|disappointed|pensive|worried|confused|frown|persevere|confounded|tired|weary|pleading|cry|sob|triumph|angry|rage|pouting|symbols_over_mouth|exploding|flushed|hot|cold|scream|fearful|sweat|hug|thinking|peeking|hand_over_mouth|saluting|shushing|melting|lying|liar|no_mouth|dotted_line|diagonal_mouth|neutral|expressionless|shaking_face|grimacing|rolling_eyes|hushed|anguished|open_mouth|astonished|yawning|sleep|drool|exhaling|dizzy|spiral_eyes|zipper|woozy|nauseated|sick|vomit|sneeze|mask|thermometer|bandage|money_mouth|cowboy|imp|ogre|goblin|clown|poop|shit|hankey|poo|ghost|skull|skeleton|alien|monster|robot|jack_o_lantern|cat|shrug|facepalm|dancer)/;
+const COMMON_SYMBOL_NAME_RE = /(?:heart|spark|star|zzz|anger|check|cross|mark|^x$|^o$|circle|square|diamond|question|exclamation|bangbang|interrobang|recycle|warning|underage|prohibited|stop|entry|no_|arrow|play|pause|stop_button|record|track_|fast_forward|rewind|eject|repeat|shuffle|twisted|grey|black|white|red|orange|yellow|green|blue|purple|brown|large_|small_|heavy_|plus|minus|divide|infinity|loop|wavy_dash|keycap|number_)/;
+const COMMON_SYMBOL_NAMES = new Set([
+  "100",
+  "1234",
+  "id",
+  "sos",
+  "ok",
+  "up",
+  "cool",
+  "new",
+  "free",
+  "ng",
+  "abc",
+  "abcd",
+  "capital_abcd",
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "hash",
+  "asterisk",
+  "tm",
+  "copyright",
+  "registered",
+  "soon",
+  "back",
+  "end",
+  "top",
+]);
+
+function isCommonDiscordEmojiAddition(groupName: DiscordEmojiGroupName, name: string, emoji: string): boolean {
+  if (SKIN_TONE_NAME_RE.test(name) || SKIN_TONE_EMOJI_RE.test(emoji)) return false;
+
+  switch (groupName) {
+    case "people":
+      return COMMON_PEOPLE_RE.test(name) && !PERSON_VARIANT_RE.test(name);
+    case "activity":
+      return !GENDERED_OR_PERSON_ACTIVITY_RE.test(name) && !ACTIVITY_PLAYER_RE.test(name);
+    case "objects":
+      return !GENDERED_OR_PERSON_ACTIVITY_RE.test(name);
+    case "symbols":
+      return COMMON_SYMBOL_NAMES.has(name) || COMMON_SYMBOL_NAME_RE.test(name);
+    case "nature":
+    case "food":
+    case "travel":
+      return true;
+  }
+}
+
+function addEmojiAlias(candidate: EmojiCandidate, alias: string): void {
+  const normalizedAlias = normalizeEmojiKey(alias);
+  if (!normalizedAlias || normalizedAlias === normalizeEmojiKey(candidate.name)) return;
+
+  const aliases = candidate.aliases ?? [];
+  if (!aliases.some((existing) => normalizeEmojiKey(existing) === normalizedAlias)) {
+    candidate.aliases = [...aliases, alias];
+  }
+}
+
+function buildEmojiCandidates(): EmojiCandidate[] {
+  const candidates: EmojiCandidate[] = [];
+  const byEmoji = new Map<string, EmojiCandidate>();
+
+  for (const preferred of PREFERRED_EMOJI_CANDIDATES) {
+    const candidate: EmojiCandidate = { ...preferred, aliases: preferred.aliases ? [...preferred.aliases] : undefined };
+    candidates.push(candidate);
+    byEmoji.set(candidate.emoji, candidate);
+  }
+
+  for (const group of DISCORD_EMOJI_GROUPS) {
+    for (const [name, emoji] of Object.entries(group.entries)) {
+      if (SKIN_TONE_NAME_RE.test(name) || SKIN_TONE_EMOJI_RE.test(emoji)) continue;
+
+      const existing = byEmoji.get(emoji);
+      if (existing) {
+        addEmojiAlias(existing, name);
+        continue;
+      }
+
+      if (!isCommonDiscordEmojiAddition(group.name, name, emoji)) continue;
+
+      const candidate: EmojiCandidate = { emoji, name };
+      candidates.push(candidate);
+      byEmoji.set(emoji, candidate);
+    }
+  }
+
+  return candidates;
+}
+
+const EMOJI_CANDIDATES = buildEmojiCandidates();
+
 function normalizeEmojiKey(value: string): string {
   return value.trim().toLowerCase().replace(/^:/, "").replace(/:$/, "").replace(EMOJI_QUERY_RE, "");
 }
 
+function emojiNames(candidate: EmojiCandidate): string[] {
+  return [candidate.name, ...(candidate.aliases ?? [])];
+}
+
 function emojiAliases(candidate: EmojiCandidate): string[] {
-  return [candidate.name, ...(candidate.aliases ?? [])].map(normalizeEmojiKey).filter(Boolean);
+  return emojiNames(candidate).map(normalizeEmojiKey).filter(Boolean);
 }
 
 function emojiCandidateMatches(candidate: EmojiCandidate, query: string): boolean {
@@ -369,9 +491,24 @@ function emojiCandidateMatches(candidate: EmojiCandidate, query: string): boolea
 function emojiRank(candidate: EmojiCandidate, query: string): number {
   const key = normalizeEmojiKey(query);
   if (!key) return 0;
-  if (normalizeEmojiKey(candidate.name) === key) return 0;
-  if (normalizeEmojiKey(candidate.name).startsWith(key)) return 1;
-  return 2;
+
+  const primary = normalizeEmojiKey(candidate.name);
+  const aliases = emojiAliases(candidate);
+  if (primary === key) return 0;
+  if (aliases.some((alias) => alias === key)) return 1;
+  if (primary.startsWith(key)) return 2;
+  if (aliases.some((alias) => alias.startsWith(key))) return 3;
+  return 4;
+}
+
+function emojiDisplayName(candidate: EmojiCandidate, query: string): string {
+  const key = normalizeEmojiKey(query);
+  if (!key) return candidate.name;
+
+  const names = emojiNames(candidate);
+  return names.find((name) => normalizeEmojiKey(name) === key)
+    ?? names.find((name) => normalizeEmojiKey(name).startsWith(key))
+    ?? candidate.name;
 }
 
 export function emojiQueryAtCursor(buffer: string, cursor: number): EmojiQuery | null {
@@ -386,12 +523,12 @@ export function emojiQueryAtCursor(buffer: string, cursor: number): EmojiQuery |
 }
 
 export function emojiCompletions(query: string): CompletionItem[] {
-  return EMOJI_CANDIDATES
+  return [...EMOJI_CANDIDATES]
     .filter((candidate) => emojiCandidateMatches(candidate, query))
     .sort((left, right) => emojiRank(left, query) - emojiRank(right, query))
     .map((candidate) => ({
       name: candidate.emoji,
-      desc: `:${candidate.name}:`,
+      desc: `:${emojiDisplayName(candidate, query)}:`,
       color: theme.text,
     }));
 }

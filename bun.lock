@@ -7,6 +7,7 @@
       "dependencies": {
         "@lng2004/node-datachannel": "^0.32.0-20260202",
         "@snazzah/davey": "^0.1.11",
+        "discord-emoji": "2.5.3",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -79,6 +80,8 @@
     "deep-extend": ["deep-extend@0.6.0", "", {}, "sha512-LOHxIOaPYdHlJRtCQfDIVZtfw/ufM8+rVj649RIHzcm/vGwQRXFt6OPqIFWsm2XEMrNIEtWR64sY1LEKD2vAOA=="],
 
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
+
+    "discord-emoji": ["discord-emoji@2.5.3", "", {}, "sha512-yfH/+clSLuZjHyGQC7ozNenof9ZHNUB19d+qQHw+v3tCW2147OgimJVUpnYhZLE6hLWAi29+7pnA3flj0a5DVQ=="],
 
     "end-of-stream": ["end-of-stream@1.4.5", "", { "dependencies": { "once": "^1.4.0" } }, "sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg=="],
 
