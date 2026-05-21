@@ -43,6 +43,7 @@ import {
 } from "./memberlist";
 import { formatByteSize, summarizeInlineMessageParts } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
+import { handlePromptPrefixBackspace } from "./promptbackspace";
 import { render } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
@@ -614,9 +615,9 @@ function pasteImageFromClipboard(): void {
   scheduleRender();
 }
 
-function removeLastPendingImage(): boolean {
-  if (state.editor.cursor !== 0 || state.pendingImages.length === 0) return false;
-  state.pendingImages.pop();
+function handlePromptBackspacePrefixAction(): boolean {
+  const action = handlePromptPrefixBackspace(state);
+  if (!action) return false;
   setNotice(state, "", "muted");
   scheduleRender();
   return true;
@@ -1271,7 +1272,7 @@ function handleMemberListFocused(key: KeyEvent): boolean {
 }
 
 function handlePromptFocused(key: KeyEvent): void {
-  if (key.type === "backspace" && removeLastPendingImage()) return;
+  if (key.type === "backspace" && handlePromptBackspacePrefixAction()) return;
 
   if (key.type === "tab") {
     if (state.autocomplete) {
