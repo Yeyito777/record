@@ -19,10 +19,10 @@ import { debugLog } from "../debuglog";
 import { VOICE_CONNECT_TIMEOUT_MS, VOICE_GATEWAY_VERSION, OPUS_PAYLOAD_TYPE } from "./constants";
 import { DaveVoiceEncryption } from "./dave";
 import { asError, voiceGatewayCloseError } from "./errors";
-import { buildVoiceIdentifyPayload } from "./payloads";
+import { buildVoiceIdentifyPayload, buildVoiceResumePayload } from "./payloads";
 import { connectUdp, discoverUdpAddress, selectEncryptionMode } from "./rtp";
 import { isDaveVoiceGatewayBinaryMessage, isObject, messageDataToBinaryBuffer, messageDataToString, snowflakeToString } from "./util";
-import { NoopVoiceAudioBackend, type VoiceAudioBackend, type VoiceAudioContext, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData } from "./types";
+import { NoopVoiceAudioBackend, VoiceGatewayCloseError, type VoiceAudioBackend, type VoiceAudioContext, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData } from "./types";
 import type { LocalAudioVolumes, NoiseSuppressionMode } from "../volume";
 
 const VIDEO_PAYLOAD_TYPE_H264 = 101;
@@ -30,6 +30,7 @@ const VIDEO_RTX_PAYLOAD_TYPE_H264 = 102;
 const SPEAKING_FLAG_VOICE = 1 << 0;
 const SPEAKING_FLAG_SOUNDSHARE = 1 << 1;
 const WEBRTC_VIDEO_STATS_INTERVAL_MS = 5_000;
+const HEARTBEAT_ACK_GRACE_MULTIPLIER = 1.5;
 
 interface VoiceGatewayWebSocketTarget {
   url: string;
@@ -54,6 +55,14 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private audioStarted = false;
   private speaking = false;
   private connectStage = "idle";
+  private connectMode: "identify" | "resume" = "identify";
+  private resumeInProgress = false;
+  private resumeCause: VoiceGatewayCloseError | null = null;
+  private heartbeatIntervalMs = 0;
+  private heartbeatAckPending = false;
+  private lastHeartbeatNonce: number | null = null;
+  private lastHeartbeatSentAt = 0;
+  private lastHeartbeatAckAt = 0;
   private audioContext: VoiceAudioContext | null = null;
   private selfMute = false;
   private selfDeaf = false;
@@ -96,16 +105,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   connect(): Promise<void> {
     if (this.ws) return Promise.resolve();
     this.disconnected = false;
+    this.connectMode = "identify";
     this.connectStage = "websocket_connecting";
     return new Promise((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
-      this.connectTimer = setTimeout(() => {
-        debugLog("voice.gateway.timeout", { stage: this.connectStage, endpoint: this.safeEndpoint() });
-        this.rejectReady(new Error("Timed out connecting to Discord voice gateway."));
-        this.disconnect();
-      }, VOICE_CONNECT_TIMEOUT_MS);
-      this.connectTimer.unref?.();
+      this.startConnectTimer("connect");
 
       void this.openWebSocket().catch((error) => {
         if (this.disconnected) return;
@@ -134,14 +139,10 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
 
   disconnect(): void {
     this.disconnected = true;
-    if (this.connectTimer) {
-      clearTimeout(this.connectTimer);
-      this.connectTimer = null;
-    }
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
+    this.resumeInProgress = false;
+    this.resumeCause = null;
+    this.clearConnectTimer();
+    this.clearHeartbeatTimer();
     this.audio.stop();
     this.audioStarted = false;
     this.speaking = false;
@@ -175,12 +176,46 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const ws = this.ws;
     this.ws = null;
     if (ws) {
-      ws.removeEventListener("message", this.handleMessage);
-      ws.removeEventListener("open", this.handleOpen);
-      ws.removeEventListener("close", this.handleClose);
-      ws.removeEventListener("error", this.handleError);
+      this.removeWebSocketListeners(ws);
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
     }
+  }
+
+  private startConnectTimer(kind: "connect" | "resume"): void {
+    this.clearConnectTimer();
+    this.connectTimer = setTimeout(() => {
+      debugLog("voice.gateway.timeout", { stage: this.connectStage, endpoint: this.safeEndpoint(), kind });
+      if (kind === "resume") {
+        this.finishResumeFailed(new VoiceGatewayCloseError(1006, "Resume timed out."));
+        return;
+      }
+      this.rejectReady(new Error("Timed out connecting to Discord voice gateway."));
+      this.disconnect();
+    }, VOICE_CONNECT_TIMEOUT_MS);
+    this.connectTimer.unref?.();
+  }
+
+  private clearConnectTimer(): void {
+    if (!this.connectTimer) return;
+    clearTimeout(this.connectTimer);
+    this.connectTimer = null;
+  }
+
+  private clearHeartbeatTimer(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.heartbeatAckPending = false;
+    this.lastHeartbeatNonce = null;
+    this.lastHeartbeatSentAt = 0;
+  }
+
+  private removeWebSocketListeners(ws: WebSocket): void {
+    ws.removeEventListener("message", this.handleMessage);
+    ws.removeEventListener("open", this.handleOpen);
+    ws.removeEventListener("close", this.handleClose);
+    ws.removeEventListener("error", this.handleError);
   }
 
   private handleMessage = (event: MessageEvent<unknown>): void => {
@@ -277,6 +312,10 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         this.handleHello(payload.d);
         break;
       case 6:
+        this.handleHeartbeatAck(payload.d);
+        break;
+      case 9:
+        this.handleResumed();
         break;
       case 2:
         void this.handleReady(payload.d);
@@ -295,6 +334,9 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         break;
       case 13:
         this.handleClientDisconnect(payload.d);
+        break;
+      case 14:
+        this.handleSessionUpdate(payload.d);
         break;
       case 12:
         this.handleVideo(payload.d);
@@ -339,6 +381,31 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.dave.addKnownUsers(userIds);
   }
 
+  private handleHeartbeatAck(data: unknown): void {
+    const ackNonce = isObject(data) && isObject(data.d) && typeof data.d.t === "number"
+      ? data.d.t
+      : isObject(data) && typeof data.t === "number"
+        ? data.t
+        : null;
+    const now = Date.now();
+    const rttMs = this.lastHeartbeatSentAt ? now - this.lastHeartbeatSentAt : null;
+    this.heartbeatAckPending = false;
+    this.lastHeartbeatAckAt = now;
+    if (ackNonce !== null && this.lastHeartbeatNonce !== null && ackNonce !== this.lastHeartbeatNonce) {
+      debugLog("voice.gateway.heartbeat_ack_mismatch", { rttMs, stage: this.connectStage });
+    }
+  }
+
+  private handleResumed(): void {
+    this.clearConnectTimer();
+    this.resumeInProgress = false;
+    this.resumeCause = null;
+    this.connectStage = "ready";
+    debugLog("voice.gateway.resumed", { endpoint: this.safeEndpoint(), seqAck: this.seq });
+    if (this.data.video) this.sendVideo();
+    else if (this.speaking) this.sendSpeaking(true);
+  }
+
   private handleClientDisconnect(data: unknown): void {
     if (!isObject(data)) return;
     const disconnectedUserId = snowflakeToString(data.user_id);
@@ -348,6 +415,20 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     for (const [ssrc, userId] of this.ssrcToUserId) {
       if (userId === disconnectedUserId) this.ssrcToUserId.delete(ssrc);
     }
+  }
+
+  private handleSessionUpdate(data: unknown): void {
+    if (!isObject(data)) return;
+    const previousMediaSessionId = this.mediaSessionId;
+    if (typeof data.media_session_id === "string") this.mediaSessionId = data.media_session_id;
+    if (typeof data.video_codec === "string") this.videoCodec = data.video_codec;
+    debugLog("voice.gateway.session_update", {
+      mediaSessionId: this.mediaSessionId,
+      previousMediaSessionId,
+      audioCodec: typeof data.audio_codec === "string" ? data.audio_codec : null,
+      videoCodec: this.videoCodec,
+      keyframeInterval: typeof data.keyframe_interval === "number" ? data.keyframe_interval : null,
+    });
   }
 
   private handleVideo(data: unknown): void {
@@ -377,8 +458,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
 
     this.connectStage = "hello";
     debugLog("voice.gateway.hello", { heartbeatInterval: interval });
-    this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), Math.max(1_000, interval));
-    this.identify();
+    this.clearHeartbeatTimer();
+    this.heartbeatIntervalMs = Math.max(1_000, interval);
+    this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), this.heartbeatIntervalMs);
+    this.heartbeatTimer.unref?.();
+    if (this.connectMode === "resume") this.resume();
+    else this.identify();
   }
 
   private async handleReady(data: unknown): Promise<void> {
@@ -504,6 +589,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const maxDaveProtocolVersion = this.data.maxDaveProtocolVersion ?? this.dave.advertisedProtocolVersion;
     debugLog("voice.gateway.identify", { channelId: this.data.channelId, guildId: this.data.guildId, hasSessionId: Boolean(this.data.sessionId), video: Boolean(this.data.video), maxDaveProtocolVersion });
     this.send(buildVoiceIdentifyPayload(this.data, maxDaveProtocolVersion));
+  }
+
+  private resume(): void {
+    this.connectStage = "resuming";
+    debugLog("voice.gateway.resume", { channelId: this.data.channelId, guildId: this.data.guildId, seqAck: this.seq });
+    this.send(buildVoiceResumePayload(this.data, this.seq));
   }
 
   private selectProtocol(address: string, port: number, mode: string): void {
@@ -737,7 +828,19 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   }
 
   private sendHeartbeat(): void {
-    this.send({ op: 3, d: { t: Date.now(), seq_ack: this.seq } });
+    const now = Date.now();
+    if (this.heartbeatAckPending && this.lastHeartbeatSentAt && this.heartbeatIntervalMs > 0 && now - this.lastHeartbeatSentAt > this.heartbeatIntervalMs * HEARTBEAT_ACK_GRACE_MULTIPLIER) {
+      debugLog("voice.gateway.heartbeat_missed", { stage: this.connectStage, msSinceLastHeartbeat: now - this.lastHeartbeatSentAt, seqAck: this.seq });
+      if (!this.resumeInProgress && this.readyReject === null) {
+        this.startResume(new VoiceGatewayCloseError(1006, "Heartbeat ACK timed out."));
+      }
+      return;
+    }
+    const nonce = now;
+    this.lastHeartbeatNonce = nonce;
+    this.lastHeartbeatSentAt = now;
+    this.heartbeatAckPending = true;
+    this.send({ op: 3, d: { t: nonce, seq_ack: this.seq } });
   }
 
   private send(payload: unknown): void {
@@ -754,6 +857,14 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     if (this.disconnected) return;
     const error = voiceGatewayCloseError(event);
     debugLog("voice.gateway.close", { code: event.code, reason: event.reason, wasClean: event.wasClean, stage: this.connectStage });
+    if (this.resumeInProgress) {
+      this.finishResumeFailed(error);
+      return;
+    }
+    if (!this.readyReject && this.shouldResumeAfterClose(error)) {
+      this.startResume(error);
+      return;
+    }
     if (this.readyReject) {
       this.rejectReady(error, { report: false });
     } else if (this.callbacks.onClose) {
@@ -764,10 +875,58 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.disconnect();
   };
 
+  private shouldResumeAfterClose(error: VoiceGatewayCloseError): boolean {
+    if (!this.data.sessionId || !this.data.token || !this.data.guildId) return false;
+    if (this.connectStage !== "ready") return false;
+    return error.code === 1006 || error.code === 4013 || error.code === 4015 || /connection ended|abnormal|heartbeat ack timed out|webrtc crashed|voice server crashed/i.test(error.closeReason);
+  }
+
+  private startResume(cause: VoiceGatewayCloseError): void {
+    if (this.disconnected || this.resumeInProgress) return;
+    this.resumeInProgress = true;
+    this.resumeCause = cause;
+    this.connectMode = "resume";
+    this.connectStage = "resume_connecting";
+    debugLog("voice.gateway.resume_start", { code: cause.code, reason: cause.closeReason, seqAck: this.seq, endpoint: this.safeEndpoint() });
+
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      this.removeWebSocketListeners(ws);
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        try { ws.close(); } catch {}
+      }
+    }
+    this.clearHeartbeatTimer();
+    this.startConnectTimer("resume");
+    void this.openWebSocket().catch((error) => {
+      if (this.disconnected || !this.resumeInProgress) return;
+      this.finishResumeFailed(asError(error, "Failed to open Discord voice gateway resume websocket."));
+    });
+  }
+
+  private finishResumeFailed(error: Error): void {
+    if (this.disconnected) return;
+    const cause = this.resumeCause;
+    debugLog("voice.gateway.resume_failed", { error: error.message, originalCode: cause?.code ?? null, originalReason: cause?.closeReason ?? null });
+    this.resumeInProgress = false;
+    this.resumeCause = null;
+    const reported = error instanceof VoiceGatewayCloseError && error.code === 4006
+      ? error
+      : cause ?? (error instanceof VoiceGatewayCloseError ? error : new VoiceGatewayCloseError(1006, error.message));
+    if (this.callbacks.onClose) this.callbacks.onClose(reported);
+    else this.reportError(reported);
+    this.disconnect();
+  }
+
   private handleError = (): void => {
     if (this.disconnected) return;
     const error = new Error("Discord voice gateway connection error.");
     debugLog("voice.gateway.error", { stage: this.connectStage, endpoint: this.safeEndpoint() });
+    if (this.resumeInProgress) {
+      this.finishResumeFailed(error);
+      return;
+    }
     if (this.readyReject) this.rejectReady(error, { report: false });
     else this.reportError(error);
   };

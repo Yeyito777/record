@@ -1,4 +1,4 @@
-import { VOICE_GATEWAY_ABNORMAL_CLOSE_CODE, VOICE_GATEWAY_REJOIN_ATTEMPTS, VOICE_GATEWAY_REJOIN_DELAY_MS, VOICE_READY_TIMEOUT_MS, VOICE_SIGNALING_READY_RETRY_MS, VOICE_SIGNALING_READY_TIMEOUT_MS } from "./constants";
+import { VOICE_GATEWAY_ABNORMAL_CLOSE_CODE, VOICE_GATEWAY_DISCONNECTED_CODE, VOICE_GATEWAY_REJOIN_ATTEMPTS, VOICE_GATEWAY_REJOIN_DELAY_MS, VOICE_READY_TIMEOUT_MS, VOICE_SIGNALING_READY_RETRY_MS, VOICE_SIGNALING_READY_TIMEOUT_MS } from "./constants";
 import { isRecoverableVoiceGatewayClose, isTerminalVoiceGatewayClose } from "./errors";
 import { fetchPreferredVoiceRegions } from "./regions";
 import { createDefaultVoiceAudioBackend } from "./audio-ffmpeg";
@@ -291,6 +291,26 @@ export class VoiceCallController {
       }
     }
 
+    if (shouldSoftRejoinVoiceGateway(cause)) {
+      try {
+        await this.prepareVoiceGatewayRejoin(session, { leaveVoice: false });
+        await this.connectSessionGateway(session);
+        if (this.active !== session) return;
+        session.state = "ready";
+        this.emitState();
+        return;
+      } catch (error) {
+        const asErr = error instanceof Error ? error : new Error(String(error));
+        lastError = asErr;
+        session.gateway?.disconnect();
+        session.gateway = null;
+        if (!isRecoverableVoiceGatewayClose(asErr)) {
+          if (this.active === session) this.failSession(session, asErr);
+          return;
+        }
+      }
+    }
+
     for (let attempt = 0; attempt < VOICE_GATEWAY_REJOIN_ATTEMPTS; attempt++) {
       if (this.active !== session) return;
       try {
@@ -398,4 +418,8 @@ function sleep(ms: number): Promise<void> {
 
 function shouldReuseVoiceJoinData(error: VoiceGatewayCloseError): boolean {
   return error.code === VOICE_GATEWAY_ABNORMAL_CLOSE_CODE || /connection ended|abnormal/i.test(error.closeReason);
+}
+
+function shouldSoftRejoinVoiceGateway(error: VoiceGatewayCloseError): boolean {
+  return error.code === VOICE_GATEWAY_DISCONNECTED_CODE || /^disconnected\.?$/i.test(error.closeReason);
 }

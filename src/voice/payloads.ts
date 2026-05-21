@@ -25,6 +25,19 @@ export function buildVoiceIdentifyPayload(data: VoiceGatewayJoinData, maxDavePro
   };
 }
 
+export function buildVoiceResumePayload(data: VoiceGatewayJoinData, seqAck: number): unknown {
+  return {
+    op: 7,
+    d: {
+      server_id: data.guildId,
+      channel_id: data.channelId,
+      session_id: data.sessionId,
+      token: data.token,
+      seq_ack: seqAck,
+    },
+  };
+}
+
 export function voiceGatewayOutboundStreamPayload(stream: VoiceGatewayOutboundStream): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     type: stream.type,

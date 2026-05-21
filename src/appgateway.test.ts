@@ -44,11 +44,13 @@ describe("app gateway helpers", () => {
 
     expect(client.createStream({ type: "guild", guildId: "guild-1", channelId: "voice-1", preferredRegion: "us-east" })).toBe(true);
     expect(client.setStreamPaused("guild:guild-1:voice-1:me", false)).toBe(true);
+    expect(client.pingStreamServer("guild:guild-1:voice-1:me")).toBe(true);
     expect(client.deleteStream("guild:guild-1:voice-1:me")).toBe(true);
 
     expect(sent).toEqual([
       { op: 18, d: { type: "guild", guild_id: "guild-1", channel_id: "voice-1", preferred_region: "us-east" } },
       { op: 22, d: { stream_key: "guild:guild-1:voice-1:me", paused: false } },
+      { op: 21, d: { stream_key: "guild:guild-1:voice-1:me" } },
       { op: 19, d: { stream_key: "guild:guild-1:voice-1:me" } },
     ]);
   });

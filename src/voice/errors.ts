@@ -1,7 +1,7 @@
 import { VOICE_GATEWAY_ABNORMAL_CLOSE_CODE, VOICE_GATEWAY_CALL_TERMINATED_CODE, VOICE_GATEWAY_DISCONNECTED_CODE, VOICE_GATEWAY_INVALID_SESSION_CODE, VOICE_GATEWAY_NORMAL_CLOSE_CODE } from "./constants";
 import { VoiceGatewayCloseError } from "./types";
 
-export function isRecoverableVoiceGatewayClose(error: Error): boolean {
+export function isRecoverableVoiceGatewayClose(error: Error): error is VoiceGatewayCloseError {
   return error instanceof VoiceGatewayCloseError
     && (
       error.code === VOICE_GATEWAY_INVALID_SESSION_CODE
@@ -16,7 +16,7 @@ export function isRecoverableVoiceGatewayClose(error: Error): boolean {
     );
 }
 
-export function isTerminalVoiceGatewayClose(error: Error): boolean {
+export function isTerminalVoiceGatewayClose(error: Error): error is VoiceGatewayCloseError {
   return error instanceof VoiceGatewayCloseError
     && (error.code === VOICE_GATEWAY_CALL_TERMINATED_CODE || /call terminated/i.test(error.closeReason));
 }

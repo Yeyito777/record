@@ -3348,7 +3348,10 @@ export function startCurrentStream(state: AppState, effects: SessionEffects): vo
   const streamKey = session.target.guildId
     ? `guild:${session.target.guildId}:${session.target.channelId}:${selfUserId}`
     : `call:${session.target.channelId}:${selfUserId}`;
-  const controller = new ScreenStreamController(streamKey, session, selfUserId, effects, (error) => {
+  const controller = new ScreenStreamController(streamKey, session, selfUserId, {
+    scheduleRender: effects.scheduleRender,
+    pingStreamServer: (key) => appGateway?.pingStreamServer(key) ?? false,
+  }, (error) => {
     setNotice(state, `Stream: ${error.message}`, "warning", { chat: false });
   });
   streamController = controller;

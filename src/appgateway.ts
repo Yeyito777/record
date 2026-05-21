@@ -205,6 +205,12 @@ export class AppGatewayClient implements VoiceSignalingClient {
     return true;
   }
 
+  pingStreamServer(streamKey: string): boolean {
+    if (!this.isReady()) return false;
+    this.send({ op: 21, d: { stream_key: streamKey } });
+    return true;
+  }
+
   setStreamPaused(streamKey: string, paused: boolean): boolean {
     if (!this.isReady()) return false;
     this.send({ op: 22, d: { stream_key: streamKey, paused } });
