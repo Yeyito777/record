@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
 
 import { configDir, defaultOpenersConfig, loadConfig } from "./config";
+import { debugLog } from "./debuglog";
 import type { DiscordMessageAttachment } from "./discord";
 
 export interface OpenableTargetMatch {
@@ -49,6 +50,9 @@ interface NormalizedOpenersConfig {
 }
 
 const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+const DOWNLOAD_BEFORE_OPEN_URL_EXTENSIONS = new Set(["gif"]);
+const TENOR_GIF_PAGE_HOST_RE = /(?:^|\.)tenor\.com$/i;
+const OPEN_STDERR_LOG_LIMIT = 8192;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -195,10 +199,66 @@ function extensionFromFilename(filename: string): string {
   return match ? match[0] : "";
 }
 
+function openableUrlCacheDir(): string {
+  return join(configDir(), "openables");
+}
+
 function attachmentCachePath(attachment: DiscordMessageAttachment): string {
   const hash = createHash("sha256").update(`${attachment.id}\n${attachment.url}\n${attachment.filename}`).digest("hex").slice(0, 16);
   const ext = extensionFromFilename(attachment.filename);
   return join(attachmentCacheDir(), `${hash}-${safeFilename(attachment.filename).replace(/\.[^.]+$/, "")}${ext}`);
+}
+
+function urlPathname(target: string): string | null {
+  try {
+    return new URL(target).pathname;
+  } catch {
+    return null;
+  }
+}
+
+function parsedUrl(target: string): URL | null {
+  try {
+    return new URL(target);
+  } catch {
+    return null;
+  }
+}
+
+function isTenorGifPageUrl(target: string): boolean {
+  const url = parsedUrl(target);
+  if (!url) return false;
+  return TENOR_GIF_PAGE_HOST_RE.test(url.hostname) && url.pathname.startsWith("/view/");
+}
+
+function extensionFromUrl(target: string): string | null {
+  const pathname = urlPathname(target);
+  if (!pathname) return isTenorGifPageUrl(target) ? "gif" : null;
+  const ext = extname(pathname).replace(/^\./, "").toLowerCase();
+  return ext || (isTenorGifPageUrl(target) ? "gif" : null);
+}
+
+function filenameFromUrl(target: string): string {
+  const pathname = urlPathname(target) ?? "";
+  let name = basename(pathname) || "openable";
+  try {
+    name = decodeURIComponent(name);
+  } catch {
+    // Keep the original percent-encoded basename if it is malformed.
+  }
+
+  name = safeFilename(name);
+  const ext = extensionFromUrl(target);
+  if (ext && extensionOf(name) !== ext) name = `${name.replace(/\.[^.]+$/, "")}.${ext}`;
+  return name;
+}
+
+function openableUrlCachePath(target: string): string {
+  const hash = createHash("sha256").update(target).digest("hex").slice(0, 16);
+  const filename = filenameFromUrl(target);
+  const ext = extensionFromFilename(filename);
+  const base = safeFilename(filename).replace(/\.[^.]+$/, "");
+  return join(openableUrlCacheDir(), `${hash}-${base}${ext}`);
 }
 
 function cachedAttachmentIsComplete(path: string, expectedSize: number): boolean {
@@ -212,6 +272,75 @@ function cachedAttachmentIsComplete(path: string, expectedSize: number): boolean
 
 export function cachedAttachmentPath(attachment: DiscordMessageAttachment): string {
   return attachmentCachePath(attachment);
+}
+
+export function downloadableOpenableUrlFilename(target: string): string {
+  return filenameFromUrl(target);
+}
+
+export function cachedOpenableUrlPath(target: string): string {
+  return openableUrlCachePath(target);
+}
+
+export function shouldDownloadTargetBeforeOpen(target: string): boolean {
+  if (!/^https?:\/\//i.test(target)) return false;
+  const ext = extensionFromUrl(target);
+  return ext !== null && DOWNLOAD_BEFORE_OPEN_URL_EXTENSIONS.has(ext);
+}
+
+function decodeHtmlAttribute(value: string): string {
+  return value.replace(/&(#x[0-9a-f]+|#\d+|amp|quot|apos|lt|gt);/gi, (_match, entity: string) => {
+    const normalized = entity.toLowerCase();
+    if (normalized === "amp") return "&";
+    if (normalized === "quot") return '"';
+    if (normalized === "apos") return "'";
+    if (normalized === "lt") return "<";
+    if (normalized === "gt") return ">";
+    if (normalized.startsWith("#x")) return String.fromCodePoint(Number.parseInt(normalized.slice(2), 16));
+    if (normalized.startsWith("#")) return String.fromCodePoint(Number.parseInt(normalized.slice(1), 10));
+    return _match;
+  });
+}
+
+function attributesFromHtmlTag(tag: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrRe = /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+  for (const match of tag.matchAll(attrRe)) {
+    const name = match[1]?.toLowerCase();
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    if (!name) continue;
+    attrs[name] = decodeHtmlAttribute(value);
+  }
+  return attrs;
+}
+
+function extractTenorGifUrl(html: string): string | null {
+  for (const tagMatch of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = attributesFromHtmlTag(tagMatch[0]);
+    const key = (attrs.property ?? attrs.name ?? "").toLowerCase();
+    if (key !== "og:image" && key !== "twitter:image") continue;
+    const content = attrs.content?.trim();
+    if (!content || extensionFromUrl(content) !== "gif") continue;
+    return content;
+  }
+
+  const fallback = html.match(/https?:\/\/media\d*\.tenor\.com\/[^\s"'<>]+\.gif(?:\?[^\s"'<>]*)?/i)?.[0];
+  return fallback ? decodeHtmlAttribute(fallback) : null;
+}
+
+async function resolveDownloadableOpenableUrl(target: string): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  if (!isTenorGifPageUrl(target)) return { ok: true, url: target };
+
+  try {
+    const response = await fetch(target, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!response.ok) return { ok: false, error: `Tenor lookup failed: HTTP ${response.status}` };
+
+    const mediaUrl = extractTenorGifUrl(await response.text());
+    if (!mediaUrl) return { ok: false, error: "Tenor lookup did not include a GIF URL." };
+    return { ok: true, url: mediaUrl };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function overlapsAny(match: OpenableTargetMatch, matches: readonly OpenableTargetMatch[]): boolean {
@@ -282,19 +411,47 @@ export function resolveOpenCommand(target: string): OpenCommand | null {
 
 export function openTargetDetached(target: string): boolean {
   const openCommand = resolveOpenCommand(target);
-  if (!openCommand) return false;
+  if (!openCommand) {
+    debugLog("openable.open.no_opener", { target });
+    return false;
+  }
 
   try {
     const child = spawn(openCommand.command, openCommand.args, {
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
     });
-    child.on("error", () => {
+    let stderr = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      if (stderr.length >= OPEN_STDERR_LOG_LIMIT) return;
+      stderr = `${stderr}${chunk}`.slice(0, OPEN_STDERR_LOG_LIMIT);
+    });
+    child.stderr?.on("error", () => {
+      // Best effort: opener stderr diagnostics must never disrupt the TUI.
+    });
+    (child.stderr as unknown as { unref?: () => void } | null)?.unref?.();
+    debugLog("openable.open.spawn", { target, command: openCommand.command, args: openCommand.args, pid: child.pid ?? null });
+    child.on("error", (error) => {
       // Best effort: opening a target should never disrupt the TUI.
+      debugLog("openable.open.spawn_error", { target, command: openCommand.command, args: openCommand.args, error: error.message });
+    });
+    child.on("exit", (code, signal) => {
+      debugLog("openable.open.exit", {
+        target,
+        command: openCommand.command,
+        args: openCommand.args,
+        pid: child.pid ?? null,
+        code,
+        signal,
+        stderr: stderr.trim(),
+        stderrTruncated: stderr.length >= OPEN_STDERR_LOG_LIMIT,
+      });
     });
     child.unref();
     return true;
-  } catch {
+  } catch (error) {
+    debugLog("openable.open.spawn_exception", { target, command: openCommand.command, args: openCommand.args, error: error instanceof Error ? error.message : String(error) });
     return false;
   }
 }
@@ -401,6 +558,39 @@ export async function downloadAttachment(
     }
 
     const totalBytes = responseContentLength(response, attachment.size);
+    notifyDownloadProgress(options, 0, totalBytes);
+    await writeResponseBodyToFile(response, path, totalBytes, options);
+    return { ok: true, path, cached: false };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function downloadOpenableUrl(
+  target: string,
+  options: AttachmentDownloadOptions = {},
+): Promise<AttachmentOpenResult> {
+  if (!shouldDownloadTargetBeforeOpen(target)) return { ok: false, error: "URL is not configured to download before opening." };
+
+  const path = openableUrlCachePath(target);
+  try {
+    const stat = statSync(path);
+    if (stat.isFile() && stat.size > 0) return { ok: true, path, cached: true };
+  } catch {
+    // Cache miss; download below.
+  }
+
+  try {
+    mkdirSync(openableUrlCacheDir(), { recursive: true, mode: 0o700 });
+    const resolved = await resolveDownloadableOpenableUrl(target);
+    if (!resolved.ok) return { ok: false, error: resolved.error };
+
+    const response = await fetch(resolved.url);
+    if (!response.ok) {
+      return { ok: false, error: `Download failed: HTTP ${response.status}` };
+    }
+
+    const totalBytes = responseContentLength(response, 0);
     notifyDownloadProgress(options, 0, totalBytes);
     await writeResponseBodyToFile(response, path, totalBytes, options);
     return { ok: true, path, cached: false };

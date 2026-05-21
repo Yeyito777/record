@@ -75,8 +75,13 @@ export function defaultOpenersConfig(): OpenersConfig {
     url: { command: "xdg-open", args: ["{target}"] },
     rules: [
       {
+        extensions: ["gif"],
+        command: "video-play",
+        args: ["{path}"],
+      },
+      {
         extensions: [
-          "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
+          "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff",
           "avif", "heic", "heif", "svg", "ico", "jxl", "jp2", "ppm", "pgm",
           "pbm", "pnm", "pdf",
         ],

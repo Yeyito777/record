@@ -125,7 +125,14 @@ import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFrom
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
-import { downloadAttachment, openTargetDetached, type AttachmentDownloadProgress } from "./openable";
+import {
+  downloadAttachment,
+  downloadableOpenableUrlFilename,
+  downloadOpenableUrl,
+  openTargetDetached,
+  shouldDownloadTargetBeforeOpen,
+  type AttachmentDownloadProgress,
+} from "./openable";
 import { createVoiceMessageController } from "./voice-message-controller";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -254,6 +261,37 @@ function formatAttachmentDownloadProgress(progress: AttachmentDownloadProgress):
 function showAttachmentDownloadProgress(filename: string, progress: AttachmentDownloadProgress): void {
   setNotice(state, `Downloading ${filename}… ${formatAttachmentDownloadProgress(progress)}`, "muted", { loading: true, chat: false });
   scheduleRender();
+}
+
+function downloadAndOpenTarget(target: string): void {
+  const filename = downloadableOpenableUrlFilename(target);
+  setNotice(state, `Downloading ${filename}…`, "muted", { loading: true, chat: false });
+  scheduleRender();
+
+  void (async () => {
+    const downloaded = await downloadOpenableUrl(target, {
+      onProgress: (progress) => {
+        if (!running) return;
+        showAttachmentDownloadProgress(filename, progress);
+      },
+    });
+    if (!running) return;
+    if (!downloaded.ok || !downloaded.path) {
+      setNotice(state, `Could not open ${filename}: ${downloaded.error ?? "unknown error"}`, "warning");
+      scheduleRender();
+      return;
+    }
+
+    const openNotice = downloaded.cached
+      ? `Opening cached ${filename}…`
+      : `Opening ${filename}…`;
+    if (!openTargetDetached(downloaded.path)) {
+      setNotice(state, `Could not open ${filename}: No opener configured for ${downloaded.path}.`, "warning");
+      scheduleRender();
+    } else {
+      showTransientNotice(openNotice);
+    }
+  })();
 }
 
 function inviteJoinLabel(result: DiscordInviteJoinResult): string {
@@ -1226,6 +1264,10 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       const inviteCode = discordInviteCodeFromUrl(target);
       if (inviteCode) {
         joinDiscordInviteTarget(target, inviteCode);
+        return true;
+      }
+      if (shouldDownloadTargetBeforeOpen(target)) {
+        downloadAndOpenTarget(target);
         return true;
       }
       if (!openTargetDetached(target)) {

@@ -6,7 +6,18 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { defaultOpenersConfig, saveConfig } from "./config";
 import type { DiscordMessageAttachment } from "./discord";
-import { cachedAttachmentPath, downloadAttachment, findOpenableTargetMatches, openTargetDetached, resolveOpenCommand, type AttachmentDownloadProgress } from "./openable";
+import {
+  cachedAttachmentPath,
+  cachedOpenableUrlPath,
+  downloadAttachment,
+  downloadableOpenableUrlFilename,
+  downloadOpenableUrl,
+  findOpenableTargetMatches,
+  openTargetDetached,
+  resolveOpenCommand,
+  shouldDownloadTargetBeforeOpen,
+  type AttachmentDownloadProgress,
+} from "./openable";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -65,8 +76,24 @@ describe("openable target command resolution", () => {
     expect(resolveOpenCommand("/tmp/reference.pdf")).toEqual({ command: "show", args: ["/tmp/reference.pdf"] });
   });
 
+  test("opens gif paths with configured play command", () => {
+    expect(resolveOpenCommand("/tmp/loop.gif")).toEqual({ command: "video-play", args: ["/tmp/loop.gif"] });
+  });
+
   test("opens links with xdg-open", () => {
     expect(resolveOpenCommand("https://example.com")).toEqual({ command: "xdg-open", args: ["https://example.com"] });
+  });
+
+  test("marks gif links for download before opening", () => {
+    expect(shouldDownloadTargetBeforeOpen("https://cdn.example/loop.gif?width=320")).toBe(true);
+    expect(downloadableOpenableUrlFilename("https://cdn.example/path/loop.gif?width=320")).toBe("loop.gif");
+    expect(shouldDownloadTargetBeforeOpen("https://tenor.com/view/one-pice-gif-26834018")).toBe(true);
+    expect(downloadableOpenableUrlFilename("https://tenor.com/view/one-pice-gif-26834018")).toBe("one-pice-gif-26834018.gif");
+    expect(shouldDownloadTargetBeforeOpen("https://example.com/page")).toBe(false);
+    expect(resolveOpenCommand("https://cdn.example/loop.gif?width=320")).toEqual({
+      command: "xdg-open",
+      args: ["https://cdn.example/loop.gif?width=320"],
+    });
   });
 
   test("opens html paths with xdg-open", () => {
@@ -198,6 +225,52 @@ describe("attachment downloads", () => {
         { receivedBytes: 2, totalBytes: 4 },
         { receivedBytes: 4, totalBytes: 4 },
       ]);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+});
+
+describe("downloadable openable links", () => {
+  test("downloads gif links into the record openable cache", async () => {
+    const previousFetch = globalThis.fetch;
+    const target = "https://cdn.example/media/loop.gif?size=4096";
+
+    globalThis.fetch = (() => Promise.resolve(new Response(new Uint8Array([1, 2, 3, 4])))) as unknown as typeof fetch;
+    try {
+      const result = await downloadOpenableUrl(target);
+      expect(result.ok).toBe(true);
+      expect(result.cached).toBe(false);
+      expect(result.path).toBe(cachedOpenableUrlPath(target));
+      expect(existsSync(result.path ?? "")).toBe(true);
+      expect(resolveOpenCommand(result.path ?? "")).toEqual({ command: "video-play", args: [result.path ?? ""] });
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("resolves Tenor view links to their GIF media before downloading", async () => {
+    const previousFetch = globalThis.fetch;
+    const target = "https://tenor.com/view/one-pice-gif-26834018";
+    const mediaUrl = "https://media1.tenor.com/m/eui1tpq5mJQAAAAd/one-pice.gif";
+    const fetched: string[] = [];
+
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetched.push(url);
+      if (url === target) {
+        return Promise.resolve(new Response(`<html><head><meta property="og:image" content="${mediaUrl}"></head></html>`));
+      }
+      if (url === mediaUrl) return Promise.resolve(new Response(new Uint8Array([1, 2, 3, 4])));
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    try {
+      const result = await downloadOpenableUrl(target);
+      expect(result.ok).toBe(true);
+      expect(result.path).toBe(cachedOpenableUrlPath(target));
+      expect(result.path?.endsWith("one-pice-gif-26834018.gif")).toBe(true);
+      expect(fetched).toEqual([target, mediaUrl]);
     } finally {
       globalThis.fetch = previousFetch;
     }
