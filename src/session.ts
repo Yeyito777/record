@@ -162,6 +162,12 @@ export interface SessionEffects {
   scheduleRender: () => void;
 }
 
+export interface ChannelMessageLocationTarget {
+  channelId: string;
+  messageId: string;
+  guildId?: string | null;
+}
+
 interface LoadGuildChannelsOptions {
   openFirstChannel?: boolean;
 }
@@ -2756,6 +2762,46 @@ export async function loadChannelMessagesAround(
       effects.scheduleRender();
     }
   }
+}
+
+function cachedGuildIdForChannel(state: AppState, channelId: string): string | null {
+  for (const [guildId, channels] of Object.entries(state.sidebar.cachedChannelsByGuildId)) {
+    if (channels.some((channel) => channel.id === channelId)) return guildId;
+  }
+  return null;
+}
+
+function accessibleTimelineChannel(state: AppState, channelId: string): DiscordChannel | null {
+  const channel = findTimelineChannel(state.channelList.channels, channelId);
+  return channel && !channel.hidden ? channel : null;
+}
+
+export async function loadChannelMessageLocation(
+  state: AppState,
+  token: string,
+  target: ChannelMessageLocationTarget,
+  effects: SessionEffects,
+): Promise<boolean> {
+  let channel = accessibleTimelineChannel(state, target.channelId);
+  const guildId = target.guildId ?? channel?.guildId ?? cachedGuildIdForChannel(state, target.channelId);
+
+  if (!channel && guildId) {
+    await loadGuildChannels(state, token, guildId, effects, { openFirstChannel: false });
+    channel = accessibleTimelineChannel(state, target.channelId);
+  }
+
+  if (!channel) {
+    setNotice(state, "You do not have access to that forwarded message's channel, or it is not loaded yet.", "warning");
+    effects.scheduleRender();
+    return false;
+  }
+
+  if (state.timeline.channelId !== channel.id) {
+    await loadChannelMessages(state, token, channel.id, effects);
+  }
+  if (state.timeline.channelId !== channel.id) return false;
+
+  return loadChannelMessagesAround(state, token, channel.id, target.messageId, effects);
 }
 
 function activeReplyForChannel(state: AppState, channelId: string): SendMessageReplyOptions | null {

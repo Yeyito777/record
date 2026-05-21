@@ -860,6 +860,18 @@ function summarizeMessage(
     return summarizeCallMessage(message, viewerId, loadingFrameIndex, nowMs);
   }
 
+  if (message.forwarded) {
+    return summarizeForwardedMessage(
+      message,
+      viewerId,
+      accentViewerInDirectMessages,
+      rolesByGuildId,
+      memberRoleIdsByGuildId,
+      activeGuildId,
+      contentColor,
+    );
+  }
+
   const mentionsRendered = renderUserMentions(
     message.content,
     message,
@@ -876,6 +888,53 @@ function summarizeMessage(
     message.attachments,
     message.embeds ?? message.embedsCount,
     message.stickerNames,
+    { muted: theme.muted, accent: theme.accent, restore: contentColor },
+  ).join("\n");
+}
+
+function summarizeForwardedMessage(
+  message: DiscordMessage,
+  viewerId: string | null,
+  accentViewerInDirectMessages: boolean,
+  rolesByGuildId: Record<string, DiscordRole[]>,
+  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
+  activeGuildId: string | null,
+  contentColor: string,
+): string {
+  const forwarded = message.forwarded;
+  if (!forwarded) return "";
+
+  const forwardedContext: DiscordMessage = {
+    ...message,
+    content: forwarded.content,
+    mentionEveryone: forwarded.mentionEveryone,
+    mentionRoleIds: forwarded.mentionRoleIds,
+    mentionUserIds: forwarded.mentionUsers.map((user) => user.id),
+    mentionUsers: forwarded.mentionUsers,
+    attachments: forwarded.attachments,
+    stickerNames: forwarded.stickerNames,
+    embedsCount: forwarded.embedsCount,
+    embeds: forwarded.embeds,
+    forwarded: null,
+  };
+  const mentionsRendered = renderUserMentions(
+    forwarded.content,
+    forwardedContext,
+    viewerId,
+    accentViewerInDirectMessages,
+    rolesByGuildId,
+    memberRoleIdsByGuildId,
+    activeGuildId,
+    contentColor,
+  );
+  const linkedContent = renderOpenableLinks(mentionsRendered, contentColor);
+  const forwardedLabel = `${theme.muted}[Forwarded]${contentColor}`;
+  const content = linkedContent.trim() ? `${forwardedLabel}: ${linkedContent}` : forwardedLabel;
+  return summarizeDisplayMessageParts(
+    content,
+    forwarded.attachments,
+    forwarded.embeds,
+    forwarded.stickerNames,
     { muted: theme.muted, accent: theme.accent, restore: contentColor },
   ).join("\n");
 }
@@ -1309,6 +1368,19 @@ function messageRenderFingerprint(
   const reactionKey = (message.reactions ?? [])
     .map((reaction) => [reaction.emoji.id ?? "", reaction.emoji.name, reaction.emoji.animated ? "1" : "0", String(reaction.count), reaction.me ? "1" : "0"].join("\u0002"))
     .join("\u0000");
+  const forwarded = message.forwarded;
+  const forwardedKey = forwarded
+    ? [
+      forwarded.content,
+      forwarded.mentionEveryone ? "1" : "0",
+      forwarded.mentionRoleIds.join(","),
+      forwarded.mentionUsers.map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002")).join("\u0000"),
+      forwarded.attachments.map((attachment) => [attachment.filename, attachment.contentType ?? "", String(attachment.size)].join("\u0002")).join("\u0000"),
+      forwarded.stickerNames.join("\u0000"),
+      String(forwarded.embedsCount),
+      forwarded.embeds.map((embed) => [embed.type ?? "", embed.providerName ?? "", embed.authorName ?? "", embed.title ?? "", embed.url ?? "", embed.description ?? ""].join("\u0002")).join("\u0000"),
+    ].join("\u0001")
+    : "";
   const replyKey = message.reply
     ? [
       message.reply.messageId ?? "",
@@ -1345,6 +1417,7 @@ function messageRenderFingerprint(
     stickerKey,
     String(message.embedsCount),
     embedKey,
+    forwardedKey,
     reactionKey,
     message.localStatus ?? "",
     message.localError ?? "",

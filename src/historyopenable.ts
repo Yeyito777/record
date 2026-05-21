@@ -3,6 +3,12 @@ import { contentBounds, logicalLineRange, stripAnsi } from "./historycursor";
 import { findOpenableTargetMatches } from "./openable";
 import type { AppState } from "./state";
 
+export interface ForwardedOriginTarget {
+  messageId: string;
+  channelId: string;
+  guildId: string | null;
+}
+
 interface LogicalCursorLine {
   text: string;
   cursorOffset: number;
@@ -44,14 +50,26 @@ function selectedHistoryMessage(state: AppState) {
   return state.timeline.messages.find((message) => message.id === bound.messageId) ?? null;
 }
 
+export function forwardedOriginAtHistoryCursor(state: AppState): ForwardedOriginTarget | null {
+  const message = selectedHistoryMessage(state);
+  const forwarded = message?.forwarded;
+  if (!forwarded?.originMessageId || !forwarded.originChannelId) return null;
+  return {
+    messageId: forwarded.originMessageId,
+    channelId: forwarded.originChannelId,
+    guildId: forwarded.originGuildId,
+  };
+}
+
 export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttachment | null {
   const logicalLine = logicalLineAtHistoryCursor(state);
   if (!logicalLine) return null;
 
   const message = selectedHistoryMessage(state);
-  if (!message || message.attachments.length === 0) return null;
+  const attachments = message ? [...message.attachments, ...(message.forwarded?.attachments ?? [])] : [];
+  if (!message || attachments.length === 0) return null;
 
-  for (const attachment of message.attachments) {
+  for (const attachment of attachments) {
     let searchFrom = 0;
     while (searchFrom < logicalLine.text.length) {
       const filenameStart = logicalLine.text.indexOf(attachment.filename, searchFrom);

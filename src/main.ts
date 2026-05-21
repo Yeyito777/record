@@ -29,7 +29,7 @@ import {
 } from "./historycursor";
 import { setChannelList } from "./channels";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
-import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction, resolveNavigationAction } from "./keybinds";
 import {
@@ -41,7 +41,7 @@ import {
   scrollMemberListSelection,
   scrollMemberListSelectionLine,
 } from "./memberlist";
-import { formatByteSize, summarizeInlineMessageParts } from "./messageparts";
+import { formatByteSize } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { handlePromptPrefixBackspace } from "./promptbackspace";
 import { render } from "./render";
@@ -52,6 +52,7 @@ import {
   disconnectAppGateway,
   disconnectMemberListGateway,
   deleteMessage,
+  loadChannelMessageLocation,
   loadChannelMessages,
   loadChannelMessagesAround,
   loadGuildChannels,
@@ -120,7 +121,7 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
@@ -566,6 +567,25 @@ function jumpToReplyTargetAtHistoryCursor(): boolean {
   return true;
 }
 
+function jumpToForwardedOriginAtHistoryCursor(): boolean {
+  const target = forwardedOriginAtHistoryCursor(state);
+  if (!target) return false;
+
+  const token = tokenOrWarn();
+  if (!token) return true;
+
+  void (async () => {
+    const loaded = await loadChannelMessageLocation(state, token, target, effects);
+    if (!running) return;
+    if (loaded) {
+      refreshHistorySnapshot();
+      jumpHistoryCursorToMessage(state, target.messageId, timelinePageSize());
+    }
+    scheduleRender();
+  })();
+  return true;
+}
+
 function jumpToChannelBottom(): void {
   const token = state.auth.savedToken;
   const channelId = state.timeline.channelId;
@@ -595,12 +615,7 @@ function jumpToChannelBottom(): void {
 
 function summarizeReplyMessage(message: DiscordMessage): string {
   if (message.call || message.type === 3) return "☎ Call";
-  return summarizeInlineMessageParts(
-    message.content,
-    message.attachments,
-    message.embeds ?? message.embedsCount,
-    message.stickerNames,
-  ).slice(0, 160);
+  return summarizeDiscordMessageReplyPreview(message).slice(0, 160);
 }
 
 function pasteImageFromClipboard(): void {
@@ -1174,6 +1189,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       return true;
     case "nav_select": {
       if (jumpToReplyTargetAtHistoryCursor()) return true;
+      if (jumpToForwardedOriginAtHistoryCursor()) return true;
 
       const attachment = attachmentAtHistoryCursor(state);
       if (attachment) {
