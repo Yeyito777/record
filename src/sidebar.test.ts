@@ -90,6 +90,29 @@ describe("sidebar state", () => {
     expect(rows[2]).not.toContain(" 7 ");
   });
 
+  test("renders muted DM icon and suppresses its channel badge", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+
+    const rows = renderSidebar(
+      sidebar,
+      [{ id: "dm-1", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false, muted: true }],
+      5,
+      false,
+      null,
+      0,
+      new Set(),
+      "⋯",
+      new Map([["dm-1", 4]]),
+      new Map([[DIRECT_MESSAGES_GUILD_ID, 4]]),
+    ).map(stripAnsiForTest);
+
+    expect(rows[3]).toContain("🔕");
+    expect(rows[3]).not.toContain(" 4 ");
+  });
+
   test("creating folders uses Exocortex placement semantics", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [

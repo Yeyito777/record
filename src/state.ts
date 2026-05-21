@@ -121,6 +121,7 @@ export interface AppState {
   guildRolesByGuildId: Record<string, DiscordRole[]>;
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
   memberRoleCacheVersion: number;
+  channelMuteSettings: Record<string, boolean>;
   showHiddenChannels: boolean;
   auth: AuthState;
   notice: Notice;
@@ -174,6 +175,7 @@ export function createInitialState(
     guildRolesByGuildId: {},
     memberRoleIdsByGuildId: {},
     memberRoleCacheVersion: 0,
+    channelMuteSettings: {},
     showHiddenChannels: options.showHiddenChannels ?? false,
     auth: {
       status: "idle",

@@ -121,6 +121,7 @@ export interface DiscordChannelResponse {
   type: number;
   nsfw?: boolean;
   last_message_id?: string | null;
+  muted?: boolean;
   recipients?: DiscordDMRecipientResponse[];
   permission_overwrites?: DiscordPermissionOverwriteResponse[];
 }
@@ -260,6 +261,7 @@ export interface DiscordChannel {
   type: number;
   nsfw: boolean;
   lastMessageId?: string | null;
+  muted?: boolean;
   recipients?: DiscordGuildMember[];
   permissionOverwrites?: DiscordPermissionOverwrite[];
   hidden?: boolean;
@@ -890,6 +892,7 @@ export function mapDirectMessageChannel(channel: DiscordChannelResponse, positio
     type: channel.type,
     nsfw: false,
     lastMessageId: channel.last_message_id ?? null,
+    muted: channel.muted,
     recipients: (channel.recipients ?? []).map((recipient) => ({
       id: recipient.id,
       username: recipient.username,
@@ -1368,6 +1371,25 @@ export async function setGuildMuted(token: string, guildId: string, muted: boole
     body: JSON.stringify({
       guilds: {
         [guildId]: guildSettings,
+      },
+    }),
+  });
+}
+
+export async function setDirectMessageChannelMuted(token: string, channelId: string, muted: boolean): Promise<void> {
+  const channelSettings: Record<string, unknown> = { muted };
+  if (muted) {
+    channelSettings.mute_config = {
+      end_time: null,
+      selected_time_window: -1,
+    };
+  }
+
+  await requestJson<unknown>(token, "/users/@me/guilds/%40me/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      channel_overrides: {
+        [channelId]: channelSettings,
       },
     }),
   });

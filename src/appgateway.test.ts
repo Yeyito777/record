@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { AppGatewayClient, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
+import { AppGatewayClient, extractChannelMuteSettings, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -136,6 +136,23 @@ describe("app gateway helpers", () => {
         ],
       },
     })).toEqual({ "guild-1": true, "guild-2": false });
+  });
+
+  test("extracts DM and group DM mute settings from READY", () => {
+    expect(extractChannelMuteSettings({
+      user_guild_settings: {
+        entries: [
+          { guild_id: "guild-1", channel_overrides: [{ channel_id: "guild-channel", muted: true }] },
+          {
+            guild_id: null,
+            channel_overrides: [
+              { channel_id: "dm-1", muted: true },
+              { channel_id: "group-dm-1", muted: false },
+            ],
+          },
+        ],
+      },
+    })).toEqual({ "dm-1": true, "group-dm-1": false });
   });
 
   test("extracts current user role ids from READY merged members", () => {

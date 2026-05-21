@@ -99,6 +99,7 @@ export interface AppGatewayCallbacks {
   onStreamDelete?: (event: StreamDeleteEvent) => void;
   onGuildMuteSettings?: (mutedByGuildId: Record<string, boolean>) => void;
   onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
+  onChannelMuteSettings?: (mutedByChannelId: Record<string, boolean>, options?: { reset?: boolean }) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
   onCurrentUserGuildRoles?: (guildId: string, roleIds: string[]) => void;
   onGuildMembersChunk?: (guildId: string, members: DiscordGuildMember[]) => void;
@@ -320,6 +321,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.callbacks.onCurrentUserRoleIds?.(extractCurrentUserRoleIdsByGuildId(payload.d));
       this.callbacks.onReadyGuilds?.(extractReadyGuilds(payload.d));
       this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
+      this.callbacks.onChannelMuteSettings?.(extractChannelMuteSettings(payload.d), { reset: true });
       this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
       for (const voiceState of extractReadyVoiceStates(payload.d)) {
         this.callbacks.onVoiceStateUpdate?.(voiceState);
@@ -514,8 +516,15 @@ export class AppGatewayClient implements VoiceSignalingClient {
           break;
         }
         case "USER_GUILD_SETTINGS_UPDATE": {
-          if (!isObject(data) || typeof data.guild_id !== "string" || typeof data.muted !== "boolean") break;
-          this.callbacks.onGuildMuteSetting?.(data.guild_id, data.muted);
+          if (!isObject(data)) break;
+          if (typeof data.guild_id === "string" && typeof data.muted === "boolean") {
+            this.callbacks.onGuildMuteSetting?.(data.guild_id, data.muted);
+            break;
+          }
+          const mutedByChannelId = channelMuteSettingsFromEntry(data);
+          if (Object.keys(mutedByChannelId).length > 0) {
+            this.callbacks.onChannelMuteSettings?.(mutedByChannelId);
+          }
           break;
         }
         default:
@@ -904,6 +913,45 @@ export function extractGuildMuteSettings(data: unknown): Record<string, boolean>
     mutedByGuildId[setting.guild_id] = setting.muted;
   }
   return mutedByGuildId;
+}
+
+function channelMuteSettingsFromOverrides(channelOverrides: unknown): Record<string, boolean> {
+  const mutedByChannelId: Record<string, boolean> = {};
+
+  if (Array.isArray(channelOverrides)) {
+    for (const override of channelOverrides) {
+      if (!isObject(override) || typeof override.channel_id !== "string" || typeof override.muted !== "boolean") continue;
+      mutedByChannelId[override.channel_id] = override.muted;
+    }
+    return mutedByChannelId;
+  }
+
+  if (isObject(channelOverrides)) {
+    for (const [channelId, override] of Object.entries(channelOverrides)) {
+      if (!isObject(override) || typeof override.muted !== "boolean") continue;
+      mutedByChannelId[channelId] = override.muted;
+    }
+  }
+
+  return mutedByChannelId;
+}
+
+function channelMuteSettingsFromEntry(entry: unknown): Record<string, boolean> {
+  if (!isObject(entry)) return {};
+  return channelMuteSettingsFromOverrides(entry.channel_overrides);
+}
+
+export function extractChannelMuteSettings(data: unknown): Record<string, boolean> {
+  if (!isObject(data)) return {};
+  const settings = isObject(data.user_guild_settings) && Array.isArray(data.user_guild_settings.entries)
+    ? data.user_guild_settings.entries
+    : [];
+  const mutedByChannelId: Record<string, boolean> = {};
+  for (const setting of settings) {
+    if (!isObject(setting) || typeof setting.guild_id === "string") continue;
+    Object.assign(mutedByChannelId, channelMuteSettingsFromEntry(setting));
+  }
+  return mutedByChannelId;
 }
 
 export function extractInitialNotifications(data: unknown): InitialNotification[] {

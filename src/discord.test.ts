@@ -20,6 +20,7 @@ import {
   deleteChannelMessage,
   editChannelMessage,
   sendChannelMessage,
+  setDirectMessageChannelMuted,
   setGuildMuted,
   ringDirectMessageCall,
   setCurrentUserSettingsProtoStatus,
@@ -922,6 +923,28 @@ describe("discord helpers", () => {
       },
     });
     expect(requests[1]?.body).toEqual({ guilds: { "guild-1": { muted: false } } });
+  });
+
+  test("mutes and unmutes DMs through @me user guild settings", async () => {
+    const requests: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await setDirectMessageChannelMuted("token", "dm-1", true);
+    await setDirectMessageChannelMuted("token", "dm-1", false);
+
+    expect(requests[0]?.url).toBe("https://discord.com/api/v9/users/@me/guilds/%40me/settings");
+    expect(requests[0]?.body).toEqual({
+      channel_overrides: {
+        "dm-1": {
+          muted: true,
+          mute_config: { end_time: null, selected_time_window: -1 },
+        },
+      },
+    });
+    expect(requests[1]?.body).toEqual({ channel_overrides: { "dm-1": { muted: false } } });
   });
 
   test("acknowledges read messages", async () => {

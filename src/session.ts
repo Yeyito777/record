@@ -32,6 +32,7 @@ import {
   fetchGuildRoles,
   fetchGuilds,
   sendChannelMessage,
+  setDirectMessageChannelMuted,
   setGuildMuted,
   sortGuildsByOrder,
   ringDirectMessageCall,
@@ -117,13 +118,16 @@ import { playLoopingSoundEffect, playSoundEffect, setSoundEffectVolume, type Sou
 import { focusPrompt, setNotice } from "./state";
 import {
   applySidebarFolderLayout,
+  applySidebarChannelMuteSettings,
   applySidebarGuildMuteSettings,
   clearSidebarData,
   getSelectedSidebarEntry,
+  isSidebarChannelMuted,
   isSidebarGuildMuted,
   moveSelectedSidebarGuild,
   moveSelectedSidebarItem,
   setSidebarCachedChannels,
+  setSidebarChannelMuted,
   setSidebarGuildMuted,
   setSidebarGuilds,
   sidebarCachedGuilds,
@@ -449,12 +453,69 @@ function guildIdForChannelId(state: AppState, channelId: string): string | null 
     ?? null;
 }
 
+function channelById(state: AppState, channelId: string | null | undefined): DiscordChannel | null {
+  if (!channelId) return null;
+  return state.channelList.channels.find((channel) => channel.id === channelId)
+    ?? Object.values(state.sidebar.cachedChannelsByGuildId).flat().find((channel) => channel.id === channelId)
+    ?? null;
+}
+
+function isChannelMuted(state: AppState, channelId: string | null | undefined): boolean {
+  if (!channelId) return false;
+  return Boolean(state.channelList.channels.find((channel) => channel.id === channelId)?.muted)
+    || Boolean(state.channelList.activeChannel?.id === channelId && state.channelList.activeChannel.muted)
+    || isSidebarChannelMuted(state.sidebar, channelId);
+}
+
+function setChannelListChannelMuted(state: AppState, channelId: string, muted: boolean): void {
+  state.channelMuteSettings[channelId] = muted;
+  state.channelList.channels = state.channelList.channels.map((channel) => (
+    channel.id === channelId ? { ...channel, muted } : channel
+  ));
+  if (state.channelList.activeChannel?.id === channelId) {
+    state.channelList.activeChannel = { ...state.channelList.activeChannel, muted };
+  }
+}
+
+function withChannelMuteSettings(state: AppState, channels: DiscordChannel[]): DiscordChannel[] {
+  return channels.map((channel) => (
+    Object.prototype.hasOwnProperty.call(state.channelMuteSettings, channel.id)
+      ? { ...channel, muted: state.channelMuteSettings[channel.id] }
+      : channel
+  ));
+}
+
+function applyChannelMuteSettings(state: AppState, mutedByChannelId: Record<string, boolean>, options: { reset?: boolean } = {}): void {
+  const nextMutedByChannelId = { ...mutedByChannelId };
+  if (options.reset) {
+    const knownDirectMessageChannels = [
+      ...state.channelList.channels.filter((channel) => channel.guildId === DIRECT_MESSAGES_GUILD_ID),
+      ...(state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID] ?? []),
+    ];
+    for (const channel of knownDirectMessageChannels) {
+      if (!Object.prototype.hasOwnProperty.call(nextMutedByChannelId, channel.id)) nextMutedByChannelId[channel.id] = false;
+    }
+  }
+
+  state.channelMuteSettings = options.reset ? { ...nextMutedByChannelId } : { ...state.channelMuteSettings, ...nextMutedByChannelId };
+  applySidebarChannelMuteSettings(state.sidebar, nextMutedByChannelId);
+  for (const [channelId, muted] of Object.entries(nextMutedByChannelId)) {
+    setChannelListChannelMuted(state, channelId, muted);
+    if (muted) clearChannelNotifications(state.notifications, channelId);
+  }
+  const accountId = currentAccountId(state);
+  const directMessages = state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID];
+  if (accountId && directMessages) saveCachedDirectMessages(accountId, directMessages);
+  persistNotifications(state);
+}
+
 function shouldNotifyForIncomingMessage(state: AppState, message: DiscordMessage): boolean {
   if (state.timeline.channelId === message.channelId && isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) {
     return false;
   }
   const guildId = guildIdForChannel(state, message);
   if (isSidebarGuildMuted(state.sidebar, guildId)) return false;
+  if (isChannelMuted(state, message.channelId)) return false;
 
   return messageMatchesNotificationRules(message, {
     viewerId: state.auth.user?.id ?? null,
@@ -475,6 +536,7 @@ function maybePlayIncomingCallRingtone(state: AppState, channelId: string): void
 function handleCallGatewayEvent(state: AppState, channelId: string, ringingUserIds: readonly string[]): void {
   const selfUserId = state.auth.user?.id;
   if (!selfUserId || !ringingUserIds.includes(selfUserId)) return;
+  if (isChannelMuted(state, channelId)) return;
   maybePlayIncomingCallRingtone(state, channelId);
 }
 
@@ -1173,6 +1235,7 @@ function markActiveCallEnded(state: AppState, channelId: string, endedTimestamp 
 }
 
 function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEffects, channel: DiscordChannel): void {
+  channel = withChannelMuteSettings(state, [channel])[0] ?? channel;
   if (channel.guildId === DIRECT_MESSAGES_GUILD_ID) {
     ensureDirectMessagesGuild(state);
   }
@@ -1641,7 +1704,8 @@ function applyCachedNotifications(state: AppState): void {
     state.notifications,
     Object.entries(cachedNotifications.byChannelId)
       .filter(([channelId, count]) => count > 0
-        && !isSidebarGuildMuted(state.sidebar, cachedNotifications.channelGuildIds[channelId]))
+        && !isSidebarGuildMuted(state.sidebar, cachedNotifications.channelGuildIds[channelId])
+        && !isChannelMuted(state, channelId))
       .map(([channelId, count]) => ({
         channelId,
         guildId: cachedNotifications.channelGuildIds[channelId] ?? null,
@@ -1841,6 +1905,10 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       applyGuildMuteSettings(state, mutedByGuildId);
       effects.scheduleRender();
     },
+    onChannelMuteSettings: (mutedByChannelId, options) => {
+      applyChannelMuteSettings(state, mutedByChannelId, options);
+      effects.scheduleRender();
+    },
     onGuildMuteSetting: (guildId, muted) => {
       applyGuildMuteSettings(state, { [guildId]: muted });
       effects.scheduleRender();
@@ -1867,7 +1935,8 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       replaceNotifications(
         state.notifications,
         notifications.filter((notification) => notification.channelId !== state.timeline.channelId
-          && !isSidebarGuildMuted(state.sidebar, notification.guildId)),
+          && !isSidebarGuildMuted(state.sidebar, notification.guildId)
+          && !isChannelMuted(state, notification.channelId)),
       );
       persistNotifications(state);
       const latestMessageId = state.timeline.channelId ? latestTimelineMessageId(state, state.timeline.channelId) : null;
@@ -1979,6 +2048,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.roleIdsByGuildId = {};
   state.guildRolesByGuildId = {};
   state.memberRoleIdsByGuildId = {};
+  state.channelMuteSettings = {};
   state.messageCacheByChannelId = {};
   state.replyTarget = null;
   state.editTarget = null;
@@ -2182,6 +2252,9 @@ export async function bootstrapReadOnlyClient(
   if (accountId) {
     ensureGuildOrderSync(state, effects);
     const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
+    for (const channel of cachedDirectMessages) {
+      if (channel.muted !== undefined) state.channelMuteSettings[channel.id] = channel.muted;
+    }
     const cachedGuildOrder = loadCachedGuildOrder(accountId);
     cachedSidebarFolders = loadCachedSidebarFolders(accountId);
     const cachedGuilds = sortGuildsByOrder(loadCachedGuilds(accountId) ?? [], cachedGuildOrder);
@@ -2215,7 +2288,7 @@ export async function bootstrapReadOnlyClient(
   startAppGateway(state, token, effects);
 
   try {
-    const directMessages = await fetchDirectMessages(token);
+    const directMessages = withChannelMuteSettings(state, await fetchDirectMessages(token));
     const guilds = await fetchGuilds(token);
     const guildOrder = accountId ? loadCachedGuildOrder(accountId) : null;
     if (requestId !== state.sidebar.requestId) return;
@@ -2242,7 +2315,7 @@ export async function bootstrapReadOnlyClient(
       setActiveChannelEntry(state.channelList, liveActiveChannel ?? findBrowsableChannel(liveChannels, liveActiveChannelId));
     }
     if (accountId) {
-      saveCachedDirectMessages(accountId, directMessages);
+      saveCachedDirectMessages(accountId, state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID] ?? directMessages);
       persistSidebarGuilds(state, { order: currentGuildOrderNeedsSave(sidebarCachedGuilds(state.sidebar).map((guild) => guild.id), guildOrder) });
     }
     for (const guild of guilds) {
@@ -2323,8 +2396,13 @@ export async function loadGuildChannels(
       liveSelfRoles: state.roleIdsByGuildId[guildId]?.length ?? null,
     });
     if (cachedChannels && cachedChannels.length > 0) {
+      if (isDirectMessages) {
+        for (const channel of cachedChannels) {
+          if (channel.muted !== undefined) state.channelMuteSettings[channel.id] = channel.muted;
+        }
+      }
       showedCachedChannels = true;
-      setChannelList(state.channelList, guildId, cachedChannels);
+      setChannelList(state.channelList, guildId, isDirectMessages ? withChannelMuteSettings(state, cachedChannels) : cachedChannels);
       refreshHiddenChannelFlags(state, guildId);
       setSidebarCachedChannels(state.sidebar, guildId, state.channelList.channels);
       state.channelList.loading = false;
@@ -2344,7 +2422,7 @@ export async function loadGuildChannels(
 
   try {
     const channels = isDirectMessages
-      ? await fetchDirectMessages(token)
+      ? withChannelMuteSettings(state, await fetchDirectMessages(token))
       : await fetchGuildChannels(token, guildId);
     if (requestId !== state.channelList.requestId) return;
 
@@ -2364,7 +2442,7 @@ export async function loadGuildChannels(
     });
     if (accountId) {
       if (isDirectMessages) {
-        saveCachedDirectMessages(accountId, channels);
+        saveCachedDirectMessages(accountId, state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID] ?? channels);
       } else {
         saveCachedGuildChannels(accountId, guildId, channels);
       }
@@ -3477,14 +3555,55 @@ export function setLocalNoiseSuppression(state: AppState, effects: SessionEffect
 export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects): void {
   const token = state.auth.savedToken;
   if (!token) {
-    setNotice(state, "Login required to mute servers.", "warning");
+    setNotice(state, "Login required to mute servers or direct messages.", "warning");
     effects.scheduleRender();
     return;
   }
 
   const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
+  if (entry.kind === "channel" && entry.guildId === DIRECT_MESSAGES_GUILD_ID) {
+    const channel = channelById(state, entry.id);
+    const previousMuted = isChannelMuted(state, entry.id);
+    const nextMuted = !previousMuted;
+    const previousNotifications = {
+      byChannelId: { ...state.notifications.byChannelId },
+      channelGuildIds: { ...state.notifications.channelGuildIds },
+    };
+
+    setChannelListChannelMuted(state, entry.id, nextMuted);
+    setSidebarChannelMuted(state.sidebar, entry.id, nextMuted);
+    if (state.channelList.guildId === DIRECT_MESSAGES_GUILD_ID) {
+      setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, state.channelList.channels);
+    }
+    if (nextMuted) {
+      clearChannelNotifications(state.notifications, entry.id);
+      persistNotifications(state);
+    }
+    const accountId = currentAccountId(state);
+    const directMessages = state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID];
+    if (accountId && directMessages) saveCachedDirectMessages(accountId, directMessages);
+    setNotice(state, "", "muted");
+    effects.scheduleRender();
+
+    void setDirectMessageChannelMuted(token, entry.id, nextMuted).catch((error) => {
+      setChannelListChannelMuted(state, entry.id, previousMuted);
+      setSidebarChannelMuted(state.sidebar, entry.id, previousMuted);
+      if (state.channelList.guildId === DIRECT_MESSAGES_GUILD_ID) {
+        setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, state.channelList.channels);
+      }
+      state.notifications.byChannelId = previousNotifications.byChannelId;
+      state.notifications.channelGuildIds = previousNotifications.channelGuildIds;
+      const rollbackDirectMessages = state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID];
+      if (accountId && rollbackDirectMessages) saveCachedDirectMessages(accountId, rollbackDirectMessages);
+      persistNotifications(state);
+      setNotice(state, `Failed to ${nextMuted ? "mute" : "unmute"} ${channel?.name ?? "direct message"}: ${error instanceof Error ? error.message : String(error)}`, "error");
+      effects.scheduleRender();
+    });
+    return;
+  }
+
   if (entry.kind !== "guild" || !entry.guildId || entry.guildId === DIRECT_MESSAGES_GUILD_ID) {
-    setNotice(state, "Select a server row to mute or unmute it.", "muted");
+    setNotice(state, "Select a server row, DM, or group chat to mute or unmute it.", "muted");
     effects.scheduleRender();
     return;
   }

@@ -380,7 +380,11 @@ export function setSidebarGuildMuted(sidebar: SidebarState, guildId: string, mut
 }
 
 export function setSidebarCachedChannels(sidebar: SidebarState, guildId: string, channels: DiscordChannel[]): void {
-  sidebar.cachedChannelsByGuildId[guildId] = channels.slice();
+  const previousMutedByChannelId = new Map((sidebar.cachedChannelsByGuildId[guildId] ?? []).map((channel) => [channel.id, channel.muted]));
+  sidebar.cachedChannelsByGuildId[guildId] = channels.map((channel) => ({
+    ...channel,
+    muted: channel.muted ?? previousMutedByChannelId.get(channel.id),
+  }));
 }
 
 export function clearSidebarCachedChannels(sidebar: SidebarState): void {
@@ -393,7 +397,10 @@ export function sidebarChannelsForGuild(sidebar: SidebarState, activeChannels: D
     byId.set(channel.id, channel);
   }
   for (const channel of activeChannels) {
-    if (channel.guildId === guildId) byId.set(channel.id, channel);
+    if (channel.guildId === guildId) {
+      const cached = byId.get(channel.id);
+      byId.set(channel.id, { ...channel, muted: channel.muted ?? cached?.muted });
+    }
   }
   return Array.from(byId.values());
 }
@@ -403,7 +410,10 @@ function allSidebarChannels(sidebar: SidebarState, activeChannels: DiscordChanne
   for (const channels of Object.values(sidebar.cachedChannelsByGuildId)) {
     for (const channel of channels) byId.set(channel.id, channel);
   }
-  for (const channel of activeChannels) byId.set(channel.id, channel);
+  for (const channel of activeChannels) {
+    const cached = byId.get(channel.id);
+    byId.set(channel.id, { ...channel, muted: channel.muted ?? cached?.muted });
+  }
   return Array.from(byId.values());
 }
 
@@ -710,6 +720,29 @@ export function applySidebarGuildMuteSettings(sidebar: SidebarState, mutedByGuil
   ));
 }
 
+export function applySidebarChannelMuteSettings(sidebar: SidebarState, mutedByChannelId: Record<string, boolean>): void {
+  for (const [guildId, channels] of Object.entries(sidebar.cachedChannelsByGuildId)) {
+    sidebar.cachedChannelsByGuildId[guildId] = channels.map((channel) => (
+      Object.prototype.hasOwnProperty.call(mutedByChannelId, channel.id)
+        ? { ...channel, muted: mutedByChannelId[channel.id] }
+        : channel
+    ));
+  }
+}
+
+export function setSidebarChannelMuted(sidebar: SidebarState, channelId: string, muted: boolean): boolean {
+  let changed = false;
+  for (const [guildId, channels] of Object.entries(sidebar.cachedChannelsByGuildId)) {
+    const index = channels.findIndex((channel) => channel.id === channelId);
+    if (index < 0) continue;
+    const nextChannels = channels.slice();
+    nextChannels[index] = { ...nextChannels[index]!, muted };
+    sidebar.cachedChannelsByGuildId[guildId] = nextChannels;
+    changed = true;
+  }
+  return changed;
+}
+
 export function sidebarCachedGuilds(sidebar: SidebarState): DiscordGuild[] {
   return sidebar.guilds.filter((guild) => guild.id !== DIRECT_MESSAGES_GUILD_ID);
 }
@@ -717,6 +750,12 @@ export function sidebarCachedGuilds(sidebar: SidebarState): DiscordGuild[] {
 export function isSidebarGuildMuted(sidebar: SidebarState, guildId: string | null | undefined): boolean {
   if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return false;
   return Boolean(sidebar.guilds.find((guild) => guild.id === guildId)?.muted);
+}
+
+export function isSidebarChannelMuted(sidebar: SidebarState, channelId: string | null | undefined): boolean {
+  if (!channelId) return false;
+  return Object.values(sidebar.cachedChannelsByGuildId)
+    .some((channels) => channels.some((channel) => channel.id === channelId && channel.muted));
 }
 
 function findAllCaseInsensitiveMatchStarts(text: string, query: string): number[] {
@@ -844,7 +883,8 @@ function pushChannelEntry(
     label: channelEntryLabel(channel, typingChannelIds, typingFrame),
     depth,
     channelType: channel.type,
-    notificationCount: channelNotificationCounts.get(channel.id) ?? 0,
+    notificationCount: channel.muted ? 0 : channelNotificationCounts.get(channel.id) ?? 0,
+    muted: Boolean(channel.muted),
     hidden: Boolean(channel.hidden),
     selected: false,
     active: false,
@@ -2229,7 +2269,7 @@ function renderEntryRow(
       : entry.label || "unnamed";
   const prefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
   const badge = renderNotificationBadge(entry.notificationCount ?? 0);
-  const muteIcon = entry.kind === "guild" && entry.muted ? " 🔕" : "";
+  const muteIcon = (entry.kind === "guild" || entry.kind === "channel") && entry.muted ? " 🔕" : "";
   const badgeGap = badge ? 1 : 0;
   const badgeWidth = badge?.width ?? 0;
   const muteWidth = termWidth(muteIcon);

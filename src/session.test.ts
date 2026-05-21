@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { loadCachedGuildOrder, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
+import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
 import { createInitialState, focusSidebar } from "./state";
@@ -988,6 +988,42 @@ describe("session", () => {
     expect(state.sidebar.guilds[0]?.muted).toBe(true);
     expect(state.notice.text).toBe("");
     expect(loadCachedGuildOrder("self")).toEqual(["guild-2", "guild-1"]);
+  });
+
+  test("muting a DM updates channel state, clears notifications, and patches Discord settings", () => {
+    const requests: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }];
+    state.sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    state.sidebar.selectedIndex = 1;
+    state.channelList.guildId = DIRECT_MESSAGES_GUILD_ID;
+    state.channelList.channels = [{ id: "dm-1", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false }];
+    state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID] = state.channelList.channels;
+    state.notifications.byChannelId["dm-1"] = 2;
+    state.notifications.channelGuildIds["dm-1"] = DIRECT_MESSAGES_GUILD_ID;
+
+    toggleSelectedGuildMute(state, { scheduleRender: () => {} });
+
+    expect(state.channelList.channels[0]?.muted).toBe(true);
+    expect(state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID]?.[0]?.muted).toBe(true);
+    expect(state.notifications.byChannelId["dm-1"]).toBeUndefined();
+    expect(loadCachedDirectMessages("self")?.[0]?.muted).toBe(true);
+    expect(requests[0]?.url).toBe("https://discord.com/api/v9/users/@me/guilds/%40me/settings");
+    expect(requests[0]?.body).toEqual({
+      channel_overrides: {
+        "dm-1": {
+          muted: true,
+          mute_config: { end_time: null, selected_time_window: -1 },
+        },
+      },
+    });
   });
 
   test("editing a message patches it optimistically and clears edit state", async () => {
