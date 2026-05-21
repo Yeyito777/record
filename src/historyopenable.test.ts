@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { defaultOpenersConfig, saveConfig } from "./config";
 import type { DiscordMessage } from "./discord";
-import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { createInitialState } from "./state";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
@@ -78,5 +78,33 @@ describe("history openable target lookup", () => {
 
     expect(attachmentAtHistoryCursor(state)).toEqual(attachment);
     expect(openableTargetAtHistoryCursor(state)).toBe("https://cdn.example/cat.png");
+  });
+
+  test("finds forwarded message origins under the history cursor", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.historyLines = ["[Forwarded]: source text"];
+    state.historyCursor = { row: 0, col: 0 };
+    state.historyMessageBounds = [{ messageId: "m1", start: 0, end: 1, contentStart: 0, contentEnd: 1 }];
+    state.timeline.messages = [baseMessage({
+      forwarded: {
+        content: "source text",
+        originMessageId: "source-message",
+        originChannelId: "source-channel",
+        originGuildId: "source-guild",
+        mentionEveryone: false,
+        mentionRoleIds: [],
+        mentionUsers: [],
+        attachments: [],
+        stickerNames: [],
+        embedsCount: 0,
+        embeds: [],
+      },
+    })];
+
+    expect(forwardedOriginAtHistoryCursor(state)).toEqual({
+      messageId: "source-message",
+      channelId: "source-channel",
+      guildId: "source-guild",
+    });
   });
 });

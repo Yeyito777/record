@@ -748,6 +748,9 @@ describe("timeline rendering", () => {
       authorName: "Blocktales",
       forwarded: {
         content: "janthony ella es dama con rama tio",
+        originMessageId: "source-message-1",
+        originChannelId: "source-channel-1",
+        originGuildId: "source-guild-1",
         mentionEveryone: false,
         mentionRoleIds: [],
         mentionUsers: [],

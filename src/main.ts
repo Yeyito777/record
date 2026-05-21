@@ -29,7 +29,7 @@ import {
 } from "./historycursor";
 import { setChannelList } from "./channels";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
-import { attachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction, resolveNavigationAction } from "./keybinds";
 import {
@@ -51,6 +51,7 @@ import {
   disconnectAppGateway,
   disconnectMemberListGateway,
   deleteMessage,
+  loadChannelMessageLocation,
   loadChannelMessages,
   loadChannelMessagesAround,
   loadGuildChannels,
@@ -555,6 +556,25 @@ function jumpToReplyTargetAtHistoryCursor(): boolean {
 
   void (async () => {
     const loaded = await loadChannelMessagesAround(state, token, channelId, target.messageId, effects);
+    if (!running) return;
+    if (loaded) {
+      refreshHistorySnapshot();
+      jumpHistoryCursorToMessage(state, target.messageId, timelinePageSize());
+    }
+    scheduleRender();
+  })();
+  return true;
+}
+
+function jumpToForwardedOriginAtHistoryCursor(): boolean {
+  const target = forwardedOriginAtHistoryCursor(state);
+  if (!target) return false;
+
+  const token = tokenOrWarn();
+  if (!token) return true;
+
+  void (async () => {
+    const loaded = await loadChannelMessageLocation(state, token, target, effects);
     if (!running) return;
     if (loaded) {
       refreshHistorySnapshot();
@@ -1168,6 +1188,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       return true;
     case "nav_select": {
       if (jumpToReplyTargetAtHistoryCursor()) return true;
+      if (jumpToForwardedOriginAtHistoryCursor()) return true;
 
       const attachment = attachmentAtHistoryCursor(state);
       if (attachment) {

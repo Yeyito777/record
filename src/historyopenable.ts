@@ -3,6 +3,12 @@ import { contentBounds, logicalLineRange, stripAnsi } from "./historycursor";
 import { findOpenableTargetMatches } from "./openable";
 import type { AppState } from "./state";
 
+export interface ForwardedOriginTarget {
+  messageId: string;
+  channelId: string;
+  guildId: string | null;
+}
+
 interface LogicalCursorLine {
   text: string;
   cursorOffset: number;
@@ -42,6 +48,17 @@ function selectedHistoryMessage(state: AppState) {
   const bound = state.historyMessageBounds.find((entry) => row >= entry.start && row < entry.end);
   if (!bound) return null;
   return state.timeline.messages.find((message) => message.id === bound.messageId) ?? null;
+}
+
+export function forwardedOriginAtHistoryCursor(state: AppState): ForwardedOriginTarget | null {
+  const message = selectedHistoryMessage(state);
+  const forwarded = message?.forwarded;
+  if (!forwarded?.originMessageId || !forwarded.originChannelId) return null;
+  return {
+    messageId: forwarded.originMessageId,
+    channelId: forwarded.originChannelId,
+    guildId: forwarded.originGuildId,
+  };
 }
 
 export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttachment | null {

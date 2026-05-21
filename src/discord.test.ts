@@ -378,6 +378,9 @@ describe("discord helpers", () => {
     expect(messages[0]?.content).toBe("");
     expect(messages[0]?.forwarded).toEqual({
       content: "janthony ella es dama con rama tio",
+      originMessageId: "message-0",
+      originChannelId: "channel-0",
+      originGuildId: null,
       mentionEveryone: false,
       mentionRoleIds: ["role-1"],
       mentionUsers: [{ id: "user-2", username: "janthony", displayName: "Janthony", bot: false, roleIds: undefined }],

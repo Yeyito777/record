@@ -350,6 +350,9 @@ export interface DiscordMessageReaction {
 
 export interface DiscordForwardedMessage {
   content: string;
+  originMessageId: string | null;
+  originChannelId: string | null;
+  originGuildId: string | null;
   mentionEveryone: boolean;
   mentionRoleIds: string[];
   mentionUsers: DiscordGuildMember[];
@@ -734,6 +737,9 @@ function mapForwardedMessage(message: Partial<DiscordMessageResponse>): DiscordF
   const embeds = snapshot.embeds?.map(mapDiscordEmbed) ?? [];
   return {
     content: snapshot.content ?? "",
+    originMessageId: message.message_reference?.message_id ?? null,
+    originChannelId: message.message_reference?.channel_id ?? null,
+    originGuildId: message.message_reference?.guild_id ?? null,
     mentionEveryone: snapshot.mention_everyone ?? false,
     mentionRoleIds: snapshot.mention_roles ?? [],
     mentionUsers: snapshot.mentions?.map(mapMentionedUser) ?? [],
