@@ -207,8 +207,11 @@ const speakingCallTimersByUserId = new Map<string, ReturnType<typeof setTimeout>
 const pendingVoiceMemberHydrationKeys = new Set<string>();
 const pendingVoiceMemberHydrationTargets = new Map<string, Set<string>>();
 const pendingVoiceMemberHydrationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const incomingCallRingtonesByChannelId = new Map<string, SoundEffectPlaybackHandle>();
+const incomingCallRingtoneCleanupTimersByChannelId = new Map<string, ReturnType<typeof setTimeout>>();
 const outboundCallRingtonesByChannelId = new Map<string, SoundEffectPlaybackHandle>();
-const INCOMING_CALL_RINGTONE_DEDUPE_MS = 15_000;
+const INCOMING_CALL_RINGTONE_MAX_MS = 30_000;
+const INCOMING_CALL_RINGTONE_REPEAT_MS = 5_500;
 const OUTBOUND_CALL_RINGTONE_MAX_MS = 15_000;
 const OUTBOUND_CALL_RINGTONE_REPEAT_MS = 2_500;
 const REMOTE_CALL_SPEAKING_IDLE_MS = 1_500;
@@ -256,6 +259,8 @@ export function disconnectAppGateway(): void {
   streamController = null;
   voiceCallController?.disconnect();
   voiceCallController = null;
+  stopAllIncomingCallRingtones("gateway_disconnect");
+  recentIncomingCallRingtones.clear();
   callVoiceStatesByChannelId.clear();
   departedCallParticipantsByChannelId.clear();
   callJoinSoundUserIdsByChannelId.clear();
@@ -531,12 +536,53 @@ function shouldNotifyForIncomingMessage(state: AppState, message: DiscordMessage
 }
 
 function maybePlayIncomingCallRingtone(state: AppState, channelId: string): void {
-  if (voiceCallController?.activeSession?.target.channelId === channelId) return;
+  if (voiceCallController?.activeSession?.target.channelId === channelId) {
+    stopIncomingCallRingtone(channelId, "already_active");
+    return;
+  }
+  if (incomingCallRingtonesByChannelId.has(channelId)) return;
+  if (recentIncomingCallRingtones.has(channelId)) {
+    debugLog("call.incoming_ringtone.skipped", { channelId, reason: "already_rang_for_call" });
+    return;
+  }
   const now = Date.now();
-  const last = recentIncomingCallRingtones.get(channelId) ?? 0;
-  if (now - last < INCOMING_CALL_RINGTONE_DEDUPE_MS) return;
   recentIncomingCallRingtones.set(channelId, now);
-  playSoundEffect("ringtone");
+  const handle = playLoopingSoundEffect("ringtone", {
+    intervalMs: INCOMING_CALL_RINGTONE_REPEAT_MS,
+    maxDurationMs: INCOMING_CALL_RINGTONE_MAX_MS,
+  });
+  incomingCallRingtonesByChannelId.set(channelId, handle);
+  const cleanupTimer = setTimeout(() => {
+    if (incomingCallRingtonesByChannelId.get(channelId) === handle) {
+      incomingCallRingtonesByChannelId.delete(channelId);
+      incomingCallRingtoneCleanupTimersByChannelId.delete(channelId);
+      debugLog("call.incoming_ringtone.expired", { channelId });
+    }
+  }, INCOMING_CALL_RINGTONE_MAX_MS + 50);
+  cleanupTimer.unref?.();
+  incomingCallRingtoneCleanupTimersByChannelId.set(channelId, cleanupTimer);
+  debugLog("call.incoming_ringtone.start", {
+    channelId,
+    intervalMs: INCOMING_CALL_RINGTONE_REPEAT_MS,
+    maxDurationMs: INCOMING_CALL_RINGTONE_MAX_MS,
+  });
+}
+
+function stopIncomingCallRingtone(channelId: string, reason: string): void {
+  const handle = incomingCallRingtonesByChannelId.get(channelId);
+  if (!handle) return;
+  incomingCallRingtonesByChannelId.delete(channelId);
+  const cleanupTimer = incomingCallRingtoneCleanupTimersByChannelId.get(channelId);
+  if (cleanupTimer) clearTimeout(cleanupTimer);
+  incomingCallRingtoneCleanupTimersByChannelId.delete(channelId);
+  handle.stop();
+  debugLog("call.incoming_ringtone.stop", { channelId, reason });
+}
+
+function stopAllIncomingCallRingtones(reason: string): void {
+  for (const channelId of Array.from(incomingCallRingtonesByChannelId.keys())) {
+    stopIncomingCallRingtone(channelId, reason);
+  }
 }
 
 function handleCallGatewayEvent(state: AppState, channelId: string, ringingUserIds: readonly string[]): void {
@@ -1835,6 +1881,7 @@ function syncVoiceCallStatus(state: AppState, session: VoiceCallSession | null):
     selfDeaf: session.selfDeaf,
     participantUserIds: remoteCallParticipantIds(state, session.target.channelId),
   };
+  stopIncomingCallRingtone(session.target.channelId, "joined_call");
   syncCallWidget(state, session);
 }
 
@@ -1972,6 +2019,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onCallDelete: (channelId) => {
       recentIncomingCallRingtones.delete(channelId);
+      stopIncomingCallRingtone(channelId, "call_delete");
       knownCallParticipantsByChannelId.delete(channelId);
       departedCallParticipantsByChannelId.delete(channelId);
       callVoiceStatesByChannelId.delete(channelId);
