@@ -41,7 +41,7 @@ import {
   scrollMemberListSelection,
   scrollMemberListSelectionLine,
 } from "./memberlist";
-import { formatByteSize, summarizeInlineMessageParts } from "./messageparts";
+import { formatByteSize } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { render } from "./render";
 import {
@@ -119,7 +119,7 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
@@ -594,12 +594,7 @@ function jumpToChannelBottom(): void {
 
 function summarizeReplyMessage(message: DiscordMessage): string {
   if (message.call || message.type === 3) return "☎ Call";
-  return summarizeInlineMessageParts(
-    message.content,
-    message.attachments,
-    message.embeds ?? message.embedsCount,
-    message.stickerNames,
-  ).slice(0, 160);
+  return summarizeDiscordMessageReplyPreview(message).slice(0, 160);
 }
 
 function pasteImageFromClipboard(): void {

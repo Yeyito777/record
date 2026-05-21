@@ -13,6 +13,7 @@ const GUILD_VOICE_CHANNEL_TYPES = new Set([2, 13]);
 const SIDEBAR_GUILD_CHANNEL_TYPES = new Set([...GUILD_TEXT_CHANNEL_TYPES, 4, ...GUILD_VOICE_CHANNEL_TYPES]);
 const DIRECT_MESSAGE_CHANNEL_TYPES = new Set([1, 3]);
 const MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE = 6;
+const MESSAGE_REFERENCE_TYPE_FORWARD = 1;
 
 export const DIRECT_MESSAGES_GUILD_ID = "@me::dms";
 export const DIRECT_MESSAGES_GUILD_NAME = "Direct Messages";
@@ -153,6 +154,7 @@ export interface DiscordAttachmentResponse {
 }
 
 export interface DiscordMessageReferenceResponse {
+  type?: number;
   message_id?: string;
   channel_id?: string;
   guild_id?: string;
@@ -184,6 +186,21 @@ export interface DiscordReferencedMessageResponse {
   attachments?: DiscordAttachmentResponse[];
   embeds?: DiscordEmbedResponse[];
   sticker_items?: DiscordStickerItemResponse[];
+  message_snapshots?: DiscordMessageSnapshotResponse[];
+}
+
+export interface DiscordMessageSnapshotMessageResponse {
+  content?: string;
+  mention_everyone?: boolean;
+  mention_roles?: string[];
+  mentions?: DiscordMessageMentionResponse[];
+  attachments?: DiscordAttachmentResponse[];
+  embeds?: DiscordEmbedResponse[];
+  sticker_items?: DiscordStickerItemResponse[];
+}
+
+export interface DiscordMessageSnapshotResponse {
+  message?: DiscordMessageSnapshotMessageResponse | null;
 }
 
 export interface DiscordCallResponse {
@@ -211,6 +228,7 @@ export interface DiscordMessageResponse {
   embeds?: DiscordEmbedResponse[];
   sticker_items?: DiscordStickerItemResponse[];
   reactions?: DiscordMessageReactionResponse[];
+  message_snapshots?: DiscordMessageSnapshotResponse[];
 }
 
 export interface DiscordMessageReactionEmojiResponse {
@@ -330,6 +348,17 @@ export interface DiscordMessageReaction {
   me: boolean;
 }
 
+export interface DiscordForwardedMessage {
+  content: string;
+  mentionEveryone: boolean;
+  mentionRoleIds: string[];
+  mentionUsers: DiscordGuildMember[];
+  attachments: DiscordMessageAttachment[];
+  stickerNames: string[];
+  embedsCount: number;
+  embeds: DiscordMessageEmbed[];
+}
+
 export type DiscordMessageReactionUpdate =
   | { type: "add"; emoji: DiscordMessageReactionEmoji; me: boolean }
   | { type: "remove"; emoji: DiscordMessageReactionEmoji; me: boolean }
@@ -364,6 +393,7 @@ export interface DiscordMessage {
   stickerNames: string[];
   embedsCount: number;
   embeds?: DiscordMessageEmbed[];
+  forwarded?: DiscordForwardedMessage | null;
   reactions?: DiscordMessageReaction[];
   localStatus?: DiscordMessageLocalStatus;
   localError?: string;
@@ -394,6 +424,7 @@ export interface DiscordMessagePatch {
   stickerNames?: string[];
   embedsCount?: number;
   embeds?: DiscordMessageEmbed[];
+  forwarded?: DiscordForwardedMessage | null;
   reactions?: DiscordMessageReaction[];
   reactionUpdate?: DiscordMessageReactionUpdate;
 }
@@ -660,7 +691,17 @@ function mapDiscordMessageContent(message: Partial<DiscordMessageResponse>): str
 }
 
 function messageReferenceIsReply(message: DiscordMessageResponse): boolean {
+  if (message.message_reference?.type === MESSAGE_REFERENCE_TYPE_FORWARD) return false;
+  if (firstMessageSnapshot(message)) return false;
   return message.type !== MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE;
+}
+
+function firstMessageSnapshot(message: Pick<DiscordMessageResponse, "message_snapshots"> | Pick<DiscordReferencedMessageResponse, "message_snapshots">): DiscordMessageSnapshotMessageResponse | null {
+  return message.message_snapshots?.find((snapshot) => snapshot.message)?.message ?? null;
+}
+
+function forwardedContentLabel(content: string): string {
+  return content.trim() ? `[Forwarded]: ${content}` : "[Forwarded]";
 }
 
 function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
@@ -671,6 +712,35 @@ function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
     description: embed.description ?? null,
     providerName: embed.provider?.name ?? null,
     authorName: embed.author?.name ?? null,
+  };
+}
+
+function mapDiscordAttachment(attachment: DiscordAttachmentResponse): DiscordMessageAttachment {
+  return {
+    id: attachment.id,
+    filename: attachment.filename,
+    contentType: attachment.content_type ?? null,
+    size: attachment.size,
+    url: attachment.url,
+    durationSecs: attachment.duration_secs,
+    waveform: attachment.waveform,
+  };
+}
+
+function mapForwardedMessage(message: Partial<DiscordMessageResponse>): DiscordForwardedMessage | undefined {
+  const snapshot = firstMessageSnapshot(message);
+  if (!snapshot) return undefined;
+
+  const embeds = snapshot.embeds?.map(mapDiscordEmbed) ?? [];
+  return {
+    content: snapshot.content ?? "",
+    mentionEveryone: snapshot.mention_everyone ?? false,
+    mentionRoleIds: snapshot.mention_roles ?? [],
+    mentionUsers: snapshot.mentions?.map(mapMentionedUser) ?? [],
+    attachments: snapshot.attachments?.map(mapDiscordAttachment) ?? [],
+    stickerNames: snapshot.sticker_items?.map((sticker) => sticker.name) ?? [],
+    embedsCount: embeds.length,
+    embeds,
   };
 }
 
@@ -799,19 +869,24 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
   const referenceChannelId = message.message_reference?.channel_id ?? message.channel_id;
 
   if (message.referenced_message) {
+    const forwarded = mapForwardedMessage(message.referenced_message);
     return {
       messageId: message.referenced_message.id,
       authorId: message.referenced_message.author.id,
       authorDisplayName: userDisplayName(message.referenced_message.author),
       timestamp: Date.parse(message.referenced_message.timestamp),
       summary: summarizeReplyPreview(
-        message.referenced_message.content,
-        message.referenced_message.attachments ?? [],
-        message.referenced_message.embeds ?? [],
-        (message.referenced_message.sticker_items ?? []).map((sticker) => sticker.name),
+        forwarded ? forwardedContentLabel(forwarded.content) : message.referenced_message.content,
+        forwarded?.attachments ?? message.referenced_message.attachments ?? [],
+        forwarded?.embeds ?? message.referenced_message.embeds ?? [],
+        forwarded?.stickerNames ?? (message.referenced_message.sticker_items ?? []).map((sticker) => sticker.name),
       ),
-      ...(message.referenced_message.mention_roles ? { mentionRoleIds: message.referenced_message.mention_roles } : {}),
-      ...(message.referenced_message.mentions ? { mentionUsers: message.referenced_message.mentions.map(mapMentionedUser) } : {}),
+      ...(forwarded
+        ? { mentionRoleIds: forwarded.mentionRoleIds, mentionUsers: forwarded.mentionUsers }
+        : {
+          ...(message.referenced_message.mention_roles ? { mentionRoleIds: message.referenced_message.mention_roles } : {}),
+          ...(message.referenced_message.mentions ? { mentionUsers: message.referenced_message.mentions.map(mapMentionedUser) } : {}),
+        }),
     };
   }
 
@@ -830,20 +905,33 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
 }
 
 export function replyPreviewFromMessage(message: DiscordMessage): DiscordMessageReply {
+  const forwarded = message.forwarded;
   return {
     messageId: message.id,
     authorId: message.author.id,
     authorDisplayName: message.author.displayName,
     timestamp: message.timestamp,
-    summary: summarizeReplyPreview(
-      message.content,
-      message.attachments,
-      message.embeds ?? message.embedsCount,
-      message.stickerNames,
-    ),
-    ...(message.mentionRoleIds.length > 0 ? { mentionRoleIds: message.mentionRoleIds } : {}),
-    ...(message.mentionUsers && message.mentionUsers.length > 0 ? { mentionUsers: message.mentionUsers } : {}),
+    summary: summarizeDiscordMessageReplyPreview(message),
+    ...((forwarded?.mentionRoleIds ?? message.mentionRoleIds).length > 0 ? { mentionRoleIds: forwarded?.mentionRoleIds ?? message.mentionRoleIds } : {}),
+    ...((forwarded?.mentionUsers ?? message.mentionUsers)?.length ? { mentionUsers: forwarded?.mentionUsers ?? message.mentionUsers } : {}),
   };
+}
+
+export function summarizeDiscordMessageReplyPreview(message: DiscordMessage): string {
+  if (message.forwarded) {
+    return summarizeReplyPreview(
+      forwardedContentLabel(message.forwarded.content),
+      message.forwarded.attachments,
+      message.forwarded.embeds,
+      message.forwarded.stickerNames,
+    );
+  }
+  return summarizeReplyPreview(
+    message.content,
+    message.attachments,
+    message.embeds ?? message.embedsCount,
+    message.stickerNames,
+  );
 }
 
 export function isMissingReplyPreview(reply: DiscordMessageReply | null | undefined): reply is DiscordMessageReply & { messageId: string } {
@@ -1056,6 +1144,7 @@ function mapMentionedUser(mention: DiscordMessageMentionResponse): DiscordGuildM
 
 export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> & { id: string; channel_id: string }): DiscordMessagePatch {
   const hasReplyFields = message.referenced_message !== undefined || message.message_reference !== undefined;
+  const forwarded = mapForwardedMessage(message);
   return {
     id: message.id,
     channelId: message.channel_id,
@@ -1092,6 +1181,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
         member: message.member,
         message_reference: message.message_reference,
         referenced_message: message.referenced_message,
+        message_snapshots: message.message_snapshots,
         call: message.call,
         attachments: message.attachments,
         embeds: message.embeds,
@@ -1106,18 +1196,11 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
           participantIds: message.call.participants ?? [],
         }
         : null,
-    attachments: message.attachments?.map((attachment) => ({
-      id: attachment.id,
-      filename: attachment.filename,
-      contentType: attachment.content_type ?? null,
-      size: attachment.size,
-      url: attachment.url,
-      durationSecs: attachment.duration_secs,
-      waveform: attachment.waveform,
-    })),
+    attachments: message.attachments?.map(mapDiscordAttachment),
     stickerNames: message.sticker_items?.map((sticker) => sticker.name),
     embedsCount: message.embeds?.length,
     embeds: message.embeds?.map(mapDiscordEmbed),
+    forwarded,
     reactions: mapDiscordReactions(message.reactions),
   };
 }
@@ -1145,6 +1228,7 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
     stickerNames: patch.stickerNames ?? message.stickerNames,
     embedsCount: patch.embedsCount ?? message.embedsCount,
     embeds: patch.embeds ?? message.embeds,
+    forwarded: patch.forwarded !== undefined ? patch.forwarded : message.forwarded,
     reactions: patch.reactions !== undefined
       ? patch.reactions
       : patch.reactionUpdate
@@ -1180,6 +1264,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     stickerNames: patch.stickerNames ?? [],
     embedsCount: patch.embedsCount ?? 0,
     embeds: patch.embeds ?? [],
+    forwarded: patch.forwarded ?? null,
     reactions: patch.reactions ?? [],
   };
 }

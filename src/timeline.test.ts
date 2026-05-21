@@ -30,6 +30,7 @@ function message(
     guildId?: string | null;
     roleIds?: string[];
     mentionUsers?: DiscordMessage["mentionUsers"];
+    forwarded?: DiscordMessage["forwarded"];
     reactions?: DiscordMessage["reactions"];
   } = {},
 ): DiscordMessage {
@@ -57,6 +58,7 @@ function message(
     attachments: [],
     stickerNames: [],
     embedsCount: 0,
+    forwarded: options.forwarded ?? null,
     reactions: options.reactions ?? [],
   };
 }
@@ -738,6 +740,37 @@ describe("timeline rendering", () => {
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines).not.toContain("(empty message)");
     expect(plainLines[1]).toContain("[sticker] catjam");
+  });
+
+  test("renders forwarded message snapshots instead of empty deleted replies", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "", {
+      authorName: "Blocktales",
+      forwarded: {
+        content: "janthony ella es dama con rama tio",
+        mentionEveryone: false,
+        mentionRoleIds: [],
+        mentionUsers: [],
+        attachments: [],
+        stickerNames: [],
+        embedsCount: 0,
+        embeds: [],
+      },
+    })]);
+
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    const plainLines = rendered.lines.map(stripAnsi);
+    expect(plainLines[0]).toContain(`Blocktales ${expectedLocalTime()}`);
+    expect(plainLines).not.toContain("↪ Deleted message");
+    expect(plainLines).not.toContain("(empty message)");
+    expect(plainLines[1]).toBe("[Forwarded]: janthony ella es dama con rama tio");
   });
 
   test("renders attachments as individual openable-looking rows", () => {

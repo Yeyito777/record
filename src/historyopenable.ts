@@ -49,9 +49,10 @@ export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttach
   if (!logicalLine) return null;
 
   const message = selectedHistoryMessage(state);
-  if (!message || message.attachments.length === 0) return null;
+  const attachments = message ? [...message.attachments, ...(message.forwarded?.attachments ?? [])] : [];
+  if (!message || attachments.length === 0) return null;
 
-  for (const attachment of message.attachments) {
+  for (const attachment of attachments) {
     let searchFrom = 0;
     while (searchFrom < logicalLine.text.length) {
       const filenameStart = logicalLine.text.indexOf(attachment.filename, searchFrom);

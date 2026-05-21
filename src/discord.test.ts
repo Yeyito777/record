@@ -345,6 +345,49 @@ describe("discord helpers", () => {
     });
   });
 
+  test("maps forwarded message snapshots without treating them as deleted replies", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([
+        {
+          id: "message-1",
+          channel_id: "channel-1",
+          content: "",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "blocktales", global_name: "Blocktales" },
+          message_reference: { type: 1, message_id: "message-0", channel_id: "channel-0" },
+          referenced_message: null,
+          message_snapshots: [{
+            message: {
+              content: "janthony ella es dama con rama tio",
+              mention_roles: ["role-1"],
+              mentions: [{ id: "user-2", username: "janthony", global_name: "Janthony" }],
+              attachments: [{ id: "a-1", filename: "note.txt", content_type: "text/plain", size: 16, url: "https://example.com/note.txt" }],
+              embeds: [{ provider: { name: "Example" }, title: "Snapshot", url: "https://example.com/snapshot" }],
+            },
+          }],
+          attachments: [],
+          embeds: [],
+        },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.reply).toBeNull();
+    expect(messages[0]?.content).toBe("");
+    expect(messages[0]?.forwarded).toEqual({
+      content: "janthony ella es dama con rama tio",
+      mentionEveryone: false,
+      mentionRoleIds: ["role-1"],
+      mentionUsers: [{ id: "user-2", username: "janthony", displayName: "Janthony", bot: false, roleIds: undefined }],
+      attachments: [{ id: "a-1", filename: "note.txt", contentType: "text/plain", size: 16, url: "https://example.com/note.txt", durationSecs: undefined, waveform: undefined }],
+      stickerNames: [],
+      embedsCount: 1,
+      embeds: [{ type: null, title: "Snapshot", url: "https://example.com/snapshot", description: null, providerName: "Example", authorName: null }],
+    });
+  });
+
   test("fetches a chunk around a target message id", async () => {
     const requests: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
