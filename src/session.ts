@@ -1780,6 +1780,36 @@ function markChannelRead(state: AppState, token: string | null, channelId: strin
   });
 }
 
+function newestSnowflakeId(left: string | null | undefined, right: string | null | undefined): string | null {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  try {
+    return BigInt(left) >= BigInt(right) ? left : right;
+  } catch {
+    return left;
+  }
+}
+
+function knownChannelLastMessageId(state: AppState, channelId: string): string | null {
+  const activeChannel = state.channelList.channels.find((channel) => channel.id === channelId);
+  if (activeChannel?.lastMessageId) return activeChannel.lastMessageId;
+
+  for (const channels of Object.values(state.sidebar.cachedChannelsByGuildId)) {
+    const channel = channels.find((entry) => entry.id === channelId);
+    if (channel?.lastMessageId) return channel.lastMessageId;
+  }
+  return null;
+}
+
+function channelAckMessageId(state: AppState, channelId: string, visibleLatestMessageId: string | null | undefined): string | null {
+  // Discord's READY/private-channel `last_message_id` can point at the unread
+  // read-state frontier even when the message is missing from our local cache or
+  // from the current REST page (for example a deleted/system DM tail message).
+  // Ack the newest id we know for the channel, not just the newest message we
+  // happened to render, or that DM will be re-created as unread on every login.
+  return newestSnowflakeId(knownChannelLastMessageId(state, channelId), visibleLatestMessageId);
+}
+
 function persistChannelMessageCache(state: AppState, channelId: string): void {
   const accountId = currentAccountId(state);
   const entry = state.messageCacheByChannelId[channelId];
@@ -1992,7 +2022,9 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
           && !isChannelMuted(state, notification.channelId)),
       );
       persistNotifications(state);
-      const latestMessageId = state.timeline.channelId ? latestTimelineMessageId(state, state.timeline.channelId) : null;
+      const latestMessageId = state.timeline.channelId
+        ? channelAckMessageId(state, state.timeline.channelId, latestTimelineMessageId(state, state.timeline.channelId))
+        : null;
       if (state.timeline.channelId && latestMessageId && isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) {
         markChannelRead(state, state.auth.savedToken, state.timeline.channelId, latestMessageId);
       }
@@ -2581,7 +2613,8 @@ export async function loadChannelMessages(
     recordMessagesRoleIds(state, cached.messages, guildId);
     setTimelineMessages(state.timeline, channelId, cached.messages, { hasOlder: cached.hasOlder });
     const latestMessage = cached.messages.at(-1);
-    if (latestMessage) markChannelRead(state, token, channelId, latestMessage.id);
+    const ackMessageId = channelAckMessageId(state, channelId, latestMessage?.id ?? null);
+    if (ackMessageId) markChannelRead(state, token, channelId, ackMessageId);
     cached.messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
     effects.scheduleRender();
 
@@ -2631,9 +2664,8 @@ async function refreshLatestChannelMessages(
     const preserveScroll = !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll);
     setTimelineMessages(state.timeline, channelId, cacheEntry.messages, { hasOlder: cacheEntry.hasOlder, preserveScroll });
     const latestMessage = cacheEntry.messages.at(-1);
-    if (latestMessage) {
-      markChannelRead(state, token, channelId, latestMessage.id);
-    }
+    const ackMessageId = channelAckMessageId(state, channelId, latestMessage?.id ?? null);
+    if (ackMessageId) markChannelRead(state, token, channelId, ackMessageId);
     cacheEntry.messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
     effects.scheduleRender();
   } catch (error) {
@@ -2757,7 +2789,8 @@ export async function loadLatestChannelMessages(
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return false;
     setTimelineMessages(state.timeline, channelId, cacheEntry.messages, { hasOlder: cacheEntry.hasOlder, hasNewer: false });
     const latestMessage = cacheEntry.messages.at(-1);
-    if (latestMessage) markChannelRead(state, token, channelId, latestMessage.id);
+    const ackMessageId = channelAckMessageId(state, channelId, latestMessage?.id ?? null);
+    if (ackMessageId) markChannelRead(state, token, channelId, ackMessageId);
     cacheEntry.messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
     return true;
   } catch (error) {
@@ -3751,7 +3784,7 @@ export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects,
 export function ackCurrentChannelIfAtBottom(state: AppState): void {
   const channelId = state.timeline.channelId;
   if (!channelId || !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) return;
-  const latestMessageId = latestTimelineMessageId(state, channelId);
+  const latestMessageId = channelAckMessageId(state, channelId, latestTimelineMessageId(state, channelId));
   if (!latestMessageId) return;
   markChannelRead(state, state.auth.savedToken, channelId, latestMessageId);
 }

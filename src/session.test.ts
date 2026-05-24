@@ -478,6 +478,44 @@ describe("session", () => {
     expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["cached"]);
   });
 
+  test("loading a channel acks the channel read-state frontier even when cache is stale", async () => {
+    const requestedUrls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("/ack")) {
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = DIRECT_MESSAGES_GUILD_ID;
+    state.channelList.channels = [{
+      id: "dm-1",
+      guildId: DIRECT_MESSAGES_GUILD_ID,
+      parentId: null,
+      name: "Felipe Toro",
+      topic: null,
+      position: 0,
+      type: 1,
+      nsfw: false,
+      lastMessageId: "50",
+    }];
+    state.messageCacheByChannelId["dm-1"] = {
+      channelId: "dm-1",
+      messages: [message("10", "cached", "dm-1")],
+      hasOlder: false,
+      updatedAt: Date.now(),
+      latestFetchedAt: Date.now(),
+    };
+
+    await loadChannelMessages(state, "token-1", "dm-1", { scheduleRender: () => {} });
+
+    expect(requestedUrls).toContain("https://discord.com/api/v9/channels/dm-1/messages/50/ack");
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["cached"]);
+  });
+
   test("loading a channel without cache fetches once and stores the result", async () => {
     let messageFetches = 0;
     globalThis.fetch = (async (input: RequestInfo | URL) => {

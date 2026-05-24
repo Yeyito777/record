@@ -1432,13 +1432,27 @@ function buildSendMessageMultipartBody(payload: Record<string, unknown>, uploads
 }
 
 export async function ackChannelMessage(token: string, channelId: string, messageId: string): Promise<void> {
-  await requestJson<unknown>(token, `/channels/${channelId}/messages/${messageId}/ack`, {
-    method: "POST",
-    body: JSON.stringify({
-      last_viewed: Math.ceil((Date.now() - 1_420_070_400_000) / 86_400_000),
-      token: null,
-    }),
-  });
+  try {
+    await requestJson<unknown>(token, `/channels/${channelId}/messages/${messageId}/ack`, {
+      method: "POST",
+      body: JSON.stringify({
+        last_viewed: Math.ceil((Date.now() - 1_420_070_400_000) / 86_400_000),
+        token: null,
+      }),
+    });
+    return;
+  } catch {
+    // Some DM read-state frontiers point at a tail message that is no longer
+    // fetchable/ackable through the per-message endpoint. The official client
+    // also has a bulk read-state ack endpoint; use it as a fallback so opening a
+    // channel can still advance Discord's server-side read state.
+    await requestJson<unknown>(token, "/read-states/ack-bulk", {
+      method: "POST",
+      body: JSON.stringify({
+        read_states: [{ channel_id: channelId, message_id: messageId, read_state_type: 0 }],
+      }),
+    });
+  }
 }
 
 export async function ringDirectMessageCall(token: string, channelId: string, recipientIds: readonly string[]): Promise<void> {

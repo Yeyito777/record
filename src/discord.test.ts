@@ -1009,6 +1009,28 @@ describe("discord helpers", () => {
     expect(typeof JSON.parse(requestedBody).last_viewed).toBe("number");
   });
 
+  test("falls back to bulk read-state ack when per-message ack fails", async () => {
+    const requests: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+      if (url.endsWith("/channels/channel-1/messages/message-1/ack")) {
+        return new Response(JSON.stringify({ message: "Unknown Message" }), { status: 404, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await ackChannelMessage("token", "channel-1", "message-1");
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://discord.com/api/v9/channels/channel-1/messages/message-1/ack",
+      "https://discord.com/api/v9/read-states/ack-bulk",
+    ]);
+    expect(requests[1]?.body).toEqual({
+      read_states: [{ channel_id: "channel-1", message_id: "message-1", read_state_type: 0 }],
+    });
+  });
+
   test("marks missing referenced messages as deleted replies", async () => {
     globalThis.fetch = (async () => {
       return new Response(JSON.stringify([
