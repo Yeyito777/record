@@ -30,8 +30,6 @@ import {
   charRight,
   findBackward,
   findForward,
-  lineDown,
-  lineUp,
   resolveMotion,
 } from "./editor-motions";
 import {
@@ -51,6 +49,7 @@ import {
 import { getVisualRange } from "./editor-selection";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
 import { getSymbol } from "./symbols";
+import { termWidth } from "./textwidth";
 import {
   keyString,
   resetPending,
@@ -79,11 +78,97 @@ export type {
 export { getInputLines, getViewport, MAX_PROMPT_ROWS, PROMPT_PREFIX_WIDTH, wrappedLineOffsets } from "./editor-layout";
 export { getVisualRange } from "./editor-selection";
 
+function resetCurswant(editor: EditorState): void {
+  editor.curswant = null;
+}
+
+function cursorVCol(buffer: string, pos: number): number {
+  const lineStart = lineStartOf(buffer, pos);
+  return termWidth(buffer.slice(lineStart, pos));
+}
+
+function offsetForVCol(line: string, desiredCol: number): number {
+  let offset = 0;
+  let col = 0;
+
+  while (offset < line.length) {
+    const end = nextGraphemeEnd(line, offset);
+    const cluster = line.slice(offset, end);
+    const width = termWidth(cluster);
+    if (col + width > desiredCol) return offset;
+    if (col + width === desiredCol) return end;
+    col += width;
+    offset = end;
+  }
+
+  return line.length;
+}
+
+function verticalTarget(buffer: string, cursor: number, direction: -1 | 1, desiredCol: number): number | null {
+  const currentLineStart = lineStartOf(buffer, cursor);
+  let targetLineStart: number;
+  let targetLineEnd: number;
+
+  if (direction < 0) {
+    if (currentLineStart === 0) return null;
+    targetLineEnd = currentLineStart - 1;
+    targetLineStart = lineStartOf(buffer, targetLineEnd);
+  } else {
+    const currentLineEnd = lineEndOf(buffer, cursor);
+    if (currentLineEnd >= buffer.length) return null;
+    targetLineStart = currentLineEnd + 1;
+    targetLineEnd = lineEndOf(buffer, targetLineStart);
+  }
+
+  return targetLineStart + offsetForVCol(buffer.slice(targetLineStart, targetLineEnd), desiredCol);
+}
+
+function moveVerticalWithCurswant(
+  editor: EditorState,
+  direction: -1 | 1,
+  count = 1,
+  normalMode = false,
+): boolean {
+  const desiredCol = editor.curswant ?? cursorVCol(editor.buffer, editor.cursor);
+  let cursor = editor.cursor;
+  let moved = false;
+
+  for (let i = 0; i < Math.max(1, count); i++) {
+    const next = verticalTarget(editor.buffer, cursor, direction, desiredCol);
+    if (next === null) break;
+    cursor = next;
+    moved = true;
+  }
+
+  editor.curswant = desiredCol;
+  if (moved) {
+    if (normalMode) {
+      const lineStart = lineStartOf(editor.buffer, cursor);
+      const lineEnd = lineEndOf(editor.buffer, cursor);
+      editor.cursor = lineEnd > lineStart && cursor >= lineEnd
+        ? previousGraphemeStart(editor.buffer, lineEnd)
+        : cursor;
+    } else {
+      editor.cursor = cursor;
+    }
+  }
+  return moved;
+}
+
+function isVerticalMotion(name: string): boolean {
+  return name === "line_down" || name === "line_up";
+}
+
+function directionForVerticalMotion(name: string): -1 | 1 {
+  return name === "line_up" ? -1 : 1;
+}
+
 function insertText(editor: EditorState, text: string): void {
   if (!text) return;
   const pos = clampInsertCursor(editor.buffer, editor.cursor);
   editor.buffer = editor.buffer.slice(0, pos) + text + editor.buffer.slice(pos);
   editor.cursor = pos + text.length;
+  resetCurswant(editor);
 }
 
 function insertNewline(editor: EditorState): void {
@@ -103,6 +188,7 @@ function applyUndo(editor: EditorState): void {
   if (!snapshot) return;
   editor.buffer = snapshot.buffer;
   editor.cursor = clampNormalCursor(snapshot.buffer, snapshot.cursor);
+  resetCurswant(editor);
   resetPending(editor);
 }
 
@@ -111,6 +197,7 @@ function applyRedo(editor: EditorState): void {
   if (!snapshot) return;
   editor.buffer = snapshot.buffer;
   editor.cursor = clampNormalCursor(snapshot.buffer, snapshot.cursor);
+  resetCurswant(editor);
   resetPending(editor);
 }
 
@@ -131,6 +218,7 @@ function applyBufferEdit(
     ? clampInsertCursor(edit.buffer, edit.cursor)
     : clampNormalCursor(edit.buffer, edit.cursor);
   if (mode) editor.mode = mode;
+  resetCurswant(editor);
   resetPending(editor);
 }
 
@@ -162,6 +250,7 @@ function applyPasteCommand(editor: EditorState, position: "after" | "before"): v
   const pos = Math.min(insertAt, editor.buffer.length);
   editor.buffer = editor.buffer.slice(0, pos) + text + editor.buffer.slice(pos);
   editor.cursor = clampNormalCursor(editor.buffer, pos + Math.max(0, text.length - 1));
+  resetCurswant(editor);
   resetPending(editor);
 }
 
@@ -177,21 +266,25 @@ function handleNormalLikeCursorKey(editor: EditorState, key: KeyEvent): boolean 
   switch (key.type) {
     case "left":
       editor.cursor = charLeft(editor.buffer, editor.cursor);
+      resetCurswant(editor);
       return true;
     case "right":
       editor.cursor = charRight(editor.buffer, editor.cursor);
+      resetCurswant(editor);
       return true;
     case "up":
-      editor.cursor = lineUp(editor.buffer, editor.cursor);
+      moveVerticalWithCurswant(editor, -1, 1, editor.mode !== "insert");
       return true;
     case "down":
-      editor.cursor = lineDown(editor.buffer, editor.cursor);
+      moveVerticalWithCurswant(editor, 1, 1, editor.mode !== "insert");
       return true;
     case "home":
       editor.cursor = lineStartOf(editor.buffer, editor.cursor);
+      resetCurswant(editor);
       return true;
     case "end":
       editor.cursor = lineEndOf(editor.buffer, editor.cursor);
+      resetCurswant(editor);
       return true;
     default:
       return false;
@@ -208,6 +301,7 @@ function applyFindMotion(editor: EditorState, direction: FindDirection, char: st
   if (remember) editor.lastFind = { char, direction };
   editor.pendingFind = null;
   editor.cursor = findTarget(editor.buffer, editor.cursor, direction, char);
+  resetCurswant(editor);
 }
 
 function applyFindOperator(editor: EditorState, direction: FindDirection, char: string, remember = true): EditorAction {
@@ -283,6 +377,7 @@ function executeModeChange(editor: EditorState, mode: EditorMode, cursorSpec?: C
   }
 
   editor.cursor = clampInsertCursor(editor.buffer, cursor);
+  resetCurswant(editor);
   markInsertEntry(editor.undo, editor.buffer, editor.cursor);
 }
 
@@ -341,7 +436,12 @@ function executeStandalone(editor: EditorState, name: string, count: number): Ed
 function executeVisualCommand(editor: EditorState, command: PromptCommand): EditorAction {
   switch (command.type) {
     case "motion":
-      editor.cursor = resolveMotion(command.name, editor.buffer, editor.cursor);
+      if (isVerticalMotion(command.name)) {
+        moveVerticalWithCurswant(editor, directionForVerticalMotion(command.name), 1, true);
+      } else {
+        editor.cursor = resolveMotion(command.name, editor.buffer, editor.cursor);
+        resetCurswant(editor);
+      }
       return "handled";
     case "standalone": {
       const { start, endExclusive } = getVisualRange(editor.buffer, editor.visualAnchor, editor.cursor, editor.mode);
@@ -398,6 +498,7 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
         editor.buffer = editor.buffer.slice(0, start) + editor.buffer.slice(pos);
         editor.cursor = start;
       }
+      resetCurswant(editor);
       return "handled";
     }
     case "delete": {
@@ -405,25 +506,30 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
       if (pos < editor.buffer.length) {
         editor.buffer = editor.buffer.slice(0, pos) + editor.buffer.slice(nextGraphemeEnd(editor.buffer, pos));
       }
+      resetCurswant(editor);
       return "handled";
     }
     case "left":
       editor.cursor = previousGraphemeStart(editor.buffer, clampInsertCursor(editor.buffer, editor.cursor));
+      resetCurswant(editor);
       return "handled";
     case "right":
       editor.cursor = nextGraphemeEnd(editor.buffer, clampInsertCursor(editor.buffer, editor.cursor));
+      resetCurswant(editor);
       return "handled";
     case "home":
       editor.cursor = lineStartOf(editor.buffer, editor.cursor);
+      resetCurswant(editor);
       return "handled";
     case "end":
       editor.cursor = lineEndOf(editor.buffer, editor.cursor);
+      resetCurswant(editor);
       return "handled";
     case "up":
-      editor.cursor = lineUp(editor.buffer, editor.cursor);
+      moveVerticalWithCurswant(editor, -1);
       return "handled";
     case "down":
-      editor.cursor = lineDown(editor.buffer, editor.cursor);
+      moveVerticalWithCurswant(editor, 1);
       return "handled";
     case "enter":
       return "submit";
@@ -650,7 +756,12 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
 
     switch (command.type) {
       case "motion":
-        editor.cursor = clampNormalCursor(editor.buffer, motionTarget(editor.buffer, editor.cursor, command.name, count));
+        if (isVerticalMotion(command.name)) {
+          moveVerticalWithCurswant(editor, directionForVerticalMotion(command.name), count, true);
+        } else {
+          editor.cursor = clampNormalCursor(editor.buffer, motionTarget(editor.buffer, editor.cursor, command.name, count));
+          resetCurswant(editor);
+        }
         resetPending(editor);
         return "handled";
       case "operator":
@@ -685,6 +796,7 @@ export function createEditorState(initialBuffer = "", mode: EditorMode = "insert
   const editor: EditorState = {
     buffer: initialBuffer,
     cursor: mode === "insert" ? initialBuffer.length : clampNormalCursor(initialBuffer, initialBuffer.length),
+    curswant: null,
     scroll: 0,
     mode,
     pendingKeys: "",
@@ -709,6 +821,7 @@ export function createEditorState(initialBuffer = "", mode: EditorMode = "insert
 export function resetEditor(editor: EditorState, buffer = "", mode: EditorMode = "insert"): void {
   editor.buffer = buffer;
   editor.cursor = mode === "insert" ? buffer.length : clampNormalCursor(buffer, buffer.length);
+  editor.curswant = null;
   editor.scroll = 0;
   editor.mode = mode;
   editor.pendingKeys = "";
@@ -738,12 +851,14 @@ export function leaveInsertMode(editor: EditorState): void {
     newCursor = previousGraphemeStart(editor.buffer, newCursor);
   }
   editor.cursor = clampNormalCursor(editor.buffer, newCursor);
+  resetCurswant(editor);
 }
 
 export function enterInsertMode(editor: EditorState, cursor: number): void {
   editor.mode = "insert";
   resetPending(editor);
   editor.cursor = clampInsertCursor(editor.buffer, cursor);
+  resetCurswant(editor);
   markInsertEntry(editor.undo, editor.buffer, editor.cursor);
 }
 

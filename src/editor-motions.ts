@@ -5,6 +5,12 @@
 import { lineEndOf, lineStartOf, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import { isBufferSpace, isPunct, isWordChar } from "./editor-chars";
 
+function normalLineEnd(buffer: string, pos: number): number {
+  const start = lineStartOf(buffer, pos);
+  const end = lineEndOf(buffer, pos);
+  return end > start ? previousGraphemeStart(buffer, end) : end;
+}
+
 export function charLeft(buffer: string, pos: number): number {
   if (pos <= 0) return 0;
   if (buffer[pos - 1] === "\n") return pos;
@@ -13,8 +19,8 @@ export function charLeft(buffer: string, pos: number): number {
 
 export function charRight(buffer: string, pos: number): number {
   if (pos >= buffer.length) return buffer.length;
-  if (buffer[pos] === "\n") return pos;
-  return nextGraphemeEnd(buffer, pos);
+  const next = nextGraphemeEnd(buffer, pos);
+  return next > normalLineEnd(buffer, pos) ? pos : next;
 }
 
 export function wordForward(buffer: string, pos: number): number {

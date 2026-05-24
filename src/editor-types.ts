@@ -13,6 +13,8 @@ export type CursorSpec = "before" | "after" | "bol" | "eol";
 export interface EditorState {
   buffer: string;
   cursor: number;
+  /** Preferred visual column for repeated vertical movement (Vim curswant). */
+  curswant: number | null;
   scroll: number;
   mode: EditorMode;
   pendingKeys: string;

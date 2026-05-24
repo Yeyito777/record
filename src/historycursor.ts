@@ -102,6 +102,7 @@ export function jumpHistoryCursorToMessage(state: AppState, messageId: string, v
   if (!bound) return false;
 
   state.historyCursor = { row: bound.contentStart, col: clampHistoryCol(0, state.historyLines, bound.contentStart) };
+  state.historyCurswant = null;
   state.historyVisualAnchor = { ...state.historyCursor };
   state.historyCursorPendingVisibleBottom = false;
   ensureHistoryCursorVisible(state, visibleRows);
@@ -140,6 +141,7 @@ export function placeHistoryCursorAtVisibleBottom(state: AppState, visibleRows: 
 
   const row = Math.max(0, Math.min(state.timeline.scrollOffset + Math.max(0, visibleRows - 1), lines.length - 1));
   state.historyCursor = { row, col: clampHistoryCol(0, lines, row) };
+  state.historyCurswant = null;
 }
 
 export function ensureHistoryCursorVisible(state: AppState, visibleRows: number): void {
@@ -164,6 +166,7 @@ export function shiftHistorySelection(state: AppState, deltaRows: number): void 
     ...state.historyCursor,
     row: Math.max(0, state.historyCursor.row + deltaRows),
   };
+  resetHistoryCurswant(state);
   state.historyVisualAnchor = {
     ...state.historyVisualAnchor,
     row: Math.max(0, state.historyVisualAnchor.row + deltaRows),
@@ -182,6 +185,7 @@ export function scrollHistoryWithCursor(state: AppState, dir: number, amount: nu
   }, dir, amount);
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
+  resetHistoryCurswant(state);
   state.timeline.scrollOffset = next.viewStart;
 }
 
@@ -197,6 +201,7 @@ export function scrollHistoryPageWithCursor(state: AppState, dir: number, amount
   }, dir, amount);
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
+  resetHistoryCurswant(state);
   state.timeline.scrollOffset = next.viewStart;
 }
 
@@ -212,6 +217,7 @@ export function scrollHistoryViewportSticky(state: AppState, dir: number, visibl
   }, dir);
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
+  resetHistoryCurswant(state);
   state.timeline.scrollOffset = next.viewStart;
 }
 
@@ -225,16 +231,16 @@ function charRight(cursor: HistoryCursor, lines: string[]): HistoryCursor {
   return { row: cursor.row, col: Math.min(end, cursor.col + 1) };
 }
 
-function lineUp(cursor: HistoryCursor, lines: string[]): HistoryCursor {
+function lineUp(cursor: HistoryCursor, lines: string[], desiredCol = cursor.col): HistoryCursor {
   if (cursor.row <= 0) return cursor;
   const row = cursor.row - 1;
-  return { row, col: clampHistoryCol(cursor.col, lines, row) };
+  return { row, col: clampHistoryCol(desiredCol, lines, row) };
 }
 
-function lineDown(cursor: HistoryCursor, lines: string[]): HistoryCursor {
+function lineDown(cursor: HistoryCursor, lines: string[], desiredCol = cursor.col): HistoryCursor {
   if (cursor.row >= lines.length - 1) return cursor;
   const row = cursor.row + 1;
-  return { row, col: clampHistoryCol(cursor.col, lines, row) };
+  return { row, col: clampHistoryCol(desiredCol, lines, row) };
 }
 
 function lineStart(cursor: HistoryCursor, lines: string[], wrapContinuation?: boolean[]): HistoryCursor {
@@ -470,6 +476,18 @@ function nextMessage(cursor: HistoryCursor, bounds: TimelineMessageBound[], line
   return cursor;
 }
 
+function resetHistoryCurswant(state: AppState): void {
+  state.historyCurswant = null;
+}
+
+function moveHistoryLine(state: AppState, direction: -1 | 1): void {
+  const desiredCol = state.historyCurswant ?? state.historyCursor.col;
+  state.historyCursor = direction < 0
+    ? lineUp(state.historyCursor, state.historyLines, desiredCol)
+    : lineDown(state.historyCursor, state.historyLines, desiredCol);
+  state.historyCurswant = desiredCol;
+}
+
 function resetHistoryPending(state: AppState): void {
   state.editor.pendingKeys = "";
   state.editor.pendingOperator = null;
@@ -636,6 +654,7 @@ function selectHistoryTextObject(state: AppState, modifier: "i" | "a", key: stri
 
   state.historyVisualAnchor = range.start;
   state.historyCursor = range.end;
+  resetHistoryCurswant(state);
   if (state.editor.mode !== "visual-line") state.editor.mode = "visual";
   ensureHistoryCursorVisible(state, visibleRows);
   return true;
@@ -674,51 +693,65 @@ function applyMotion(name: string, state: AppState): boolean {
   switch (name) {
     case "char_left":
       state.historyCursor = charLeft(cursor, lines);
+      resetHistoryCurswant(state);
       return true;
     case "char_right":
       state.historyCursor = charRight(cursor, lines);
+      resetHistoryCurswant(state);
       return true;
     case "line_up":
-      state.historyCursor = lineUp(cursor, lines);
+      moveHistoryLine(state, -1);
       return true;
     case "line_down":
-      state.historyCursor = lineDown(cursor, lines);
+      moveHistoryLine(state, 1);
       return true;
     case "word_forward":
       state.historyCursor = wordForward(cursor, lines);
+      resetHistoryCurswant(state);
       return true;
     case "word_backward":
       state.historyCursor = wordBackward(cursor, lines);
+      resetHistoryCurswant(state);
       return true;
     case "word_end":
       state.historyCursor = wordEnd(cursor, lines);
+      resetHistoryCurswant(state);
       return true;
     case "word_forward_big":
       state.historyCursor = wordForwardBig(cursor, lines);
+      resetHistoryCurswant(state);
       return true;
     case "word_backward_big":
       state.historyCursor = wordBackwardBig(cursor, lines);
+      resetHistoryCurswant(state);
       return true;
     case "word_end_big":
       state.historyCursor = wordEndBig(cursor, lines);
+      resetHistoryCurswant(state);
       return true;
     case "line_start":
       state.historyCursor = lineStart(cursor, lines, wrapContinuation);
+      resetHistoryCurswant(state);
       return true;
     case "line_end":
       state.historyCursor = lineEnd(cursor, lines, wrapContinuation);
+      resetHistoryCurswant(state);
       return true;
     case "buffer_start":
       state.historyCursor = bufferStart(lines);
+      resetHistoryCurswant(state);
       return true;
     case "buffer_end":
       state.historyCursor = bufferEnd(lines);
+      resetHistoryCurswant(state);
       return true;
     case "prev_message":
       if (bounds.length > 0) state.historyCursor = previousMessage(cursor, bounds);
+      resetHistoryCurswant(state);
       return true;
     case "next_message":
       if (bounds.length > 0) state.historyCursor = nextMessage(cursor, bounds, lines);
+      resetHistoryCurswant(state);
       return true;
     default:
       return false;
@@ -765,6 +798,7 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
     state.historyCursor = direction === "f"
       ? findForward(state.historyCursor, lines, key.char)
       : findBackward(state.historyCursor, lines, key.char);
+    resetHistoryCurswant(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }
@@ -783,37 +817,42 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
     state.historyCursor = direction === "f"
       ? findForward(state.historyCursor, lines, lastFind.char)
       : findBackward(state.historyCursor, lines, lastFind.char);
+    resetHistoryCurswant(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }
 
   if (key.type === "left") {
     state.historyCursor = charLeft(state.historyCursor, lines);
+    resetHistoryCurswant(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }
   if (key.type === "right") {
     state.historyCursor = charRight(state.historyCursor, lines);
+    resetHistoryCurswant(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }
   if (key.type === "up") {
-    state.historyCursor = lineUp(state.historyCursor, lines);
+    moveHistoryLine(state, -1);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }
   if (key.type === "down") {
-    state.historyCursor = lineDown(state.historyCursor, lines);
+    moveHistoryLine(state, 1);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }
   if (key.type === "home") {
     state.historyCursor = lineStart(state.historyCursor, lines, state.historyWrapContinuation);
+    resetHistoryCurswant(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }
   if (key.type === "end") {
     state.historyCursor = lineEnd(state.historyCursor, lines, state.historyWrapContinuation);
+    resetHistoryCurswant(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }

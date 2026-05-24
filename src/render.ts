@@ -408,6 +408,7 @@ export function render(state: AppState): void {
   if (state.chatFocus === "history" && state.historyCursorPendingVisibleBottom && state.historyLines.length > 0) {
     const visibleBottom = state.timeline.scrollOffset + Math.max(0, Math.min(bodyRows, timeline.lines.length) - 1);
     state.historyCursor = { row: Math.min(visibleBottom, state.historyLines.length - 1), col: 0 };
+    state.historyCurswant = null;
     state.historyVisualAnchor = { ...state.historyCursor };
     state.historyCursorPendingVisibleBottom = false;
   }

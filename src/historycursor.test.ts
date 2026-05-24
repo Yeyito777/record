@@ -165,6 +165,42 @@ describe("history cursor", () => {
     expect(state.historyCursor.row).toBe(9);
   });
 
+  test("j/k preserve preferred column across short history lines", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.chatFocus = "history";
+    state.historyLines = ["abcdef", "x", "123456789"];
+    state.historyWrapContinuation = [false, false, false];
+    state.historyCursor = { row: 0, col: 5 };
+
+    expect(handleHistoryVimKey(state, { type: "char", char: "j" }, 3)).toBe(true);
+    expect(state.historyCursor).toEqual({ row: 1, col: 0 });
+
+    expect(handleHistoryVimKey(state, { type: "char", char: "j" }, 3)).toBe(true);
+    expect(state.historyCursor).toEqual({ row: 2, col: 5 });
+    expect(state.historyCurswant).toBe(5);
+  });
+
+  test("non-vertical history motion resets preferred column", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.chatFocus = "history";
+    state.historyLines = ["abcdef", "x", "123456789"];
+    state.historyWrapContinuation = [false, false, false];
+    state.historyCursor = { row: 0, col: 5 };
+
+    handleHistoryVimKey(state, { type: "char", char: "j" }, 3);
+    handleHistoryVimKey(state, { type: "char", char: "j" }, 3);
+    expect(state.historyCursor).toEqual({ row: 2, col: 5 });
+
+    handleHistoryVimKey(state, { type: "char", char: "h" }, 3);
+    expect(state.historyCursor).toEqual({ row: 2, col: 4 });
+    expect(state.historyCurswant).toBeNull();
+
+    handleHistoryVimKey(state, { type: "char", char: "k" }, 3);
+    expect(state.historyCursor).toEqual({ row: 1, col: 0 });
+    handleHistoryVimKey(state, { type: "char", char: "j" }, 3);
+    expect(state.historyCursor).toEqual({ row: 2, col: 4 });
+  });
+
   test("supports quote text objects in history visual mode", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.chatFocus = "history";

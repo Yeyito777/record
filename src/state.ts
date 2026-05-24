@@ -93,6 +93,8 @@ export interface AppState {
   navigationPendingKeys: string;
   editor: EditorState;
   historyCursor: HistoryCursor;
+  /** Preferred history column for repeated j/k movement (Vim curswant). */
+  historyCurswant: number | null;
   historyVisualAnchor: HistoryCursor;
   historyCursorPendingVisibleBottom: boolean;
   historyLineAnchors: string[];
@@ -144,6 +146,7 @@ export function createInitialState(
     navigationPendingKeys: "",
     editor: createEditorState("", "insert"),
     historyCursor: createHistoryCursor(),
+    historyCurswant: null,
     historyVisualAnchor: createHistoryCursor(),
     historyCursorPendingVisibleBottom: false,
     historyLineAnchors: [],
