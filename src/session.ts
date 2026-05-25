@@ -2322,6 +2322,7 @@ export async function bootstrapReadOnlyClient(
   let cachedSidebarFolders: ReturnType<typeof loadCachedSidebarFolders> = null;
   let appliedCachedSidebarFolders = false;
   const previousExpandedGuildId = state.sidebar.expandedGuildId;
+  const previousFocusedGuildId = state.sidebar.focusedGuildId;
   const previousActiveGuildId = state.sidebar.activeGuildId;
   const previousChannelListGuildId = state.channelList.guildId;
   const previousChannels = state.channelList.channels;
@@ -2361,6 +2362,7 @@ export async function bootstrapReadOnlyClient(
       appliedCachedSidebarFolders = true;
       applyCachedNotifications(state);
       state.sidebar.expandedGuildId = previousExpandedGuildId;
+      state.sidebar.focusedGuildId = previousFocusedGuildId;
       state.sidebar.activeGuildId = previousActiveGuildId;
       if (previousChannelListGuildId && previousChannels.length > 0) {
         setChannelList(state.channelList, previousChannelListGuildId, previousChannels);
@@ -2380,6 +2382,7 @@ export async function bootstrapReadOnlyClient(
     if (requestId !== state.sidebar.requestId) return;
 
     const liveExpandedGuildId = state.sidebar.expandedGuildId;
+    const liveFocusedGuildId = state.sidebar.focusedGuildId;
     const liveActiveGuildId = state.sidebar.activeGuildId;
     const liveChannelListGuildId = state.channelList.guildId;
     const liveChannels = state.channelList.channels;
@@ -2394,6 +2397,7 @@ export async function bootstrapReadOnlyClient(
     }
     setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, directMessages);
     state.sidebar.expandedGuildId = liveExpandedGuildId;
+    state.sidebar.focusedGuildId = liveFocusedGuildId;
     state.sidebar.activeGuildId = liveActiveGuildId;
     if (liveChannelListGuildId && liveChannels.length > 0) {
       setChannelList(state.channelList, liveChannelListGuildId, liveChannels);
@@ -2440,6 +2444,7 @@ export async function loadGuildChannels(
 ): Promise<void> {
   const requestId = ++state.channelList.requestId;
   const accountId = currentAccountId(state);
+  state.sidebar.focusedGuildId = guildId;
   state.sidebar.expandedGuildId = guildId;
   state.sidebar.loadingGuildId = guildId;
   state.channelList.loading = true;
@@ -2595,6 +2600,7 @@ export async function loadChannelMessages(
   if (state.messageDeletePending && state.messageDeletePending.channelId !== channelId) {
     state.messageDeletePending = null;
   }
+  state.sidebar.focusedGuildId = channel.guildId;
   state.sidebar.activeGuildId = channel.guildId;
   subscribeAppGatewayToActiveChannel(state);
   state.timeline.loadingOlder = false;

@@ -22,6 +22,7 @@ import {
   moveSidebarSelectionToPrevGuild,
   moveSidebarSelectionOut,
   moveSelectedSidebarGuild,
+  openSidebarCommandBar,
   openSidebarCreateFolderPrompt,
   openSidebarMoveItemsPrompt,
   openSidebarSearchBar,
@@ -459,7 +460,9 @@ describe("sidebar state", () => {
 
     expect(entry?.kind).toBe("guild");
     expect(sidebar.expandedGuildId).toBe("guild-2");
+    expect(sidebar.focusedGuildId).toBe("guild-2");
     expect(sidebar.activeGuildId).toBe("guild-1");
+    expect(buildSidebarEntries(sidebar, []).find((candidate) => candidate.id === "guild-2")?.active).toBe(true);
   });
 
   test("starts with no active or expanded guild by default", () => {
@@ -470,6 +473,7 @@ describe("sidebar state", () => {
     ]);
 
     expect(sidebar.activeGuildId).toBeNull();
+    expect(sidebar.focusedGuildId).toBeNull();
     expect(sidebar.expandedGuildId).toBeNull();
   });
 
@@ -704,6 +708,116 @@ describe("sidebar state", () => {
     openSidebarSearchBar(sidebar, [], "forward");
     for (const ch of "alice") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
     expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("dm-1");
+  });
+
+  test("sidebar search matches folders and servers, not only channels", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "Gamma Server", icon: null },
+      { id: "guild-2", name: "Alpha Server", icon: null },
+    ]);
+    applySidebarFolderLayout(sidebar, {
+      folders: [{ id: "folder-work", name: "Workspaces", parentId: null, pinned: false, sortOrder: 1 }],
+      guildPlacements: {
+        "guild-1": { folderId: "folder-work", pinned: false, sortOrder: 0 },
+        "guild-2": { folderId: null, pinned: false, sortOrder: 2 },
+      },
+    });
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const ch of "workspace") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    let entries = buildSidebarEntries(sidebar, []);
+    expect(entries.map((entry) => entry.id)).toEqual(["folder-work"]);
+    expect(entries[sidebar.selectedIndex]?.kind).toBe("folder");
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const ch of "alpha server") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    entries = buildSidebarEntries(sidebar, []);
+    expect(entries.map((entry) => entry.id)).toEqual(["guild-2"]);
+    expect(entries[sidebar.selectedIndex]?.kind).toBe("guild");
+  });
+
+  test("opening a directly matched server from search shows unfiltered children", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Raw Mutton", icon: null }]);
+    setSidebarCachedChannels(sidebar, "guild-1", [
+      { id: "cat-1", guildId: "guild-1", parentId: null, name: "Text Channels", topic: null, position: 0, type: 4, nsfw: false },
+      { id: "chan-1", guildId: "guild-1", parentId: "cat-1", name: "general", topic: null, position: 1, type: 0, nsfw: false },
+      { id: "chan-2", guildId: "guild-1", parentId: "cat-1", name: "off-topic", topic: null, position: 2, type: 0, nsfw: false },
+    ]);
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const ch of "raw mutton") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    handleSidebarSearchBarKey(sidebar, [], { type: "enter" });
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["guild-1"]);
+
+    const opened = activateSelectedEntry(sidebar, []);
+    expect(opened?.kind).toBe("guild");
+    expect(sidebar.expandedGuildId).toBe("guild-1");
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["guild-1", "cat-1", "chan-1", "chan-2"]);
+  });
+
+  test(":noh reveals the focused server in its folder and keeps it open", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-root", name: "Root", icon: null },
+      { id: "guild-work", name: "Work", icon: null },
+    ]);
+    applySidebarFolderLayout(sidebar, {
+      folders: [{ id: "folder-work", name: "Workspaces", parentId: null, pinned: false, sortOrder: 1 }],
+      guildPlacements: {
+        "guild-root": { folderId: null, pinned: false, sortOrder: 0 },
+        "guild-work": { folderId: "folder-work", pinned: false, sortOrder: 0 },
+      },
+    });
+    setSidebarCachedChannels(sidebar, "guild-work", [
+      { id: "work-general", guildId: "guild-work", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false },
+    ]);
+    sidebar.focusedGuildId = "guild-work";
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const ch of "no-results") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    handleSidebarSearchBarKey(sidebar, [], { type: "enter" });
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual([]);
+
+    openSidebarCommandBar(sidebar, []);
+    for (const ch of "noh") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    handleSidebarSearchBarKey(sidebar, [], { type: "enter" });
+
+    expect(sidebar.currentFolderId).toBe("folder-work");
+    expect(sidebar.expandedGuildId).toBe("guild-work");
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["..", "guild-work", "work-general"]);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("guild-work");
+  });
+
+  test(":noh returns to root when no server has been focused", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: "guild-root", name: "Root", icon: null },
+    ]);
+    applySidebarFolderLayout(sidebar, {
+      folders: [{ id: "folder-work", name: "Workspaces", parentId: null, pinned: false, sortOrder: 1 }],
+      guildPlacements: {
+        "guild-root": { folderId: null, pinned: false, sortOrder: 0 },
+      },
+    });
+    sidebar.currentFolderId = "folder-work";
+    sidebar.expandedGuildId = "guild-root";
+    sidebar.focusedGuildId = null;
+
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const ch of "root") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    handleSidebarSearchBarKey(sidebar, [], { type: "enter" });
+    openSidebarCommandBar(sidebar, []);
+    for (const ch of "noh") handleSidebarSearchBarKey(sidebar, [], { type: "char", char: ch });
+    handleSidebarSearchBarKey(sidebar, [], { type: "enter" });
+
+    expect(sidebar.currentFolderId).toBeNull();
+    expect(sidebar.expandedGuildId).toBeNull();
+    expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-root", "folder-work"]);
   });
 
   test("sidebar search supports n/N and :noh like conversation search", () => {

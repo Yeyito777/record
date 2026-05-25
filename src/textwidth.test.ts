@@ -16,6 +16,11 @@ describe("textwidth", () => {
     expect(termWidth("the🦋chat")).toBe(9);
   });
 
+  test("treats nonspacing marks from display names as zero width", () => {
+    expect(termWidth("ੈ")).toBe(0);
+    expect(termWidth("ღ jättebög ੈ✩‧₊˚")).toBe(15);
+  });
+
   test("truncates by terminal columns instead of utf-16 length", () => {
     expect(truncate("【calm】", 7)).toBe("【calm…");
   });

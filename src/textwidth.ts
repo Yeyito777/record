@@ -104,6 +104,7 @@ const WIDE_RANGES: readonly [number, number][] = [
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
 const ANSI_SGR_RE = /\x1b\[([0-9;]*)m/g;
 const ANSI_RESET = "\x1b[0m";
+const NONSPACING_OR_ENCLOSING_MARK_RE = /[\p{Mn}\p{Me}]/u;
 
 function inRanges(cp: number, ranges: readonly [number, number][]): boolean {
   let lo = 0;
@@ -120,6 +121,7 @@ function inRanges(cp: number, ranges: readonly [number, number][]): boolean {
 }
 
 function isZeroWidth(cp: number): boolean {
+  if (NONSPACING_OR_ENCLOSING_MARK_RE.test(String.fromCodePoint(cp))) return true;
   if (cp >= 0x200B && cp <= 0x200F) return true;
   if (cp >= 0x2028 && cp <= 0x202E) return true;
   if (cp >= 0x2060 && cp <= 0x2069) return true;

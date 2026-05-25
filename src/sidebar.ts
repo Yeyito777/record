@@ -96,6 +96,7 @@ export interface SidebarEntry {
   expanded: boolean;
   item?: SidebarSelectableItem;
   childCount?: number;
+  searchMatched?: boolean;
 }
 
 export interface SidebarVoiceMember {
@@ -115,6 +116,7 @@ export interface SidebarState {
   open: boolean;
   guilds: DiscordGuild[];
   selectedIndex: number;
+  focusedGuildId: string | null;
   activeGuildId: string | null;
   expandedGuildId: string | null;
   collapsedCategoryIds: string[];
@@ -140,6 +142,7 @@ export function createSidebarState(): SidebarState {
     open: false,
     guilds: [],
     selectedIndex: 0,
+    focusedGuildId: null,
     activeGuildId: null,
     expandedGuildId: null,
     collapsedCategoryIds: [],
@@ -322,6 +325,7 @@ function findSelectableEntryIndex(entries: SidebarEntry[], start: number, end: n
 export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.guilds = [];
   sidebar.selectedIndex = 0;
+  sidebar.focusedGuildId = null;
   sidebar.activeGuildId = null;
   sidebar.expandedGuildId = null;
   sidebar.collapsedCategoryIds = [];
@@ -366,6 +370,9 @@ export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]):
 
   if (sidebar.activeGuildId && !guilds.some((guild) => guild.id === sidebar.activeGuildId)) {
     sidebar.activeGuildId = null;
+  }
+  if (sidebar.focusedGuildId && !guilds.some((guild) => guild.id === sidebar.focusedGuildId)) {
+    sidebar.focusedGuildId = null;
   }
   if (sidebar.expandedGuildId && !guilds.some((guild) => guild.id === sidebar.expandedGuildId)) {
     sidebar.expandedGuildId = null;
@@ -796,8 +803,28 @@ function searchableChannelLabel(channel: DiscordChannel): string {
   return channel.name || "(unnamed)";
 }
 
+function textMatchesQuery(text: string, query: string): boolean {
+  return findAllCaseInsensitiveMatchStarts(text, query).length > 0;
+}
+
+function searchableGuildLabel(guild: DiscordGuild): string {
+  return guild.name || "(unnamed)";
+}
+
+function searchableFolderLabel(folder: SidebarFolder): string {
+  return folder.name || "Folder";
+}
+
 function channelMatchesQuery(channel: DiscordChannel, query: string): boolean {
-  return findAllCaseInsensitiveMatchStarts(searchableChannelLabel(channel), query).length > 0;
+  return textMatchesQuery(searchableChannelLabel(channel), query);
+}
+
+function guildMatchesQuery(guild: DiscordGuild, query: string): boolean {
+  return textMatchesQuery(searchableGuildLabel(guild), query);
+}
+
+function folderMatchesQuery(folder: SidebarFolder, query: string): boolean {
+  return textMatchesQuery(searchableFolderLabel(folder), query);
 }
 
 export function getActiveSidebarSearchQuery(sidebar: Pick<SidebarState, "search">): string | null {
@@ -817,6 +844,7 @@ function pushGuildEntry(
   guildNotificationCounts: ReadonlyMap<string, number>,
   expanded: boolean,
   depth = 0,
+  searchMatched = false,
 ): void {
   entries.push({
     kind: "guild",
@@ -827,13 +855,20 @@ function pushGuildEntry(
     notificationCount: guild.muted ? 0 : guildNotificationCounts.get(guild.id) ?? 0,
     muted: Boolean(guild.muted),
     selected: false,
-    active: guild.id === sidebar.activeGuildId,
+    active: guild.id === (sidebar.focusedGuildId ?? sidebar.activeGuildId),
     expanded,
     item: { type: "guild", id: guild.id },
+    searchMatched,
   });
 }
 
-function pushFolderEntry(entries: SidebarEntry[], folder: SidebarFolder, sidebar: SidebarState, guildNotificationCounts: ReadonlyMap<string, number>): void {
+function pushFolderEntry(
+  entries: SidebarEntry[],
+  folder: SidebarFolder,
+  sidebar: SidebarState,
+  guildNotificationCounts: ReadonlyMap<string, number>,
+  searchMatched = false,
+): void {
   const descendants = descendantFolderIds(sidebar, folder.id);
   const childGuilds = sidebar.guilds.filter((guild) => guild.id !== DIRECT_MESSAGES_GUILD_ID && descendants.has(guildPlacement(sidebar, guild.id).folderId ?? ""));
   const notificationCount = childGuilds.reduce((sum, guild) => sum + (guild.muted ? 0 : guildNotificationCounts.get(guild.id) ?? 0), 0);
@@ -849,6 +884,7 @@ function pushFolderEntry(entries: SidebarEntry[], folder: SidebarFolder, sidebar
     expanded: false,
     item: { type: "folder", id: folder.id },
     childCount: childGuilds.length,
+    searchMatched,
   });
 }
 
@@ -875,6 +911,7 @@ function pushChannelEntry(
   typingFrame: string,
   channelNotificationCounts: ReadonlyMap<string, number>,
   voiceMembersByChannelId: Readonly<Record<string, readonly SidebarVoiceMember[]>>,
+  searchMatched = false,
 ): void {
   entries.push({
     kind: "channel",
@@ -889,6 +926,7 @@ function pushChannelEntry(
     selected: false,
     active: false,
     expanded: false,
+    searchMatched,
   });
   pushVoiceMemberEntries(entries, guildId, channel, depth + 1, voiceMembersByChannelId);
 }
@@ -936,6 +974,7 @@ function sortChannelsForSidebar(channels: DiscordChannel[]): DiscordChannel[] {
 function buildSidebarSearchEntries(
   sidebar: SidebarState,
   channels: DiscordChannel[],
+  loadingFrameIndex: number,
   query: string,
   typingChannelIds: ReadonlySet<string>,
   typingFrame: string,
@@ -946,18 +985,34 @@ function buildSidebarSearchEntries(
   const entries: SidebarEntry[] = [];
   const allChannels = allSidebarChannels(sidebar, channels);
 
-  for (const guild of sidebar.guilds) {
-    const guildChannels = allChannels.filter((channel) => channel.guildId === guild.id);
-    const visibleChannelRows = guildChannels
-      .filter((channel) => channel.type !== 4 && (options.showHiddenChannels || !channel.hidden))
-      .filter((channel) => channelMatchesQuery(channel, query));
-    if (visibleChannelRows.length === 0) continue;
+  normalizeSidebarPlacement(sidebar);
+  for (const folder of sidebar.folders) {
+    if (folderMatchesQuery(folder, query)) {
+      pushFolderEntry(entries, folder, sidebar, guildNotificationCounts, true);
+    }
+  }
 
-    pushGuildEntry(entries, guild, sidebar, guildNotificationCounts, true);
+  for (const guild of sidebar.guilds) {
+    const guildMatched = guildMatchesQuery(guild, query);
+    const guildChannels = allChannels.filter((channel) => channel.guildId === guild.id);
+    const visibleGuildChannels = guildChannels
+      .filter((channel) => channel.type !== 4 && (options.showHiddenChannels || !channel.hidden));
+    const matchingChannelRows = visibleGuildChannels.filter((channel) => channelMatchesQuery(channel, query));
+    if (!guildMatched && matchingChannelRows.length === 0) continue;
+
+    const showUnfilteredChildren = guildMatched && sidebar.expandedGuildId === guild.id;
+    pushGuildEntry(entries, guild, sidebar, guildNotificationCounts, showUnfilteredChildren || matchingChannelRows.length > 0, 0, guildMatched);
+
+    if (showUnfilteredChildren) {
+      pushExpandedGuildChildren(entries, sidebar, channels, guild, loadingFrameIndex, typingChannelIds, typingFrame, channelNotificationCounts, options);
+      continue;
+    }
+
+    if (matchingChannelRows.length === 0) continue;
 
     if (guild.id === DIRECT_MESSAGES_GUILD_ID) {
-      for (const channel of sortChannelsForSidebar(visibleChannelRows)) {
-        pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+      for (const channel of sortChannelsForSidebar(matchingChannelRows)) {
+        pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, true);
       }
       continue;
     }
@@ -967,16 +1022,16 @@ function buildSidebarSearchEntries(
       .filter((category) => options.showHiddenChannels || !category.hidden)
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
     const categoryIds = new Set(guildCategories.map((category) => category.id));
-    const uncategorized = visibleChannelRows
+    const uncategorized = matchingChannelRows
       .filter((channel) => !channel.parentId || !categoryIds.has(channel.parentId))
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
     for (const channel of uncategorized) {
-      pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+      pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, true);
     }
 
     for (const category of guildCategories) {
-      const categoryChannels = visibleChannelRows
+      const categoryChannels = matchingChannelRows
         .filter((channel) => channel.parentId === category.id)
         .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
       if (categoryChannels.length === 0) continue;
@@ -994,7 +1049,7 @@ function buildSidebarSearchEntries(
       });
 
       for (const channel of categoryChannels) {
-        pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+        pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, true);
       }
     }
   }
@@ -1096,7 +1151,7 @@ export function buildSidebarEntries(
 ): SidebarEntry[] {
   const query = getActiveSidebarSearchQuery(sidebar);
   const entries: SidebarEntry[] = query
-    ? buildSidebarSearchEntries(sidebar, channels, query, typingChannelIds, typingFrame, channelNotificationCounts, guildNotificationCounts, options)
+    ? buildSidebarSearchEntries(sidebar, channels, loadingFrameIndex, query, typingChannelIds, typingFrame, channelNotificationCounts, guildNotificationCounts, options)
     : [];
 
   if (!query) {
@@ -1133,7 +1188,7 @@ export function buildSidebarEntries(
     ...entry,
     selected: index === clampedIndex,
     active: entry.kind === "guild"
-      ? entry.guildId === sidebar.activeGuildId
+      ? entry.guildId === (sidebar.focusedGuildId ?? sidebar.activeGuildId)
       : entry.active,
   }));
 }
@@ -1214,10 +1269,10 @@ function findNextSidebarSearchMatch(
   options: SidebarVisibilityOptions,
 ): number | null {
   if (!query) return null;
-  const entries = buildSidebarSearchEntries(sidebar, channels, query, new Set(), "⋯", new Map(), new Map(), options);
+  const entries = buildSidebarSearchEntries(sidebar, channels, 0, query, new Set(), "⋯", new Map(), new Map(), options);
   const candidates = entries
     .map((entry, index) => ({ entry, index }))
-    .filter(({ entry }) => entry.kind === "channel")
+    .filter(({ entry }) => isSelectableEntry(entry) && entry.searchMatched)
     .map(({ index }) => index);
   return findNextSortedMatch(candidates, fromIndex, direction);
 }
@@ -1269,10 +1324,31 @@ function executeSidebarCommand(sidebar: SidebarState, command: string): SidebarS
   switch (command) {
     case "noh":
       search.highlightsVisible = false;
+      revealFocusedGuildAfterSearch(sidebar);
       return { type: "handled" };
     default:
       return { type: "handled" };
   }
+}
+
+function revealFocusedGuildAfterSearch(sidebar: SidebarState): void {
+  const guildId = sidebar.focusedGuildId;
+  if (!guildId || !sidebar.guilds.some((guild) => guild.id === guildId)) {
+    sidebar.currentFolderId = null;
+    sidebar.expandedGuildId = null;
+    sidebar.selectedItem = null;
+    sidebar.selectedIndex = 0;
+    sidebar.scrollOffset = 0;
+    return;
+  }
+
+  const parentId = itemParent(sidebar, { type: "guild", id: guildId });
+  sidebar.currentFolderId = parentId === undefined ? null : parentId;
+  sidebar.expandedGuildId = guildId;
+  sidebar.selectedItem = { type: "guild", id: guildId };
+  sidebar.selectedIndex = 0;
+  sidebar.scrollOffset = 0;
+  sidebar.visualAnchor = null;
 }
 
 export function openSidebarSearchBar(sidebar: SidebarState, channels: DiscordChannel[], direction: SidebarSearchDirection, options: SidebarVisibilityOptions = {}): void {
@@ -2096,6 +2172,7 @@ export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordCh
   }
 
   if (entry.kind === "guild") {
+    sidebar.focusedGuildId = entry.guildId;
     if (sidebar.expandedGuildId === entry.guildId) {
       sidebar.expandedGuildId = null;
     } else {

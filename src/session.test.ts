@@ -423,6 +423,41 @@ describe("session", () => {
     await load;
   });
 
+  test("opening a server focuses it without switching chat history", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/guilds/guild-2/channels")) {
+        return new Response(JSON.stringify([
+          { id: "channel-2", guild_id: "guild-2", parent_id: null, name: "other", topic: null, position: 0, type: 0, nsfw: false },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.sidebar.guilds = [
+      { id: "guild-1", name: "Guild One", icon: null },
+      { id: "guild-2", name: "Guild Two", icon: null },
+    ];
+    state.sidebar.activeGuildId = "guild-1";
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.activeChannel = state.channelList.channels[0]!;
+    state.timeline.channelId = "channel-1";
+    state.timeline.messages = [message("1", "still here", "channel-1")];
+
+    await loadGuildChannels(state, "token-1", "guild-2", { scheduleRender: () => {} }, { openFirstChannel: false });
+
+    expect(state.sidebar.focusedGuildId).toBe("guild-2");
+    expect(state.sidebar.expandedGuildId).toBe("guild-2");
+    expect(state.sidebar.activeGuildId).toBe("guild-1");
+    expect(state.channelList.activeChannelId).toBe("channel-1");
+    expect(state.channelList.activeChannel?.id).toBe("channel-1");
+    expect(state.timeline.channelId).toBe("channel-1");
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["still here"]);
+  });
+
   test("refetches cached guild roles that lack names", async () => {
     let roleFetches = 0;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
