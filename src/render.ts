@@ -29,6 +29,7 @@ import { channelNotificationCounts, guildNotificationCounts } from "./notificati
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, getSidebarSearchBarViewport, renderSidebar } from "./sidebar";
 import { renderStatusLine } from "./statusline";
+import { renderPromptSeparator } from "./promptbar";
 import { padRight, termWidth, truncate } from "./textwidth";
 import { formatSize, imageLabel } from "./imageclipboard";
 import type { AppState } from "./state";
@@ -456,7 +457,7 @@ export function render(state: AppState): void {
 
   out.push(moveTo(promptSeparatorRow, 1) + clearedLine);
   emitSidebarCol(promptSeparatorRow);
-  out.push(moveTo(promptSeparatorRow, mainCol) + bgLine(`${promptColor}${"─".repeat(mainW)}${theme.reset}`));
+  out.push(moveTo(promptSeparatorRow, mainCol) + bgLine(renderPromptSeparator(state, mainW, promptColor)));
   emitMemberListCol(promptSeparatorRow);
 
   if (imageIndicatorRows > 0) {

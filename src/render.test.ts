@@ -166,6 +166,28 @@ describe("render", () => {
     expect(output).toContain(`${theme.accent}⠋ Listening…${theme.reset}`);
   });
 
+  test("renders reply context in the prompt separator", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 100;
+    state.rows = 12;
+    state.replyTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      authorId: "user-2",
+      authorDisplayName: "Other",
+      authorColor: theme.accent,
+      summary: "original message",
+      timestamp: null,
+      mention: true,
+    };
+
+    const output = captureRender(state);
+
+    expect(output).toContain("↩ Replying: ");
+    expect(output).toContain("PING ");
+  });
+
   test("keeps status notices out of populated chat history", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.cols = 100;

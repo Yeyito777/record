@@ -75,7 +75,7 @@ describe("statusline", () => {
     expect(status.lines[0]).toContain(theme.error);
   });
 
-  test("shows active reply target after account details with text-colored truncated content", () => {
+  test("does not render active reply targets as status-line blocks", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.replyTarget = {
       messageId: "message-1",
@@ -92,13 +92,13 @@ describe("statusline", () => {
     const line = renderStatusLine(state, 120).lines[0] ?? "";
     const plain = stripAnsi(line);
 
-    expect(plain.indexOf("Replying:")).toBeGreaterThan(plain.indexOf("Logged In As:"));
-    expect(plain.indexOf("Replying:")).toBeGreaterThan(plain.indexOf("Status:"));
-    expect(plain).toContain("PING Other: original message that is definitely lon…");
-    expect(line).toContain(`${theme.accent}PING \x1b[38;2;1;2;3mOther: ${theme.text}original message that is definitely lon…${theme.reset}`);
+    expect(plain).toContain("Logged In As:");
+    expect(plain).toContain("Status:");
+    expect(plain).not.toContain("Replying:");
+    expect(plain).not.toContain("PING Other:");
   });
 
-  test("shows active edit target after account details", () => {
+  test("does not render active edit targets as status-line blocks", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editTarget = {
       messageId: "message-1",
@@ -113,31 +113,10 @@ describe("statusline", () => {
     const line = renderStatusLine(state, 120).lines[0] ?? "";
     const plain = stripAnsi(line);
 
-    expect(plain.indexOf("Editing:")).toBeGreaterThan(plain.indexOf("Logged In As:"));
-    expect(plain.indexOf("Editing:")).toBeGreaterThan(plain.indexOf("Status:"));
-    expect(plain).toContain("Editing: Self: original message that is definitely lon…");
-    expect(line).toContain(`\x1b[38;2;1;2;3mSelf: ${theme.text}original message that is definitely lon…${theme.reset}`);
-  });
-
-  test("omits PING for non-pinging replies", () => {
-    const state = createInitialState(null, "/tmp/record-config.json");
-    state.replyTarget = {
-      messageId: "message-1",
-      channelId: "channel-1",
-      guildId: "guild-1",
-      authorId: "user-2",
-      authorDisplayName: "Other",
-      authorColor: theme.accent,
-      summary: "original message",
-      timestamp: null,
-      mention: false,
-    };
-
-    const line = renderStatusLine(state, 120).lines[0] ?? "";
-    const plain = stripAnsi(line);
-
-    expect(plain).toContain("Replying: Other: original message");
-    expect(plain).not.toContain("PING");
+    expect(plain).toContain("Logged In As:");
+    expect(plain).toContain("Status:");
+    expect(plain).not.toContain("Editing:");
+    expect(plain).not.toContain("Self: original message");
   });
 
   test("shows active voice call info with elapsed time and audio state", () => {
@@ -161,7 +140,7 @@ describe("statusline", () => {
     expect(line).toContain(theme.accent);
   });
 
-  test("keeps call status after account and presence but before transient blocks", () => {
+  test("keeps call status after account and presence but before notices", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.voiceCall = {
       displayName: "Alice",
@@ -188,8 +167,8 @@ describe("statusline", () => {
 
     expect(plain.indexOf("Logged In As:")).toBeLessThan(plain.indexOf("Status:"));
     expect(plain.indexOf("Status:")).toBeLessThan(plain.indexOf("☎ Alice"));
-    expect(plain.indexOf("☎ Alice")).toBeLessThan(plain.indexOf("Replying:"));
-    expect(plain.indexOf("Replying:")).toBeLessThan(plain.indexOf("notice"));
+    expect(plain.indexOf("☎ Alice")).toBeLessThan(plain.indexOf("notice"));
+    expect(plain).not.toContain("Replying:");
   });
 
   test("shows pending voice calls as muted spinner progress", () => {
