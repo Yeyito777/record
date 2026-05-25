@@ -380,6 +380,34 @@ describe("sidebar state", () => {
     expect(buildSidebarEntries(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }])[sidebar.selectedIndex]?.kind).toBe("channel");
   });
 
+  test("keeps muted and deafened voice member icons visible when names truncate", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    sidebar.voiceMembersByChannelId = {
+      "voice-1": [
+        { userId: "user-1", displayName: "A very very very very long voice member name", muted: true, deafened: true },
+      ],
+    };
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+
+    const rows = renderSidebar(
+      sidebar,
+      [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }],
+      6,
+      false,
+    ).map(stripAnsiForTest);
+    const memberRow = rows.find((row) => row.includes("•"));
+
+    expect(memberRow).toBeDefined();
+    expect(memberRow).toContain("…");
+    expect(memberRow).toContain("🔇");
+    expect(memberRow).toContain("🔕");
+    expect(memberRow!.indexOf("…")).toBeLessThan(memberRow!.indexOf("🔇"));
+    expect(memberRow!.indexOf("🔇")).toBeLessThan(memberRow!.indexOf("🔕"));
+    expect(termWidth(memberRow!)).toBe(SIDEBAR_WIDTH);
+  });
+
   test("marks channels with active typing", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);

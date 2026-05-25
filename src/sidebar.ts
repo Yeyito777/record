@@ -9,7 +9,7 @@ import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild } from
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import type { KeyEvent } from "./input";
 import { loadingLabel } from "./loading";
-import { getViewportByWidth, padRight, termWidth } from "./textwidth";
+import { getViewportByWidth, padRight, termWidth, truncate } from "./textwidth";
 import { theme } from "./theme";
 import {
   scrollByAmountWithCursorInViewport,
@@ -1204,9 +1204,12 @@ function channelEntryMarker(channelType: number | undefined): string {
   return "# ";
 }
 
-function voiceMemberEntryLabel(entry: SidebarEntry): string {
-  const suffix = `${entry.self ? " (you)" : ""}${entry.muted ? " 🔇" : ""}${entry.deafened ? " 🔕" : ""}`;
-  return `${entry.label}${suffix}`;
+function voiceMemberNameLabel(entry: SidebarEntry): string {
+  return `${entry.label}${entry.self ? " (you)" : ""}`;
+}
+
+function voiceMemberStatusSuffix(entry: SidebarEntry): string {
+  return `${entry.muted ? " 🔇" : ""}${entry.deafened ? " 🔕" : ""}`;
 }
 
 function selectedEntrySnapshot(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions): Pick<SidebarEntry, "kind" | "id" | "guildId"> | null {
@@ -2339,21 +2342,33 @@ function renderEntryRow(
         : entry.kind === "voice-member"
           ? "• "
         : "";
+  const prefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
+
+  if (entry.kind === "voice-member") {
+    const rawLabel = voiceMemberNameLabel(entry);
+    const statusSuffix = voiceMemberStatusSuffix(entry);
+    const contentWidth = Math.max(0, innerWidth - termWidth(prefix));
+    const labelWidth = Math.max(0, contentWidth - termWidth(statusSuffix));
+    const clippedLabel = statusSuffix ? truncate(rawLabel, labelWidth) : rawLabel;
+    const title = padRight(`${clippedLabel}${statusSuffix}`, contentWidth);
+    const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
+
+    return theme.reset + bg + fg + prefix + text
+      + theme.reset + borderBg + borderFg + "│" + theme.reset;
+  }
+
   const rawLabel = entry.kind === "folder"
     ? `📁 ${entry.label}/ ${entry.childCount ?? 0}`
-    : entry.kind === "voice-member"
-      ? voiceMemberEntryLabel(entry)
-      : entry.label || "unnamed";
-  const prefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
+    : entry.label || "unnamed";
   const badge = renderNotificationBadge(entry.notificationCount ?? 0);
   const muteIcon = (entry.kind === "guild" || entry.kind === "channel") && entry.muted ? " 🔕" : "";
   const badgeGap = badge ? 1 : 0;
   const badgeWidth = badge?.width ?? 0;
   const muteWidth = termWidth(muteIcon);
+  const suffix = `${muteIcon}${badge ? `${" ".repeat(badgeGap)}${badge.text}` : ""}`;
   const labelWidth = Math.max(0, innerWidth - termWidth(prefix) - muteWidth - badgeGap - badgeWidth);
   const title = padRight(rawLabel, labelWidth);
   const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
-  const suffix = `${muteIcon}${badge ? `${" ".repeat(badgeGap)}${badge.text}` : ""}`;
 
   return theme.reset + bg + fg + prefix + text + suffix
     + theme.reset + borderBg + borderFg + "│" + theme.reset;
