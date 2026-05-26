@@ -96,15 +96,15 @@ describe("screen stream controller", () => {
     };
     const gateways: FakeGateway[] = [];
     const errors: string[] = [];
-    const pinged: string[] = [];
+    const refreshes: Array<{ streamKey: string; reason: string; attempt: number }> = [];
     const controller = new ScreenStreamController(
       "call:call-1:me",
       session,
       "me",
       {
         scheduleRender: () => {},
-        pingStreamServer: (streamKey) => {
-          pinged.push(streamKey);
+        refreshStreamServer: (streamKey, reason, attempt) => {
+          refreshes.push({ streamKey, reason, attempt });
           return true;
         },
       },
@@ -131,7 +131,10 @@ describe("screen stream controller", () => {
 
     gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4014, "Disconnected."));
     await waitFor(() => gateways.length >= 2);
-    await waitFor(() => pinged.length >= 2);
+    await waitFor(() => refreshes.some((entry) => entry.reason === "invalid_session"));
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(gateways.length).toBe(2);
 
     session.sessionId = "voice-session-2";
     controller.handleServerUpdate({ streamKey: "call:call-1:me", token: "stream-token-2", endpoint: "stream2.example" });
@@ -141,5 +144,76 @@ describe("screen stream controller", () => {
     expect(gateways[1]?.disconnected).toBe(true);
     expect(gateways[2]?.data.sessionId).toBe("voice-session-2");
     expect(gateways[2]?.data.token).toBe("stream-token-2");
+  });
+
+  test("waits for fresh stream server details after parent voice session reconnects", async () => {
+    const session: VoiceCallSession = {
+      target: { guildId: null, channelId: "call-1" },
+      state: "ready",
+      gateway: null,
+      startedAt: Date.now(),
+      selfMute: false,
+      selfDeaf: false,
+      sessionId: "voice-session-1",
+    };
+    const gateways: FakeGateway[] = [];
+    const errors: string[] = [];
+    const refreshes: Array<{ streamKey: string; reason: string; attempt: number }> = [];
+    const controller = new ScreenStreamController(
+      "call:call-1:me",
+      session,
+      "me",
+      {
+        scheduleRender: () => {},
+        refreshStreamServer: (streamKey, reason, attempt) => {
+          refreshes.push({ streamKey, reason, attempt });
+          return true;
+        },
+      },
+      (error) => errors.push(error.message),
+      (data, callbacks) => {
+        const gateway = new FakeGateway(data, callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+    );
+
+    const started = controller.start();
+    controller.handleCreate({
+      streamKey: "call:call-1:me",
+      rtcServerId: "stream-server-1",
+      rtcChannelId: "stream-channel-1",
+      region: null,
+      viewerIds: [],
+      paused: false,
+    });
+    controller.handleServerUpdate({ streamKey: "call:call-1:me", token: "stream-token-1", endpoint: "stream.example" });
+    await started;
+
+    session.state = "signaling";
+    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4014, "Disconnected."));
+
+    await waitFor(() => refreshes.some((entry) => entry.reason === "voice_session_not_ready"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(gateways.length).toBe(1);
+
+    session.state = "ready";
+    session.sessionId = "voice-session-2";
+    controller.handleCreate({
+      streamKey: "call:call-1:me",
+      rtcServerId: "stream-server-2",
+      rtcChannelId: "stream-channel-2",
+      region: null,
+      viewerIds: [],
+      paused: false,
+    });
+    controller.handleServerUpdate({ streamKey: "call:call-1:me", token: "stream-token-2", endpoint: "stream2.example" });
+
+    await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true);
+    expect(errors).toEqual([]);
+    expect(gateways[1]?.data.sessionId).toBe("voice-session-2");
+    expect(gateways[1]?.data.guildId).toBe("stream-server-2");
+    expect(gateways[1]?.data.channelId).toBe("stream-channel-2");
+    expect(gateways[1]?.data.token).toBe("stream-token-2");
   });
 });

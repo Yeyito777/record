@@ -3562,6 +3562,33 @@ export function startCurrentStream(state: AppState, effects: SessionEffects): vo
   const controller = new ScreenStreamController(streamKey, session, selfUserId, {
     scheduleRender: effects.scheduleRender,
     pingStreamServer: (key) => appGateway?.pingStreamServer(key) ?? false,
+    refreshStreamServer: (key, reason, attempt) => {
+      const gateway = appGateway;
+      if (!gateway || appGatewayToken !== token || !gateway.isReady()) return false;
+
+      const pinged = gateway.pingStreamServer(key);
+      // A plain STREAM_PING is enough for a transient bad stream server, but a
+      // 4006 invalid session or a parent voice reconnect usually means the old
+      // stream allocation is stale.  Re-sending CREATE_STREAM asks Discord to
+      // give us fresh STREAM_CREATE / STREAM_SERVER_UPDATE data for the same
+      // stream key without making the user manually stop/start sharing.
+      const shouldRecreate = reason === "invalid_session"
+        || reason === "voice_session_not_ready"
+        || reason === "awaiting_fresh_stream_server"
+        || attempt >= 3;
+      let recreated = false;
+      if (shouldRecreate) {
+        recreated = gateway.createStream({
+          type,
+          guildId: session.target.guildId,
+          channelId: session.target.channelId,
+          preferredRegion: session.target.preferredRegions?.[0] ?? null,
+        });
+        if (recreated) gateway.setStreamPaused(key, false);
+      }
+      debugLog("stream.refresh.request", { streamKey: key, reason, attempt, pinged, recreated });
+      return pinged || recreated;
+    },
   }, (error) => {
     setNotice(state, `Stream: ${error.message}`, "warning", { chat: false });
   });
