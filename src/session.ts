@@ -3516,7 +3516,8 @@ export function hangUpCurrentCall(state: AppState, effects: SessionEffects): voi
 
   stopCurrentStream(state, effects, { silent: true });
   stopOutboundCallRingtone(voiceCallController.activeSession.target.channelId, "hangup");
-  voiceCallController.leave();
+  debugLog("call.command.hangup", { channelId: voiceCallController.activeSession.target.channelId });
+  voiceCallController.leave("hangup");
   state.voiceCall = null;
   setNotice(state, "", "muted");
   effects.scheduleRender();
@@ -3575,6 +3576,7 @@ export function startCurrentStream(state: AppState, effects: SessionEffects): vo
       const shouldRecreate = reason === "invalid_session"
         || reason === "voice_session_not_ready"
         || reason === "awaiting_fresh_stream_server"
+        || reason === "stream_delete"
         || attempt >= 3;
       let recreated = false;
       if (shouldRecreate) {

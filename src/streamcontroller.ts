@@ -86,6 +86,24 @@ export class ScreenStreamController {
 
   handleDelete(event: StreamDeleteEvent): void {
     if (event.streamKey !== this.streamKey) return;
+    debugLog("stream.controller.delete", {
+      streamKey: this.streamKey,
+      reason: event.reason,
+      unavailable: event.unavailable,
+      started: this.started,
+      voiceState: this.voiceSession.state,
+      hasConnection: Boolean(this.connection),
+    });
+    if (this.started && shouldRecoverStreamDelete(event)) {
+      const connection = this.connection;
+      this.connection = null;
+      connection?.disconnect();
+      this.serverUpdate = null;
+      this.needsFreshServerUpdate = true;
+      this.requestFreshServerUpdate("stream_delete");
+      this.scheduleReconnect("stream_delete", STREAM_FRESH_SERVER_RETRY_DELAY_MS);
+      return;
+    }
     const error = new Error(`Discord ended the stream: ${event.reason}`);
     if (this.rejectStart) this.fail(error);
     else this.onError(error);
@@ -262,6 +280,11 @@ export class ScreenStreamController {
 function isInvalidVoiceSessionClose(error: Error): error is VoiceGatewayCloseError {
   return error instanceof VoiceGatewayCloseError
     && (error.code === 4006 || /session is no longer valid/i.test(error.closeReason));
+}
+
+function shouldRecoverStreamDelete(event: StreamDeleteEvent): boolean {
+  if (event.unavailable) return true;
+  return !/^(user_requested|unauthorized|invalid_channel|stream_full|safety_guild_rate_limited)$/i.test(event.reason);
 }
 
 function daveChannelIdForStreamServer(rtcServerId: string): string {

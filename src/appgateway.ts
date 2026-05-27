@@ -196,24 +196,33 @@ export class AppGatewayClient implements VoiceSignalingClient {
       channel_id: request.channelId,
     };
     if (request.preferredRegion) data.preferred_region = request.preferredRegion;
+    debugLog("app_gateway.stream_create.send", {
+      type: request.type,
+      guildId: request.guildId,
+      channelId: request.channelId,
+      preferredRegion: request.preferredRegion ?? null,
+    });
     this.send({ op: 18, d: data });
     return true;
   }
 
   deleteStream(streamKey: string): boolean {
     if (!this.isReady()) return false;
+    debugLog("app_gateway.stream_delete.send", { streamKey });
     this.send({ op: 19, d: { stream_key: streamKey } });
     return true;
   }
 
   pingStreamServer(streamKey: string): boolean {
     if (!this.isReady()) return false;
+    debugLog("app_gateway.stream_ping.send", { streamKey });
     this.send({ op: 21, d: { stream_key: streamKey } });
     return true;
   }
 
   setStreamPaused(streamKey: string, paused: boolean): boolean {
     if (!this.isReady()) return false;
+    debugLog("app_gateway.stream_paused.send", { streamKey, paused });
     this.send({ op: 22, d: { stream_key: streamKey, paused } });
     return true;
   }
@@ -490,17 +499,41 @@ export class AppGatewayClient implements VoiceSignalingClient {
         }
         case "STREAM_CREATE": {
           const event = mapStreamCreateEvent(data);
-          if (event) this.callbacks.onStreamCreate?.(event);
+          if (event) {
+            debugLog("app_gateway.stream_create", {
+              streamKey: event.streamKey,
+              rtcServerId: event.rtcServerId,
+              rtcChannelId: event.rtcChannelId,
+              paused: event.paused,
+              viewerCount: event.viewerIds.length,
+              region: event.region,
+            });
+            this.callbacks.onStreamCreate?.(event);
+          }
           break;
         }
         case "STREAM_SERVER_UPDATE": {
           const event = mapStreamServerUpdateEvent(data);
-          if (event) this.callbacks.onStreamServerUpdate?.(event);
+          if (event) {
+            debugLog("app_gateway.stream_server_update", {
+              streamKey: event.streamKey,
+              endpoint: event.endpoint,
+              hasToken: Boolean(event.token),
+            });
+            this.callbacks.onStreamServerUpdate?.(event);
+          }
           break;
         }
         case "STREAM_DELETE": {
           const event = mapStreamDeleteEvent(data);
-          if (event) this.callbacks.onStreamDelete?.(event);
+          if (event) {
+            debugLog("app_gateway.stream_delete", {
+              streamKey: event.streamKey,
+              reason: event.reason,
+              unavailable: event.unavailable,
+            });
+            this.callbacks.onStreamDelete?.(event);
+          }
           break;
         }
         case "GUILD_MEMBER_UPDATE": {

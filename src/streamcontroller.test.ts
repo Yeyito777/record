@@ -216,4 +216,74 @@ describe("screen stream controller", () => {
     expect(gateways[1]?.data.channelId).toBe("stream-channel-2");
     expect(gateways[1]?.data.token).toBe("stream-token-2");
   });
+
+  test("recreates an unexpectedly deleted stream while the call is still active", async () => {
+    const session: VoiceCallSession = {
+      target: { guildId: "guild-1", channelId: "voice-1" },
+      state: "ready",
+      gateway: null,
+      startedAt: Date.now(),
+      selfMute: false,
+      selfDeaf: false,
+      sessionId: "voice-session-1",
+    };
+    const gateways: FakeGateway[] = [];
+    const errors: string[] = [];
+    const refreshes: Array<{ streamKey: string; reason: string; attempt: number }> = [];
+    const controller = new ScreenStreamController(
+      "guild:guild-1:voice-1:me",
+      session,
+      "me",
+      {
+        scheduleRender: () => {},
+        refreshStreamServer: (streamKey, reason, attempt) => {
+          refreshes.push({ streamKey, reason, attempt });
+          return true;
+        },
+      },
+      (error) => errors.push(error.message),
+      (data, callbacks) => {
+        const gateway = new FakeGateway(data, callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+    );
+
+    const started = controller.start();
+    controller.handleCreate({
+      streamKey: "guild:guild-1:voice-1:me",
+      rtcServerId: "stream-server-1",
+      rtcChannelId: "stream-channel-1",
+      region: null,
+      viewerIds: [],
+      paused: false,
+    });
+    controller.handleServerUpdate({ streamKey: "guild:guild-1:voice-1:me", token: "stream-token-1", endpoint: "stream.example" });
+    await started;
+
+    controller.handleDelete({ streamKey: "guild:guild-1:voice-1:me", reason: "stream_ended", unavailable: false });
+
+    await waitFor(() => refreshes.some((entry) => entry.reason === "stream_delete"));
+    expect(gateways[0]?.disconnected).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(gateways.length).toBe(1);
+
+    session.sessionId = "voice-session-2";
+    controller.handleCreate({
+      streamKey: "guild:guild-1:voice-1:me",
+      rtcServerId: "stream-server-2",
+      rtcChannelId: "stream-channel-2",
+      region: null,
+      viewerIds: [],
+      paused: false,
+    });
+    controller.handleServerUpdate({ streamKey: "guild:guild-1:voice-1:me", token: "stream-token-2", endpoint: "stream2.example" });
+
+    await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true);
+    expect(errors).toEqual([]);
+    expect(gateways[1]?.data.sessionId).toBe("voice-session-2");
+    expect(gateways[1]?.data.guildId).toBe("stream-server-2");
+    expect(gateways[1]?.data.channelId).toBe("stream-channel-2");
+    expect(gateways[1]?.data.token).toBe("stream-token-2");
+  });
 });
