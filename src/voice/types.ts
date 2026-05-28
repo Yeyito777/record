@@ -121,6 +121,8 @@ export interface VoiceCallControllerOptions {
   fetchPreferredRegions?: () => Promise<string[]>;
   ringRecipients?: (channelId: string, recipientIds: string[]) => Promise<void>;
   retryDelayMs?: number;
+  voiceReadyTimeoutMs?: number;
+  recoveryAttempts?: number;
   onStateChange?: (session: VoiceCallSession | null) => void;
   onSpeakingChange?: (userId: string, speaking: boolean) => void;
   onError?: (error: Error) => void;

@@ -194,6 +194,7 @@ export class ScreenStreamController {
       const asErr = error instanceof Error ? error : new Error(String(error));
       if (isInvalidVoiceSessionClose(asErr)) this.invalidateServerUpdate("invalid_session");
       if (isRecoverableVoiceGatewayClose(asErr) && this.scheduleRecoverableReconnect(asErr, "connect_failed")) return;
+      if (isRecoverableStreamConnectionError(asErr) && this.scheduleRecoverableConnectionError(asErr, "connect_failed")) return;
       this.fail(asErr);
       this.stop("connect_failed");
     });
@@ -202,6 +203,7 @@ export class ScreenStreamController {
   private handleGatewayClose(connection: VoiceGatewayConnection, error: VoiceGatewayCloseError): void {
     if (this.connection === connection) this.connection = null;
     if (isInvalidVoiceSessionClose(error)) this.invalidateServerUpdate("invalid_session");
+    else if (shouldRefreshStreamServerAfterClose(error)) this.invalidateServerUpdate("gateway_close");
     if (isRecoverableVoiceGatewayClose(error) && this.scheduleRecoverableReconnect(error, "gateway_close")) return;
 
     if (this.rejectStart) this.fail(error);
@@ -255,6 +257,22 @@ export class ScreenStreamController {
     return true;
   }
 
+  private scheduleRecoverableConnectionError(error: Error, reason: string): boolean {
+    if (this.reconnectAttempts >= STREAM_GATEWAY_RECONNECT_ATTEMPTS) return false;
+    this.reconnectAttempts += 1;
+    this.invalidateServerUpdate(reason);
+    debugLog("stream.controller.reconnect", {
+      streamKey: this.streamKey,
+      attempt: this.reconnectAttempts,
+      code: null,
+      reason: error.message,
+      trigger: reason,
+      pinged: false,
+    });
+    this.scheduleReconnect(reason, STREAM_FRESH_SERVER_RETRY_DELAY_MS);
+    return true;
+  }
+
   private scheduleReconnect(reason: string, delayMs: number): void {
     if (this.reconnectTimer) return;
     debugLog("stream.controller.reconnect_scheduled", { streamKey: this.streamKey, reason, delayMs });
@@ -285,6 +303,20 @@ function isInvalidVoiceSessionClose(error: Error): error is VoiceGatewayCloseErr
 function shouldRecoverStreamDelete(event: StreamDeleteEvent): boolean {
   if (event.unavailable) return true;
   return !/^(user_requested|unauthorized|invalid_channel|stream_full|safety_guild_rate_limited)$/i.test(event.reason);
+}
+
+function shouldRefreshStreamServerAfterClose(error: VoiceGatewayCloseError): boolean {
+  return error.code === 1000
+    || error.code === 1006
+    || error.code === 4014
+    || /connection closed normally|connection ended|disconnected/i.test(error.closeReason);
+}
+
+function isRecoverableStreamConnectionError(error: Error): boolean {
+  return /timed out connecting to discord voice gateway/i.test(error.message)
+    || /timed out waiting for discord stream server details/i.test(error.message)
+    || /websocket/i.test(error.message)
+    || /network|connection/i.test(error.message);
 }
 
 function daveChannelIdForStreamServer(rtcServerId: string): string {

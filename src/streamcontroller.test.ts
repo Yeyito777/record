@@ -77,11 +77,27 @@ describe("screen stream controller", () => {
 
     gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4014, "Disconnected."));
 
+    await waitFor(() => pinged.length >= 1);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(gateways.length).toBe(1);
+
+    controller.handleCreate({
+      streamKey: "call:call-1:me",
+      rtcServerId: "call-2",
+      rtcChannelId: "call-2",
+      region: null,
+      viewerIds: [],
+      paused: false,
+    });
+    controller.handleServerUpdate({ streamKey: "call:call-1:me", token: "stream-token-2", endpoint: "stream2.example" });
+
     await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true);
     expect(errors).toEqual([]);
-    expect(pinged).toEqual(["call:call-1:me"]);
+    expect(pinged.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(pinged)).toEqual(new Set(["call:call-1:me"]));
     expect(renders).toBeGreaterThan(0);
     expect(gateways[1]?.data.sessionId).toBe("voice-session-1");
+    expect(gateways[1]?.data.token).toBe("stream-token-2");
   });
 
   test("keeps an existing stream alive when reconnect identify gets a stale 4006", async () => {
@@ -130,6 +146,8 @@ describe("screen stream controller", () => {
     await started;
 
     gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4014, "Disconnected."));
+    await waitFor(() => refreshes.some((entry) => entry.reason === "gateway_close"));
+    controller.handleServerUpdate({ streamKey: "call:call-1:me", token: "stale-stream-token", endpoint: "stale-stream.example" });
     await waitFor(() => gateways.length >= 2);
     await waitFor(() => refreshes.some((entry) => entry.reason === "invalid_session"));
 
@@ -193,7 +211,7 @@ describe("screen stream controller", () => {
     session.state = "signaling";
     gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(4014, "Disconnected."));
 
-    await waitFor(() => refreshes.some((entry) => entry.reason === "voice_session_not_ready"));
+    await waitFor(() => refreshes.some((entry) => entry.reason === "gateway_close"));
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(gateways.length).toBe(1);
 
@@ -282,6 +300,73 @@ describe("screen stream controller", () => {
     await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true);
     expect(errors).toEqual([]);
     expect(gateways[1]?.data.sessionId).toBe("voice-session-2");
+    expect(gateways[1]?.data.guildId).toBe("stream-server-2");
+    expect(gateways[1]?.data.channelId).toBe("stream-channel-2");
+    expect(gateways[1]?.data.token).toBe("stream-token-2");
+  });
+
+  test("waits for a fresh stream server after a normal stream gateway close", async () => {
+    const session: VoiceCallSession = {
+      target: { guildId: "guild-1", channelId: "voice-1" },
+      state: "ready",
+      gateway: null,
+      startedAt: Date.now(),
+      selfMute: false,
+      selfDeaf: false,
+      sessionId: "voice-session-1",
+    };
+    const gateways: FakeGateway[] = [];
+    const errors: string[] = [];
+    const refreshes: Array<{ streamKey: string; reason: string; attempt: number }> = [];
+    const controller = new ScreenStreamController(
+      "guild:guild-1:voice-1:me",
+      session,
+      "me",
+      {
+        scheduleRender: () => {},
+        refreshStreamServer: (streamKey, reason, attempt) => {
+          refreshes.push({ streamKey, reason, attempt });
+          return true;
+        },
+      },
+      (error) => errors.push(error.message),
+      (data, callbacks) => {
+        const gateway = new FakeGateway(data, callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+    );
+
+    const started = controller.start();
+    controller.handleCreate({
+      streamKey: "guild:guild-1:voice-1:me",
+      rtcServerId: "stream-server-1",
+      rtcChannelId: "stream-channel-1",
+      region: null,
+      viewerIds: [],
+      paused: false,
+    });
+    controller.handleServerUpdate({ streamKey: "guild:guild-1:voice-1:me", token: "stream-token-1", endpoint: "stream.example" });
+    await started;
+
+    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(1000, "Connection closed normally."));
+
+    await waitFor(() => refreshes.some((entry) => entry.reason === "gateway_close"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(gateways.length).toBe(1);
+
+    controller.handleCreate({
+      streamKey: "guild:guild-1:voice-1:me",
+      rtcServerId: "stream-server-2",
+      rtcChannelId: "stream-channel-2",
+      region: null,
+      viewerIds: [],
+      paused: false,
+    });
+    controller.handleServerUpdate({ streamKey: "guild:guild-1:voice-1:me", token: "stream-token-2", endpoint: "stream2.example" });
+
+    await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true);
+    expect(errors).toEqual([]);
     expect(gateways[1]?.data.guildId).toBe("stream-server-2");
     expect(gateways[1]?.data.channelId).toBe("stream-channel-2");
     expect(gateways[1]?.data.token).toBe("stream-token-2");

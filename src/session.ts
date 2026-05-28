@@ -3577,6 +3577,8 @@ export function startCurrentStream(state: AppState, effects: SessionEffects): vo
         || reason === "voice_session_not_ready"
         || reason === "awaiting_fresh_stream_server"
         || reason === "stream_delete"
+        || reason === "gateway_close"
+        || reason === "connect_failed"
         || attempt >= 3;
       let recreated = false;
       if (shouldRecreate) {

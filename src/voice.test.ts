@@ -847,7 +847,7 @@ describe("voice backend", () => {
     gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(1000, "Connection closed normally."));
     await waitFor(() => signaling.requests.length === 2);
 
-    expect(signaling.leaves).toBe(1);
+    expect(signaling.leaves).toBe(0);
     controller.handleVoiceStateUpdate({
       userId: "me",
       channelId: "dm-1",
@@ -859,6 +859,61 @@ describe("voice backend", () => {
       deaf: false,
     });
     controller.handleVoiceServerUpdate({ token: "voice-token-2", endpoint: "voice2.example", guildId: null });
+
+    await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true && controller.activeSession?.state === "ready");
+    expect(errors).toEqual([]);
+  });
+
+  test("keeps retrying voice recovery across missing gateway details", async () => {
+    const signaling = new FakeSignaling();
+    const gateways: FakeGateway[] = [];
+    const errors: string[] = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      retryDelayMs: 0,
+      voiceReadyTimeoutMs: 1,
+      recoveryAttempts: 4,
+      createGatewayConnection: (_data, callbacks) => {
+        const gateway = new FakeGateway(callbacks);
+        gateways.push(gateway);
+        return gateway;
+      },
+      onError: (error) => errors.push(error.message),
+    });
+
+    const started = controller.startCall({ guildId: "guild-1", channelId: "voice-1", recipientIds: [], displayName: "Voice" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "voice-session-1",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-1", endpoint: "voice1.example", guildId: "guild-1" });
+    await started;
+
+    gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(1000, "Connection closed normally."));
+    await waitFor(() => signaling.requests.length >= 4);
+    expect(controller.activeSession?.state).toBe("signaling");
+    expect(errors).toEqual([]);
+
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "voice-session-2",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token-2", endpoint: "voice2.example", guildId: "guild-1" });
 
     await waitFor(() => gateways.length === 2 && gateways[1]?.connected === true && controller.activeSession?.state === "ready");
     expect(errors).toEqual([]);

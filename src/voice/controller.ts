@@ -7,6 +7,8 @@ import { VoiceGatewayCloseError, type PendingVoiceJoin, type VoiceCallController
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
 import { debugLog } from "../debuglog";
 
+const VOICE_GATEWAY_RECOVERY_REJOIN_ATTEMPTS = 12;
+
 export class VoiceCallController {
   private pending: PendingVoiceJoin | null = null;
   private active: VoiceCallSession | null = null;
@@ -316,7 +318,7 @@ export class VoiceCallController {
         session.gateway?.disconnect();
         session.gateway = null;
         debugLog("voice.controller.recover.failed", { channelId: session.target.channelId, strategy: "reuse_join_data", error: asErr.message });
-        if (!isRecoverableVoiceGatewayClose(asErr)) {
+        if (!isRecoverableVoiceRecoveryError(asErr)) {
           if (this.active === session) this.failSession(session, asErr);
           return;
         }
@@ -338,17 +340,18 @@ export class VoiceCallController {
         session.gateway?.disconnect();
         session.gateway = null;
         debugLog("voice.controller.recover.failed", { channelId: session.target.channelId, strategy: "soft_rejoin", error: asErr.message });
-        if (!isRecoverableVoiceGatewayClose(asErr)) {
+        if (!isRecoverableVoiceRecoveryError(asErr)) {
           if (this.active === session) this.failSession(session, asErr);
           return;
         }
       }
     }
 
-    for (let attempt = 0; attempt < VOICE_GATEWAY_REJOIN_ATTEMPTS; attempt++) {
+    const recoveryAttempts = this.options.recoveryAttempts ?? VOICE_GATEWAY_RECOVERY_REJOIN_ATTEMPTS;
+    for (let attempt = 0; attempt < recoveryAttempts; attempt++) {
       if (this.active !== session) return;
       try {
-        debugLog("voice.controller.recover.fresh_attempt", { channelId: session.target.channelId, attempt: attempt + 1, attempts: VOICE_GATEWAY_REJOIN_ATTEMPTS });
+        debugLog("voice.controller.recover.fresh_attempt", { channelId: session.target.channelId, attempt: attempt + 1, attempts: recoveryAttempts });
         await this.prepareVoiceGatewayRejoin(session);
         await this.connectSessionGateway(session);
         if (this.active !== session) return;
@@ -362,7 +365,7 @@ export class VoiceCallController {
         session.gateway?.disconnect();
         session.gateway = null;
         debugLog("voice.controller.recover.failed", { channelId: session.target.channelId, strategy: "fresh_rejoin", attempt: attempt + 1, error: asErr.message });
-        if (!isRecoverableVoiceGatewayClose(asErr)) break;
+        if (!isRecoverableVoiceRecoveryError(asErr)) break;
       }
     }
 
@@ -385,7 +388,7 @@ export class VoiceCallController {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.clearPending(new Error("Timed out waiting for Discord voice gateway details."));
-      }, VOICE_READY_TIMEOUT_MS);
+      }, this.options.voiceReadyTimeoutMs ?? VOICE_READY_TIMEOUT_MS);
       timer.unref?.();
       this.pending = { target, state: null, server: null, resolve, reject, timer };
     });
@@ -461,5 +464,16 @@ function shouldReuseVoiceJoinData(error: VoiceGatewayCloseError): boolean {
 }
 
 function shouldSoftRejoinVoiceGateway(error: VoiceGatewayCloseError): boolean {
-  return error.code === VOICE_GATEWAY_DISCONNECTED_CODE || /^disconnected\.?$/i.test(error.closeReason);
+  return error.code === VOICE_GATEWAY_DISCONNECTED_CODE
+    || error.code === 1000
+    || /^disconnected\.?$/i.test(error.closeReason)
+    || /connection closed normally/i.test(error.closeReason);
+}
+
+function isRecoverableVoiceRecoveryError(error: Error): boolean {
+  return isRecoverableVoiceGatewayClose(error)
+    || /timed out waiting for discord voice gateway details/i.test(error.message)
+    || /timed out waiting for discord gateway to become ready/i.test(error.message)
+    || /retrying discord gateway/i.test(error.message)
+    || /gateway connection error/i.test(error.message);
 }
