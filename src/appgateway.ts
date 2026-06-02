@@ -311,11 +311,11 @@ export class AppGatewayClient implements VoiceSignalingClient {
       case 11:
         return;
       case 7:
+        debugLog("app_gateway.reconnect_requested", { hasSessionId: Boolean(this.sessionId), seq: this.seq });
         this.scheduleReconnect(0);
         return;
       case 9:
-        this.sessionId = null;
-        this.scheduleReconnect(0);
+        this.handleInvalidSession(payload.d);
         return;
       default:
         break;
@@ -396,6 +396,22 @@ export class AppGatewayClient implements VoiceSignalingClient {
         },
       },
     });
+  }
+
+  private handleInvalidSession(data: unknown): void {
+    const resumable = data === true;
+    debugLog("app_gateway.invalid_session", { resumable, hasSessionId: Boolean(this.sessionId), seq: this.seq });
+    if (!resumable) {
+      this.sessionId = null;
+      this.seq = null;
+    }
+
+    // Discord's OP 9 tells us whether the current app-gateway session can be
+    // resumed. Keeping the session id for resumable invalidations is important:
+    // creating a brand-new app session while already in voice can make Discord
+    // close the voice gateway with 4014 ("Disconnected"), causing audible VC
+    // dropouts even though the user did not leave.
+    this.scheduleReconnect(resumable ? 0 : undefined);
   }
 
   private handleDispatch(type: string | null | undefined, data: unknown): void {
@@ -607,7 +623,12 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private handleClose = (event: CloseEvent): void => {
     const manual = this.manualDisconnect;
     const wasReady = this.ready;
-    debugLog("app_gateway.close", { code: event.code, reason: event.reason || null, manualDisconnect: manual, wasReady });
+    const resetSession = isNonResumableGatewayCloseCode(event.code);
+    debugLog("app_gateway.close", { code: event.code, reason: event.reason || null, manualDisconnect: manual, wasReady, resetSession });
+    if (resetSession) {
+      this.sessionId = null;
+      this.seq = null;
+    }
     this.closeSocket();
     if (manual) return;
 
@@ -640,6 +661,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     this.closeSocket();
     const attempt = ++this.reconnectAttempt;
     const delayMs = delayOverride ?? Math.min(MAX_RECONNECT_DELAY_MS, INITIAL_RECONNECT_DELAY_MS * 2 ** Math.max(0, attempt - 1));
+    debugLog("app_gateway.reconnect", { attempt, delayMs, hasSessionId: Boolean(this.sessionId), seq: this.seq });
     this.callbacks.onReconnect?.(attempt, delayMs);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -720,6 +742,11 @@ export class AppGatewayClient implements VoiceSignalingClient {
       socket.close();
     }
   }
+}
+
+function isNonResumableGatewayCloseCode(code: number): boolean {
+  return code === 4007 // Invalid seq.
+    || code === 4009; // Session timed out.
 }
 
 export function extractCurrentUserId(data: unknown): string | null {

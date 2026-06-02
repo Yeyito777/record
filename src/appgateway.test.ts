@@ -55,6 +55,34 @@ describe("app gateway helpers", () => {
     ]);
   });
 
+  test("keeps gateway session data for resumable invalid-session opcodes", () => {
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    const reconnectDelays: unknown[] = [];
+    client.sessionId = "gateway-session";
+    client.seq = 42;
+    client.scheduleReconnect = (delay?: number) => reconnectDelays.push(delay);
+
+    client.handleMessage({ data: JSON.stringify({ op: 9, d: true }) });
+
+    expect(client.sessionId).toBe("gateway-session");
+    expect(client.seq).toBe(42);
+    expect(reconnectDelays).toEqual([0]);
+  });
+
+  test("clears gateway session data for non-resumable invalid-session opcodes", () => {
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    const reconnectDelays: unknown[] = [];
+    client.sessionId = "gateway-session";
+    client.seq = 42;
+    client.scheduleReconnect = (delay?: number) => reconnectDelays.push(delay);
+
+    client.handleMessage({ data: JSON.stringify({ op: 9, d: false }) });
+
+    expect(client.sessionId).toBeNull();
+    expect(client.seq).toBeNull();
+    expect(reconnectDelays).toEqual([undefined]);
+  });
+
   test("dispatches voice states from READY_SUPPLEMENTAL", () => {
     const updates: unknown[] = [];
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onVoiceStateUpdate: (update) => updates.push(update), onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
