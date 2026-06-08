@@ -15,6 +15,7 @@ export class VoiceCallController {
   private recoveringSession: VoiceCallSession | null = null;
   private localVolumes: LocalAudioVolumes;
   private noiseSuppression: NoiseSuppressionMode;
+  private readonly remoteMutedUserIds = new Set<string>();
 
   constructor(private readonly options: VoiceCallControllerOptions) {
     this.localVolumes = {
@@ -139,6 +140,17 @@ export class VoiceCallController {
     this.active?.gateway?.setLocalVolumes?.(this.localVolumes);
   }
 
+  setRemoteUserMuted(userId: string, muted: boolean): void {
+    if (!userId || userId === this.options.selfUserId) return;
+    if (muted) this.remoteMutedUserIds.add(userId);
+    else this.remoteMutedUserIds.delete(userId);
+    this.active?.gateway?.setRemoteUserMuted?.(userId, muted);
+  }
+
+  isRemoteUserMuted(userId: string): boolean {
+    return this.remoteMutedUserIds.has(userId);
+  }
+
   setNoiseSuppression(mode: NoiseSuppressionMode): void {
     this.noiseSuppression = mode;
     this.active?.gateway?.setNoiseSuppression?.(mode);
@@ -247,6 +259,7 @@ export class VoiceCallController {
       ?? new DiscordVoiceGatewayConnection(gatewayData, createDefaultVoiceAudioBackend(this.localVolumes, this.noiseSuppression), callbacks);
     session.gateway = gateway;
     gateway.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
+    for (const userId of this.remoteMutedUserIds) gateway.setRemoteUserMuted?.(userId, true);
     gateway.setLocalVolumes?.(this.localVolumes);
     gateway.setNoiseSuppression?.(this.noiseSuppression);
     await gateway.connect();

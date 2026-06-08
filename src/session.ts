@@ -203,6 +203,7 @@ interface TrackedCallVoiceState {
 const callVoiceStatesByChannelId = new Map<string, Map<string, TrackedCallVoiceState>>();
 const callJoinSoundUserIdsByChannelId = new Map<string, Set<string>>();
 const speakingCallUserIds = new Set<string>();
+const locallyMutedCallUserIds = new Set<string>();
 const speakingCallTimersByUserId = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingVoiceMemberHydrationKeys = new Set<string>();
 const pendingVoiceMemberHydrationTargets = new Map<string, Set<string>>();
@@ -264,6 +265,7 @@ export function disconnectAppGateway(): void {
   callVoiceStatesByChannelId.clear();
   departedCallParticipantsByChannelId.clear();
   callJoinSoundUserIdsByChannelId.clear();
+  locallyMutedCallUserIds.clear();
   clearAllSpeakingCallUsers();
   clearVoiceMemberHydrationState();
   callWidget.stop();
@@ -793,6 +795,7 @@ function clearVoiceMemberHydrationState(): void {
 }
 
 function setCallUserSpeaking(state: AppState, effects: SessionEffects, session: VoiceCallSession, userId: string, speaking: boolean): boolean {
+  if (speaking && locallyMutedCallUserIds.has(userId)) speaking = false;
   const wasSpeaking = speakingCallUserIds.has(userId);
   if (speaking) {
     speakingCallUserIds.add(userId);
@@ -833,9 +836,33 @@ function sidebarVoiceMemberFromState(state: AppState, channelId: string, userId:
     displayName: voiceState.displayName ?? displayNameForUser(state, channelId, userId, userId),
     muted: voiceState.selfMute || voiceState.mute,
     deafened: voiceState.selfDeaf || voiceState.deaf,
+    localMuted: locallyMutedCallUserIds.has(userId),
     self: userId === state.auth.user?.id,
     color: sidebarVoiceMemberColor(state, channelId, userId, voiceState),
   };
+}
+
+function toggleSelectedVoiceMemberMute(state: AppState, effects: SessionEffects, entry: ReturnType<typeof getSelectedSidebarEntry>): boolean {
+  if (entry.kind !== "voice-member" || !entry.userId) return false;
+
+  const userId = entry.userId;
+  const isSelf = entry.self || userId === state.auth.user?.id;
+  if (isSelf) {
+    setCurrentCallMute(state, effects, null);
+    return true;
+  }
+
+  const nextMuted = !locallyMutedCallUserIds.has(userId);
+  if (nextMuted) locallyMutedCallUserIds.add(userId);
+  else locallyMutedCallUserIds.delete(userId);
+  voiceCallController?.setRemoteUserMuted(userId, nextMuted);
+  if (nextMuted) clearSpeakingCallUser(userId);
+  syncAllSidebarVoiceMembers(state);
+  const activeSession = voiceCallController?.activeSession;
+  if (activeSession) syncVoiceCallStatus(state, activeSession);
+  setNotice(state, "", "muted");
+  effects.scheduleRender();
+  return true;
 }
 
 function syncSidebarVoiceMembersForChannel(state: AppState, channelId: string): void {
@@ -1865,8 +1892,9 @@ function buildCallWidgetParticipants(state: AppState, session: VoiceCallSession)
       name: voiceState?.displayName ?? displayNameForUser(state, channelId, userId, userId),
       avatarUrl: discordAvatarUrl(userId, avatarHashForUser(state, channelId, userId), null),
       textColor: callWidgetTextColorForUser(state, session.target.guildId, channelId, userId),
-      speaking: speakingCallUserIds.has(userId),
+      speaking: locallyMutedCallUserIds.has(userId) ? false : speakingCallUserIds.has(userId),
       muted: voiceState ? voiceState.selfMute || voiceState.mute : false,
+      localMuted: locallyMutedCallUserIds.has(userId),
       deafened: voiceState ? voiceState.selfDeaf || voiceState.deaf : false,
       self: false,
     });
@@ -1952,6 +1980,7 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
       effects.scheduleRender();
     },
   });
+  for (const userId of locallyMutedCallUserIds) voiceCallController.setRemoteUserMuted(userId, true);
   return voiceCallController;
 }
 
@@ -3717,6 +3746,9 @@ export function setLocalNoiseSuppression(state: AppState, effects: SessionEffect
 }
 
 export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects): void {
+  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
+  if (toggleSelectedVoiceMemberMute(state, effects, entry)) return;
+
   const token = state.auth.savedToken;
   if (!token) {
     setNotice(state, "Login required to mute servers or direct messages.", "warning");
@@ -3724,7 +3756,6 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
     return;
   }
 
-  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
   if (entry.kind === "channel" && entry.guildId === DIRECT_MESSAGES_GUILD_ID) {
     const channel = channelById(state, entry.id);
     const previousMuted = isChannelMuted(state, entry.id);

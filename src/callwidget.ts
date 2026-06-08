@@ -18,6 +18,7 @@ export interface CallWidgetParticipant {
   textColor?: string | null;
   speaking: boolean;
   muted?: boolean;
+  localMuted?: boolean;
   deafened?: boolean;
   self: boolean;
 }

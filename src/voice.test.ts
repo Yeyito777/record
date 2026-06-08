@@ -32,11 +32,16 @@ class FakeGateway implements VoiceGatewayConnection {
   connected = false;
   disconnected = false;
   selfVoiceStates: Array<{ selfMute: boolean; selfDeaf: boolean }> = [];
+  remoteMutedStates: Array<{ userId: string; muted: boolean }> = [];
 
   constructor(readonly callbacks: VoiceGatewayConnectionCallbacks = {}) {}
 
   setSelfVoiceState(state: { selfMute: boolean; selfDeaf: boolean }): void {
     this.selfVoiceStates.push({ ...state });
+  }
+
+  setRemoteUserMuted(userId: string, muted: boolean): void {
+    this.remoteMutedStates.push({ userId, muted });
   }
 
   async connect(): Promise<void> {
@@ -561,6 +566,43 @@ describe("voice backend", () => {
       { userId: "friend", speaking: true },
       { userId: "friend", speaking: false },
     ]);
+  });
+
+  test("forwards local remote-user mute state to current and future voice gateways", async () => {
+    const signaling = new FakeSignaling();
+    const gateways: FakeGateway[] = [];
+    const controller = new VoiceCallController({
+      selfUserId: "me",
+      signaling,
+      fetchPreferredRegions: async () => [],
+      createGatewayConnection: () => {
+        const gateway = new FakeGateway();
+        gateways.push(gateway);
+        return gateway;
+      },
+    });
+
+    controller.setRemoteUserMuted("friend", true);
+    const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.handleVoiceStateUpdate({
+      userId: "me",
+      channelId: "dm-1",
+      guildId: null,
+      sessionId: "voice-session",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    controller.handleVoiceServerUpdate({ token: "voice-token", endpoint: "voice.example", guildId: null });
+    await started;
+
+    expect(gateways[0]?.remoteMutedStates).toEqual([{ userId: "friend", muted: true }]);
+
+    controller.setRemoteUserMuted("friend", false);
+    expect(gateways[0]?.remoteMutedStates.at(-1)).toEqual({ userId: "friend", muted: false });
+    expect(controller.isRemoteUserMuted("friend")).toBe(false);
   });
 
   test("waits for the app gateway before requesting voice state", async () => {

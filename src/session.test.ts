@@ -1099,6 +1099,42 @@ describe("session", () => {
     });
   });
 
+  test("muting a selected voice sidebar member is local and displays the local-muted bell state", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.expandedGuildId = "guild-1";
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Voice", topic: null, position: 0, type: 2, nsfw: false }];
+    const effects = { renders: 0, scheduleRender: () => { effects.renders += 1; } };
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "friend",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "voice-session-friend",
+      displayName: "Friend",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    state.sidebar.selectedIndex = 2;
+    effects.renders = 0;
+
+    toggleSelectedGuildMute(state, effects);
+
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]).toMatchObject({ userId: "friend", localMuted: true });
+    expect(state.notice.text).toBe("");
+    expect(effects.renders).toBeGreaterThan(0);
+
+    toggleSelectedGuildMute(state, effects);
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.localMuted).toBe(false);
+
+    clearReadOnlyClient(state);
+  });
+
   test("editing a message patches it optimistically and clears edit state", async () => {
     let requestedBody = "";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

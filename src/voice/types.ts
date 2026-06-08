@@ -74,6 +74,7 @@ export interface VoiceGatewayConnection {
   connect(): Promise<void>;
   disconnect(): void;
   setSelfVoiceState?(state: { selfMute: boolean; selfDeaf: boolean }): void;
+  setRemoteUserMuted?(userId: string, muted: boolean): void;
   setLocalVolumes?(volumes: LocalAudioVolumes): void;
   setNoiseSuppression?(mode: NoiseSuppressionMode): void;
   readonly mediaSessionId: string | null;
@@ -155,6 +156,7 @@ export interface VoiceAudioContext {
   encodeOutgoingOpus?: (payload: Buffer) => Buffer | null;
   encodeOutgoingVideo?: (payload: Buffer, codec?: "H264" | "VP8" | "VP9" | "H265" | "AV1") => Buffer | null;
   decodeIncomingOpus?: (ssrc: number, payload: Buffer) => Buffer | null;
+  shouldDropIncomingAudio?: (ssrc: number) => boolean;
   onIncomingAudio?: (ssrc: number) => void;
   onError: (error: Error) => void;
 }

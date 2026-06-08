@@ -82,12 +82,15 @@ export interface SidebarEntry {
   kind: SidebarEntryKind;
   id: string;
   guildId: string;
+  channelId?: string;
+  userId?: string;
   label: string;
   depth: number;
   channelType?: number;
   notificationCount?: number;
   muted?: boolean;
   deafened?: boolean;
+  localMuted?: boolean;
   self?: boolean;
   color?: string;
   hidden?: boolean;
@@ -104,6 +107,7 @@ export interface SidebarVoiceMember {
   displayName: string;
   muted?: boolean;
   deafened?: boolean;
+  localMuted?: boolean;
   self?: boolean;
   color?: string;
 }
@@ -164,7 +168,7 @@ export function createSidebarState(): SidebarState {
 }
 
 function isSelectableEntry(entry: SidebarEntry): boolean {
-  return entry.kind !== "loading" && entry.kind !== "voice-member";
+  return entry.kind !== "loading";
 }
 
 function sameSidebarItem(a: SidebarSelectableItem | null | undefined, b: SidebarSelectableItem | null | undefined): boolean {
@@ -955,10 +959,13 @@ function pushSidebarVoiceMemberEntry(
     kind: "voice-member",
     id: `${channelId}:${member.userId}:${index}`,
     guildId,
+    channelId,
+    userId: member.userId,
     label: member.displayName || member.userId,
     depth,
     muted: member.muted,
     deafened: member.deafened,
+    localMuted: member.localMuted,
     self: member.self,
     color: member.color,
     selected: false,
@@ -1209,7 +1216,7 @@ function voiceMemberNameLabel(entry: SidebarEntry): string {
 }
 
 function voiceMemberStatusSuffix(entry: SidebarEntry): string {
-  return `${entry.muted ? " 🔇" : ""}${entry.deafened ? " 🔕" : ""}`;
+  return `${entry.muted ? " 🔇" : ""}${entry.deafened || entry.localMuted ? " 🔕" : ""}`;
 }
 
 function selectedEntrySnapshot(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions): Pick<SidebarEntry, "kind" | "id" | "guildId"> | null {

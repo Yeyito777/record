@@ -359,7 +359,7 @@ describe("sidebar state", () => {
     sidebar.open = true;
     sidebar.voiceMembersByChannelId = {
       "voice-1": [
-        { userId: "user-1", displayName: "Alice" },
+        { userId: "user-1", displayName: "Alice", localMuted: true },
         { userId: "me", displayName: "Me", self: true, muted: true },
       ],
     };
@@ -374,10 +374,14 @@ describe("sidebar state", () => {
     ).map(stripAnsiForTest);
 
     expect(rows.join("\n")).toContain("🔊 Lounge");
-    expect(rows.join("\n")).toContain("• Alice");
+    expect(rows.join("\n")).toContain("• Alice 🔕");
     expect(rows.join("\n")).toContain("• Me (you) 🔇");
     expect(moveSidebarSelection(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }], 1)).toBeUndefined();
     expect(buildSidebarEntries(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }])[sidebar.selectedIndex]?.kind).toBe("channel");
+    moveSidebarSelection(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }], 1);
+    const selectedMember = buildSidebarEntries(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }])[sidebar.selectedIndex];
+    expect(selectedMember?.kind).toBe("voice-member");
+    expect(selectedMember?.userId).toBe("user-1");
   });
 
   test("keeps muted and deafened voice member icons visible when names truncate", () => {

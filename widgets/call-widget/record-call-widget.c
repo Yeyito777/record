@@ -58,6 +58,7 @@ typedef struct {
   char *text_color;
   bool speaking;
   bool muted;
+  bool local_muted;
   bool deafened;
   bool self;
 } Participant;
@@ -213,8 +214,17 @@ static char *status_icon_path(const char *name) {
   return out;
 }
 
-static int reserved_status_width(void) {
-  return 2 * STATUS_ICON_SIZE + STATUS_ICON_GAP;
+static int status_width_for_count(int count) {
+  if (count <= 0) return 0;
+  return count * STATUS_ICON_SIZE + (count - 1) * STATUS_ICON_GAP;
+}
+
+static int participant_status_count(const Participant *p) {
+  int count = 0;
+  if (p->muted) count++;
+  if (p->local_muted) count++;
+  if (p->deafened) count++;
+  return count;
 }
 
 static void set_source_theme(cairo_t *cr, ThemeColor color) {
@@ -549,6 +559,41 @@ static void draw_icon(cairo_t *cr, const char *name, double x, double y) {
   g_object_unref(pixbuf);
 }
 
+static void draw_emoji_icon(cairo_t *cr, const char *emoji, double x, double y) {
+  PangoLayout *layout = pango_cairo_create_layout(cr);
+  PangoFontDescription *font = pango_font_description_from_string("Sans 13");
+  pango_layout_set_font_description(layout, font);
+  pango_layout_set_width(layout, STATUS_ICON_SIZE * PANGO_SCALE);
+  pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
+  char *markup = g_strdup_printf("<span foreground=\"%s\">%s</span>", THEME_TEXT_COLOR, emoji);
+  pango_layout_set_markup(layout, markup, -1);
+
+  int tw = 0, th = 0;
+  pango_layout_get_pixel_size(layout, &tw, &th);
+  cairo_move_to(cr, x + (STATUS_ICON_SIZE - tw) / 2.0, y + (STATUS_ICON_SIZE - th) / 2.0);
+  pango_cairo_show_layout(cr, layout);
+
+  g_free(markup);
+  pango_font_description_free(font);
+  g_object_unref(layout);
+}
+
+static double draw_participant_status_icons(cairo_t *cr, const Participant *p, double x, double y) {
+  if (p->muted) {
+    draw_icon(cr, "muted", x, y);
+    x += STATUS_ICON_SIZE + STATUS_ICON_GAP;
+  }
+  if (p->local_muted) {
+    draw_emoji_icon(cr, "🔕", x, y);
+    x += STATUS_ICON_SIZE + STATUS_ICON_GAP;
+  }
+  if (p->deafened) {
+    draw_icon(cr, "deafened", x, y);
+    x += STATUS_ICON_SIZE + STATUS_ICON_GAP;
+  }
+  return x;
+}
+
 static void render(void) {
   int width = 0, height = 0;
   desired_size(&width, &height);
@@ -576,12 +621,9 @@ static void render(void) {
 
   int avatar_box = AVATAR_SIZE + AVATAR_BORDER_WIDTH * 2;
   int row_h = avatar_box + ROW_PADDING_Y * 2;
-  int swidth = reserved_status_width();
   int content_x = OUTER_BORDER_WIDTH + PANEL_PADDING;
   int content_y = OUTER_BORDER_WIDTH + PANEL_PADDING;
   int content_w = width - (OUTER_BORDER_WIDTH + PANEL_PADDING) * 2;
-  int nwidth = content_w - ROW_PADDING_X * 2 - avatar_box - NAME_GAP - STATUS_GAP - swidth - ROW_PADDING_X;
-  if (nwidth < 24) nwidth = 24;
   int row_w = content_w;
 
   for (size_t i = 0; i < participant_count; i++) {
@@ -597,6 +639,9 @@ static void render(void) {
     double avatar_y = y + ROW_PADDING_Y;
     draw_avatar(cr, p, avatar_x, avatar_y);
 
+    int swidth = status_width_for_count(participant_status_count(p));
+    int nwidth = row_w - ROW_PADDING_X * 2 - avatar_box - NAME_GAP - (swidth > 0 ? STATUS_GAP + swidth : 0);
+    if (nwidth < 24) nwidth = 24;
     double text_x = avatar_x + avatar_box + NAME_GAP;
     cairo_save(cr);
     cairo_rectangle(cr, row_x, y, row_w, row_h);
@@ -606,12 +651,7 @@ static void render(void) {
 
     double icon_x = row_x + row_w - ROW_PADDING_X - swidth;
     double icon_y = y + (row_h - STATUS_ICON_SIZE) / 2.0;
-    if (p->muted) {
-      draw_icon(cr, "muted", icon_x, icon_y);
-    }
-    if (p->deafened) {
-      draw_icon(cr, "deafened", icon_x + STATUS_ICON_SIZE + STATUS_ICON_GAP, icon_y);
-    }
+    draw_participant_status_icons(cr, p, icon_x, icon_y);
   }
 
   cairo_destroy(cr);
@@ -653,6 +693,7 @@ static void handle_update(json_object *root) {
     p->text_color = g_strdup(text_color ? text_color : THEME_TEXT_COLOR);
     p->speaking = json_get_bool(item, "speaking");
     p->muted = json_get_bool(item, "muted");
+    p->local_muted = json_get_bool(item, "localMuted");
     p->deafened = json_get_bool(item, "deafened");
     p->self = json_get_bool(item, "self");
   }

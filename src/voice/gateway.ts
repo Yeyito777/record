@@ -71,6 +71,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private videoCodec: string | null = null;
   private readonly ssrcToUserId = new Map<number, string>();
   private readonly remoteUserIds = new Set<string>();
+  private readonly remoteMutedUserIds = new Set<string>();
   private readonly dave: DaveVoiceEncryption;
   private webRtc: NodePeerConnection | null = null;
   private webRtcAudioTrack: Track | null = null;
@@ -127,6 +128,16 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
       this.audioContext.selfDeaf = this.selfDeaf;
     }
     if (this.selfMute) this.sendSpeaking(false);
+  }
+
+  setRemoteUserMuted(userId: string, muted: boolean): void {
+    if (!userId || userId === this.data.userId) return;
+    if (muted) {
+      this.remoteMutedUserIds.add(userId);
+      this.callbacks.onSpeakingChange?.(userId, false);
+    } else {
+      this.remoteMutedUserIds.delete(userId);
+    }
   }
 
   setLocalVolumes(volumes: LocalAudioVolumes): void {
@@ -368,7 +379,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     // Our local capture path is the authoritative source for the current user.
     // Discord may echo stale SPEAKING frames for self, which made the call
     // widget clear the green speaking ring immediately after we set it locally.
-    if (userId !== this.data.userId) this.callbacks.onSpeakingChange?.(userId, speaking);
+    if (userId !== this.data.userId && !this.remoteMutedUserIds.has(userId)) this.callbacks.onSpeakingChange?.(userId, speaking);
     this.dave.addKnownUsers([userId]);
   }
 
@@ -544,6 +555,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         encodeOutgoingOpus: (payload) => this.data.video && !this.dave.ready ? null : this.dave.encodeOutgoingOpus(payload),
         encodeOutgoingVideo: (payload, codec) => this.data.video && !this.dave.ready ? null : this.dave.encodeOutgoingVideo(payload, codec),
         decodeIncomingOpus: (ssrc, payload) => this.dave.decodeIncomingOpus(this.resolveIncomingSsrcUserId(ssrc), payload),
+        shouldDropIncomingAudio: (ssrc) => this.shouldDropIncomingAudio(ssrc),
         onIncomingAudio: (ssrc) => this.handleIncomingAudio(ssrc),
         onError: (error) => this.reportError(error),
       };
@@ -578,9 +590,14 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     return inferredUserId;
   }
 
+  private shouldDropIncomingAudio(ssrc: number): boolean {
+    const userId = this.resolveIncomingSsrcUserId(ssrc);
+    return Boolean(userId && userId !== this.data.userId && this.remoteMutedUserIds.has(userId));
+  }
+
   private handleIncomingAudio(ssrc: number): void {
     const userId = this.resolveIncomingSsrcUserId(ssrc);
-    if (!userId || userId === this.data.userId) return;
+    if (!userId || userId === this.data.userId || this.remoteMutedUserIds.has(userId)) return;
     this.callbacks.onSpeakingChange?.(userId, true);
   }
 

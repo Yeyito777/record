@@ -77,6 +77,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackInvalidPacketCount = 0;
   private playbackInvalidOpusPacketCount = 0;
   private playbackSelfDeafDropCount = 0;
+  private playbackLocalMuteDropCount = 0;
   private playbackFirstPacketLogged = false;
   private playbackForceFfplay = false;
   private lastPlaybackStatsAt = 0;
@@ -360,6 +361,11 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       this.logPlaybackStats("wrong_payload");
       return;
     }
+    if (context.shouldDropIncomingAudio?.(parsed.ssrc)) {
+      this.playbackLocalMuteDropCount += 1;
+      this.logPlaybackStats("local_mute");
+      return;
+    }
 
     const decrypted = decryptAes256GcmRtp(packet, parsed.headerLength, context.secretKey);
     if (!decrypted) {
@@ -479,6 +485,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackInvalidPacketCount = 0;
     this.playbackInvalidOpusPacketCount = 0;
     this.playbackSelfDeafDropCount = 0;
+    this.playbackLocalMuteDropCount = 0;
     this.playbackFirstPacketLogged = false;
     this.playbackForceFfplay = false;
     this.lastPlaybackStatsAt = 0;
@@ -512,6 +519,7 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       invalidOpusPackets: this.playbackInvalidOpusPacketCount,
       wrongPayloads: this.playbackWrongPayloadCount,
       selfDeafDrops: this.playbackSelfDeafDropCount,
+      localMuteDrops: this.playbackLocalMuteDropCount,
       sendErrors: this.playbackSendErrorCount,
       streams: [...this.playbackDiagnosticsBySsrc.values()].map((stream) => stream.snapshot()),
       tracePath: this.playbackTracePath,
