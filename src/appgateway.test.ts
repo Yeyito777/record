@@ -15,6 +15,23 @@ describe("app gateway helpers", () => {
     expect(sent).toEqual([{ op: 3, d: { status: "dnd", afk: false, since: 0, activities: [] } }]);
   });
 
+  test("sends Discord QoS heartbeats and marks active RTC sessions", () => {
+    const sent: unknown[] = [];
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    client.ready = true;
+    client.seq = 123;
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+
+    client.sendHeartbeat();
+    client.currentVoiceChannelId = "voice-1";
+    client.sendHeartbeat();
+
+    expect(sent).toEqual([
+      { op: 40, d: { seq: 123, qos: { active: true, ver: 27, reasons: ["foregrounded"] } } },
+      { op: 40, d: { seq: 123, qos: { active: true, ver: 27, reasons: ["foregrounded", "rtc_connected"] } } },
+    ]);
+  });
+
   test("requests specific guild members over the gateway", () => {
     const sent: unknown[] = [];
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;

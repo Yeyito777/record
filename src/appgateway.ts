@@ -27,6 +27,7 @@ import { buildVoiceStatePayload, type VoiceServerUpdate, type VoiceSignalingClie
 const API_BASE = "https://discord.com/api/v9";
 const GATEWAY_VERSION = 9;
 const GATEWAY_CAPABILITIES = 30717;
+const GATEWAY_QOS_HEARTBEAT_VERSION = 27;
 const GATEWAY_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -135,6 +136,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private guildChannelSubscription: GuildChannelSubscription | null = null;
   private guildSubscriptions = new Set<string>();
   private currentPresenceStatus: DiscordPresenceStatus;
+  private currentVoiceChannelId: string | null = null;
 
   constructor(
     private readonly token: string,
@@ -185,6 +187,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
   requestVoiceState(request: VoiceStateRequest): boolean {
     if (!this.isReady()) return false;
     this.send(buildVoiceStatePayload(request));
+    this.currentVoiceChannelId = request.channelId;
     return true;
   }
 
@@ -333,6 +336,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.callbacks.onChannelMuteSettings?.(extractChannelMuteSettings(payload.d), { reset: true });
       this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
       for (const voiceState of extractReadyVoiceStates(payload.d)) {
+        this.rememberSelfVoiceState(voiceState);
         this.callbacks.onVoiceStateUpdate?.(voiceState);
       }
       this.sendPresenceUpdate();
@@ -353,6 +357,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
     if (payload.t === "READY_SUPPLEMENTAL") {
       for (const voiceState of extractReadyVoiceStates(payload.d)) {
+        this.rememberSelfVoiceState(voiceState);
         this.callbacks.onVoiceStateUpdate?.(voiceState);
       }
       return;
@@ -490,7 +495,10 @@ export class AppGatewayClient implements VoiceSignalingClient {
         }
         case "VOICE_STATE_UPDATE": {
           const update = mapVoiceStateUpdate(data);
-          if (update) this.callbacks.onVoiceStateUpdate?.(update);
+          if (update) {
+            this.rememberSelfVoiceState(update);
+            this.callbacks.onVoiceStateUpdate?.(update);
+          }
           break;
         }
         case "VOICE_SERVER_UPDATE": {
@@ -650,8 +658,29 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private startHeartbeat(intervalMs: number): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(() => {
-      this.send({ op: 1, d: this.seq });
+      this.sendHeartbeat();
     }, Math.max(1_000, intervalMs));
+  }
+
+  private sendHeartbeat(): void {
+    const reasons = ["foregrounded"];
+    if (this.currentVoiceChannelId) reasons.push("rtc_connected");
+    this.send({
+      op: 40,
+      d: {
+        seq: this.seq,
+        qos: {
+          active: true,
+          ver: GATEWAY_QOS_HEARTBEAT_VERSION,
+          reasons,
+        },
+      },
+    });
+  }
+
+  private rememberSelfVoiceState(update: VoiceStateUpdate): void {
+    if (update.userId !== this.currentUserId) return;
+    this.currentVoiceChannelId = update.channelId;
   }
 
   private scheduleReconnect(delayOverride?: number): void {
