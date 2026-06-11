@@ -455,9 +455,12 @@ function maybeResortDirectMessages(state: AppState, channelId: string, messageId
 }
 
 function guildIdForChannel(state: AppState, message: DiscordMessage): string | null {
+  // Discord omits guild_id on private-channel gateway messages. Those DMs may
+  // arrive while the Direct Messages list is not the opened channel list yet,
+  // so keep enough guild context for the top-level DM notification badge.
   return message.guildId
-    ?? state.channelList.channels.find((channel) => channel.id === message.channelId)?.guildId
-    ?? null;
+    ?? guildIdForChannelId(state, message.channelId)
+    ?? DIRECT_MESSAGES_GUILD_ID;
 }
 
 function guildIdForChannelId(state: AppState, channelId: string): string | null {
@@ -1245,7 +1248,7 @@ export function handleVoiceStateUpdate(state: AppState, effects: SessionEffects,
   if (changed || voiceMembersChanged) effects.scheduleRender();
 }
 
-function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
+export function handleGatewayMessageCreate(state: AppState, effects: SessionEffects, message: DiscordMessage): void {
   const guildId = guildIdForChannel(state, message);
   const cachedMessage = hydrateMissingReplyPreviewFromKnownMessages(state, withMessageGuildId(message, guildId));
   recordMessageRoleIds(state, cachedMessage, guildId);

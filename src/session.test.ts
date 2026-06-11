@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
+import { guildNotificationCounts } from "./notifications";
+import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -1097,6 +1098,32 @@ describe("session", () => {
         },
       },
     });
+  });
+
+  test("gateway DM messages badge Direct Messages before the DM list is open", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }];
+    state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID] = [{
+      id: "dm-1",
+      guildId: DIRECT_MESSAGES_GUILD_ID,
+      parentId: null,
+      name: "Alice",
+      topic: null,
+      position: 0,
+      type: 1,
+      nsfw: false,
+    }];
+    state.channelList.guildId = null;
+    state.channelList.channels = [];
+
+    const dmMessage = message("2", "hello", "dm-1");
+    delete dmMessage.guildId;
+    handleGatewayMessageCreate(state, { scheduleRender: () => {} }, dmMessage);
+
+    expect(state.notifications.byChannelId["dm-1"]).toBe(1);
+    expect(state.notifications.channelGuildIds["dm-1"]).toBe(DIRECT_MESSAGES_GUILD_ID);
+    expect(guildNotificationCounts(state.notifications, state.channelList.channels).get(DIRECT_MESSAGES_GUILD_ID)).toBe(1);
   });
 
   test("muting a selected voice sidebar member is local and displays the local-muted bell state", () => {
