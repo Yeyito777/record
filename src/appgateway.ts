@@ -123,6 +123,7 @@ export interface AppGatewayCallbacks {
 
 export class AppGatewayClient implements VoiceSignalingClient {
   private gatewayUrl: string | null = null;
+  private resumeGatewayUrl: string | null = null;
   private ws: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -216,6 +217,13 @@ export class AppGatewayClient implements VoiceSignalingClient {
     return true;
   }
 
+  watchStream(streamKey: string): boolean {
+    if (!this.isReady()) return false;
+    debugLog("app_gateway.stream_watch.send", { streamKey });
+    this.send({ op: 20, d: { stream_key: streamKey } });
+    return true;
+  }
+
   pingStreamServer(streamKey: string): boolean {
     if (!this.isReady()) return false;
     debugLog("app_gateway.stream_ping.send", { streamKey });
@@ -266,6 +274,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     }
     this.closeSocket();
     this.sessionId = null;
+    this.resumeGatewayUrl = null;
     this.seq = null;
     this.ready = false;
     this.reconnectAttempt = 0;
@@ -281,7 +290,8 @@ export class AppGatewayClient implements VoiceSignalingClient {
       }
       if (this.manualDisconnect) return;
 
-      const gatewayUrl = `${this.gatewayUrl}/?v=${GATEWAY_VERSION}&encoding=json`;
+      const gatewayUrl = this.websocketUrl();
+      debugLog("app_gateway.connect", { resume: Boolean(this.sessionId && this.resumeGatewayUrl), hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl) });
       this.ws = new WebSocket(gatewayUrl);
       this.ws.addEventListener("message", this.handleMessage);
       this.ws.addEventListener("close", this.handleClose);
@@ -314,7 +324,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
       case 11:
         return;
       case 7:
-        debugLog("app_gateway.reconnect_requested", { hasSessionId: Boolean(this.sessionId), seq: this.seq });
+        debugLog("app_gateway.reconnect_requested", { hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq });
         this.scheduleReconnect(0);
         return;
       case 9:
@@ -329,7 +339,8 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.ready = true;
       this.currentUserId = extractCurrentUserId(payload.d);
       this.sessionId = isObject(payload.d) && typeof payload.d.session_id === "string" ? payload.d.session_id : null;
-      debugLog("app_gateway.ready", { userId: this.currentUserId, hasSessionId: Boolean(this.sessionId) });
+      this.resumeGatewayUrl = extractResumeGatewayUrl(payload.d) ?? this.resumeGatewayUrl;
+      debugLog("app_gateway.ready", { userId: this.currentUserId, hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl) });
       this.callbacks.onCurrentUserRoleIds?.(extractCurrentUserRoleIdsByGuildId(payload.d));
       this.callbacks.onReadyGuilds?.(extractReadyGuilds(payload.d));
       this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
@@ -405,9 +416,10 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
   private handleInvalidSession(data: unknown): void {
     const resumable = data === true;
-    debugLog("app_gateway.invalid_session", { resumable, hasSessionId: Boolean(this.sessionId), seq: this.seq });
+    debugLog("app_gateway.invalid_session", { resumable, hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq });
     if (!resumable) {
       this.sessionId = null;
+      this.resumeGatewayUrl = null;
       this.seq = null;
     }
 
@@ -635,6 +647,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     debugLog("app_gateway.close", { code: event.code, reason: event.reason || null, manualDisconnect: manual, wasReady, resetSession });
     if (resetSession) {
       this.sessionId = null;
+      this.resumeGatewayUrl = null;
       this.seq = null;
     }
     this.closeSocket();
@@ -690,7 +703,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     this.closeSocket();
     const attempt = ++this.reconnectAttempt;
     const delayMs = delayOverride ?? Math.min(MAX_RECONNECT_DELAY_MS, INITIAL_RECONNECT_DELAY_MS * 2 ** Math.max(0, attempt - 1));
-    debugLog("app_gateway.reconnect", { attempt, delayMs, hasSessionId: Boolean(this.sessionId), seq: this.seq });
+    debugLog("app_gateway.reconnect", { attempt, delayMs, hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq });
     this.callbacks.onReconnect?.(attempt, delayMs);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -771,6 +784,13 @@ export class AppGatewayClient implements VoiceSignalingClient {
       socket.close();
     }
   }
+
+  private websocketUrl(): string {
+    const base = this.sessionId && this.resumeGatewayUrl ? this.resumeGatewayUrl : this.gatewayUrl;
+    if (!base) throw new Error("Discord gateway URL is not available.");
+    const separator = base.includes("?") ? "&" : "/?";
+    return `${base}${separator}v=${GATEWAY_VERSION}&encoding=json`;
+  }
 }
 
 function isNonResumableGatewayCloseCode(code: number): boolean {
@@ -782,6 +802,23 @@ export function extractCurrentUserId(data: unknown): string | null {
   if (!isObject(data)) return null;
   const user = isObject(data.user) ? data.user : null;
   return user && typeof user.id === "string" ? user.id : null;
+}
+
+export function extractResumeGatewayUrl(data: unknown): string | null {
+  if (!isObject(data) || typeof data.resume_gateway_url !== "string") return null;
+  return normalizeGatewayBaseUrl(data.resume_gateway_url);
+}
+
+function normalizeGatewayBaseUrl(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "wss:" && parsed.protocol !== "ws:") return null;
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`.replace(/\/$/, "");
+  } catch {
+    return null;
+  }
 }
 
 export function mapVoiceStateUpdate(data: unknown, fallbackGuildId: string | null = null): VoiceStateUpdate | null {

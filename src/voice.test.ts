@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfplayPlaybackArgs, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
+import { buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -99,6 +99,29 @@ describe("voice backend", () => {
         video: true,
         max_dave_protocol_version: 1,
         streams: [{ type: "screen", rid: "100", quality: 100, active: true, max_framerate: 30 }],
+      },
+    });
+
+    expect(buildVoiceIdentifyPayload({ ...joinData, streamReceive: { streamKey: "call:dm-1:friend", ownerUserId: "friend" } }, 1)).toEqual({
+      op: 0,
+      d: {
+        server_id: "dm-1",
+        channel_id: "dm-1",
+        user_id: "me",
+        session_id: "voice-session",
+        token: "voice-token",
+        video: true,
+        max_dave_protocol_version: 1,
+      },
+    });
+  });
+
+  test("builds media sink wants for watched stream quality", () => {
+    expect(buildMediaSinkWantsPayload(8964, { quality: 150, pixelCount: 1189844.5 })).toEqual({
+      op: 15,
+      d: {
+        "8964": 100,
+        pixelCounts: { "8964": 1189844.5 },
       },
     });
   });

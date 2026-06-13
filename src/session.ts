@@ -156,6 +156,8 @@ import { clearTypingUser, recordTypingStart } from "./typing";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
 import { ScreenStreamController } from "./streamcontroller";
+import { WatchStreamController, buildStreamKeyForVoiceSession, parseStreamKey, streamKeyMatchesVoiceSession } from "./watchstreamcontroller";
+import { createDefaultWatchStreamPlayback } from "./watchstreamplayback";
 import { formatGainDbWithUnit, normalizeGainDb, type NoiseSuppressionMode } from "./volume";
 
 export interface SessionEffects {
@@ -187,7 +189,13 @@ let appGateway: AppGatewayClient | null = null;
 let appGatewayToken: string | null = null;
 let voiceCallController: VoiceCallController | null = null;
 let streamController: ScreenStreamController | null = null;
+let watchStreamController: WatchStreamController | null = null;
 let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | null = null;
+interface TrackedStreamState {
+  create: import("./appgateway").StreamCreateEvent;
+  serverUpdate: import("./appgateway").StreamServerUpdateEvent | null;
+}
+const availableStreamsByKey = new Map<string, TrackedStreamState>();
 const callWidget = new CallWidgetController();
 const recentIncomingCallRingtones = new Map<string, number>();
 const knownCallParticipantsByChannelId = new Map<string, Set<string>>();
@@ -258,6 +266,9 @@ export function disconnectMemberListGateway(): void {
 export function disconnectAppGateway(): void {
   streamController?.stop("gateway_disconnect");
   streamController = null;
+  watchStreamController?.stop("gateway_disconnect");
+  watchStreamController = null;
+  availableStreamsByKey.clear();
   voiceCallController?.disconnect();
   voiceCallController = null;
   stopAllIncomingCallRingtones("gateway_disconnect");
@@ -1987,6 +1998,90 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
   return voiceCallController;
 }
 
+function rememberStreamCreate(event: import("./appgateway").StreamCreateEvent): void {
+  const current = availableStreamsByKey.get(event.streamKey);
+  availableStreamsByKey.set(event.streamKey, { create: event, serverUpdate: current?.serverUpdate ?? null });
+}
+
+function rememberStreamServerUpdate(event: import("./appgateway").StreamServerUpdateEvent): void {
+  const current = availableStreamsByKey.get(event.streamKey);
+  if (!current) return;
+  availableStreamsByKey.set(event.streamKey, { ...current, serverUpdate: event });
+}
+
+function forgetTrackedStream(streamKey: string): void {
+  availableStreamsByKey.delete(streamKey);
+}
+
+function trackedStreamsForSession(session: VoiceCallSession, selfUserId: string | null | undefined): TrackedStreamState[] {
+  return Array.from(availableStreamsByKey.values()).filter((stream) => {
+    const parsed = parseStreamKey(stream.create.streamKey);
+    if (!parsed || parsed.ownerUserId === selfUserId) return false;
+    return streamKeyMatchesVoiceSession(stream.create.streamKey, session);
+  });
+}
+
+function normalizeWatchTarget(target: string | null | undefined): string | null {
+  const trimmed = target?.trim();
+  if (!trimmed) return null;
+  const mention = trimmed.match(/^<@!?(\d+)>$/);
+  return mention?.[1] ?? trimmed;
+}
+
+function resolveWatchTargetUserId(state: AppState, session: VoiceCallSession, target: string): string | null {
+  if (/^\d{5,25}$/.test(target)) return target;
+  const needle = target.toLowerCase();
+  for (const stream of trackedStreamsForSession(session, state.auth.user?.id)) {
+    const parsed = parseStreamKey(stream.create.streamKey);
+    if (!parsed) continue;
+    const displayName = displayNameForUser(state, session.target.channelId, parsed.ownerUserId, parsed.ownerUserId).toLowerCase();
+    if (displayName === needle || displayName.includes(needle)) return parsed.ownerUserId;
+  }
+  const activeChannel = channelById(state, session.target.channelId);
+  for (const recipient of activeChannel?.recipients ?? []) {
+    if (recipient.displayName.toLowerCase() === needle || recipient.username.toLowerCase() === needle) return recipient.id;
+  }
+  for (const member of state.memberList.members) {
+    if (member.displayName.toLowerCase() === needle || member.username.toLowerCase() === needle) return member.id;
+  }
+  return null;
+}
+
+function resolveWatchStreamKey(state: AppState, session: VoiceCallSession, target: string | null | undefined): { streamKey: string; ownerUserId: string | null } | null {
+  const normalizedTarget = normalizeWatchTarget(target);
+  if (normalizedTarget && parseStreamKey(normalizedTarget)) {
+    if (!streamKeyMatchesVoiceSession(normalizedTarget, session)) return null;
+    return { streamKey: normalizedTarget, ownerUserId: parseStreamKey(normalizedTarget)?.ownerUserId ?? null };
+  }
+
+  if (!normalizedTarget) {
+    const streams = trackedStreamsForSession(session, state.auth.user?.id);
+    if (streams.length !== 1) return null;
+    const streamKey = streams[0]?.create.streamKey;
+    return streamKey ? { streamKey, ownerUserId: parseStreamKey(streamKey)?.ownerUserId ?? null } : null;
+  }
+
+  const ownerUserId = resolveWatchTargetUserId(state, session, normalizedTarget);
+  if (!ownerUserId) return null;
+  return { streamKey: buildStreamKeyForVoiceSession(session, ownerUserId), ownerUserId };
+}
+
+function watchStreamAmbiguityNotice(state: AppState, session: VoiceCallSession, target: string | null | undefined): string {
+  const normalizedTarget = normalizeWatchTarget(target);
+  if (normalizedTarget) {
+    if (parseStreamKey(normalizedTarget)) return "That stream is not in the current call.";
+    return "Use /watch with a user id, @mention, exact stream_key, or a visible streamer name.";
+  }
+  const streams = trackedStreamsForSession(session, state.auth.user?.id);
+  if (streams.length === 0) return "No active streams found in this call yet.";
+  const labels = streams.slice(0, 5).map((stream) => {
+    const owner = parseStreamKey(stream.create.streamKey)?.ownerUserId ?? "unknown";
+    return `${displayNameForUser(state, session.target.channelId, owner, owner)} (${stream.create.streamKey})`;
+  });
+  const suffix = streams.length > labels.length ? `, and ${streams.length - labels.length} more` : "";
+  return `Multiple streams are live; use /watch <user_id|stream_key>. Streams: ${labels.join(", ")}${suffix}`;
+}
+
 function startAppGateway(state: AppState, token: string, effects: SessionEffects): void {
   if (appGateway && appGatewayToken === token) return;
   state.voiceCall = null;
@@ -2094,11 +2189,22 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       syncCallWidget(state, null);
       effects.scheduleRender();
     },
-    onStreamCreate: (event) => streamController?.handleCreate(event),
-    onStreamServerUpdate: (event) => streamController?.handleServerUpdate(event),
+    onStreamCreate: (event) => {
+      rememberStreamCreate(event);
+      streamController?.handleCreate(event);
+      watchStreamController?.handleCreate(event);
+    },
+    onStreamServerUpdate: (event) => {
+      rememberStreamServerUpdate(event);
+      streamController?.handleServerUpdate(event);
+      watchStreamController?.handleServerUpdate(event);
+    },
     onStreamDelete: (event) => {
       streamController?.handleDelete(event);
       if (streamController?.streamKey === event.streamKey) streamController = null;
+      watchStreamController?.handleDelete(event);
+      if (watchStreamController?.streamKey === event.streamKey && !watchStreamController.active) watchStreamController = null;
+      forgetTrackedStream(event.streamKey);
     },
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
     onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
@@ -3547,6 +3653,7 @@ export function hangUpCurrentCall(state: AppState, effects: SessionEffects): voi
   }
 
   stopCurrentStream(state, effects, { silent: true });
+  stopCurrentWatchedStream(state, effects, { silent: true });
   stopOutboundCallRingtone(voiceCallController.activeSession.target.channelId, "hangup");
   debugLog("call.command.hangup", { channelId: voiceCallController.activeSession.target.channelId });
   voiceCallController.leave("hangup");
@@ -3674,6 +3781,99 @@ export function stopCurrentStream(state: AppState, effects: SessionEffects, opti
   if (!options.silent) {
     playSoundEffect("streamEnded");
     setNotice(state, "Stream stopped.", "muted", { chat: false });
+    effects.scheduleRender();
+  }
+}
+
+export function watchCurrentStream(state: AppState, effects: SessionEffects, target: string | null = null): void {
+  const token = state.auth.savedToken;
+  const selfUserId = state.auth.user?.id;
+  if (!token || !selfUserId) {
+    setNotice(state, "Login required to watch a stream.", "warning", { statusLine: false });
+    effects.scheduleRender();
+    return;
+  }
+  const session = voiceCallController?.activeSession;
+  if (!session || session.state !== "ready") {
+    setNotice(state, "Join a call before using /watch.", "warning", { statusLine: false });
+    effects.scheduleRender();
+    return;
+  }
+  if (!session.sessionId) {
+    setNotice(state, "Discord voice session is still connecting; try /watch again in a moment.", "warning", { statusLine: false });
+    effects.scheduleRender();
+    return;
+  }
+  if (!appGateway || appGatewayToken !== token || !appGateway.isReady()) {
+    setNotice(state, "Discord gateway is still connecting; try again in a moment.", "warning", { statusLine: false });
+    effects.scheduleRender();
+    return;
+  }
+
+  const resolved = resolveWatchStreamKey(state, session, target);
+  if (!resolved) {
+    setNotice(state, watchStreamAmbiguityNotice(state, session, target), "warning", { statusLine: false });
+    effects.scheduleRender();
+    return;
+  }
+  if (resolved.ownerUserId === selfUserId) {
+    setNotice(state, "Use /stream to control your own stream; /watch is for other users' streams.", "warning", { statusLine: false });
+    effects.scheduleRender();
+    return;
+  }
+
+  if (watchStreamController?.streamKey === resolved.streamKey) {
+    stopCurrentWatchedStream(state, effects);
+    return;
+  }
+  stopCurrentWatchedStream(state, effects, { silent: true });
+
+  const ownerLabel = resolved.ownerUserId
+    ? displayNameForUser(state, session.target.channelId, resolved.ownerUserId, resolved.ownerUserId)
+    : "stream";
+  const controller = new WatchStreamController(resolved.streamKey, session, selfUserId, {
+    scheduleRender: effects.scheduleRender,
+    watchStream: (streamKey) => appGateway?.watchStream(streamKey) ?? false,
+    pingStreamServer: (streamKey) => appGateway?.pingStreamServer(streamKey) ?? false,
+  }, (error) => {
+    setNotice(state, `Stream watch: ${error.message}`, "warning", { statusLine: false });
+  }, undefined, createDefaultWatchStreamPlayback());
+  watchStreamController = controller;
+
+  const tracked = availableStreamsByKey.get(resolved.streamKey);
+  if (tracked) {
+    controller.handleCreate(tracked.create);
+    if (tracked.serverUpdate) controller.handleServerUpdate(tracked.serverUpdate);
+  }
+
+  setNotice(state, `Joining ${ownerLabel}'s stream…`, "muted", { loading: true, statusLine: false });
+  effects.scheduleRender();
+
+  void controller.start().then(() => {
+    if (watchStreamController !== controller) return;
+    setNotice(state, `Watching ${ownerLabel}'s stream.`, "success", { statusLine: false });
+    effects.scheduleRender();
+  }).catch((error) => {
+    if (watchStreamController === controller) watchStreamController = null;
+    const message = error instanceof Error ? error.message : String(error);
+    setNotice(state, `Failed to watch stream: ${message}`, "error", { statusLine: false });
+    effects.scheduleRender();
+  });
+}
+
+export function stopCurrentWatchedStream(state: AppState, effects: SessionEffects, options: { silent?: boolean } = {}): void {
+  const controller = watchStreamController;
+  if (!controller) {
+    if (!options.silent) {
+      setNotice(state, "No active watched stream.", "muted", { statusLine: false });
+      effects.scheduleRender();
+    }
+    return;
+  }
+  watchStreamController = null;
+  controller.stop("command");
+  if (!options.silent) {
+    setNotice(state, "Stopped watching stream.", "muted", { statusLine: false });
     effects.scheduleRender();
   }
 }

@@ -8,7 +8,7 @@ const DEFAULT_VIDEO_STREAMS: VoiceGatewayOutboundStream[] = [
 ];
 
 export function buildVoiceIdentifyPayload(data: VoiceGatewayJoinData, maxDaveProtocolVersion = DAVE_PROTOCOL_VERSION): unknown {
-  const video = Boolean(data.video);
+  const video = Boolean(data.video || data.streamReceive);
   const payload: Record<string, unknown> = {
     server_id: data.guildId,
     channel_id: data.channelId,
@@ -18,11 +18,31 @@ export function buildVoiceIdentifyPayload(data: VoiceGatewayJoinData, maxDavePro
     video,
     max_dave_protocol_version: maxDaveProtocolVersion,
   };
-  if (video) payload.streams = DEFAULT_VIDEO_STREAMS.map(voiceGatewayOutboundStreamPayload);
+  if (video && !data.streamReceive) payload.streams = DEFAULT_VIDEO_STREAMS.map(voiceGatewayOutboundStreamPayload);
   return {
     op: 0,
     d: payload,
   };
+}
+
+export function buildMediaSinkWantsPayload(ssrc: number, options: { quality?: number; pixelCount?: number } = {}): unknown {
+  const quality = normalizeQuality(options.quality ?? 100);
+  const pixelCount = options.pixelCount ?? 1920 * 1080;
+  const key = String(ssrc >>> 0);
+  return {
+    op: 15,
+    d: {
+      [key]: quality,
+      pixelCounts: {
+        [key]: pixelCount,
+      },
+    },
+  };
+}
+
+function normalizeQuality(quality: number): number {
+  if (!Number.isFinite(quality)) return 100;
+  return Math.max(0, Math.min(100, Math.round(quality)));
 }
 
 export function buildVoiceResumePayload(data: VoiceGatewayJoinData, seqAck: number): unknown {

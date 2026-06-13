@@ -27,6 +27,7 @@ export type CommandResult =
   | { type: "upload"; path: string }
   | { type: "call" }
   | { type: "stream" }
+  | { type: "watch"; target: string | null }
   | { type: "hangup" }
   | { type: "mute"; muted: boolean | null }
   | { type: "deafen"; deafened: boolean | null }
@@ -242,6 +243,18 @@ const commands: SlashCommand[] = [
       if (parts.length !== 1) return usage(state, "Usage: /stream");
       clearPrompt(state);
       return { type: "stream" };
+    },
+  },
+  {
+    name: "/watch",
+    description: "Watch another user's stream in the current call",
+    handler: (text, state) => {
+      const match = text.match(/^\/watch(?:\s+(\S+))?\s*$/);
+      if (!match) return usage(state, "Usage: /watch [user_id|@mention|stream_key]");
+      const rawTarget = match[1]?.trim() ?? null;
+      const mention = rawTarget?.match(/^<@!?(\d+)>$/);
+      clearPrompt(state);
+      return { type: "watch", target: mention?.[1] ?? rawTarget };
     },
   },
   {

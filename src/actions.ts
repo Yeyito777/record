@@ -10,7 +10,7 @@ import { tryCommand } from "./commands";
 import { fetchCurrentUserPresenceStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
 import { expandMacros } from "./macros";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
-import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, toggleCurrentStream, uploadCurrentChannelFile, type SessionEffects } from "./session";
+import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, toggleCurrentStream, uploadCurrentChannelFile, watchCurrentStream, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
@@ -178,6 +178,9 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       return true;
     case "stream":
       toggleCurrentStream(state, effects);
+      return true;
+    case "watch":
+      watchCurrentStream(state, effects, result.target);
       return true;
     case "hangup":
       hangUpCurrentCall(state, effects);

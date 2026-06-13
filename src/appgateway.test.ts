@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { AppGatewayClient, extractChannelMuteSettings, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, mapCallGatewayEvent, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
+import { AppGatewayClient, extractChannelMuteSettings, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, extractResumeGatewayUrl, mapCallGatewayEvent, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -53,7 +53,7 @@ describe("app gateway helpers", () => {
     });
   });
 
-  test("sends stream create and delete requests over the gateway", () => {
+  test("sends stream create, watch, ping, pause, and delete requests over the gateway", () => {
     const sent: unknown[] = [];
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
     client.ready = true;
@@ -61,12 +61,14 @@ describe("app gateway helpers", () => {
 
     expect(client.createStream({ type: "guild", guildId: "guild-1", channelId: "voice-1", preferredRegion: "us-east" })).toBe(true);
     expect(client.setStreamPaused("guild:guild-1:voice-1:me", false)).toBe(true);
+    expect(client.watchStream("guild:guild-1:voice-1:friend")).toBe(true);
     expect(client.pingStreamServer("guild:guild-1:voice-1:me")).toBe(true);
     expect(client.deleteStream("guild:guild-1:voice-1:me")).toBe(true);
 
     expect(sent).toEqual([
       { op: 18, d: { type: "guild", guild_id: "guild-1", channel_id: "voice-1", preferred_region: "us-east" } },
       { op: 22, d: { stream_key: "guild:guild-1:voice-1:me", paused: false } },
+      { op: 20, d: { stream_key: "guild:guild-1:voice-1:friend" } },
       { op: 21, d: { stream_key: "guild:guild-1:voice-1:me" } },
       { op: 19, d: { stream_key: "guild:guild-1:voice-1:me" } },
     ]);
@@ -76,26 +78,47 @@ describe("app gateway helpers", () => {
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
     const reconnectDelays: unknown[] = [];
     client.sessionId = "gateway-session";
+    client.resumeGatewayUrl = "wss://gateway-us-east1-b.discord.gg";
     client.seq = 42;
     client.scheduleReconnect = (delay?: number) => reconnectDelays.push(delay);
 
     client.handleMessage({ data: JSON.stringify({ op: 9, d: true }) });
 
     expect(client.sessionId).toBe("gateway-session");
+    expect(client.resumeGatewayUrl).toBe("wss://gateway-us-east1-b.discord.gg");
     expect(client.seq).toBe(42);
     expect(reconnectDelays).toEqual([0]);
+  });
+
+  test("uses Discord's resume gateway URL when resuming sessions", () => {
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    client.gatewayUrl = "wss://gateway.discord.gg";
+
+    expect(client.websocketUrl()).toBe("wss://gateway.discord.gg/?v=9&encoding=json");
+
+    client.sessionId = "gateway-session";
+    client.resumeGatewayUrl = "wss://gateway-us-east1-b.discord.gg";
+
+    expect(client.websocketUrl()).toBe("wss://gateway-us-east1-b.discord.gg/?v=9&encoding=json");
+  });
+
+  test("extracts and normalizes READY resume gateway URLs", () => {
+    expect(extractResumeGatewayUrl({ resume_gateway_url: "wss://gateway-us-east1-b.discord.gg/?v=9&encoding=json" })).toBe("wss://gateway-us-east1-b.discord.gg");
+    expect(extractResumeGatewayUrl({ resume_gateway_url: "https://gateway-us-east1-b.discord.gg" })).toBeNull();
   });
 
   test("clears gateway session data for non-resumable invalid-session opcodes", () => {
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
     const reconnectDelays: unknown[] = [];
     client.sessionId = "gateway-session";
+    client.resumeGatewayUrl = "wss://gateway-us-east1-b.discord.gg";
     client.seq = 42;
     client.scheduleReconnect = (delay?: number) => reconnectDelays.push(delay);
 
     client.handleMessage({ data: JSON.stringify({ op: 9, d: false }) });
 
     expect(client.sessionId).toBeNull();
+    expect(client.resumeGatewayUrl).toBeNull();
     expect(client.seq).toBeNull();
     expect(reconnectDelays).toEqual([undefined]);
   });

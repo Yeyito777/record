@@ -54,8 +54,30 @@ export interface VoiceGatewayJoinData {
   token: string;
   endpoint: string;
   video?: boolean;
+  streamReceive?: VoiceGatewayStreamReceive;
   daveChannelId?: string;
   maxDaveProtocolVersion?: number;
+}
+
+export interface VoiceGatewayStreamReceive {
+  streamKey: string;
+  ownerUserId?: string | null;
+  quality?: number;
+  pixelCount?: number;
+}
+
+export interface IncomingVoiceRtpPacket {
+  mediaType: "audio" | "video" | "rtx" | "unknown";
+  packet: Buffer;
+  payload: Buffer;
+  payloadType: number;
+  sequence: number;
+  timestamp: number;
+  ssrc: number;
+  userId: string | null;
+  streamKey: string | null;
+  trackMid?: string;
+  trackType?: string;
 }
 
 export interface VoiceGatewayOutboundStream {
@@ -91,6 +113,7 @@ export interface VoiceGatewayConnectionCallbacks {
   onError?: (error: Error) => void;
   onClose?: (error: VoiceGatewayCloseError) => void;
   onSpeakingChange?: (userId: string, speaking: boolean) => void;
+  onIncomingRtp?: (packet: IncomingVoiceRtpPacket) => void;
 }
 
 export interface VoiceCallSession {

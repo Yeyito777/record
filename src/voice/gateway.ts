@@ -19,8 +19,8 @@ import { debugLog } from "../debuglog";
 import { VOICE_CONNECT_TIMEOUT_MS, VOICE_GATEWAY_VERSION, OPUS_PAYLOAD_TYPE } from "./constants";
 import { DaveVoiceEncryption } from "./dave";
 import { asError, voiceGatewayCloseError } from "./errors";
-import { buildVoiceIdentifyPayload, buildVoiceResumePayload } from "./payloads";
-import { connectUdp, discoverUdpAddress, selectEncryptionMode } from "./rtp";
+import { buildMediaSinkWantsPayload, buildVoiceIdentifyPayload, buildVoiceResumePayload } from "./payloads";
+import { connectUdp, discoverUdpAddress, parsePlainRtpPacket, selectEncryptionMode } from "./rtp";
 import { isDaveVoiceGatewayBinaryMessage, isObject, messageDataToBinaryBuffer, messageDataToString, snowflakeToString } from "./util";
 import { NoopVoiceAudioBackend, VoiceGatewayCloseError, type VoiceAudioBackend, type VoiceAudioContext, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData } from "./types";
 import type { LocalAudioVolumes, NoiseSuppressionMode } from "../volume";
@@ -88,6 +88,14 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private webRtcLastVideoStatsDropped = 0;
   private webRtcLastVideoStatsSendFalse = 0;
   mediaSessionId: string | null = null;
+
+  private get receiveOnlyStream(): boolean {
+    return Boolean(this.data.streamReceive);
+  }
+
+  private get usesWebRtcVideo(): boolean {
+    return Boolean(this.data.video || this.data.streamReceive);
+  }
 
   constructor(
     private readonly data: VoiceGatewayJoinData,
@@ -413,7 +421,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.resumeCause = null;
     this.connectStage = "ready";
     debugLog("voice.gateway.resumed", { endpoint: this.safeEndpoint(), seqAck: this.seq });
-    if (this.data.video) this.sendVideo();
+    if (this.data.video && !this.receiveOnlyStream) this.sendVideo();
     else if (this.speaking) this.sendSpeaking(true);
   }
 
@@ -447,6 +455,53 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const userId = snowflakeToString(data.user_id);
     const audioSsrc = typeof data.audio_ssrc === "number" ? data.audio_ssrc : null;
     if (userId && audioSsrc !== null) this.ssrcToUserId.set(audioSsrc, userId);
+    if (userId && userId !== this.data.userId) this.remoteUserIds.add(userId);
+
+    const videoSsrc = typeof data.video_ssrc === "number" ? data.video_ssrc : null;
+    const rtxSsrc = typeof data.rtx_ssrc === "number" ? data.rtx_ssrc : null;
+    if (userId && videoSsrc !== null) this.ssrcToUserId.set(videoSsrc, userId);
+    if (userId && rtxSsrc !== null) this.ssrcToUserId.set(rtxSsrc, userId);
+
+    const stream = this.pickIncomingVideoStream(data.streams, userId, videoSsrc, rtxSsrc);
+    if (!stream) return;
+    this.videoSsrc = stream.ssrc;
+    this.videoRtxSsrc = stream.rtxSsrc ?? null;
+    if (userId) {
+      this.ssrcToUserId.set(stream.ssrc, userId);
+      if (stream.rtxSsrc !== undefined) this.ssrcToUserId.set(stream.rtxSsrc, userId);
+    }
+    debugLog("voice.gateway.incoming_video_stream", {
+      streamKey: this.data.streamReceive?.streamKey ?? null,
+      userId,
+      videoSsrc: this.videoSsrc,
+      videoRtxSsrc: this.videoRtxSsrc,
+      quality: stream.quality ?? null,
+      rid: stream.rid ?? null,
+    });
+    if (this.receiveOnlyStream) this.sendMediaSinkWants(stream.ssrc);
+  }
+
+  private pickIncomingVideoStream(streams: unknown, userId: string | null, fallbackSsrc: number | null, fallbackRtxSsrc: number | null): { ssrc: number; rtxSsrc?: number; quality?: number; rid?: string } | null {
+    const receive = this.data.streamReceive;
+    if (!receive) return null;
+    if (receive.ownerUserId && userId && userId !== receive.ownerUserId) return null;
+
+    if (Array.isArray(streams)) {
+      const candidates = streams.filter(isObject);
+      const preferred = candidates.find((candidate) => (candidate.type === "screen" || candidate.type === "video") && (candidate.rid === "100" || candidate.quality === 100))
+        ?? candidates.find((candidate) => candidate.type === "screen" || candidate.type === "video")
+        ?? candidates[0];
+      if (preferred && typeof preferred.ssrc === "number") {
+        return {
+          ssrc: preferred.ssrc,
+          rtxSsrc: typeof preferred.rtx_ssrc === "number" ? preferred.rtx_ssrc : undefined,
+          quality: typeof preferred.quality === "number" ? preferred.quality : undefined,
+          rid: typeof preferred.rid === "string" ? preferred.rid : undefined,
+        };
+      }
+    }
+
+    return fallbackSsrc === null ? null : { ssrc: fallbackSsrc, rtxSsrc: fallbackRtxSsrc ?? undefined };
   }
 
   private rememberReadyVideoStream(streams: unknown): void {
@@ -457,6 +512,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     if (typeof stream.ssrc === "number") this.videoSsrc = stream.ssrc;
     if (typeof stream.rtx_ssrc === "number") this.videoRtxSsrc = stream.rtx_ssrc;
     debugLog("voice.gateway.video_stream", { videoSsrc: this.videoSsrc, videoRtxSsrc: this.videoRtxSsrc, rid: stream.rid ?? null, quality: stream.quality ?? null });
+    if (this.receiveOnlyStream && this.videoSsrc !== null) this.sendMediaSinkWants(this.videoSsrc);
   }
 
   private handleHello(data: unknown): void {
@@ -491,9 +547,9 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     }
 
     this.connectStage = "udp_discovery";
-    debugLog("voice.gateway.ready", { ip, port, ssrc, modeCount: modes.length, modes, streams: this.data.video && Array.isArray(data.streams) ? data.streams : undefined, experiments: this.data.video && Array.isArray(data.experiments) ? data.experiments : undefined });
+    debugLog("voice.gateway.ready", { ip, port, ssrc, modeCount: modes.length, modes, streams: this.usesWebRtcVideo && Array.isArray(data.streams) ? data.streams : undefined, experiments: this.usesWebRtcVideo && Array.isArray(data.experiments) ? data.experiments : undefined });
     this.ssrc = ssrc;
-    if (this.data.video) {
+    if (this.usesWebRtcVideo) {
       this.send({ op: 16, d: {} });
       this.startWebRtcSelectProtocol(ssrc);
       return;
@@ -552,8 +608,8 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         videoRtxSsrc: this.videoRtxSsrc ?? undefined,
         videoPayloadType: VIDEO_PAYLOAD_TYPE_H264,
         sendVideo: () => this.sendVideo(),
-        encodeOutgoingOpus: (payload) => this.data.video && !this.dave.ready ? null : this.dave.encodeOutgoingOpus(payload),
-        encodeOutgoingVideo: (payload, codec) => this.data.video && !this.dave.ready ? null : this.dave.encodeOutgoingVideo(payload, codec),
+        encodeOutgoingOpus: (payload) => this.usesWebRtcVideo && !this.dave.ready ? null : this.dave.encodeOutgoingOpus(payload),
+        encodeOutgoingVideo: (payload, codec) => this.usesWebRtcVideo && !this.dave.ready ? null : this.dave.encodeOutgoingVideo(payload, codec),
         decodeIncomingOpus: (ssrc, payload) => this.dave.decodeIncomingOpus(this.resolveIncomingSsrcUserId(ssrc), payload),
         shouldDropIncomingAudio: (ssrc) => this.shouldDropIncomingAudio(ssrc),
         onIncomingAudio: (ssrc) => this.handleIncomingAudio(ssrc),
@@ -580,6 +636,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private resolveIncomingSsrcUserId(ssrc: number): string | null {
     const mappedUserId = this.ssrcToUserId.get(ssrc);
     if (mappedUserId) return mappedUserId;
+    const streamOwnerUserId = this.data.streamReceive?.ownerUserId;
+    if (streamOwnerUserId) {
+      this.ssrcToUserId.set(ssrc, streamOwnerUserId);
+      debugLog("voice.playback.ssrc_map", { ssrc, userId: streamOwnerUserId, source: "stream_owner_fallback" });
+      return streamOwnerUserId;
+    }
     if (this.remoteUserIds.size !== 1) {
       debugLog("voice.playback.ssrc_unmapped", { ssrc, remoteUserIds: [...this.remoteUserIds] });
       return null;
@@ -604,7 +666,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private identify(): void {
     this.connectStage = "identified";
     const maxDaveProtocolVersion = this.data.maxDaveProtocolVersion ?? this.dave.advertisedProtocolVersion;
-    debugLog("voice.gateway.identify", { channelId: this.data.channelId, guildId: this.data.guildId, hasSessionId: Boolean(this.data.sessionId), video: Boolean(this.data.video), maxDaveProtocolVersion });
+    debugLog("voice.gateway.identify", { channelId: this.data.channelId, guildId: this.data.guildId, hasSessionId: Boolean(this.data.sessionId), video: this.usesWebRtcVideo, receiveStream: this.data.streamReceive?.streamKey ?? null, maxDaveProtocolVersion });
     this.send(buildVoiceIdentifyPayload(this.data, maxDaveProtocolVersion));
   }
 
@@ -623,8 +685,8 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         protocol: "udp",
         data: { address, port, mode },
         codecs: [
-          { name: "opus", type: "audio", priority: 1000, payload_type: OPUS_PAYLOAD_TYPE },
-          ...(this.data.video ? [{ name: "H264", type: "video", priority: 1000, payload_type: VIDEO_PAYLOAD_TYPE_H264, rtx_payload_type: VIDEO_RTX_PAYLOAD_TYPE_H264, encode: true, decode: true }] : []),
+            { name: "opus", type: "audio", priority: 1000, payload_type: OPUS_PAYLOAD_TYPE },
+            ...(this.usesWebRtcVideo ? [{ name: "H264", type: "video", priority: 1000, payload_type: VIDEO_PAYLOAD_TYPE_H264, rtx_payload_type: VIDEO_RTX_PAYLOAD_TYPE_H264, encode: !this.receiveOnlyStream, decode: true }] : []),
         ],
       },
     });
@@ -632,8 +694,9 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
 
   private startWebRtcSelectProtocol(audioSsrc: number): void {
     this.connectStage = "webrtc_offer";
-    const audio = new Audio("0", "SendRecv");
-    const video = new Video("1", "SendRecv");
+    const direction = this.receiveOnlyStream ? "RecvOnly" : "SendRecv";
+    const audio = new Audio("0", direction);
+    const video = new Video("1", direction);
     audio.addOpusCodec(OPUS_PAYLOAD_TYPE);
     video.addH264Codec(VIDEO_PAYLOAD_TYPE_H264);
     video.addRTXCodec(VIDEO_RTX_PAYLOAD_TYPE_H264, VIDEO_PAYLOAD_TYPE_H264, 90_000);
@@ -643,10 +706,11 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.webRtcAudioTrack = pc.addTrack(audio);
     this.webRtcVideoTrack = pc.addTrack(video);
     pc.onStateChange((state) => debugLog("voice.gateway.webrtc_state", { state }));
+    pc.onTrack((track) => this.registerIncomingWebRtcTrack(track));
     pc.onLocalDescription((sdp) => {
       if (this.webRtc !== pc || this.disconnected) return;
       const rtcConnectionId = randomUUID();
-      debugLog("voice.gateway.select_protocol_webrtc", { rtcConnectionId, audioSsrc, videoSsrc: this.videoSsrc });
+      debugLog("voice.gateway.select_protocol_webrtc", { rtcConnectionId, audioSsrc, videoSsrc: this.videoSsrc, receiveOnly: this.receiveOnlyStream });
       this.connectStage = "select_protocol";
       this.send({
         op: 1,
@@ -674,14 +738,14 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     debugLog("voice.gateway.session_description", { mode: "webrtc", mediaSessionId: this.mediaSessionId, audioCodec: typeof data.audio_codec === "string" ? data.audio_codec : null, videoCodec: this.videoCodec, daveProtocolVersion: typeof data.dave_protocol_version === "number" ? data.dave_protocol_version : null });
     this.dave.handleSessionDescription(data);
 
-    if (!this.webRtc || this.ssrc === null || this.videoSsrc === null) {
+    if (!this.webRtc || this.ssrc === null || (!this.receiveOnlyStream && this.videoSsrc === null)) {
       this.rejectReady(new Error("Discord voice WebRTC session became ready before media tracks were initialized."));
       return;
     }
-    this.configureWebRtcPacketizers(this.ssrc, this.videoSsrc);
-    this.webRtc.setRemoteDescription(buildDiscordWebRtcAnswer(sdp), "answer");
+    if (!this.receiveOnlyStream) this.configureWebRtcPacketizers(this.ssrc, this.videoSsrc as number);
+    this.webRtc.setRemoteDescription(buildDiscordWebRtcAnswer(sdp, { receiveOnly: this.receiveOnlyStream }), "answer");
 
-    if (!this.audioStarted) {
+    if (!this.receiveOnlyStream && !this.audioStarted) {
       this.audioStarted = true;
       const audioContext: VoiceAudioContext = {
         udp: createSocket("udp4"),
@@ -692,14 +756,14 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         selfDeaf: this.selfDeaf,
         sendSpeaking: (speaking) => this.sendSpeaking(speaking),
         sendSpeakingFlags: (flags) => this.sendSpeakingFlags(flags),
-        videoSsrc: this.videoSsrc,
+        videoSsrc: this.videoSsrc ?? undefined,
         videoRtxSsrc: this.videoRtxSsrc ?? undefined,
         videoPayloadType: VIDEO_PAYLOAD_TYPE_H264,
         sendVideo: () => this.sendVideo(),
         sendOpusFrame: (payload, frameDurationMs) => this.sendWebRtcAudioFrame(payload, frameDurationMs),
         sendEncodedVideoFrame: (payload, frameDurationMs, keyframe) => this.sendWebRtcVideoFrame(payload, frameDurationMs, keyframe),
-        encodeOutgoingOpus: (payload) => this.data.video && !this.dave.ready ? null : this.dave.encodeOutgoingOpus(payload),
-        encodeOutgoingVideo: (payload, codec) => this.data.video && !this.dave.ready ? null : this.dave.encodeOutgoingVideo(payload, codec),
+        encodeOutgoingOpus: (payload) => this.usesWebRtcVideo && !this.dave.ready ? null : this.dave.encodeOutgoingOpus(payload),
+        encodeOutgoingVideo: (payload, codec) => this.usesWebRtcVideo && !this.dave.ready ? null : this.dave.encodeOutgoingVideo(payload, codec),
         onError: (error) => this.reportError(error),
       };
       this.audioContext = audioContext;
@@ -738,6 +802,44 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     videoPacketizer.addToChain(new PacingHandler(25 * 1000 * 1000, 1));
     this.webRtcVideoPacketizer = videoPacketizer;
     this.webRtcVideoTrack?.setMediaHandler(videoPacketizer);
+  }
+
+  private registerIncomingWebRtcTrack(track: Track): void {
+    const trackMid = safeTrackString(track, "mid");
+    const trackType = safeTrackString(track, "type");
+    debugLog("voice.gateway.webrtc_track", { mid: trackMid, type: trackType, streamKey: this.data.streamReceive?.streamKey ?? null });
+    track.onMessage((message) => {
+      const packet = Buffer.isBuffer(message) ? message : Buffer.from(message);
+      const parsed = parsePlainRtpPacket(packet);
+      if (!parsed) {
+        debugLog("voice.gateway.webrtc_track_packet_invalid", { mid: trackMid, type: trackType, bytes: packet.length });
+        return;
+      }
+      const mediaType = incomingMediaType(parsed.payloadType, trackType);
+      const userId = this.resolveIncomingSsrcUserId(parsed.ssrc);
+      this.callbacks.onIncomingRtp?.({
+        mediaType,
+        packet,
+        payload: parsed.payload,
+        payloadType: parsed.payloadType,
+        sequence: parsed.sequence,
+        timestamp: parsed.timestamp,
+        ssrc: parsed.ssrc,
+        userId,
+        streamKey: this.data.streamReceive?.streamKey ?? null,
+        trackMid,
+        trackType,
+      });
+    });
+  }
+
+  private sendMediaSinkWants(videoSsrc: number): void {
+    const receive = this.data.streamReceive;
+    if (!receive || !Number.isFinite(videoSsrc)) return;
+    const quality = receive.quality ?? 100;
+    const pixelCount = receive.pixelCount ?? 1920 * 1080;
+    debugLog("voice.gateway.media_sink_wants", { streamKey: receive.streamKey, videoSsrc, quality, pixelCount });
+    this.send(buildMediaSinkWantsPayload(videoSsrc, { quality, pixelCount }));
   }
 
   private sendWebRtcAudioFrame(payload: Buffer, frameDurationMs: number): void {
@@ -1015,7 +1117,23 @@ function safeSelectedCandidatePair(peerConnection: NodePeerConnection | null): {
   }
 }
 
-function buildDiscordWebRtcAnswer(sdp: string): string {
+function safeTrackString(track: Track, method: "mid" | "type"): string | undefined {
+  try {
+    const value = track[method]();
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function incomingMediaType(payloadType: number, trackType: string | undefined): "audio" | "video" | "rtx" | "unknown" {
+  if (payloadType === OPUS_PAYLOAD_TYPE || trackType === "audio") return "audio";
+  if (payloadType === VIDEO_RTX_PAYLOAD_TYPE_H264) return "rtx";
+  if (payloadType === VIDEO_PAYLOAD_TYPE_H264 || trackType === "video") return "video";
+  return "unknown";
+}
+
+function buildDiscordWebRtcAnswer(sdp: string, options: { receiveOnly?: boolean } = {}): string {
   let ip = "";
   let port = "";
   let iceUsername = "";
@@ -1031,6 +1149,7 @@ function buildDiscordWebRtcAnswer(sdp: string): string {
     else if (line.startsWith("a=fingerprint")) fingerprint = line;
     else if (line.startsWith("a=candidate")) candidate = line;
   }
+  const remoteDirection = options.receiveOnly ? "sendonly" : "inactive";
   const audioSection = `
 m=audio ${port} UDP/TLS/RTP/SAVPF ${OPUS_PAYLOAD_TYPE}
 ${ip}
@@ -1039,7 +1158,7 @@ a=extmap:3 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extension
 a=setup:passive
 a=mid:0
 a=maxptime:60
-a=inactive
+a=${remoteDirection}
 ${iceUsername}
 ${icePassword}
 ${fingerprint}
@@ -1061,7 +1180,7 @@ a=extmap:13 urn:3gpp:video-orientation
 a=extmap:5 http://www.webrtc.org/experiments/rtp-hdrext/playout-delay
 a=setup:passive
 a=mid:1
-a=inactive
+a=${remoteDirection}
 ${iceUsername}
 ${icePassword}
 ${fingerprint}

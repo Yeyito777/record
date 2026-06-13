@@ -160,6 +160,18 @@ describe("submitCurrentBuffer", () => {
     expect(state.notice.statusLine).toBe(false);
   });
 
+  test("/watch is handled as a command instead of being sent as chat", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.editor.buffer = "/watch friend";
+    state.editor.cursor = state.editor.buffer.length;
+
+    submitCurrentBuffer(state, effects);
+
+    expect(state.notice.text).toBe("Join a call before using /watch.");
+    expect(state.notice.statusLine).toBe(false);
+  });
+
   test("/upload sends a local file as a multipart message attachment", async () => {
     let requestedBody: BodyInit | null | undefined = null;
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

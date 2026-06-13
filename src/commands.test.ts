@@ -66,6 +66,10 @@ describe("commands", () => {
 
     expect(tryCommand("/call", state)).toEqual({ type: "call" });
     expect(tryCommand("/stream", state)).toEqual({ type: "stream" });
+    expect(tryCommand("/watch", state)).toEqual({ type: "watch", target: null });
+    expect(tryCommand("/watch 123456789012345678", state)).toEqual({ type: "watch", target: "123456789012345678" });
+    expect(tryCommand("/watch <@!123456789012345678>", state)).toEqual({ type: "watch", target: "123456789012345678" });
+    expect(tryCommand("/watch guild:guild-1:voice-1:user-1", state)).toEqual({ type: "watch", target: "guild:guild-1:voice-1:user-1" });
     expect(tryCommand("/hangup", state)).toEqual({ type: "hangup" });
     expect(tryCommand("/mute", state)).toEqual({ type: "mute", muted: null });
     expect(tryCommand("/mute on", state)).toEqual({ type: "mute", muted: true });
