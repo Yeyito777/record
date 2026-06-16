@@ -1,10 +1,10 @@
-import { theme } from "../theme";
+import { hexToAnsiBg, theme } from "../theme";
 import { hardBreak, sliceByWidth, termWidth, visibleLength } from "../textwidth";
 
 export { hardBreak, sliceByWidth, termWidth, visibleLength } from "../textwidth";
 
 // Markdown-specific background not in the theme system
-const BG_CODE = "\x1b[48;2;22;32;48m"; // #162030 subtle tint for inline code
+const BG_CODE = hexToAnsiBg("#162030");
 
 // --- Horizontal rule detection ---
 // Matches CommonMark horizontal rules: 3+ of -, *, or _ with optional

@@ -15,6 +15,7 @@ import {
 } from "./editor";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { renderBodyLines } from "./bodypanel";
+import { appendPositionedPayload, appendRowWrite, createFrameRows, flushFrame } from "./frame";
 import {
   buildLineAnchorIndex,
   clampHistoryCursor,
@@ -244,10 +245,10 @@ function renderHistoryViewportLine(
 export function render(state: AppState): void {
   const cols = Math.max(1, state.cols);
   const rows = Math.max(3, state.rows);
-  const out: string[] = [];
 
   const appBg = theme.appBg ?? "";
   const clearedLine = appBg + clearLine;
+  const frameRows = createFrameRows(rows, clearedLine);
   const bgLine = appBg
     ? (line: string) => applyLineBg(line, appBg)
     : (line: string) => line;
@@ -295,27 +296,25 @@ export function render(state: AppState): void {
 
   const emitSidebarCol = (row: number): void => {
     if (sidebarOpen && sidebarRows[row - 1]) {
-      out.push(sidebarRows[row - 1]);
+      appendRowWrite(frameRows, row, 1, sidebarRows[row - 1]);
     }
   };
 
   const emitMemberListCol = (row: number): void => {
     if (memberListOpen && memberListRows[row - 1]) {
-      out.push(moveTo(row, memberListCol) + memberListRows[row - 1]);
+      appendRowWrite(frameRows, row, memberListCol, memberListRows[row - 1]);
     }
   };
 
-  out.push(moveTo(1, 1) + clearedLine);
   emitSidebarCol(1);
-  out.push(moveTo(1, mainCol) + renderTopbar(state, mainW));
+  appendRowWrite(frameRows, 1, mainCol, renderTopbar(state, mainW));
   emitMemberListCol(1);
 
   const bodyBorder = historyFocused ? theme.borderFocused : theme.borderUnfocused;
   const promptColor = promptFocused ? theme.accent : theme.dim;
 
-  out.push(moveTo(2, 1) + clearedLine);
   emitSidebarCol(2);
-  out.push(moveTo(2, mainCol) + bgLine(`${bodyBorder}${"─".repeat(mainW)}${theme.reset}`));
+  appendRowWrite(frameRows, 2, mainCol, bgLine(`${bodyBorder}${"─".repeat(mainW)}${theme.reset}`));
   emitMemberListCol(2);
 
   const status = renderStatusLine(state, mainW);
@@ -421,7 +420,6 @@ export function render(state: AppState): void {
 
   for (let i = 0; i < bodyRows; i++) {
     const row = bodyTop + i;
-    out.push(moveTo(row, 1) + clearedLine);
     emitSidebarCol(row);
 
     const lineIndex = state.timeline.scrollOffset + i;
@@ -440,30 +438,27 @@ export function render(state: AppState): void {
         ? applyLineBg(` ${line}`, lineBackground)
         : bgLine(` ${line}`);
 
-    out.push(moveTo(row, mainCol) + renderedLine);
+    appendRowWrite(frameRows, row, mainCol, renderedLine);
     emitMemberListCol(row);
   }
 
   if (typingLine) {
-    out.push(moveTo(typingRow, 1) + clearedLine);
     emitSidebarCol(typingRow);
-    out.push(moveTo(typingRow, mainCol) + bgLine(` ${theme.muted}${typingFrameText} ${typingLine}${theme.reset}`));
+    appendRowWrite(frameRows, typingRow, mainCol, bgLine(` ${theme.muted}${typingFrameText} ${typingLine}${theme.reset}`));
     emitMemberListCol(typingRow);
   }
 
   if (state.autocomplete) {
-    out.push(renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol));
+    appendPositionedPayload(frameRows, renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol));
   }
 
-  out.push(moveTo(promptSeparatorRow, 1) + clearedLine);
   emitSidebarCol(promptSeparatorRow);
-  out.push(moveTo(promptSeparatorRow, mainCol) + bgLine(renderPromptSeparator(state, mainW, promptColor)));
+  appendRowWrite(frameRows, promptSeparatorRow, mainCol, bgLine(renderPromptSeparator(state, mainW, promptColor)));
   emitMemberListCol(promptSeparatorRow);
 
   if (imageIndicatorRows > 0) {
-    out.push(moveTo(imageIndicatorRow, 1) + clearedLine);
     emitSidebarCol(imageIndicatorRow);
-    out.push(moveTo(imageIndicatorRow, mainCol) + bgLine(renderImageIndicator(state, mainW)));
+    appendRowWrite(frameRows, imageIndicatorRow, mainCol, bgLine(renderImageIndicator(state, mainW)));
     emitMemberListCol(imageIndicatorRow);
   }
 
@@ -499,64 +494,72 @@ export function render(state: AppState): void {
       }
     }
 
-    out.push(moveTo(row, 1) + clearedLine);
     emitSidebarCol(row);
-    out.push(moveTo(row, mainCol) + bgLine(`${prefix}${lineContent}`));
+    appendRowWrite(frameRows, row, mainCol, bgLine(`${prefix}${lineContent}`));
     emitMemberListCol(row);
   }
 
   if (statusHeight > 0) {
-    out.push(moveTo(promptBottomSeparatorRow, 1) + clearedLine);
     emitSidebarCol(promptBottomSeparatorRow);
-    out.push(moveTo(promptBottomSeparatorRow, mainCol) + bgLine(`${promptColor}${"─".repeat(mainW)}${theme.reset}`));
+    appendRowWrite(frameRows, promptBottomSeparatorRow, mainCol, bgLine(`${promptColor}${"─".repeat(mainW)}${theme.reset}`));
     emitMemberListCol(promptBottomSeparatorRow);
 
     for (let i = 0; i < statusHeight; i++) {
       const row = statusStartRow + i;
-      out.push(moveTo(row, 1) + clearedLine);
       emitSidebarCol(row);
-      out.push(moveTo(row, mainCol) + bgLine(status.lines[i] ?? ""));
+      appendRowWrite(frameRows, row, mainCol, bgLine(status.lines[i] ?? ""));
       emitMemberListCol(row);
     }
   }
 
+  const cursorPayload: string[] = [];
   if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
     const { cursorCol } = getSidebarSearchBarViewport(state.sidebar.search, SIDEBAR_WIDTH - 1);
-    out.push(moveTo(rows, 1 + cursorCol));
-    out.push(cursorBar);
-    out.push(showCursor);
+    cursorPayload.push(moveTo(rows, 1 + cursorCol));
+    cursorPayload.push(cursorBar);
+    cursorPayload.push(showCursor);
   } else if (historyFocused && state.historyLines.length > 0) {
     const visibleRow = state.historyCursor.row - state.timeline.scrollOffset;
     if (visibleRow >= 0 && visibleRow < bodyRows) {
       const cursorRow = bodyTop + visibleRow;
       const cursorCol = Math.min(cols, mainCol + 1 + state.historyCursor.col);
-      out.push(moveTo(cursorRow, cursorCol));
-      out.push(
+      cursorPayload.push(moveTo(cursorRow, cursorCol));
+      cursorPayload.push(
         state.editor.mode === "visual" || state.editor.mode === "visual-line"
           ? cursorUnderline
           : cursorBlock,
       );
-      out.push(showCursor);
+      cursorPayload.push(showCursor);
     } else {
-      out.push(hideCursor);
+      cursorPayload.push(hideCursor);
     }
   } else {
     const cursorRow = firstInputRow + input.cursorLine;
     const cursorCol = Math.min(cols, mainCol + PROMPT_PREFIX_WIDTH + input.cursorCol);
-    out.push(moveTo(cursorRow, cursorCol));
+    cursorPayload.push(moveTo(cursorRow, cursorCol));
     if (promptFocused) {
-      out.push(
+      cursorPayload.push(
         state.editor.mode === "insert"
           ? cursorBar
           : (state.editor.pendingOperator || state.editor.pendingReplace)
             ? cursorUnderline
             : cursorBlock,
       );
-      out.push(showCursor);
+      cursorPayload.push(showCursor);
     } else {
-      out.push(hideCursor);
+      cursorPayload.push(hideCursor);
     }
   }
 
-  process.stdout.write(out.join(""));
+  const canScrollMessageRegion = !sidebarOpen
+    && !memberListOpen
+    && !state.autocomplete
+    && bodyRows > 0;
+
+  flushFrame(state, {
+    rows: frameRows,
+    cursor: cursorPayload.join(""),
+    scrollRegion: canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null,
+    viewStart: state.timeline.scrollOffset,
+  });
 }

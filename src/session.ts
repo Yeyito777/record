@@ -154,6 +154,7 @@ import {
 } from "./timeline";
 import { clearTypingUser, recordTypingStart } from "./typing";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
+import { ansiColorToRgb } from "./terminalcolors";
 import { VoiceCallController, type VoiceCallSession, type VoiceStateUpdate } from "./voice";
 import { ScreenStreamController } from "./streamcontroller";
 import { WatchStreamController, buildStreamKeyForVoiceSession, parseStreamKey, streamKeyMatchesVoiceSession } from "./watchstreamcontroller";
@@ -408,10 +409,8 @@ function callWidgetTextColorForUser(state: AppState, sessionGuildId: string | nu
 }
 
 function ansiTextColorToHex(color: string): string | null {
-  const match = /\x1b\[38;2;(\d{1,3});(\d{1,3});(\d{1,3})m/.exec(color);
-  if (!match) return null;
-  const channels = match.slice(1).map((value) => Number(value));
-  if (channels.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)) return null;
+  const channels = ansiColorToRgb(color, 38);
+  if (!channels) return null;
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 

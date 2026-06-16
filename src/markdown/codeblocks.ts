@@ -1,9 +1,10 @@
 import { highlightLine, isLanguageSupported, FG_WHITE } from "./highlight";
 import { termWidth, hardBreak } from "./formatting";
+import { hexToAnsi } from "../theme";
 
 // ANSI color codes (syntax-highlight-specific, not in theme)
-const FG_SYN_GUTTER = "\x1b[38;2;55;65;80m";   // #374150 gutter char color
-const FG_SYN_LABEL = "\x1b[38;2;80;90;105m";    // #505a69 dim label for language name
+const FG_SYN_GUTTER = hexToAnsi("#374150");
+const FG_SYN_LABEL = hexToAnsi("#505a69");
 
 // Gutter character constant
 export const CODE_GUTTER = "▎";

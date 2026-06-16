@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 
 import { configDir } from "./config";
+import { adaptAnsiTruecolor, detectTerminalColorLevel, hexToAnsiColor, rgbToAnsi } from "./terminalcolors";
 import { cerberus } from "./themes/cerberus";
 import { whale } from "./themes/whale";
 
@@ -64,6 +65,7 @@ export const themes = {
 
 export type ThemeName = keyof typeof themes;
 export const THEME_NAMES = Object.keys(themes) as ThemeName[];
+export const terminalColorLevel = detectTerminalColorLevel();
 
 function themeConfigPath(): string {
   return `${configDir()}/theme.json`;
@@ -86,15 +88,25 @@ function persistThemeName(name: ThemeName): void {
   writeFileSync(themeConfigPath(), `${JSON.stringify({ theme: name }, null, 2)}\n`, { mode: 0o600 });
 }
 
-export const theme: Theme = { ...whale };
+function adaptThemeForTerminal(base: Theme): Theme {
+  const adapted = { ...base };
+  for (const key of Object.keys(adapted) as Array<keyof Theme>) {
+    const value = adapted[key];
+    if (key === "name" || key === "cursorColor" || typeof value !== "string") continue;
+    (adapted as Record<keyof Theme, string | undefined>)[key] = adaptAnsiTruecolor(value, terminalColorLevel);
+  }
+  return adapted;
+}
+
+export const theme: Theme = adaptThemeForTerminal(whale);
 
 const envTheme = process.env.RECORD_THEME;
 if (envTheme && envTheme in themes) {
-  Object.assign(theme, themes[envTheme as ThemeName]);
+  Object.assign(theme, adaptThemeForTerminal(themes[envTheme as ThemeName]));
 } else {
   const persisted = loadPersistedThemeName();
   if (persisted) {
-    Object.assign(theme, themes[persisted]);
+    Object.assign(theme, adaptThemeForTerminal(themes[persisted]));
   }
 }
 
@@ -150,7 +162,7 @@ export function ansiTrueColor(color: number): string {
   const red = (color >> 16) & 0xff;
   const green = (color >> 8) & 0xff;
   const blue = color & 0xff;
-  return `\x1b[38;2;${red};${green};${blue}m`;
+  return rgbToAnsi(38, red, green, blue, terminalColorLevel);
 }
 
 export function dmAuthorColor(userId: string): string {
@@ -163,7 +175,7 @@ export function dmAuthorColor(userId: string): string {
   const baseColor = DM_AUTHOR_BASE_COLORS[hash % DM_AUTHOR_BASE_COLORS.length];
   const tint = DM_AUTHOR_TINTS[Math.floor(hash / DM_AUTHOR_BASE_COLORS.length) % DM_AUTHOR_TINTS.length];
   const [red, green, blue] = baseColor.map((channel) => tintChannel(channel, tint));
-  return `\x1b[38;2;${red};${green};${blue}m`;
+  return rgbToAnsi(38, red, green, blue, terminalColorLevel);
 }
 
 function tintChannel(channel: number, tint: number): number {
@@ -174,11 +186,19 @@ function tintChannel(channel: number, tint: number): number {
 }
 
 export function setTheme(name: ThemeName): string | null {
-  Object.assign(theme, themes[name]);
+  Object.assign(theme, adaptThemeForTerminal(themes[name]));
   try {
     persistThemeName(name);
     return null;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+export function hexToAnsi(hex: string): string {
+  return hexToAnsiColor(38, hex, terminalColorLevel);
+}
+
+export function hexToAnsiBg(hex: string): string {
+  return hexToAnsiColor(48, hex, terminalColorLevel);
 }

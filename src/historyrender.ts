@@ -3,9 +3,9 @@
  */
 
 import { stripAnsi } from "./historycursor";
-import { theme } from "./theme";
+import { hexToAnsi, theme } from "./theme";
 
-const CURSOR_FG = "\x1b[38;2;0;0;0m";
+const CURSOR_FG = hexToAnsi("#000000");
 const ANSI_OR_HYPERLINK = /^\x1b(?:\[[0-9;]*[A-Za-z]|\]8;[^;]*;[^\x1b]*\x1b\\)/;
 
 export function renderLineWithCursor(line: string, col: number): string {

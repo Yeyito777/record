@@ -44,6 +44,7 @@ import {
 import { formatByteSize } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { handlePromptPrefixBackspace } from "./promptbackspace";
+import { invalidateFrame } from "./frame";
 import { render } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
@@ -1497,6 +1498,7 @@ async function main(): Promise<void> {
   process.stdout.on("resize", () => {
     state.cols = process.stdout.columns || 80;
     state.rows = process.stdout.rows || 24;
+    invalidateFrame(state);
     scheduleRender();
   });
 
