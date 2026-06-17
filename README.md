@@ -41,6 +41,14 @@ bun install
 bun run start
 ```
 
+Voice calls use the bundled native Rust/C audio helper in `native/discord-voice-engine/`. Build and install it onto your normal `PATH` with:
+
+```bash
+bun run install:voice-engine
+```
+
+That installs `discord-voice-engine` to `~/.local/bin` by default, so Record and other local tools such as `discord-cli` can continue to discover it through `DISCORD_VOICE_ENGINE` or ordinary `PATH` lookup. Override the install prefix the same way as the helper Makefile, e.g. `bun run install:voice-engine -- PREFIX=/usr/local`.
+
 Notes:
 - tokens are stored as plaintext for now, just with strict file permissions
 - default theme is `whale`

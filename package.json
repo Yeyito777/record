@@ -8,9 +8,13 @@
     "dev": "bun run --watch src/main.ts",
     "build:widget": "scripts/build-call-widget",
     "build:stream-helper": "scripts/build-stream-helper",
+    "build:voice-engine": "make -C native/discord-voice-engine build",
+    "install:voice-engine": "make -C native/discord-voice-engine install",
+    "check:voice-engine": "make -C native/discord-voice-engine check",
+    "test:voice-engine": "make -C native/discord-voice-engine test",
     "test": "bun test",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit",
-    "check": "bun run typecheck && bun run test"
+    "check": "bun run typecheck && bun run test && bun run check:voice-engine"
   },
   "devDependencies": {
     "@types/bun": "latest",
