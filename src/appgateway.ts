@@ -27,10 +27,12 @@ import { buildVoiceStatePayload, type VoiceServerUpdate, type VoiceSignalingClie
 const API_BASE = "https://discord.com/api/v9";
 const GATEWAY_VERSION = 9;
 const GATEWAY_CAPABILITIES = 30717;
-const GATEWAY_QOS_HEARTBEAT_VERSION = 27;
+const GATEWAY_QOS_HEARTBEAT_VERSION = 29;
 const GATEWAY_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+const GATEWAY_RECONNECT_CLOSE_CODE = 4000;
+const GATEWAY_RESUME_MAX_HEARTBEAT_ACK_AGE_MS = 3 * 60 * 1_000;
 
 interface GatewayPayload {
   op: number;
@@ -128,6 +130,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private seq: number | null = null;
+  private lastHeartbeatAckAt: number | null = null;
   private sessionId: string | null = null;
   private manualDisconnect = false;
   private connecting = false;
@@ -322,10 +325,11 @@ export class AppGatewayClient implements VoiceSignalingClient {
         this.handleHello(payload.d);
         return;
       case 11:
+        this.lastHeartbeatAckAt = Date.now();
         return;
       case 7:
-        debugLog("app_gateway.reconnect_requested", { hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq });
-        this.scheduleReconnect(0);
+        debugLog("app_gateway.reconnect_requested", { hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq, heartbeatAckAgeMs: this.heartbeatAckAgeMs() });
+        this.scheduleReconnect(0, GATEWAY_RECONNECT_CLOSE_CODE);
         return;
       case 9:
         this.handleInvalidSession(payload.d);
@@ -386,18 +390,31 @@ export class AppGatewayClient implements VoiceSignalingClient {
     }
 
     this.startHeartbeat(heartbeatInterval);
-    if (this.sessionId) {
-      this.send({
-        op: 6,
-        d: {
-          token: this.token,
-          session_id: this.sessionId,
-          seq: this.seq,
-        },
-      });
+    if (this.canResumeSession()) {
+      this.sendResume();
+      this.lastHeartbeatAckAt = Date.now();
       return;
     }
 
+    this.sendIdentify();
+  }
+
+  private sendResume(): void {
+    this.send({
+      op: 6,
+      d: {
+        token: this.token,
+        session_id: this.sessionId,
+        seq: this.seq,
+      },
+    });
+  }
+
+  private sendIdentify(): void {
+    this.seq = null;
+    this.sessionId = null;
+    this.resumeGatewayUrl = null;
+    this.lastHeartbeatAckAt = Date.now();
     this.send({
       op: 2,
       d: {
@@ -414,21 +431,31 @@ export class AppGatewayClient implements VoiceSignalingClient {
     });
   }
 
+  private canResumeSession(): boolean {
+    if (!this.sessionId) return false;
+    const ageMs = this.heartbeatAckAgeMs();
+    return ageMs === null || ageMs <= GATEWAY_RESUME_MAX_HEARTBEAT_ACK_AGE_MS;
+  }
+
+  private heartbeatAckAgeMs(): number | null {
+    return this.lastHeartbeatAckAt === null ? null : Date.now() - this.lastHeartbeatAckAt;
+  }
+
   private handleInvalidSession(data: unknown): void {
     const resumable = data === true;
-    debugLog("app_gateway.invalid_session", { resumable, hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq });
-    if (!resumable) {
+    debugLog("app_gateway.invalid_session", { resumable, hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq, heartbeatAckAgeMs: this.heartbeatAckAgeMs() });
+    if (!resumable || !this.canResumeSession()) {
       this.sessionId = null;
       this.resumeGatewayUrl = null;
       this.seq = null;
     }
 
     // Discord's OP 9 tells us whether the current app-gateway session can be
-    // resumed. Keeping the session id for resumable invalidations is important:
-    // creating a brand-new app session while already in voice can make Discord
-    // close the voice gateway with 4014 ("Disconnected"), causing audible VC
-    // dropouts even though the user did not leave.
-    this.scheduleReconnect(resumable ? 0 : undefined);
+    // resumed. If it is still plausibly resumable, retry the resume path;
+    // otherwise identify fresh. Fresh identifies while already in voice can make
+    // Discord close the voice gateway with 4014 ("Disconnected"), so preserving
+    // resumable session state matters.
+    this.scheduleReconnect(resumable ? 0 : undefined, this.sessionId ? GATEWAY_RECONNECT_CLOSE_CODE : undefined);
   }
 
   private handleDispatch(type: string | null | undefined, data: unknown): void {
@@ -696,14 +723,14 @@ export class AppGatewayClient implements VoiceSignalingClient {
     this.currentVoiceChannelId = update.channelId;
   }
 
-  private scheduleReconnect(delayOverride?: number): void {
+  private scheduleReconnect(delayOverride?: number, closeCode?: number): void {
     if (this.manualDisconnect) return;
     if (this.reconnectTimer) return;
 
-    this.closeSocket();
+    this.closeSocket(closeCode);
     const attempt = ++this.reconnectAttempt;
     const delayMs = delayOverride ?? Math.min(MAX_RECONNECT_DELAY_MS, INITIAL_RECONNECT_DELAY_MS * 2 ** Math.max(0, attempt - 1));
-    debugLog("app_gateway.reconnect", { attempt, delayMs, hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq });
+    debugLog("app_gateway.reconnect", { attempt, delayMs, closeCode: closeCode ?? null, hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq, heartbeatAckAgeMs: this.heartbeatAckAgeMs() });
     this.callbacks.onReconnect?.(attempt, delayMs);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -767,7 +794,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     this.ws.send(JSON.stringify(payload));
   }
 
-  private closeSocket(): void {
+  private closeSocket(closeCode?: number): void {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -781,7 +808,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     socket.removeEventListener("close", this.handleClose);
     socket.removeEventListener("error", this.handleError);
     if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-      socket.close();
+      socket.close(closeCode);
     }
   }
 

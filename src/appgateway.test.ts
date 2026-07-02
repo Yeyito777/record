@@ -27,8 +27,8 @@ describe("app gateway helpers", () => {
     client.sendHeartbeat();
 
     expect(sent).toEqual([
-      { op: 40, d: { seq: 123, qos: { active: true, ver: 27, reasons: ["foregrounded"] } } },
-      { op: 40, d: { seq: 123, qos: { active: true, ver: 27, reasons: ["foregrounded", "rtc_connected"] } } },
+      { op: 40, d: { seq: 123, qos: { active: true, ver: 29, reasons: ["foregrounded"] } } },
+      { op: 40, d: { seq: 123, qos: { active: true, ver: 29, reasons: ["foregrounded", "rtc_connected"] } } },
     ]);
   });
 
@@ -100,6 +100,39 @@ describe("app gateway helpers", () => {
     client.resumeGatewayUrl = "wss://gateway-us-east1-b.discord.gg";
 
     expect(client.websocketUrl()).toBe("wss://gateway-us-east1-b.discord.gg/?v=9&encoding=json");
+  });
+
+  test("closes the app gateway with Discord's reconnect close code before resuming", () => {
+    const closeCodes: unknown[] = [];
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    client.sessionId = "gateway-session";
+    client.resumeGatewayUrl = "wss://gateway-us-east1-b.discord.gg";
+    client.seq = 42;
+    client.ws = { readyState: WebSocket.OPEN, removeEventListener: () => {}, close: (code?: number) => closeCodes.push(code) };
+
+    client.handleMessage({ data: JSON.stringify({ op: 7 }) });
+
+    expect(closeCodes).toEqual([4000]);
+    expect(client.sessionId).toBe("gateway-session");
+    expect(client.resumeGatewayUrl).toBe("wss://gateway-us-east1-b.discord.gg");
+    clearTimeout(client.reconnectTimer);
+  });
+
+  test("identifies instead of resuming when the previous heartbeat ack is stale", () => {
+    const sent: unknown[] = [];
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    client.sessionId = "gateway-session";
+    client.resumeGatewayUrl = "wss://gateway-us-east1-b.discord.gg";
+    client.seq = 42;
+    client.lastHeartbeatAckAt = Date.now() - 4 * 60 * 1_000;
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+
+    client.handleMessage({ data: JSON.stringify({ op: 10, d: { heartbeat_interval: 45_000 } }) });
+
+    expect(sent[0]).toMatchObject({ op: 2, d: { token: "token" } });
+    expect(client.sessionId).toBeNull();
+    expect(client.resumeGatewayUrl).toBeNull();
+    clearInterval(client.heartbeatTimer);
   });
 
   test("extracts and normalizes READY resume gateway URLs", () => {
