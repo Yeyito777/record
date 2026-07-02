@@ -13,7 +13,7 @@ import {
   setChannelList,
   upsertChannel,
 } from "./channels";
-import { saveConfig } from "./config";
+import { saveConfig, saveSavedLogins } from "./config";
 import { statSync } from "fs";
 import { basename } from "path";
 import {
@@ -160,6 +160,7 @@ import { ScreenStreamController } from "./streamcontroller";
 import { WatchStreamController, buildStreamKeyForVoiceSession, parseStreamKey, streamKeyMatchesVoiceSession } from "./watchstreamcontroller";
 import { createDefaultWatchStreamPlayback } from "./watchstreamplayback";
 import { formatGainDbWithUnit, normalizeGainDb, type NoiseSuppressionMode } from "./volume";
+import { normalizeToken } from "./token";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -286,10 +287,68 @@ export function disconnectAppGateway(): void {
   appGatewayToken = null;
 }
 
-function getMemberListGateway(token: string): MemberListGatewayClient {
+function currentAuthToken(state: AppState, fallback: string): string {
+  return state.auth.savedToken ?? fallback;
+}
+
+function handleGatewayAuthTokenRefresh(state: AppState, effects: SessionEffects, token: string): void {
+  const nextToken = normalizeToken(token);
+  if (!nextToken) return;
+
+  const previousToken = state.auth.savedToken ?? appGatewayToken ?? memberListGatewayToken;
+  if (previousToken === nextToken) return;
+
+  state.auth.savedToken = nextToken;
+  appGateway?.updateAuthToken(nextToken);
+  memberListGateway?.updateAuthToken(nextToken);
+  if (appGateway) appGatewayToken = nextToken;
+  if (memberListGateway) memberListGatewayToken = nextToken;
+
+  persistRefreshedAuthToken(state, previousToken, nextToken);
+  debugLog("auth.token_refresh", {
+    hasPreviousToken: Boolean(previousToken),
+    hasUser: Boolean(state.auth.user),
+    savedLoginCount: Object.keys(state.auth.savedLogins).length,
+  });
+  effects.scheduleRender();
+}
+
+function persistRefreshedAuthToken(state: AppState, previousToken: string | null, nextToken: string): void {
+  try {
+    saveConfig({ token: nextToken });
+  } catch (error) {
+    debugLog("auth.token_refresh.save_config_failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+
+  const username = state.auth.user?.username;
+  const savedLogins = { ...state.auth.savedLogins };
+  let changed = false;
+  for (const [name, savedToken] of Object.entries(savedLogins)) {
+    if ((previousToken && savedToken === previousToken) || (username && name === username)) {
+      savedLogins[name] = nextToken;
+      changed = true;
+    }
+  }
+  if (username && !Object.prototype.hasOwnProperty.call(savedLogins, username)) {
+    savedLogins[username] = nextToken;
+    changed = true;
+  }
+  if (!changed) return;
+
+  state.auth.savedLogins = savedLogins;
+  try {
+    saveSavedLogins(savedLogins);
+  } catch (error) {
+    debugLog("auth.token_refresh.save_logins_failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+function getMemberListGateway(state: AppState, token: string, effects: SessionEffects): MemberListGatewayClient {
   if (!memberListGateway || memberListGatewayToken !== token) {
     disconnectMemberListGateway();
-    memberListGateway = new MemberListGatewayClient(token);
+    memberListGateway = new MemberListGatewayClient(token, {
+      onAuthTokenRefresh: (refreshedToken) => handleGatewayAuthTokenRefresh(state, effects, refreshedToken),
+    });
     memberListGatewayToken = token;
   }
 
@@ -1966,7 +2025,7 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
     signaling: appGateway,
     localVolumes: state.audio,
     noiseSuppression: state.noiseSuppression,
-    ringRecipients: (channelId, recipientIds) => ringDirectMessageCall(token, channelId, recipientIds),
+    ringRecipients: (channelId, recipientIds) => ringDirectMessageCall(currentAuthToken(state, token), channelId, recipientIds),
     onStateChange: (session) => {
       debugLog("voice.state", { state: session?.state ?? "idle", channelId: session?.target.channelId ?? null });
       if (session && session.state !== "ended" && session.state !== "error" && !knownCallParticipantsByChannelId.has(session.target.channelId)) {
@@ -2088,6 +2147,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
   disconnectAppGateway();
   appGatewayToken = token;
   appGateway = new AppGatewayClient(token, {
+    onAuthTokenRefresh: (refreshedToken) => handleGatewayAuthTokenRefresh(state, effects, refreshedToken),
     onCurrentUserRoleIds: (roleIdsByGuildId) => {
       debugLog("gateway.self_roles.ready", {
         guilds: Object.keys(roleIdsByGuildId).length,
@@ -2124,13 +2184,13 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onReadyGuilds: (guilds) => {
       if (mergeGatewayGuilds(state, guilds)) {
-        for (const guild of guilds) loadGuildRolesInBackground(state, token, guild.id, effects);
+        for (const guild of guilds) loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects);
         effects.scheduleRender();
       }
     },
     onGuildCreate: (guild) => {
       if (mergeGatewayGuilds(state, [guild])) {
-        loadGuildRolesInBackground(state, token, guild.id, effects);
+        loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects);
         effects.scheduleRender();
       }
     },
@@ -2343,7 +2403,7 @@ export function syncMemberListForCurrentChannel(state: AppState, effects: Sessio
     return;
   }
 
-  const gateway = getMemberListGateway(token);
+  const gateway = getMemberListGateway(state, token, effects);
   const subscribe = (attempt: number): void => {
     let settled = false;
     let timeoutId: ReturnType<typeof setTimeout>;
@@ -2513,8 +2573,8 @@ export async function bootstrapReadOnlyClient(
   startAppGateway(state, token, effects);
 
   try {
-    const directMessages = withChannelMuteSettings(state, await fetchDirectMessages(token));
-    const guilds = await fetchGuilds(token);
+    const directMessages = withChannelMuteSettings(state, await fetchDirectMessages(currentAuthToken(state, token)));
+    const guilds = await fetchGuilds(currentAuthToken(state, token));
     const guildOrder = accountId ? loadCachedGuildOrder(accountId) : null;
     if (requestId !== state.sidebar.requestId) return;
 
@@ -2546,9 +2606,9 @@ export async function bootstrapReadOnlyClient(
       persistSidebarGuilds(state, { order: currentGuildOrderNeedsSave(sidebarCachedGuilds(state.sidebar).map((guild) => guild.id), guildOrder) });
     }
     for (const guild of guilds) {
-      loadGuildRolesInBackground(state, token, guild.id, effects);
+      loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects);
     }
-    startAppGateway(state, token, effects);
+    startAppGateway(state, currentAuthToken(state, token), effects);
 
     if (state.sidebar.guilds.length === 0) {
       clearChannelList(state.channelList);
@@ -2744,7 +2804,7 @@ export async function loadChannelMessages(
   setNotice(state, "", "muted");
   syncMemberListForCurrentChannel(state, effects);
   const guildId = state.channelList.activeChannel?.guildId ?? null;
-  if (guildId) loadGuildRolesInBackground(state, token, guildId, effects);
+  if (guildId) loadGuildRolesInBackground(state, currentAuthToken(state, token), guildId, effects);
 
   const cached = cachedChannelMessages(state.messageCacheByChannelId, channelId);
   if (cached) {

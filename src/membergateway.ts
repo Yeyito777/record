@@ -13,6 +13,7 @@ import { release } from "os";
 
 import { debugLog } from "./debuglog";
 import type { DiscordGuildMember } from "./discord";
+import { normalizeToken } from "./token";
 
 const API_BASE = "https://discord.com/api/v9";
 const GATEWAY_VERSION = 9;
@@ -29,6 +30,10 @@ interface GatewayPayload {
 interface MemberListCallbacks {
   onMembers: (members: DiscordGuildMember[]) => void;
   onError: (error: Error) => void;
+}
+
+interface MemberListGatewayCallbacks {
+  onAuthTokenRefresh?: (token: string) => void;
 }
 
 interface ActiveSubscription extends MemberListCallbacks {
@@ -57,7 +62,14 @@ export class MemberListGatewayClient {
   private reconnectPromise: Promise<void> | null = null;
   private subscription: ActiveSubscription | null = null;
 
-  constructor(private readonly token: string) {}
+  constructor(private token: string, private readonly callbacks: MemberListGatewayCallbacks = {}) {}
+
+  updateAuthToken(token: string): boolean {
+    const normalized = normalizeToken(token);
+    if (!normalized || normalized === this.token) return false;
+    this.token = normalized;
+    return true;
+  }
 
   async subscribe(guildId: string, channelId: string, callbacks: MemberListCallbacks): Promise<void> {
     debugLog("member_gateway.subscribe", { guildId, channelId, ready: this.ready, hasSocket: Boolean(this.ws), socketState: this.ws?.readyState ?? null });
@@ -187,6 +199,7 @@ export class MemberListGatewayClient {
     }
 
     if (payload.t === "READY") {
+      this.handleAuthTokenRefresh(payload.d);
       debugLog("member_gateway.ready");
       this.ready = true;
       this.readyResolve?.();
@@ -199,6 +212,13 @@ export class MemberListGatewayClient {
       this.handleMemberListUpdate(payload.d);
     }
   };
+
+  private handleAuthTokenRefresh(data: unknown): void {
+    const token = extractAuthToken(data);
+    if (!token || !this.updateAuthToken(token)) return;
+    debugLog("member_gateway.auth_token_refresh", {});
+    this.callbacks.onAuthTokenRefresh?.(this.token);
+  }
 
   private handleClose = (event: CloseEvent): void => {
     debugLog("member_gateway.close", { code: event.code, reason: event.reason || null, manualDisconnect: this.manualDisconnect, wasReady: this.ready });
@@ -598,6 +618,12 @@ function messageDataToString(data: unknown): string {
 
 function isObject(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null;
+}
+
+function extractAuthToken(data: unknown): string | null {
+  if (!isObject(data) || typeof data.auth_token !== "string") return null;
+  const token = normalizeToken(data.auth_token);
+  return token || null;
 }
 
 function asError(error: unknown, fallback: string): Error {

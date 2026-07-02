@@ -4,6 +4,7 @@
 
 import { release } from "os";
 
+import { normalizeToken } from "./token";
 import {
   compareSnowflakesDesc,
   DIRECT_MESSAGES_GUILD_ID,
@@ -91,6 +92,7 @@ export interface StreamDeleteEvent {
 }
 
 export interface AppGatewayCallbacks {
+  onAuthTokenRefresh?: (token: string) => void;
   onInitialNotifications: (notifications: InitialNotification[]) => void;
   onVoiceStateUpdate?: (update: VoiceStateUpdate) => void;
   onVoiceServerUpdate?: (update: VoiceServerUpdate) => void;
@@ -143,7 +145,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private currentVoiceChannelId: string | null = null;
 
   constructor(
-    private readonly token: string,
+    private token: string,
     private readonly callbacks: AppGatewayCallbacks,
     initialPresenceStatus: DiscordPresenceStatus = "online",
   ) {
@@ -162,6 +164,13 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
   getSessionId(): string | null {
     return this.sessionId;
+  }
+
+  updateAuthToken(token: string): boolean {
+    const normalized = normalizeToken(token);
+    if (!normalized || normalized === this.token) return false;
+    this.token = normalized;
+    return true;
   }
 
   subscribeToGuildChannel(guildId: string | null | undefined, channelId: string | null | undefined): void {
@@ -341,6 +350,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     if (payload.t === "READY") {
       this.reconnectAttempt = 0;
       this.ready = true;
+      this.handleAuthTokenRefresh(payload.d);
       this.currentUserId = extractCurrentUserId(payload.d);
       this.sessionId = isObject(payload.d) && typeof payload.d.session_id === "string" ? payload.d.session_id : null;
       this.resumeGatewayUrl = extractResumeGatewayUrl(payload.d) ?? this.resumeGatewayUrl;
@@ -456,6 +466,13 @@ export class AppGatewayClient implements VoiceSignalingClient {
     // Discord close the voice gateway with 4014 ("Disconnected"), so preserving
     // resumable session state matters.
     this.scheduleReconnect(resumable ? 0 : undefined, this.sessionId ? GATEWAY_RECONNECT_CLOSE_CODE : undefined);
+  }
+
+  private handleAuthTokenRefresh(data: unknown): void {
+    const token = extractAuthToken(data);
+    if (!token || !this.updateAuthToken(token)) return;
+    debugLog("app_gateway.auth_token_refresh", {});
+    this.callbacks.onAuthTokenRefresh?.(this.token);
   }
 
   private handleDispatch(type: string | null | undefined, data: unknown): void {
@@ -834,6 +851,12 @@ export function extractCurrentUserId(data: unknown): string | null {
 export function extractResumeGatewayUrl(data: unknown): string | null {
   if (!isObject(data) || typeof data.resume_gateway_url !== "string") return null;
   return normalizeGatewayBaseUrl(data.resume_gateway_url);
+}
+
+export function extractAuthToken(data: unknown): string | null {
+  if (!isObject(data) || typeof data.auth_token !== "string") return null;
+  const token = normalizeToken(data.auth_token);
+  return token || null;
 }
 
 function normalizeGatewayBaseUrl(url: string): string | null {

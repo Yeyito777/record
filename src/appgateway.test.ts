@@ -90,6 +90,32 @@ describe("app gateway helpers", () => {
     expect(reconnectDelays).toEqual([0]);
   });
 
+  test("stores refreshed auth tokens from READY for future gateway resumes", () => {
+    const refreshed: string[] = [];
+    const sent: unknown[] = [];
+    const client = new AppGatewayClient("token-1", { onAuthTokenRefresh: (token) => refreshed.push(token), onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+
+    client.handleMessage({ data: JSON.stringify({
+      op: 0,
+      t: "READY",
+      d: {
+        auth_token: "\n token-2 \t",
+        user: { id: "me" },
+        session_id: "gateway-session",
+        resume_gateway_url: "wss://gateway-us-east1-b.discord.gg",
+        guilds: [],
+      },
+    }) });
+    sent.length = 0;
+
+    client.seq = 42;
+    client.sendResume();
+
+    expect(refreshed).toEqual(["token-2"]);
+    expect(sent).toEqual([{ op: 6, d: { token: "token-2", session_id: "gateway-session", seq: 42 } }]);
+  });
+
   test("uses Discord's resume gateway URL when resuming sessions", () => {
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
     client.gatewayUrl = "wss://gateway.discord.gg";

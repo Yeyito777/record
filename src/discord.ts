@@ -5,7 +5,8 @@
 import { summarizeInlineMessageParts, type DisplayAttachment, type DisplayEmbed } from "./messageparts";
 
 const API_BASE = "https://discord.com/api/v9";
-const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) record/0.1.0 Safari/537.36";
+const DISCORD_CLIENT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
+const USER_AGENT = DISCORD_CLIENT_USER_AGENT;
 const REQUEST_TIMEOUT_MS = 15_000;
 const GUILD_PAGE_LIMIT = 200;
 const GUILD_TEXT_CHANNEL_TYPES = new Set([0, 5, 11, 12]);
@@ -82,8 +83,6 @@ export class DiscordCaptchaRequiredError extends Error {
     this.name = "DiscordCaptchaRequiredError";
   }
 }
-
-const DISCORD_CLIENT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
 
 interface DiscordUserSettingsResponse {
   status?: string | null;
@@ -1639,9 +1638,20 @@ async function requestJson<T>(token: string, path: string, init: RequestInit): P
 
 function requestHeaders(token: string, init: RequestInit): HeadersInit {
   const headers: Record<string, string> = {
-    "Accept": "application/json",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
     "Authorization": token,
+    "Origin": "https://discord.com",
+    "Priority": "u=1, i",
+    "Referer": "https://discord.com/channels/@me",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
     "User-Agent": USER_AGENT,
+    "X-Debug-Options": "bugReporterEnabled",
+    "X-Discord-Locale": "en-US",
+    "X-Discord-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    "X-Super-Properties": discordSuperProperties(),
   };
   if (!(init.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";

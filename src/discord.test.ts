@@ -108,6 +108,22 @@ describe("discord helpers", () => {
       .rejects.toThrow("Captcha required to join this server.");
   });
 
+  test("sends Discord client metadata headers on REST requests", async () => {
+    let headers: Record<string, string> = {};
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      headers = init?.headers as Record<string, string>;
+      return new Response(JSON.stringify([{ id: "guild-1", name: "One", icon: null }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await fetchGuilds("token");
+
+    expect(headers["Authorization"]).toBe("token");
+    expect(headers["User-Agent"]).toContain("discord/0.0.115");
+    expect(headers["Origin"]).toBe("https://discord.com");
+    expect(headers["Referer"]).toBe("https://discord.com/channels/@me");
+    expect(headers["X-Super-Properties"]).toEqual(expect.any(String));
+  });
+
   test("deletes a channel message through Discord REST", async () => {
     const requests: Array<{ url: string; method: string }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -96,6 +96,20 @@ describe("member gateway member-list ops", () => {
     expect(errors).toBe(0);
   });
 
+  test("stores refreshed auth tokens from READY before reconnecting", () => {
+    const refreshed: string[] = [];
+    const sent: unknown[] = [];
+    const client = new MemberListGatewayClient("token-1", { onAuthTokenRefresh: (token) => refreshed.push(token) }) as any;
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+
+    client.handleMessage({ data: JSON.stringify({ op: 0, t: "READY", d: { auth_token: " token-2 " } }) });
+    client.handleMessage({ data: JSON.stringify({ op: 10, d: { heartbeat_interval: 45_000 } }) });
+
+    expect(refreshed).toEqual(["token-2"]);
+    expect(sent[0]).toMatchObject({ op: 2, d: { token: "token-2" } });
+    clearInterval(client.heartbeatTimer);
+  });
+
   test("replays existing guild rows when switching channels in the same guild", async () => {
     const client = new MemberListGatewayClient("token") as any;
     const seen: unknown[] = [];
