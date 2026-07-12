@@ -16,6 +16,7 @@ What it does right now:
 - render the server tree as a collapsible sidebar
 - show server voice/stage channels in the sidebar and join them from the terminal
 - start DM voice calls with `/call`, leave with `/hangup`, and toggle `/mute` or `/deafen`
+- watch a call participant's stream with `/watch` in a GPU-accelerated player window; close the window (or run `/watch` again) to stop watching
 - run slash commands like `/login <token>`, `/logout`, `/refresh`, and `/theme <name>`
 - treat the prompt as message/command input only
 
@@ -51,6 +52,7 @@ That installs `discord-voice-engine` to `~/.local/bin` by default, so Record and
 
 Notes:
 - tokens are stored as plaintext for now, just with strict file permissions
+- `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`
 - this is intentionally small and modular so real Discord features can be layered on later

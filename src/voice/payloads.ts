@@ -25,18 +25,12 @@ export function buildVoiceIdentifyPayload(data: VoiceGatewayJoinData, maxDavePro
   };
 }
 
-export function buildMediaSinkWantsPayload(ssrc: number, options: { quality?: number; pixelCount?: number } = {}): unknown {
+export function buildMediaSinkWantsPayload(ssrc: number, options: { quality?: number } = {}): unknown {
   const quality = normalizeQuality(options.quality ?? 100);
-  const pixelCount = options.pixelCount ?? 1920 * 1080;
   const key = String(ssrc >>> 0);
   return {
     op: 15,
-    d: {
-      [key]: quality,
-      pixelCounts: {
-        [key]: pixelCount,
-      },
-    },
+    d: { [key]: quality },
   };
 }
 

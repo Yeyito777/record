@@ -3890,13 +3890,24 @@ export function watchCurrentStream(state: AppState, effects: SessionEffects, tar
   const ownerLabel = resolved.ownerUserId
     ? displayNameForUser(state, session.target.channelId, resolved.ownerUserId, resolved.ownerUserId)
     : "stream";
+  const playback = createDefaultWatchStreamPlayback({
+    title: `record stream — ${ownerLabel}`,
+    onEnded: (error) => {
+      if (watchStreamController !== controller) return;
+      watchStreamController = null;
+      controller.stop("playback_ended");
+      if (error) setNotice(state, `Stream playback ended: ${error.message}`, "warning", { statusLine: false });
+      else setNotice(state, `Stopped watching ${ownerLabel}'s stream.`, "muted", { statusLine: false });
+      effects.scheduleRender();
+    },
+  });
   const controller = new WatchStreamController(resolved.streamKey, session, selfUserId, {
     scheduleRender: effects.scheduleRender,
     watchStream: (streamKey) => appGateway?.watchStream(streamKey) ?? false,
     pingStreamServer: (streamKey) => appGateway?.pingStreamServer(streamKey) ?? false,
   }, (error) => {
     setNotice(state, `Stream watch: ${error.message}`, "warning", { statusLine: false });
-  }, undefined, createDefaultWatchStreamPlayback());
+  }, undefined, playback);
   watchStreamController = controller;
 
   const tracked = availableStreamsByKey.get(resolved.streamKey);

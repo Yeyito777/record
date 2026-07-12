@@ -11,6 +11,9 @@ import { reserveUdpPort } from "./voice/rtp";
 const WATCH_STREAM_HELPER_SHUTDOWN_GRACE_MS = 1_500;
 const WATCH_STREAM_VIDEO_PAYLOAD_TYPE = 101;
 const WATCH_STREAM_AUDIO_PAYLOAD_TYPE = 120;
+const WATCH_STREAM_SDP_PROTOCOL_WHITELIST = "file,udp,rtp";
+
+export type WatchStreamPlayer = "mpv" | "ffplay";
 
 export interface WatchStreamPlayback {
   start(): Promise<void> | void;
@@ -24,11 +27,16 @@ export class NoopWatchStreamPlayback implements WatchStreamPlayback {
   stop(): void {}
 }
 
-export interface FfplayWatchStreamPlaybackOptions {
+export interface PlayerWatchStreamPlaybackOptions {
+  player?: WatchStreamPlayer;
   command?: string;
+  args?: string[];
+  title?: string;
+  /** Fired when the player exits on its own, e.g. the user closed the window. Not fired for stop(). */
+  onEnded?: (error: Error | null) => void;
 }
 
-export class FfplayWatchStreamPlayback implements WatchStreamPlayback {
+export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
   private udp: UdpSocket | null = null;
   private tempDir: string | null = null;
   private sdpPath: string | null = null;
@@ -38,7 +46,7 @@ export class FfplayWatchStreamPlayback implements WatchStreamPlayback {
   private packetsForwarded = 0;
   private firstPacketLogged = false;
 
-  constructor(private readonly options: FfplayWatchStreamPlaybackOptions = {}) {}
+  constructor(private readonly options: PlayerWatchStreamPlaybackOptions = {}) {}
 
   async start(): Promise<void> {
     if (this.proc) return;
@@ -49,24 +57,29 @@ export class FfplayWatchStreamPlayback implements WatchStreamPlayback {
     this.sdpPath = join(this.tempDir, "stream.sdp");
     writeFileSync(this.sdpPath, buildWatchStreamPlaybackSdp(this.videoPort, this.audioPort));
 
-    const command = this.options.command ?? "ffplay";
-    const args = buildWatchStreamFfplayArgs(this.sdpPath);
+    const player = this.options.player ?? "mpv";
+    const command = this.options.command ?? player;
+    const args = this.options.args ?? (player === "mpv"
+      ? buildWatchStreamMpvArgs(this.sdpPath, this.options.title)
+      : buildWatchStreamFfplayArgs(this.sdpPath, this.options.title));
     debugLog("stream.watch.playback.start", { command, args, videoPort: this.videoPort, audioPort: this.audioPort, sdpPath: this.sdpPath });
     const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     this.proc = proc;
     const stderr = drainChildOutput(proc);
     proc.on("error", (error) => {
       if (this.proc !== proc) return;
+      this.proc = null;
       debugLog("stream.watch.playback.spawn_error", { error: error.message });
       this.stop();
+      this.options.onEnded?.(new Error(`Failed to start ${command}: ${error.message}`));
     });
     proc.on("exit", (code, signal) => {
       const details = stderr().trim();
       debugLog("stream.watch.playback.exit", { code, signal, details, packetsForwarded: this.packetsForwarded });
       if (this.proc !== proc) return;
       this.proc = null;
-      if (signal === "SIGTERM" || signal === "SIGKILL") return;
       this.stop();
+      this.options.onEnded?.(playerExitError(command, code, signal, details));
     });
   }
 
@@ -110,9 +123,21 @@ export class FfplayWatchStreamPlayback implements WatchStreamPlayback {
   }
 }
 
-export function createDefaultWatchStreamPlayback(): WatchStreamPlayback {
+export interface CreateWatchStreamPlaybackOptions {
+  title?: string;
+  onEnded?: (error: Error | null) => void;
+}
+
+export function createDefaultWatchStreamPlayback(options: CreateWatchStreamPlaybackOptions = {}): WatchStreamPlayback {
   if (process.platform !== "linux") return new NoopWatchStreamPlayback();
-  return new FfplayWatchStreamPlayback();
+  return new PlayerWatchStreamPlayback({ player: resolveWatchStreamPlayer(), ...options });
+}
+
+export function resolveWatchStreamPlayer(env: Record<string, string | undefined> = process.env, which: (command: string) => string | null = Bun.which): WatchStreamPlayer {
+  const requested = env.RECORD_WATCH_PLAYER?.trim().toLowerCase();
+  if (requested === "mpv" || requested === "ffplay") return requested;
+  if (requested) debugLog("stream.watch.playback.unknown_player", { requested });
+  return which("mpv") ? "mpv" : "ffplay";
 }
 
 export function buildWatchStreamPlaybackSdp(videoPort: number, audioPort: number | null = null, videoPayloadType = WATCH_STREAM_VIDEO_PAYLOAD_TYPE, audioPayloadType = WATCH_STREAM_AUDIO_PAYLOAD_TYPE): string {
@@ -140,14 +165,34 @@ export function buildWatchStreamPlaybackSdp(videoPort: number, audioPort: number
   ].join("\n");
 }
 
-export function buildWatchStreamFfplayArgs(sdpPath: string): string[] {
+export function buildWatchStreamMpvArgs(sdpPath: string, title?: string): string[] {
+  return [
+    "--profile=low-latency",
+    "--hwdec=auto-safe",
+    "--force-window=immediate",
+    "--msg-level=all=error",
+    `--title=${title ?? "record stream"}`,
+    `--demuxer-lavf-o-append=protocol_whitelist=${WATCH_STREAM_SDP_PROTOCOL_WHITELIST}`,
+    sdpPath,
+  ];
+}
+
+export function buildWatchStreamFfplayArgs(sdpPath: string, title?: string): string[] {
   return [
     "-loglevel", "error",
     "-fflags", "nobuffer",
     "-flags", "low_delay",
-    "-protocol_whitelist", "file,udp,rtp",
+    "-protocol_whitelist", WATCH_STREAM_SDP_PROTOCOL_WHITELIST,
+    ...(title ? ["-window_title", title] : []),
     "-i", sdpPath,
   ];
+}
+
+function playerExitError(command: string, code: number | null, signal: NodeJS.Signals | null, details: string): Error | null {
+  if (code === 0) return null;
+  const reason = typeof code === "number" ? `exited with status ${code}` : `was killed by ${signal ?? "a signal"}`;
+  const lastLine = details.split("\n").filter((line) => line.trim()).pop();
+  return new Error(`${command} ${reason}${lastLine ? `: ${lastLine.trim()}` : ""}`);
 }
 
 function drainChildOutput(proc: ChildProcess): () => string {

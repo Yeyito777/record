@@ -703,14 +703,22 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
 
     const pc = new PeerConnection("", { iceServers: ["stun:stun.l.google.com:19302"] });
     this.webRtc = pc;
-    this.webRtcAudioTrack = pc.addTrack(audio);
-    this.webRtcVideoTrack = pc.addTrack(video);
+    const audioTrack = pc.addTrack(audio);
+    const videoTrack = pc.addTrack(video);
+    this.webRtcAudioTrack = audioTrack;
+    this.webRtcVideoTrack = videoTrack;
     pc.onStateChange((state) => debugLog("voice.gateway.webrtc_state", { state }));
+    audioTrack.onOpen(() => debugLog("voice.gateway.webrtc_track_open", { mid: safeTrackString(audioTrack, "mid"), type: safeTrackString(audioTrack, "type") }));
+    audioTrack.onClosed(() => debugLog("voice.gateway.webrtc_track_closed", { mid: "0", type: "audio" }));
+    audioTrack.onError((error) => debugLog("voice.gateway.webrtc_track_error", { mid: "0", type: "audio", error }));
+    videoTrack.onOpen(() => debugLog("voice.gateway.webrtc_track_open", { mid: safeTrackString(videoTrack, "mid"), type: safeTrackString(videoTrack, "type") }));
+    videoTrack.onClosed(() => debugLog("voice.gateway.webrtc_track_closed", { mid: "1", type: "video" }));
+    videoTrack.onError((error) => debugLog("voice.gateway.webrtc_track_error", { mid: "1", type: "video", error }));
     pc.onTrack((track) => this.registerIncomingWebRtcTrack(track));
     pc.onLocalDescription((sdp) => {
       if (this.webRtc !== pc || this.disconnected) return;
       const rtcConnectionId = randomUUID();
-      debugLog("voice.gateway.select_protocol_webrtc", { rtcConnectionId, audioSsrc, videoSsrc: this.videoSsrc, receiveOnly: this.receiveOnlyStream });
+      debugLog("voice.gateway.select_protocol_webrtc", { rtcConnectionId, audioSsrc, videoSsrc: this.videoSsrc, receiveOnly: this.receiveOnlyStream, audioTrackOpen: safeTrackOpen(audioTrack), videoTrackOpen: safeTrackOpen(videoTrack) });
       this.connectStage = "select_protocol";
       this.send({
         op: 1,
@@ -839,7 +847,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const quality = receive.quality ?? 100;
     const pixelCount = receive.pixelCount ?? 1920 * 1080;
     debugLog("voice.gateway.media_sink_wants", { streamKey: receive.streamKey, videoSsrc, quality, pixelCount });
-    this.send(buildMediaSinkWantsPayload(videoSsrc, { quality, pixelCount }));
+    this.send(buildMediaSinkWantsPayload(videoSsrc, { quality }));
   }
 
   private sendWebRtcAudioFrame(payload: Buffer, frameDurationMs: number): void {
@@ -885,11 +893,13 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
       submittedFps: elapsedSeconds > 0 ? sentDelta / elapsedSeconds : null,
       droppedFps: elapsedSeconds > 0 ? droppedDelta / elapsedSeconds : null,
       sendFalseFps: elapsedSeconds > 0 ? sendFalseDelta / elapsedSeconds : null,
-      bufferedBytes: null,
+      bufferedBytes: safeTrackBufferedAmount(this.webRtcVideoTrack),
       submittedVideoBytes: this.webRtcVideoBytesSent,
       peerBytesSent,
       peerBitrateKbps: elapsedSeconds > 0 && peerBytesDelta !== null ? (peerBytesDelta * 8) / elapsedSeconds / 1000 : null,
       peerRttMs: safePeerRttMs(this.webRtc),
+      audioTrackOpen: safeTrackOpen(this.webRtcAudioTrack),
+      videoTrackOpen: safeTrackOpen(this.webRtcVideoTrack),
       localCandidateType: selectedCandidatePair?.local.type ?? null,
       remoteCandidateType: selectedCandidatePair?.remote.type ?? null,
     });
@@ -924,23 +934,25 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private sendVideo(): void {
     if (this.ssrc === null || this.videoSsrc === null) return;
     const rtxSsrc = this.videoRtxSsrc ?? (this.videoSsrc + 1);
+    const stream = {
+      type: "screen",
+      rid: "100",
+      ssrc: this.videoSsrc,
+      rtx_ssrc: rtxSsrc,
+      quality: 100,
+      active: true,
+      max_bitrate: 10_000_000,
+      max_framerate: 30,
+      max_resolution: { type: "fixed", width: 1920, height: 1080 },
+    };
+    debugLog("voice.gateway.video", { audioSsrc: this.ssrc, videoSsrc: this.videoSsrc, rtxSsrc, streamType: stream.type, rid: stream.rid });
     this.send({
       op: 12,
       d: {
         audio_ssrc: this.ssrc,
         video_ssrc: this.videoSsrc,
         rtx_ssrc: rtxSsrc,
-        streams: [{
-          type: "video",
-          rid: "100",
-          ssrc: this.videoSsrc,
-          rtx_ssrc: rtxSsrc,
-          quality: 100,
-          active: true,
-          max_bitrate: 10_000_000,
-          max_framerate: 30,
-          max_resolution: { type: "fixed", width: 1920, height: 1080 },
-        }],
+        streams: [stream],
       },
     });
     this.sendSpeakingFlags(SPEAKING_FLAG_SOUNDSHARE);
@@ -1126,6 +1138,24 @@ function safeTrackString(track: Track, method: "mid" | "type"): string | undefin
   }
 }
 
+function safeTrackOpen(track: Track | null): boolean | null {
+  if (!track) return null;
+  try {
+    return track.isOpen();
+  } catch {
+    return null;
+  }
+}
+
+function safeTrackBufferedAmount(track: Track | null): number | null {
+  if (!track) return null;
+  try {
+    return track.bufferedAmount();
+  } catch {
+    return null;
+  }
+}
+
 function incomingMediaType(payloadType: number, trackType: string | undefined): "audio" | "video" | "rtx" | "unknown" {
   if (payloadType === OPUS_PAYLOAD_TYPE || trackType === "audio") return "audio";
   if (payloadType === VIDEO_RTX_PAYLOAD_TYPE_H264) return "rtx";
@@ -1133,7 +1163,7 @@ function incomingMediaType(payloadType: number, trackType: string | undefined): 
   return "unknown";
 }
 
-function buildDiscordWebRtcAnswer(sdp: string, options: { receiveOnly?: boolean } = {}): string {
+export function buildDiscordWebRtcAnswer(sdp: string, options: { receiveOnly?: boolean } = {}): string {
   let ip = "";
   let port = "";
   let iceUsername = "";
@@ -1143,13 +1173,19 @@ function buildDiscordWebRtcAnswer(sdp: string, options: { receiveOnly?: boolean 
   for (const rawLine of sdp.split("\n")) {
     const line = rawLine.trim();
     if (line.startsWith("c=")) ip = line;
-    else if (line.startsWith("a=rtcp")) port = line.split(":")[1] ?? "";
+    else if (line.startsWith("a=rtcp:")) port = line.slice("a=rtcp:".length).split(/\s+/, 1)[0] ?? "";
     else if (line.startsWith("a=ice-ufrag")) iceUsername = line;
     else if (line.startsWith("a=ice-pwd")) icePassword = line;
     else if (line.startsWith("a=fingerprint")) fingerprint = line;
     else if (line.startsWith("a=candidate")) candidate = line;
   }
-  const remoteDirection = options.receiveOnly ? "sendonly" : "inactive";
+  // This SDP is installed as the *remote* answer to our local offer.  When we
+  // are publishing a stream Discord is a receiver, so the remote answer must be
+  // recvonly.  Marking it inactive makes libdatachannel keep the local tracks
+  // effectively closed: Track.send() returns false for every frame, which looks
+  // like intermittent/black stream drops to viewers even though the encoder is
+  // producing frames.
+  const remoteDirection = options.receiveOnly ? "sendonly" : "recvonly";
   const audioSection = `
 m=audio ${port} UDP/TLS/RTP/SAVPF ${OPUS_PAYLOAD_TYPE}
 ${ip}

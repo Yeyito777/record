@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
+import { buildDiscordWebRtcAnswer, buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, DiscordVoiceGatewayConnection, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -117,11 +117,72 @@ describe("voice backend", () => {
   });
 
   test("builds media sink wants for watched stream quality", () => {
-    expect(buildMediaSinkWantsPayload(8964, { quality: 150, pixelCount: 1189844.5 })).toEqual({
+    expect(buildMediaSinkWantsPayload(8964, { quality: 150 })).toEqual({
       op: 15,
       d: {
         "8964": 100,
-        pixelCounts: { "8964": 1189844.5 },
+      },
+    });
+  });
+
+  test("builds Discord WebRTC answers with the media direction Discord expects", () => {
+    const answerSource = [
+      "v=0",
+      "c=IN IP4 203.0.113.10",
+      "a=rtcp:50000 IN IP4 203.0.113.10",
+      "a=ice-ufrag:ufrag-1",
+      "a=ice-pwd:password-1",
+      "a=fingerprint:sha-256 00:11:22:33",
+      "a=candidate:1 1 UDP 2130706431 203.0.113.10 50000 typ host",
+      "a=rtcp-mux",
+    ].join("\n");
+
+    const publishingAnswer = buildDiscordWebRtcAnswer(answerSource);
+    expect(publishingAnswer).toContain("m=audio 50000 UDP/TLS/RTP/SAVPF 120");
+    expect(publishingAnswer).toContain("m=video 50000 UDP/TLS/RTP/SAVPF 101 102");
+    expect(publishingAnswer.match(/a=recvonly/g)).toHaveLength(2);
+    expect(publishingAnswer).not.toContain("a=inactive");
+
+    const watchingAnswer = buildDiscordWebRtcAnswer(answerSource, { receiveOnly: true });
+    expect(watchingAnswer.match(/a=sendonly/g)).toHaveLength(2);
+    expect(watchingAnswer).not.toContain("a=inactive");
+  });
+
+  test("announces outbound screen streams as screen video parameters", () => {
+    const sent: unknown[] = [];
+    const gateway = new DiscordVoiceGatewayConnection({
+      guildId: "dm-1",
+      channelId: "dm-1",
+      userId: "me",
+      sessionId: "voice-session",
+      token: "voice-token",
+      endpoint: "voice.example",
+      video: true,
+    });
+    (gateway as any).ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+    (gateway as any).ssrc = 1234;
+    (gateway as any).videoSsrc = 5678;
+    (gateway as any).videoRtxSsrc = 5679;
+
+    (gateway as any).sendVideo();
+
+    expect(sent[0]).toEqual({
+      op: 12,
+      d: {
+        audio_ssrc: 1234,
+        video_ssrc: 5678,
+        rtx_ssrc: 5679,
+        streams: [{
+          type: "screen",
+          rid: "100",
+          ssrc: 5678,
+          rtx_ssrc: 5679,
+          quality: 100,
+          active: true,
+          max_bitrate: 10_000_000,
+          max_framerate: 30,
+          max_resolution: { type: "fixed", width: 1920, height: 1080 },
+        }],
       },
     });
   });
