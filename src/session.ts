@@ -33,6 +33,7 @@ import {
   fetchGuilds,
   sendChannelMessage,
   setDirectMessageChannelMuted,
+  setGuildChannelMuted,
   setGuildMuted,
   sortGuildsByOrder,
   ringDirectMessageCall,
@@ -547,9 +548,15 @@ function channelById(state: AppState, channelId: string | null | undefined): Dis
 
 function isChannelMuted(state: AppState, channelId: string | null | undefined): boolean {
   if (!channelId) return false;
-  return Boolean(state.channelList.channels.find((channel) => channel.id === channelId)?.muted)
+  const channel = channelById(state, channelId);
+  const directlyMuted = Boolean(channel?.muted)
     || Boolean(state.channelList.activeChannel?.id === channelId && state.channelList.activeChannel.muted)
     || isSidebarChannelMuted(state.sidebar, channelId);
+  if (directlyMuted) return true;
+  return Boolean(channel?.parentId && (
+    state.channelMuteSettings[channel.parentId]
+    || isSidebarChannelMuted(state.sidebar, channel.parentId)
+  ));
 }
 
 function setChannelListChannelMuted(state: AppState, channelId: string, muted: boolean): void {
@@ -573,11 +580,11 @@ function withChannelMuteSettings(state: AppState, channels: DiscordChannel[]): D
 function applyChannelMuteSettings(state: AppState, mutedByChannelId: Record<string, boolean>, options: { reset?: boolean } = {}): void {
   const nextMutedByChannelId = { ...mutedByChannelId };
   if (options.reset) {
-    const knownDirectMessageChannels = [
-      ...state.channelList.channels.filter((channel) => channel.guildId === DIRECT_MESSAGES_GUILD_ID),
-      ...(state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID] ?? []),
+    const knownChannels = [
+      ...state.channelList.channels,
+      ...Object.values(state.sidebar.cachedChannelsByGuildId).flat(),
     ];
-    for (const channel of knownDirectMessageChannels) {
+    for (const channel of knownChannels) {
       if (!Object.prototype.hasOwnProperty.call(nextMutedByChannelId, channel.id)) nextMutedByChannelId[channel.id] = false;
     }
   }
@@ -591,6 +598,11 @@ function applyChannelMuteSettings(state: AppState, mutedByChannelId: Record<stri
   const accountId = currentAccountId(state);
   const directMessages = state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID];
   if (accountId && directMessages) saveCachedDirectMessages(accountId, directMessages);
+  if (accountId) {
+    for (const [guildId, channels] of Object.entries(state.sidebar.cachedChannelsByGuildId)) {
+      if (guildId !== DIRECT_MESSAGES_GUILD_ID) saveCachedGuildChannels(accountId, guildId, channels);
+    }
+  }
   persistNotifications(state);
 }
 
@@ -4070,8 +4082,56 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
     return;
   }
 
+  if ((entry.kind === "category" || entry.kind === "channel") && entry.guildId !== DIRECT_MESSAGES_GUILD_ID) {
+    const channel = channelById(state, entry.id);
+    if (!channel) {
+      setNotice(state, "Could not find that channel or category.", "warning");
+      effects.scheduleRender();
+      return;
+    }
+
+    const previousMuted = Boolean(channel.muted || state.channelMuteSettings[entry.id]);
+    const nextMuted = !previousMuted;
+    const previousNotifications = {
+      byChannelId: { ...state.notifications.byChannelId },
+      channelGuildIds: { ...state.notifications.channelGuildIds },
+    };
+    setChannelListChannelMuted(state, entry.id, nextMuted);
+    setSidebarChannelMuted(state.sidebar, entry.id, nextMuted);
+    if (nextMuted) {
+      const mutedChannelIds = entry.kind === "category"
+        ? [entry.id, ...[
+          ...state.channelList.channels,
+          ...Object.values(state.sidebar.cachedChannelsByGuildId).flat(),
+        ]
+          .filter((candidate) => candidate.parentId === entry.id)
+          .map((candidate) => candidate.id)]
+        : [entry.id];
+      for (const channelId of mutedChannelIds) clearChannelNotifications(state.notifications, channelId);
+      persistNotifications(state);
+    }
+    const accountId = currentAccountId(state);
+    const cachedChannels = state.sidebar.cachedChannelsByGuildId[entry.guildId];
+    if (accountId && cachedChannels) saveCachedGuildChannels(accountId, entry.guildId, cachedChannels);
+    setNotice(state, "", "muted");
+    effects.scheduleRender();
+
+    void setGuildChannelMuted(token, entry.guildId, entry.id, nextMuted).catch((error) => {
+      setChannelListChannelMuted(state, entry.id, previousMuted);
+      setSidebarChannelMuted(state.sidebar, entry.id, previousMuted);
+      state.notifications.byChannelId = previousNotifications.byChannelId;
+      state.notifications.channelGuildIds = previousNotifications.channelGuildIds;
+      const rollbackChannels = state.sidebar.cachedChannelsByGuildId[entry.guildId];
+      if (accountId && rollbackChannels) saveCachedGuildChannels(accountId, entry.guildId, rollbackChannels);
+      persistNotifications(state);
+      setNotice(state, `Failed to ${nextMuted ? "mute" : "unmute"} ${channel.name}: ${error instanceof Error ? error.message : String(error)}`, "error");
+      effects.scheduleRender();
+    });
+    return;
+  }
+
   if (entry.kind !== "guild" || !entry.guildId || entry.guildId === DIRECT_MESSAGES_GUILD_ID) {
-    setNotice(state, "Select a server row, DM, or group chat to mute or unmute it.", "muted");
+    setNotice(state, "Select a server, category, channel, DM, or group chat to mute or unmute it.", "muted");
     effects.scheduleRender();
     return;
   }

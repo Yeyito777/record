@@ -8,10 +8,13 @@ import { theme } from "./theme";
 import { padRight, termWidth, truncate } from "./textwidth";
 
 export type ServerAction = "copy_invite" | "toggle_mute" | "leave_server";
+export type ServerActionTargetKind = "guild" | "category" | "channel";
 
 export interface ServerActionModalState {
   guildId: string;
   guildName: string;
+  targetKind: ServerActionTargetKind;
+  targetId: string;
   muted: boolean;
   selection: ServerAction;
   leaveConfirmation: boolean;
@@ -28,12 +31,40 @@ export function createServerActionModal(guildId: string, guildName: string, mute
   return {
     guildId,
     guildName,
+    targetKind: "guild",
+    targetId: guildId,
     muted,
     selection: "copy_invite",
     leaveConfirmation: false,
     busy: false,
     error: null,
   };
+}
+
+export function createChannelActionModal(
+  targetKind: "category" | "channel",
+  guildId: string,
+  targetId: string,
+  targetName: string,
+  muted = false,
+): ServerActionModalState {
+  return {
+    guildId,
+    guildName: targetName,
+    targetKind,
+    targetId,
+    muted,
+    selection: "toggle_mute",
+    leaveConfirmation: false,
+    busy: false,
+    error: null,
+  };
+}
+
+function availableActions(modal: ServerActionModalState): ServerAction[] {
+  return modal.targetKind === "guild"
+    ? ["copy_invite", "toggle_mute", "leave_server"]
+    : ["toggle_mute"];
 }
 
 export function handleServerActionModalKey(modal: ServerActionModalState, key: KeyEvent): ServerActionModalKeyResult {
@@ -46,7 +77,7 @@ export function handleServerActionModalKey(modal: ServerActionModalState, key: K
       ? 1
       : 0;
   if (direction !== 0) {
-    const actions: ServerAction[] = ["copy_invite", "toggle_mute", "leave_server"];
+    const actions = availableActions(modal);
     const currentIndex = actions.indexOf(modal.selection);
     const nextIndex = Math.max(0, Math.min(actions.length - 1, currentIndex + direction));
     modal.selection = actions[nextIndex] ?? "copy_invite";
@@ -81,11 +112,16 @@ export function renderServerActionModal(
   const availableWidth = totalCols - leftCol + 1;
   if (availableWidth < 6 || totalRows < 4) return "";
 
-  const labels = [
-    "Copy invite",
-    modal.muted ? "Unmute server" : "Mute server",
-    modal.leaveConfirmation ? "You sure?" : "Leave server",
-  ];
+  const muteTarget = modal.targetKind === "guild" ? "server" : modal.targetKind;
+  const muteLabel = `${modal.muted ? "Unmute" : "Mute"} ${muteTarget}`;
+  const actions = availableActions(modal);
+  const labels = actions.map((action) => (
+    action === "copy_invite"
+      ? "Copy invite"
+      : action === "toggle_mute"
+        ? muteLabel
+        : modal.leaveConfirmation ? "You sure?" : "Leave server"
+  ));
   const errorText = modal.error ? truncate(modal.error, Math.max(1, Math.min(38, availableWidth - 4))) : null;
   const rawLines = labels.map((label) => `  ${label} `);
   if (errorText) rawLines.push(`  ${errorText} `);
@@ -102,23 +138,14 @@ export function renderServerActionModal(
   ];
 
   for (let index = 0; index < rawLines.length; index++) {
-    const selected = index === 0
-      ? modal.selection === "copy_invite"
-      : index === 1
-        ? modal.selection === "toggle_mute"
-        : index === 2 && modal.selection === "leave_server";
+    const action = actions[index];
+    const selected = action !== undefined && modal.selection === action;
     const marker = selected ? "▸ " : "  ";
-    const label = index === 0
-      ? labels[0]!
-      : index === 1
-        ? labels[1]!
-        : index === 2
-          ? labels[2]!
-          : errorText!;
+    const label = labels[index] ?? errorText!;
     const bg = selected ? theme.sidebarSelBg : theme.sidebarBg;
-    const fg = index === 2
+    const fg = action === "leave_server"
       ? theme.error
-      : index >= 3
+      : action === undefined
         ? theme.warning
         : theme.text;
     const content = truncate(`${marker}${label} `, innerWidth);

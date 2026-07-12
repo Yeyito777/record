@@ -1064,6 +1064,65 @@ describe("session", () => {
     expect(loadCachedGuildOrder("self")).toEqual(["guild-2", "guild-1"]);
   });
 
+  test("muting a category updates its override and clears child notifications", () => {
+    const requests: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.expandedGuildId = "guild-1";
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [
+      { id: "category-1", guildId: "guild-1", parentId: null, name: "News", topic: null, position: 0, type: 4, nsfw: false },
+      { id: "channel-1", guildId: "guild-1", parentId: "category-1", name: "announcements", topic: null, position: 1, type: 0, nsfw: false },
+    ];
+    state.sidebar.cachedChannelsByGuildId["guild-1"] = state.channelList.channels;
+    state.sidebar.selectedIndex = 1;
+    state.notifications.byChannelId["channel-1"] = 3;
+    state.notifications.channelGuildIds["channel-1"] = "guild-1";
+
+    toggleSelectedGuildMute(state, { scheduleRender: () => {} });
+
+    expect(state.sidebar.cachedChannelsByGuildId["guild-1"]?.find((channel) => channel.id === "category-1")?.muted).toBe(true);
+    expect(state.notifications.byChannelId["channel-1"]).toBeUndefined();
+    expect(requests[0]?.body).toEqual({
+      guilds: {
+        "guild-1": {
+          channel_overrides: {
+            "category-1": {
+              muted: true,
+              mute_config: { end_time: null, selected_time_window: -1 },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  test("muting a guild channel updates its local mute state", () => {
+    globalThis.fetch = (async () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.expandedGuildId = "guild-1";
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false },
+    ];
+    state.sidebar.cachedChannelsByGuildId["guild-1"] = state.channelList.channels;
+    state.sidebar.selectedIndex = 1;
+
+    toggleSelectedGuildMute(state, { scheduleRender: () => {} });
+
+    expect(state.channelList.channels[0]?.muted).toBe(true);
+    expect(state.sidebar.cachedChannelsByGuildId["guild-1"]?.[0]?.muted).toBe(true);
+  });
+
   test("muting a DM updates channel state, clears notifications, and patches Discord settings", () => {
     const requests: Array<{ url: string; body: any }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

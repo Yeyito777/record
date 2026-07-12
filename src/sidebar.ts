@@ -1056,6 +1056,7 @@ function buildSidebarSearchEntries(
         guildId: guild.id,
         label: category.name,
         depth: 1,
+        muted: Boolean(category.muted),
         hidden: Boolean(category.hidden),
         selected: false,
         active: false,
@@ -1121,6 +1122,7 @@ function pushExpandedGuildChildren(
       guildId: guild.id,
       label: category.name,
       depth: 1,
+      muted: Boolean(category.muted),
       hidden: Boolean(category.hidden),
       selected: false,
       active: false,
@@ -2375,7 +2377,7 @@ function renderEntryRow(
     ? `📁 ${entry.label}/ ${entry.childCount ?? 0}`
     : entry.label || "unnamed";
   const badge = renderNotificationBadge(entry.notificationCount ?? 0);
-  const muteIcon = (entry.kind === "guild" || entry.kind === "channel") && entry.muted ? " 🔕" : "";
+  const muteIcon = (entry.kind === "guild" || entry.kind === "category" || entry.kind === "channel") && entry.muted ? " 🔕" : "";
   const badgeGap = badge ? 1 : 0;
   const badgeWidth = badge?.width ?? 0;
   const muteWidth = termWidth(muteIcon);

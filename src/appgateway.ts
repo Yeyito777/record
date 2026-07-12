@@ -632,7 +632,6 @@ export class AppGatewayClient implements VoiceSignalingClient {
           if (!isObject(data)) break;
           if (typeof data.guild_id === "string" && typeof data.muted === "boolean") {
             this.callbacks.onGuildMuteSetting?.(data.guild_id, data.muted);
-            break;
           }
           const mutedByChannelId = channelMuteSettingsFromEntry(data);
           if (Object.keys(mutedByChannelId).length > 0) {
@@ -1124,7 +1123,7 @@ export function extractChannelMuteSettings(data: unknown): Record<string, boolea
     : [];
   const mutedByChannelId: Record<string, boolean> = {};
   for (const setting of settings) {
-    if (!isObject(setting) || typeof setting.guild_id === "string") continue;
+    if (!isObject(setting)) continue;
     Object.assign(mutedByChannelId, channelMuteSettingsFromEntry(setting));
   }
   return mutedByChannelId;

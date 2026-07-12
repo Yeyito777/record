@@ -1534,6 +1534,29 @@ export async function setGuildMuted(token: string, guildId: string, muted: boole
   });
 }
 
+export async function setGuildChannelMuted(token: string, guildId: string, channelId: string, muted: boolean): Promise<void> {
+  const channelSettings: Record<string, unknown> = { muted };
+  if (muted) {
+    channelSettings.mute_config = {
+      end_time: null,
+      selected_time_window: -1,
+    };
+  }
+
+  await requestJson<unknown>(token, "/users/@me/guilds/settings", {
+    method: "PATCH",
+    body: JSON.stringify({
+      guilds: {
+        [guildId]: {
+          channel_overrides: {
+            [channelId]: channelSettings,
+          },
+        },
+      },
+    }),
+  });
+}
+
 export async function setDirectMessageChannelMuted(token: string, channelId: string, muted: boolean): Promise<void> {
   const channelSettings: Record<string, unknown> = { muted };
   if (muted) {

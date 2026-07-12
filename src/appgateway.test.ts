@@ -265,7 +265,7 @@ describe("app gateway helpers", () => {
     })).toEqual({ "guild-1": true, "guild-2": false });
   });
 
-  test("extracts DM and group DM mute settings from READY", () => {
+  test("extracts guild channel, category, DM, and group DM mute settings from READY", () => {
     expect(extractChannelMuteSettings({
       user_guild_settings: {
         entries: [
@@ -279,7 +279,7 @@ describe("app gateway helpers", () => {
           },
         ],
       },
-    })).toEqual({ "dm-1": true, "group-dm-1": false });
+    })).toEqual({ "guild-channel": true, "dm-1": true, "group-dm-1": false });
   });
 
   test("extracts current user role ids from READY merged members", () => {

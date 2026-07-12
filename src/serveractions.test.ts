@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  createChannelActionModal,
   createServerActionModal,
   handleServerActionModalKey,
   renderServerActionModal,
@@ -81,6 +82,22 @@ describe("server actions modal", () => {
     const rendered = stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80));
 
     expect(rendered).toContain("Unmute server");
+  });
+
+  test("shows only the relevant mute action for categories and channels", () => {
+    const category = createChannelActionModal("category", "guild-1", "category-1", "News", false);
+    const channel = createChannelActionModal("channel", "guild-1", "channel-1", "general", true);
+
+    const categoryRendered = stripAnsi(renderServerActionModal(category, 3, 29, 20, 80));
+    const channelRendered = stripAnsi(renderServerActionModal(channel, 3, 29, 20, 80));
+    expect(categoryRendered).toContain("Mute category");
+    expect(categoryRendered).not.toContain("Copy invite");
+    expect(categoryRendered).not.toContain("Leave server");
+    expect(channelRendered).toContain("Unmute channel");
+    expect(handleServerActionModalKey(category, { type: "enter" })).toEqual({
+      type: "action",
+      action: "toggle_mute",
+    });
   });
 
   test("keeps the selected copy option in normal text color", () => {

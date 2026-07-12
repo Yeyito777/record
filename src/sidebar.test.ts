@@ -91,6 +91,20 @@ describe("sidebar state", () => {
     expect(rows[2]).not.toContain(" 7 ");
   });
 
+  test("renders mute icons for muted categories and channels", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+    const rows = renderSidebar(sidebar, [
+      { id: "category-1", guildId: "guild-1", parentId: null, name: "News", topic: null, position: 0, type: 4, nsfw: false, muted: true },
+      { id: "channel-1", guildId: "guild-1", parentId: "category-1", name: "announcements", topic: null, position: 1, type: 0, nsfw: false, muted: true },
+    ], 8, true).map(stripAnsiForTest);
+
+    expect(rows.find((row) => row.includes("News"))).toContain("🔕");
+    expect(rows.find((row) => row.includes("announcements"))).toContain("🔕");
+  });
+
   test("renders muted DM icon and suppresses its channel badge", () => {
     const sidebar = createSidebarState();
     sidebar.open = true;

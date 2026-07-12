@@ -102,7 +102,7 @@ import {
   moveSidebarSelectionToPrevGuild,
   SIDEBAR_WIDTH,
 } from "./sidebar";
-import { createServerActionModal, handleServerActionModalKey } from "./serveractions";
+import { createChannelActionModal, createServerActionModal, handleServerActionModalKey } from "./serveractions";
 import {
   createInitialState,
   cycleFocus,
@@ -935,13 +935,27 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
 
 function openSelectedServerActionModal(): boolean {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
-  if (selected.kind !== "guild" || selected.guildId === DIRECT_MESSAGES_GUILD_ID) return false;
-  const guild = state.sidebar.guilds.find((candidate) => candidate.id === selected.guildId);
-  if (!guild) return false;
+  if (selected.kind !== "guild" && selected.kind !== "category" && selected.kind !== "channel") return false;
   state.navigationPendingKeys = "";
   state.sidebar.visualAnchor = null;
   state.sidebar.pendingDeleteItem = null;
-  state.sidebar.serverActionModal = createServerActionModal(guild.id, guild.name, Boolean(guild.muted));
+  if (selected.kind === "guild") {
+    if (selected.guildId === DIRECT_MESSAGES_GUILD_ID) return false;
+    const guild = state.sidebar.guilds.find((candidate) => candidate.id === selected.guildId);
+    if (!guild) return false;
+    state.sidebar.serverActionModal = createServerActionModal(guild.id, guild.name, Boolean(guild.muted));
+  } else {
+    const channel = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, selected.guildId)
+      .find((candidate) => candidate.id === selected.id);
+    if (!channel) return false;
+    state.sidebar.serverActionModal = createChannelActionModal(
+      selected.kind,
+      selected.guildId,
+      selected.id,
+      selected.label,
+      Boolean(channel.muted),
+    );
+  }
   scheduleRender();
   return true;
 }
