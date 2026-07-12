@@ -65,6 +65,10 @@ interface DiscordInviteResponse {
   channel?: DiscordInviteChannelResponse | null;
 }
 
+interface DiscordCreatedInviteResponse {
+  code?: string;
+}
+
 export interface DiscordInviteAcceptOptions {
   sessionId?: string | null;
 }
@@ -1109,6 +1113,56 @@ export async function fetchGuildChannels(token: string, guildId: string): Promis
       .map((channel) => mapGuildChannel(channel, guildId))
       .filter((channel): channel is DiscordChannel => channel !== null),
   );
+}
+
+export async function createGuildInvite(
+  token: string,
+  guildId: string,
+  cachedChannels: readonly DiscordChannel[] = [],
+): Promise<string> {
+  // Expanded/previously visited servers already have their full channel list in
+  // the sidebar cache. Avoiding another REST round-trip makes this action feel
+  // immediate in the common case.
+  const channels = cachedChannels.length > 0
+    ? [...cachedChannels]
+    : await fetchGuildChannels(token, guildId);
+  const inviteChannels = channels
+    .filter((channel) => channel.type !== 4)
+    .sort((left, right) => inviteChannelPriority(left.type) - inviteChannelPriority(right.type) || left.position - right.position);
+  if (inviteChannels.length === 0) throw new Error("This server has no channel that can host an invite.");
+
+  let lastError: unknown = null;
+  for (const channel of inviteChannels) {
+    try {
+      const invite = await requestJson<DiscordCreatedInviteResponse>(token, `/channels/${channel.id}/invites`, {
+        method: "POST",
+        body: JSON.stringify({
+          flags: 0,
+          max_age: 604800,
+          max_uses: 0,
+          temporary: false,
+          validate: null,
+        }),
+      });
+      if (!invite.code) throw new Error("Discord returned an invite without a code.");
+      return `https://discord.gg/${invite.code}`;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Could not create a server invite.");
+}
+
+function inviteChannelPriority(channelType: number): number {
+  if (channelType === 0 || channelType === 5) return 0;
+  if (channelType === 2 || channelType === 13) return 1;
+  return 2;
+}
+
+export async function leaveGuild(token: string, guildId: string): Promise<void> {
+  await requestJson<unknown>(token, `/users/@me/guilds/${guildId}`, {
+    method: "DELETE",
+  });
 }
 
 interface DiscordRoleResponse {

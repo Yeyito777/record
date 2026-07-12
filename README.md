@@ -29,6 +29,7 @@ Controls:
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
 - `Enter` on a server voice/stage channel: join that voice chat
 - `Shift+Enter` or `o` on a voice/stage channel: open its text chat without joining
+- `;` on a server: open server actions (copy invite or leave server)
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
 - `Enter` in the prompt: submit the current message or slash command

@@ -29,6 +29,7 @@ import {
 } from "./historycursor";
 import { setChannelList } from "./channels";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
+import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction, resolveNavigationAction } from "./keybinds";
@@ -62,6 +63,7 @@ import {
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
   persistSidebarFolders,
+  removeSessionGuild,
   sendCurrentChannelVoiceMessage,
   startCurrentVoiceCall,
   syncMemberListForCurrentChannel,
@@ -100,6 +102,7 @@ import {
   moveSidebarSelectionToPrevGuild,
   SIDEBAR_WIDTH,
 } from "./sidebar";
+import { createServerActionModal, handleServerActionModalKey } from "./serveractions";
 import {
   createInitialState,
   cycleFocus,
@@ -122,7 +125,7 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, createGuildInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, leaveGuild, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
@@ -177,6 +180,7 @@ if (startupWarnings.length > 0) {
 
 const LOADING_INTERVAL_MS = 80;
 const OPEN_NOTICE_MS = 1200;
+const COPIED_INVITE_NOTICE_MS = 1800;
 
 let running = true;
 let terminalReady = false;
@@ -929,6 +933,87 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
   if (channels.length > 0) setChannelList(state.channelList, guildId, channels);
 }
 
+function openSelectedServerActionModal(): boolean {
+  const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+  if (selected.kind !== "guild" || selected.guildId === DIRECT_MESSAGES_GUILD_ID) return false;
+  const guild = state.sidebar.guilds.find((candidate) => candidate.id === selected.guildId);
+  if (!guild) return false;
+  state.navigationPendingKeys = "";
+  state.sidebar.visualAnchor = null;
+  state.sidebar.pendingDeleteItem = null;
+  state.sidebar.serverActionModal = createServerActionModal(guild.id, guild.name, Boolean(guild.muted));
+  scheduleRender();
+  return true;
+}
+
+function serverActionErrorMessage(error: unknown, fallback: string): string {
+  const detail = error instanceof Error ? error.message.trim() : "";
+  return detail ? `${fallback}: ${detail}` : fallback;
+}
+
+function runServerModalAction(action: "copy_invite" | "toggle_mute" | "leave_server"): void {
+  const modal = state.sidebar.serverActionModal;
+  if (!modal || modal.busy) return;
+  const token = tokenOrWarn();
+  if (!token) return;
+  modal.busy = true;
+  modal.error = null;
+  scheduleRender();
+
+  if (action === "copy_invite") {
+    const cachedChannels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, modal.guildId);
+    // A context menu that sits unchanged during the network request feels like
+    // the Enter press was missed. Dismiss it immediately and move progress to
+    // the status line until the URL is actually on the clipboard.
+    state.sidebar.serverActionModal = null;
+    setNotice(state, "Copying invite...", "muted", { loading: true, statusLine: true, chat: false });
+    scheduleRender();
+    void createGuildInvite(token, modal.guildId, cachedChannels).then((inviteUrl) => {
+      copyToClipboard(inviteUrl);
+      const notice = "Copied server url to clipboard!";
+      setNotice(state, notice, "success", { statusLine: true, chat: false });
+      clearNoticeLater(notice, COPIED_INVITE_NOTICE_MS);
+      scheduleRender();
+    }).catch((error) => {
+      modal.busy = false;
+      modal.error = serverActionErrorMessage(error, "Could not copy invite");
+      setNotice(state, "", "muted", { statusLine: true, chat: false });
+      if (!state.sidebar.serverActionModal && state.sidebar.guilds.some((guild) => guild.id === modal.guildId)) {
+        state.sidebar.serverActionModal = modal;
+      }
+      scheduleRender();
+    });
+    return;
+  }
+
+  if (action === "toggle_mute") {
+    state.sidebar.serverActionModal = null;
+    toggleSelectedGuildMute(state, { scheduleRender });
+    return;
+  }
+
+  void leaveGuild(token, modal.guildId).then(() => {
+    if (state.sidebar.serverActionModal === modal) state.sidebar.serverActionModal = null;
+    removeSessionGuild(state, modal.guildId);
+    scheduleRender();
+  }).catch((error) => {
+    if (state.sidebar.serverActionModal !== modal) return;
+    modal.busy = false;
+    modal.error = serverActionErrorMessage(error, "Could not leave server");
+    scheduleRender();
+  });
+}
+
+function handleServerModalKey(key: KeyEvent): void {
+  const modal = state.sidebar.serverActionModal;
+  if (!modal) return;
+  state.navigationPendingKeys = "";
+  const result = handleServerActionModalKey(modal, key);
+  if (result.type === "close") state.sidebar.serverActionModal = null;
+  if (result.type === "action") runServerModalAction(result.action);
+  scheduleRender();
+}
+
 function handleSidebarFocused(key: KeyEvent): boolean {
   if (state.sidebar.prompt) {
     state.navigationPendingKeys = "";
@@ -950,6 +1035,11 @@ function handleSidebarFocused(key: KeyEvent): boolean {
     state.sidebar.visualAnchor = null;
     state.sidebar.pendingDeleteItem = null;
     scheduleRender();
+    return true;
+  }
+
+  if (key.type === "char" && key.char === ";") {
+    openSelectedServerActionModal();
     return true;
   }
 
@@ -1403,6 +1493,11 @@ function handleKey(key: KeyEvent): void {
 
   if (voiceMessageController?.handleKey(key)) return;
   if (key.event === "release") return;
+
+  if (state.sidebar.serverActionModal) {
+    handleServerModalKey(key);
+    return;
+  }
 
   if (state.panelFocus === "sidebar" && state.sidebar.open && state.sidebar.prompt) {
     handleSidebarFocused(key);

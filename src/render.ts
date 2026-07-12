@@ -29,6 +29,7 @@ import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, getSidebarSearchBarViewport, renderSidebar } from "./sidebar";
+import { renderServerActionModal } from "./serveractions";
 import { renderStatusLine } from "./statusline";
 import { renderPromptSeparator } from "./promptbar";
 import { padRight, termWidth, truncate } from "./textwidth";
@@ -510,6 +511,17 @@ export function render(state: AppState): void {
       appendRowWrite(frameRows, row, mainCol, bgLine(status.lines[i] ?? ""));
       emitMemberListCol(row);
     }
+  }
+
+  if (sidebarOpen && state.sidebar.serverActionModal) {
+    const selectedSidebarRow = 3 + state.sidebar.selectedIndex - state.sidebar.scrollOffset;
+    appendPositionedPayload(frameRows, renderServerActionModal(
+      state.sidebar.serverActionModal,
+      selectedSidebarRow,
+      SIDEBAR_WIDTH + 1,
+      rows,
+      cols,
+    ));
   }
 
   const cursorPayload: string[] = [];

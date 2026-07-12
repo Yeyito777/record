@@ -1822,7 +1822,7 @@ function mergeRestGuilds(
   setSidebarGuilds(state.sidebar, cachedSidebarGuilds(directMessages, orderedGuilds));
 }
 
-function removeGatewayGuild(state: AppState, guildId: string): boolean {
+export function removeSessionGuild(state: AppState, guildId: string): boolean {
   if (guildId === DIRECT_MESSAGES_GUILD_ID || !state.sidebar.guilds.some((guild) => guild.id === guildId)) return false;
   const nextGuilds = sidebarCachedGuilds(state.sidebar).filter((guild) => guild.id !== guildId);
   setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, nextGuilds));
@@ -2198,7 +2198,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       if (mergeGatewayGuilds(state, [guild])) effects.scheduleRender();
     },
     onGuildDelete: (guildId) => {
-      if (removeGatewayGuild(state, guildId)) effects.scheduleRender();
+      if (removeSessionGuild(state, guildId)) effects.scheduleRender();
     },
     onInitialNotifications: (notifications) => {
       replaceNotifications(

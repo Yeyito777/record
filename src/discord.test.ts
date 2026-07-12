@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   DIRECT_MESSAGES_GUILD_ID,
   acceptDiscordInvite,
+  createGuildInvite,
   ackChannelMessage,
   fetchChannelMessagesAfter,
   fetchChannelMessages,
@@ -26,6 +27,7 @@ import {
   setCurrentUserSettingsProtoStatus,
   fetchCurrentUserPresenceStatus,
   discordInviteCodeFromUrl,
+  leaveGuild,
 } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -137,6 +139,84 @@ describe("discord helpers", () => {
     expect(requests).toEqual([{
       url: "https://discord.com/api/v9/channels/channel-1/messages/message-1",
       method: "DELETE",
+    }]);
+  });
+
+  test("creates a seven-day server invite through the first text channel", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({
+        url,
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      if (url.endsWith("/guilds/guild-1/channels")) {
+        return new Response(JSON.stringify([
+          { id: "category-1", guild_id: "guild-1", parent_id: null, name: "Chat", position: 0, type: 4 },
+          { id: "voice-1", guild_id: "guild-1", parent_id: null, name: "Voice", position: 0, type: 2 },
+          { id: "text-1", guild_id: "guild-1", parent_id: "category-1", name: "general", position: 1, type: 0 },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/channels/text-1/invites")) {
+        return new Response(JSON.stringify({ code: "abc123" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    expect(await createGuildInvite("token", "guild-1")).toBe("https://discord.gg/abc123");
+    expect(requests).toEqual([{
+      url: "https://discord.com/api/v9/guilds/guild-1/channels",
+      method: "GET",
+      body: null,
+    }, {
+      url: "https://discord.com/api/v9/channels/text-1/invites",
+      method: "POST",
+      body: {
+        flags: 0,
+        max_age: 604800,
+        max_uses: 0,
+        temporary: false,
+        validate: null,
+      },
+    }]);
+  });
+
+  test("creates an invite without refetching channels when they are cached", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify({ code: "cached123" }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const url = await createGuildInvite("token", "guild-1", [{
+      id: "text-1",
+      guildId: "guild-1",
+      parentId: null,
+      name: "general",
+      topic: null,
+      position: 0,
+      type: 0,
+      nsfw: false,
+    }]);
+
+    expect(url).toBe("https://discord.gg/cached123");
+    expect(requests).toEqual(["https://discord.com/api/v9/channels/text-1/invites"]);
+  });
+
+  test("leaves a guild through Discord REST", async () => {
+    const requests: Array<{ url: string; method: string; body: BodyInit | null | undefined }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), method: init?.method ?? "GET", body: init?.body });
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await leaveGuild("token", "guild-1");
+
+    expect(requests).toEqual([{
+      url: "https://discord.com/api/v9/users/@me/guilds/guild-1",
+      method: "DELETE",
+      body: undefined,
     }]);
   });
 

@@ -9,6 +9,7 @@ import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild } from
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import type { KeyEvent } from "./input";
 import { loadingLabel } from "./loading";
+import type { ServerActionModalState } from "./serveractions";
 import { getViewportByWidth, padRight, termWidth, truncate } from "./textwidth";
 import { theme } from "./theme";
 import {
@@ -139,6 +140,7 @@ export interface SidebarState {
   cachedChannelsByGuildId: Record<string, DiscordChannel[]>;
   voiceMembersByChannelId: Record<string, SidebarVoiceMember[]>;
   search: SidebarSearchState | null;
+  serverActionModal: ServerActionModalState | null;
 }
 
 export function createSidebarState(): SidebarState {
@@ -164,6 +166,7 @@ export function createSidebarState(): SidebarState {
     cachedChannelsByGuildId: {},
     voiceMembersByChannelId: {},
     search: null,
+    serverActionModal: null,
   };
 }
 
@@ -346,6 +349,7 @@ export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.cachedChannelsByGuildId = {};
   sidebar.voiceMembersByChannelId = {};
   sidebar.search = null;
+  sidebar.serverActionModal = null;
 }
 
 export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]): void {
@@ -380,6 +384,9 @@ export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]):
   }
   if (sidebar.expandedGuildId && !guilds.some((guild) => guild.id === sidebar.expandedGuildId)) {
     sidebar.expandedGuildId = null;
+  }
+  if (sidebar.serverActionModal && !guilds.some((guild) => guild.id === sidebar.serverActionModal?.guildId)) {
+    sidebar.serverActionModal = null;
   }
 }
 
