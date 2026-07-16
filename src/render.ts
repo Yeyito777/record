@@ -29,12 +29,14 @@ import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, getSidebarSearchBarViewport, renderSidebar } from "./sidebar";
+import { WHATSAPP_GUILD_ID } from "./chatproviders";
 import { renderServerActionModal } from "./serveractions";
 import { renderStatusLine } from "./statusline";
 import { renderPromptSeparator } from "./promptbar";
 import { padRight, termWidth, truncate } from "./textwidth";
 import { formatSize, imageLabel } from "./imageclipboard";
 import type { AppState } from "./state";
+import { renderLoginModal } from "./whatsapp/loginmodal";
 import {
   applyLineBg,
   clearLine,
@@ -367,14 +369,18 @@ export function render(state: AppState): void {
     state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
   }
 
+  const activeGuildId = state.channelList.activeChannel?.guildId ?? null;
+  const activeViewerId = activeGuildId === WHATSAPP_GUILD_ID
+    ? state.whatsapp.account?.id ?? null
+    : state.auth.user?.id ?? null;
   setTimelineRenderContext(
     state.timeline,
-    state.auth.user?.id ?? null,
-    state.channelList.activeChannel?.guildId === DIRECT_MESSAGES_GUILD_ID,
+    activeViewerId,
+    activeGuildId === DIRECT_MESSAGES_GUILD_ID || activeGuildId === WHATSAPP_GUILD_ID,
     state.guildRolesByGuildId,
     state.memberRoleIdsByGuildId,
     state.memberRoleCacheVersion,
-    state.channelList.activeChannel?.guildId ?? null,
+    activeGuildId,
   );
   const timelineNotice = state.timeline.messages.length === 0 && state.timeline.channelId === null
     ? state.notice
@@ -524,8 +530,14 @@ export function render(state: AppState): void {
     ));
   }
 
+  if (state.whatsapp.loginModal) {
+    appendPositionedPayload(frameRows, renderLoginModal(state.whatsapp.loginModal, rows, cols));
+  }
+
   const cursorPayload: string[] = [];
-  if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
+  if (state.whatsapp.loginModal) {
+    cursorPayload.push(hideCursor);
+  } else if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
     const { cursorCol } = getSidebarSearchBarViewport(state.sidebar.search, SIDEBAR_WIDTH - 1);
     cursorPayload.push(moveTo(rows, 1 + cursorCol));
     cursorPayload.push(cursorBar);
@@ -566,6 +578,7 @@ export function render(state: AppState): void {
   const canScrollMessageRegion = !sidebarOpen
     && !memberListOpen
     && !state.autocomplete
+    && !state.whatsapp.loginModal
     && bodyRows > 0;
 
   flushFrame(state, {

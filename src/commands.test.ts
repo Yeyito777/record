@@ -29,6 +29,19 @@ describe("commands", () => {
     expect(state.editor.buffer).toBe("");
   });
 
+  test("parses WhatsApp login and provider-scoped logout", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+
+    expect(tryCommand("/login whatsapp", state)).toEqual({ type: "login_whatsapp" });
+    expect(tryCommand("/logout whatsapp", state)).toEqual({ type: "logout_whatsapp" });
+  });
+
+  test("allows Discord to be selected explicitly", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+
+    expect(tryCommand("/login discord alice", state)).toEqual({ type: "login", credential: "alice" });
+  });
+
   test("parses /logout", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
     const result = tryCommand("/logout", state);
@@ -215,6 +228,8 @@ describe("commands", () => {
     const state = createInitialState(null, "/tmp/record-config.json", { zed: "tok-2", alice: "tok-1" });
 
     expect(getCommandArgs(state)["/login"]).toEqual([
+      { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
+      { name: "discord", desc: "Log in to Discord explicitly" },
       { name: "alice", desc: "saved login" },
       { name: "zed", desc: "saved login" },
     ]);

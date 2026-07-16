@@ -6,6 +6,7 @@ import { join } from "path";
 import { resolveLoginCredential, submitCurrentBuffer, type AppEffects } from "./actions";
 import { loadConfig } from "./config";
 import { createInitialState } from "./state";
+import { whatsappChannelId } from "./chatproviders";
 
 const originalFetch = globalThis.fetch;
 const originalXdg = process.env.XDG_CONFIG_HOME;
@@ -15,6 +16,9 @@ const effects: AppEffects = {
   quit: () => {},
   applyThemeCursor: () => {},
   bootstrapSession: () => {},
+  loginWhatsApp: () => {},
+  logoutWhatsApp: () => {},
+  sendWhatsAppMessage: () => false,
 };
 
 afterEach(() => {
@@ -53,6 +57,25 @@ describe("submitCurrentBuffer", () => {
     expect(state.auth.status).toBe("idle");
     expect(state.notice.text).toBe("Login first with /login <token|username>.");
     expect(state.editor.buffer).toBe("hello world");
+  });
+
+  test("routes WhatsApp chat text without requiring a Discord token", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.channelList.activeChannelId = whatsappChannelId("15551234567@s.whatsapp.net");
+    state.editor.buffer = "hello WhatsApp";
+    state.editor.cursor = state.editor.buffer.length;
+    let sent = "";
+
+    submitCurrentBuffer(state, {
+      ...effects,
+      sendWhatsAppMessage: (content) => {
+        sent = content;
+        return true;
+      },
+    });
+
+    expect(sent).toBe("hello WhatsApp");
+    expect(state.notice.text).toBe("");
   });
 
   test("image-only messages submit", () => {

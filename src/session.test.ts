@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
+import { WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
 import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
 import { createInitialState, focusSidebar } from "./state";
@@ -115,7 +116,7 @@ describe("session", () => {
 
     expect(state.panelFocus === "chat").toBe(true);
     expect(state.chatFocus === "prompt").toBe(true);
-    expect(state.sidebar.guilds).toEqual([]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID]);
     expect(state.channelList.channels).toEqual([]);
     expect(state.timeline.messages).toEqual([]);
     expect(state.memberList.members).toEqual([]);
@@ -150,13 +151,13 @@ describe("session", () => {
     await flushTimers();
 
     expect(state.sidebar.loading).toBe(true);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID]);
 
     resolveDms(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
     await bootstrap;
 
     expect(state.sidebar.loading).toBe(false);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID]);
   });
 
   test("bootstrap revalidation preserves a channel list opened while REST is in flight", async () => {
@@ -270,8 +271,8 @@ describe("session", () => {
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
 
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", "guild-2", "guild-new"]);
-    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual([DIRECT_MESSAGES_GUILD_NAME, "One Fresh", "Two Fresh", "New"]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, "guild-1", "guild-2", "guild-new"]);
+    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual([DIRECT_MESSAGES_GUILD_NAME, WHATSAPP_GUILD_NAME, "One Fresh", "Two Fresh", "New"]);
   });
 
   test("bootstrap warms persisted member lists for voice participant name fallback", async () => {
@@ -324,7 +325,7 @@ describe("session", () => {
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
 
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-2", "guild-1", "guild-3"]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, "guild-2", "guild-1", "guild-3"]);
   });
 
   test("bootstrap preserves local folders when the guild cache is cold", async () => {
@@ -1015,10 +1016,10 @@ describe("session", () => {
 
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
     try {
-      expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", "guild-2"]);
+      expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, "guild-1", "guild-2"]);
 
       saveCachedGuildOrder("self", ["guild-2", "guild-1"]);
-      await waitForCondition(() => state.sidebar.guilds.map((guild) => guild.id).join(",") === `${DIRECT_MESSAGES_GUILD_ID},guild-2,guild-1`);
+      await waitForCondition(() => state.sidebar.guilds.map((guild) => guild.id).join(",") === `${DIRECT_MESSAGES_GUILD_ID},${WHATSAPP_GUILD_ID},guild-2,guild-1`);
     } finally {
       clearReadOnlyClient(state);
     }

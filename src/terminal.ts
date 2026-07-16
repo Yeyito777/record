@@ -21,6 +21,9 @@ export const cursorBar = `${ESC}6 q`;
 export const eraseToEol = `${ESC}K`;
 export const setCursorColor = (hex: string) => `\x1b]12;${hex}\x1b\\`;
 export const resetCursorColor = `\x1b]112\x1b\\`;
+/** st extension: temporarily use 1:2 cells for aspect-sensitive block art. */
+export const setStGraphicsCells = (enabled: boolean) =>
+  `\x1b]777;graphics-cells;${enabled ? "enter" : "exit"}\x07`;
 
 export const moveTo = (row: number, col: number) => `${ESC}${row};${col}H`;
 

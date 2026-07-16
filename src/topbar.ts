@@ -24,7 +24,9 @@ export function renderTopbar(state: AppState, width: number): string {
       ? guild.name
       : state.auth.status === "authenticated"
         ? "Connected"
-        : "Discord terminal client";
+        : state.whatsapp.connection.status === "connected"
+          ? "WhatsApp connected"
+          : "Discord and WhatsApp terminal client";
 
   const text = ` ${title} ${focusLabel(state)} — ${descriptor}`;
   const padded = padRight(text, width);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME } from "./discord";
+import { WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import {
   activateSelectedEntry,
   applySidebarFolderLayout,
@@ -44,6 +45,29 @@ function stripAnsiForTest(text: string): string {
 }
 
 describe("sidebar state", () => {
+  test("keeps WhatsApp as a separate fixed top-level root next to Direct Messages", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [
+      { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+      { id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null },
+      { id: "guild-1", name: "Guild", icon: null },
+    ]);
+    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, [
+      { id: "wa:chat", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Mom", topic: null, position: 0, type: 1, nsfw: false },
+    ]);
+    sidebar.expandedGuildId = WHATSAPP_GUILD_ID;
+
+    const entries = buildSidebarEntries(sidebar, []);
+    expect(entries.map((entry) => [entry.kind, entry.label])).toEqual([
+      ["guild", DIRECT_MESSAGES_GUILD_NAME],
+      ["guild", WHATSAPP_GUILD_NAME],
+      ["channel", "Mom"],
+      ["guild", "Guild"],
+    ]);
+    sidebar.selectedIndex = 1;
+    expect(moveSelectedSidebarGuild(sidebar, [], "down")).toBeNull();
+  });
+
   test("builds a collapsible guild/category/channel tree", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);

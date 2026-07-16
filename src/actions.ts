@@ -14,11 +14,15 @@ import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshRead
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
+import { isWhatsAppChannelId } from "./chatproviders";
 
 export interface AppEffects extends SessionEffects {
   quit: () => void;
   applyThemeCursor: () => void;
   bootstrapSession: (token: string) => void;
+  loginWhatsApp: () => void;
+  logoutWhatsApp: () => void;
+  sendWhatsAppMessage: (content: string) => boolean;
 }
 
 function setAuthError(state: AppState, message: string): void {
@@ -160,8 +164,14 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
         effects,
       );
       return true;
+    case "login_whatsapp":
+      effects.loginWhatsApp();
+      return true;
     case "logout":
       logout(state, effects);
+      return true;
+    case "logout_whatsapp":
+      effects.logoutWhatsApp();
       return true;
     case "theme_changed":
       effects.applyThemeCursor();
@@ -224,6 +234,9 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
 
   const expandedText = expandMacros(text);
   if (text && !hasImages && expandedText === text && handleCommandSubmit(state, text, effects)) return;
+
+  const activeChannelId = state.channelList.activeChannelId ?? state.timeline.channelId;
+  if (isWhatsAppChannelId(activeChannelId) && effects.sendWhatsAppMessage(expandedText)) return;
 
   sendCurrentChannelMessage(state, state.auth.savedToken, expandedText, effects, {
     sendContent: resolvePromptMentionsForSend(state, expandedText),

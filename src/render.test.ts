@@ -6,6 +6,7 @@ import { setTimelineMessages } from "./timeline";
 import { theme } from "./theme";
 import type { DiscordMessage } from "./discord";
 import { recordTypingStart } from "./typing";
+import { createLoginModalState } from "./whatsapp/loginmodal";
 
 function message(id: string, content: string): DiscordMessage {
   const numericId = Number(id);
@@ -45,6 +46,18 @@ function captureRender(state: ReturnType<typeof createInitialState>): string {
 }
 
 describe("render", () => {
+  test("composes the centered WhatsApp QR modal over the retained frame", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 120;
+    state.rows = 48;
+    state.whatsapp.loginModal = createLoginModalState({ phase: "qr", qr: "private-test-qr-payload" });
+
+    const output = captureRender(state);
+
+    expect(output).toContain("WhatsApp · Scan QR code");
+    expect(output).not.toContain("private-test-qr-payload");
+  });
+
   test("opening a new channel stays pinned to the bottom even with old history anchors", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.cols = 80;

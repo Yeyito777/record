@@ -5,6 +5,7 @@
 import { randomUUID } from "crypto";
 
 import type { CompletionItem } from "./commands";
+import { isFixedTopLevelGuildId, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild } from "./discord";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import type { KeyEvent } from "./input";
@@ -230,7 +231,7 @@ function normalizeSidebarPlacement(sidebar: SidebarState): void {
       delete sidebar.guildPlacements[guildId];
       continue;
     }
-    if (guildId === DIRECT_MESSAGES_GUILD_ID) {
+    if (isFixedTopLevelGuildId(guildId)) {
       delete sidebar.guildPlacements[guildId];
       continue;
     }
@@ -363,7 +364,7 @@ export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]):
     if (!guilds.some((guild) => guild.id === guildId)) delete sidebar.guildPlacements[guildId];
   }
   for (const [index, guild] of sidebar.guilds.entries()) {
-    if (guild.id === DIRECT_MESSAGES_GUILD_ID) continue;
+    if (isFixedTopLevelGuildId(guild.id)) continue;
     if (!sidebar.guildPlacements[guild.id]) {
       sidebar.guildPlacements[guild.id] = {
         folderId: null,
@@ -453,7 +454,7 @@ function assignItemSortOrder(sidebar: SidebarState, item: SidebarItemRef, sortOr
 
 function assignItemParent(sidebar: SidebarState, item: SidebarItemRef, parentId: string | null): void {
   if (item.type === "guild") {
-    if (item.id === DIRECT_MESSAGES_GUILD_ID) return;
+    if (isFixedTopLevelGuildId(item.id)) return;
     const existing = guildPlacement(sidebar, item.id);
     sidebar.guildPlacements[item.id] = { ...existing, folderId: parentId };
     return;
@@ -464,7 +465,7 @@ function assignItemParent(sidebar: SidebarState, item: SidebarItemRef, parentId:
 
 function assignItemPinned(sidebar: SidebarState, item: SidebarItemRef, pinned: boolean): void {
   if (item.type === "guild") {
-    if (item.id === DIRECT_MESSAGES_GUILD_ID) return;
+    if (isFixedTopLevelGuildId(item.id)) return;
     const existing = guildPlacement(sidebar, item.id);
     sidebar.guildPlacements[item.id] = { ...existing, pinned };
     return;
@@ -483,7 +484,7 @@ function sidebarOrderEntries(sidebar: SidebarState, parentId: string | null): Si
     }
   }
   for (const guild of sidebar.guilds) {
-    if (guild.id === DIRECT_MESSAGES_GUILD_ID) continue;
+    if (isFixedTopLevelGuildId(guild.id)) continue;
     const placement = guildPlacement(sidebar, guild.id);
     if ((placement.folderId ?? null) === parentId) {
       entries.push({ type: "guild", id: guild.id, pinned: placement.pinned, sortOrder: placement.sortOrder });
@@ -527,7 +528,7 @@ function topLevelCurrentFolderRef(sidebar: SidebarState): SidebarItemRef | undef
 
 function siblingMovableItems(sidebar: SidebarState, parentId: string | null, pinned?: boolean): SidebarItemRef[] {
   return folderVisibleItems({ ...sidebar, currentFolderId: parentId }).map(({ item }) => item)
-    .filter((item) => item.type !== "guild" || item.id !== DIRECT_MESSAGES_GUILD_ID)
+    .filter((item) => item.type !== "guild" || !isFixedTopLevelGuildId(item.id))
     .filter((item) => pinned === undefined || itemPinned(sidebar, item) === pinned);
 }
 
@@ -596,7 +597,7 @@ function moveSidebarItems(
   const seen = new Set<string>();
   const movableItems: SidebarItemRef[] = [];
   for (const item of items) {
-    if (item.type === "guild" && item.id === DIRECT_MESSAGES_GUILD_ID) continue;
+    if (item.type === "guild" && isFixedTopLevelGuildId(item.id)) continue;
     const key = sidebarItemKey(item);
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -684,8 +685,11 @@ export function moveSelectedSidebarItem(
   if (orderedSiblingGuildIds.length > 0) {
     const rank = new Map(orderedSiblingGuildIds.map((id, index) => [id, index]));
     sidebar.guilds = sidebar.guilds.slice().sort((a, b) => {
-      if (a.id === DIRECT_MESSAGES_GUILD_ID) return -1;
-      if (b.id === DIRECT_MESSAGES_GUILD_ID) return 1;
+      if (isFixedTopLevelGuildId(a.id) || isFixedTopLevelGuildId(b.id)) {
+        const fixedOrder = (id: string): number => id === DIRECT_MESSAGES_GUILD_ID ? 0 : id === WHATSAPP_GUILD_ID ? 1 : 2;
+        const order = fixedOrder(a.id) - fixedOrder(b.id);
+        if (order !== 0) return order;
+      }
       const ar = rank.get(a.id);
       const br = rank.get(b.id);
       if (ar === undefined && br === undefined) return 0;
@@ -708,14 +712,14 @@ export function moveSelectedSidebarGuild(
   options: SidebarVisibilityOptions = {},
 ): SidebarGuildMoveResult | null {
   const entry = getSelectedSidebarEntry(sidebar, channels, options);
-  if (entry.kind !== "guild" || entry.guildId === DIRECT_MESSAGES_GUILD_ID) return null;
+  if (entry.kind !== "guild" || isFixedTopLevelGuildId(entry.guildId)) return null;
 
   const fromIndex = sidebar.guilds.findIndex((guild) => guild.id === entry.guildId);
   if (fromIndex < 0) return null;
 
   const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
   const target = sidebar.guilds[toIndex];
-  if (!target || target.id === DIRECT_MESSAGES_GUILD_ID) return null;
+  if (!target || isFixedTopLevelGuildId(target.id)) return null;
 
   const previousGuilds = sidebar.guilds.slice();
   const nextGuilds = sidebar.guilds.slice();
@@ -762,11 +766,11 @@ export function setSidebarChannelMuted(sidebar: SidebarState, channelId: string,
 }
 
 export function sidebarCachedGuilds(sidebar: SidebarState): DiscordGuild[] {
-  return sidebar.guilds.filter((guild) => guild.id !== DIRECT_MESSAGES_GUILD_ID);
+  return sidebar.guilds.filter((guild) => !isFixedTopLevelGuildId(guild.id));
 }
 
 export function isSidebarGuildMuted(sidebar: SidebarState, guildId: string | null | undefined): boolean {
-  if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return false;
+  if (!guildId || isFixedTopLevelGuildId(guildId)) return false;
   return Boolean(sidebar.guilds.find((guild) => guild.id === guildId)?.muted);
 }
 
@@ -881,7 +885,7 @@ function pushFolderEntry(
   searchMatched = false,
 ): void {
   const descendants = descendantFolderIds(sidebar, folder.id);
-  const childGuilds = sidebar.guilds.filter((guild) => guild.id !== DIRECT_MESSAGES_GUILD_ID && descendants.has(guildPlacement(sidebar, guild.id).folderId ?? ""));
+  const childGuilds = sidebar.guilds.filter((guild) => !isFixedTopLevelGuildId(guild.id) && descendants.has(guildPlacement(sidebar, guild.id).folderId ?? ""));
   const notificationCount = childGuilds.reduce((sum, guild) => sum + (guild.muted ? 0 : guildNotificationCounts.get(guild.id) ?? 0), 0);
   entries.push({
     kind: "folder",
@@ -1024,7 +1028,7 @@ function buildSidebarSearchEntries(
 
     if (matchingChannelRows.length === 0) continue;
 
-    if (guild.id === DIRECT_MESSAGES_GUILD_ID) {
+    if (isFixedTopLevelGuildId(guild.id)) {
       for (const channel of sortChannelsForSidebar(matchingChannelRows)) {
         pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, true);
       }
@@ -1147,10 +1151,15 @@ function folderVisibleItems(sidebar: SidebarState): Array<{ item: SidebarItemRef
     .filter((folder) => (folder.parentId ?? null) === parentId)
     .map((folder) => ({ item: { type: "folder" as const, id: folder.id }, pinned: folder.pinned, sortOrder: folder.sortOrder, name: folder.name }));
   const guilds = sidebar.guilds
-    .filter((guild) => guild.id === DIRECT_MESSAGES_GUILD_ID ? parentId === null : (guildPlacement(sidebar, guild.id).folderId ?? null) === parentId)
+    .filter((guild) => isFixedTopLevelGuildId(guild.id) ? parentId === null : (guildPlacement(sidebar, guild.id).folderId ?? null) === parentId)
     .map((guild) => {
       const placement = guildPlacement(sidebar, guild.id);
-      return { item: { type: "guild" as const, id: guild.id }, pinned: guild.id === DIRECT_MESSAGES_GUILD_ID ? false : placement.pinned, sortOrder: guild.id === DIRECT_MESSAGES_GUILD_ID ? Number.MIN_SAFE_INTEGER : placement.sortOrder, name: guild.name };
+      const fixedSortOrder = guild.id === DIRECT_MESSAGES_GUILD_ID
+        ? Number.MIN_SAFE_INTEGER
+        : guild.id === WHATSAPP_GUILD_ID
+          ? Number.MIN_SAFE_INTEGER + 1
+          : placement.sortOrder;
+      return { item: { type: "guild" as const, id: guild.id }, pinned: isFixedTopLevelGuildId(guild.id) ? false : placement.pinned, sortOrder: fixedSortOrder, name: guild.name };
     });
   return [...folders, ...guilds].sort(compareSidebarOrder);
 }
@@ -1928,7 +1937,7 @@ export function leaveSidebarFolder(sidebar: SidebarState): boolean {
 
 export function toggleSidebarVisualSelection(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
   const item = getSelectedSidebarEntry(sidebar, channels, options).item;
-  if (!isMovableSidebarItem(item) || (item.type === "guild" && item.id === DIRECT_MESSAGES_GUILD_ID)) return false;
+  if (!isMovableSidebarItem(item) || (item.type === "guild" && isFixedTopLevelGuildId(item.id))) return false;
   sidebar.visualAnchor = sidebar.visualAnchor ? null : item;
   sidebar.pendingDeleteItem = null;
   return true;
@@ -1936,7 +1945,7 @@ export function toggleSidebarVisualSelection(sidebar: SidebarState, channels: Di
 
 export function moveSidebarSelectionOut(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
   if (!sidebar.currentFolderId) return false;
-  const items = selectedSidebarItems(sidebar, channels, options).filter((item) => item.type !== "guild" || item.id !== DIRECT_MESSAGES_GUILD_ID);
+  const items = selectedSidebarItems(sidebar, channels, options).filter((item) => item.type !== "guild" || !isFixedTopLevelGuildId(item.id));
   const before = currentFolderRef(sidebar);
   if (items.length === 0 || !before) return false;
   sidebar.visualAnchor = null;
@@ -2034,7 +2043,7 @@ export function openSidebarCreateFolderPrompt(sidebar: SidebarState, channels: D
 }
 
 export function openSidebarMoveItemsPrompt(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
-  const items = selectedSidebarItems(sidebar, channels, options).filter((item) => item.type !== "guild" || item.id !== DIRECT_MESSAGES_GUILD_ID);
+  const items = selectedSidebarItems(sidebar, channels, options).filter((item) => item.type !== "guild" || !isFixedTopLevelGuildId(item.id));
   if (items.length === 0) return false;
   sidebar.prompt = { purpose: "move_items", input: "", cursorPos: 0, items, autocomplete: null };
   updateMovePromptAutocomplete(sidebar);
@@ -2092,7 +2101,7 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent, cha
     if (prompt.purpose === "create_folder") {
       if (!input) return true;
       const parentId = sidebar.currentFolderId;
-      const items = prompt.items.filter((item) => item.type !== "guild" || item.id !== DIRECT_MESSAGES_GUILD_ID);
+      const items = prompt.items.filter((item) => item.type !== "guild" || !isFixedTopLevelGuildId(item.id));
       const selectedItemsInParent = items.filter((item) => itemParent(sidebar, item) === parentId);
       const selectedOrders = selectedItemsInParent.map((item) => itemSortOrder(sidebar, item));
       const selectedPinnedStates = selectedItemsInParent

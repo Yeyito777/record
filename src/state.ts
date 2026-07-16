@@ -20,6 +20,7 @@ import type { NoticeTone } from "./theme";
 import type { VoiceConnectionState } from "./voice";
 import type { VoiceMessagePromptState } from "./voice-message";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "./volume";
+import { createWhatsAppUiState, type WhatsAppUiState } from "./whatsapp/integration";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
 export type PresenceStatus = DiscordPresenceStatus;
@@ -125,6 +126,7 @@ export interface AppState {
   memberRoleCacheVersion: number;
   channelMuteSettings: Record<string, boolean>;
   showHiddenChannels: boolean;
+  whatsapp: WhatsAppUiState;
   auth: AuthState;
   notice: Notice;
   loadingFrameIndex: number;
@@ -180,6 +182,7 @@ export function createInitialState(
     memberRoleCacheVersion: 0,
     channelMuteSettings: {},
     showHiddenChannels: options.showHiddenChannels ?? false,
+    whatsapp: createWhatsAppUiState(),
     auth: {
       status: "idle",
       user: null,

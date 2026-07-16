@@ -35,6 +35,8 @@ describe("autocomplete", () => {
     updateAutocomplete(state);
 
     expect(state.autocomplete?.matches).toEqual([
+      { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
+      { name: "discord", desc: "Log in to Discord explicitly" },
       { name: "alice", desc: "saved login" },
       { name: "bob", desc: "saved login" },
     ]);

@@ -89,6 +89,7 @@ import {
   openSidebarSearchBar,
   scrollSidebarSelection,
   scrollSidebarSelectionLine,
+  setSidebarGuilds,
   sidebarChannelsForGuild,
   toggleSidebarVisualSelection,
   unwrapSelectedSidebarFolder,
@@ -120,12 +121,14 @@ import {
   hideCursor,
   leaveAlt,
   resetCursorColor,
+  setStGraphicsCells,
   setCursorColor,
   showCursor,
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, createGuildInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, leaveGuild, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, createGuildInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isGuildVoiceChannel, leaveGuild, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
 import { normalizeToken } from "./token";
@@ -138,6 +141,8 @@ import {
   type AttachmentDownloadProgress,
 } from "./openable";
 import { createVoiceMessageController } from "./voice-message-controller";
+import { WhatsAppController } from "./whatsapp/controller";
+import { handleLoginModalKey } from "./whatsapp/loginmodal";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("record needs an interactive TTY.");
@@ -174,6 +179,10 @@ try {
 }
 
 const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb });
+setSidebarGuilds(state.sidebar, [
+  { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
+  whatsappGuild(),
+]);
 if (startupWarnings.length > 0) {
   setNotice(state, startupWarnings.join("\n"), "warning");
 }
@@ -186,6 +195,17 @@ let running = true;
 let terminalReady = false;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let loadingTimer: ReturnType<typeof setInterval> | null = null;
+let terminalGraphicsCells = false;
+
+function syncTerminalGraphicsCells(): void {
+  const modal = state.whatsapp.loginModal;
+  const enabled = Boolean(modal?.phase === "qr" && modal.qr);
+  if (enabled === terminalGraphicsCells) return;
+  terminalGraphicsCells = enabled;
+  if (terminalReady && process.env.TERM?.startsWith("st")) {
+    process.stdout.write(setStGraphicsCells(enabled));
+  }
+}
 
 function stopLoadingAnimation(): void {
   if (!loadingTimer) return;
@@ -203,6 +223,7 @@ function hasActiveLoadingIndicator(): boolean {
     || state.timeline.loading
     || state.timeline.loadingOlder
     || state.timeline.loadingNewer
+    || Boolean(state.whatsapp.loginModal && state.whatsapp.loginModal.phase !== "qr" && state.whatsapp.loginModal.phase !== "error")
     || hasActiveTimelineCall(state.timeline)
     || Boolean(state.voiceCall)
     || Object.keys(state.typing.byChannelId).length > 0;
@@ -230,6 +251,7 @@ function syncLoadingAnimation(): void {
 }
 
 function scheduleRender(): void {
+  syncTerminalGraphicsCells();
   syncLoadingAnimation();
   if (renderTimer) return;
   renderTimer = setTimeout(() => {
@@ -591,6 +613,14 @@ function jumpToReplyTargetAtHistoryCursor(): boolean {
     return true;
   }
 
+  // WhatsApp history currently lives in the provider's local sync buffer. A
+  // missing quoted message must never fall through to Discord's REST loader.
+  if (isWhatsAppChannelId(state.timeline.channelId)) {
+    setNotice(state, "That quoted WhatsApp message is not in the loaded history.", "muted", { statusLine: false, chat: true });
+    scheduleRender();
+    return true;
+  }
+
   const token = state.auth.savedToken;
   const channelId = state.timeline.channelId;
   if (!token || !channelId) {
@@ -720,12 +750,15 @@ function replyGuildIdForMessage(message: DiscordMessage): string | null {
 }
 
 function replyAuthorColor(message: DiscordMessage): string {
-  if (state.channelList.activeChannel?.guildId !== DIRECT_MESSAGES_GUILD_ID) return "";
-  return message.author.id === state.auth.user?.id ? theme.accent : dmAuthorColor(message.author.id);
+  const guildId = state.channelList.activeChannel?.guildId;
+  if (guildId !== DIRECT_MESSAGES_GUILD_ID && guildId !== WHATSAPP_GUILD_ID) return "";
+  const viewerId = guildId === WHATSAPP_GUILD_ID ? state.whatsapp.account?.id : state.auth.user?.id;
+  return message.author.id === viewerId ? theme.accent : dmAuthorColor(message.author.id);
 }
 
 function selectedMessageCanBeEdited(message: DiscordMessage | null): message is DiscordMessage {
   if (!message) return false;
+  if (message.guildId === WHATSAPP_GUILD_ID) return false;
   if (!state.auth.user || message.author.id !== state.auth.user.id) return false;
   if (message.localStatus === "pending" || message.id.startsWith("local:")) return false;
   return true;
@@ -750,6 +783,12 @@ function deleteSelectedHistoryMessage(): void {
 
   const message = selectedHistoryMessage();
   if (!message) {
+    scheduleRender();
+    return;
+  }
+  if (message.guildId === WHATSAPP_GUILD_ID) {
+    state.messageDeletePending = null;
+    setNotice(state, "Deleting WhatsApp messages is not supported yet.", "warning", { statusLine: false, chat: true });
     scheduleRender();
     return;
   }
@@ -936,11 +975,12 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
 function openSelectedServerActionModal(): boolean {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
   if (selected.kind !== "guild" && selected.kind !== "category" && selected.kind !== "channel") return false;
+  if (selected.guildId === WHATSAPP_GUILD_ID) return false;
   state.navigationPendingKeys = "";
   state.sidebar.visualAnchor = null;
   state.sidebar.pendingDeleteItem = null;
   if (selected.kind === "guild") {
-    if (selected.guildId === DIRECT_MESSAGES_GUILD_ID) return false;
+    if (isFixedTopLevelGuildId(selected.guildId)) return false;
     const guild = state.sidebar.guilds.find((candidate) => candidate.id === selected.guildId);
     if (!guild) return false;
     state.sidebar.serverActionModal = createServerActionModal(guild.id, guild.name, Boolean(guild.muted));
@@ -1217,9 +1257,6 @@ function handleSidebarFocused(key: KeyEvent): boolean {
         return true;
       }
 
-      const token = tokenOrWarn();
-      if (!token) return true;
-
       ensureSidebarEntryGuildLoaded(selected.guildId);
       const channel = state.channelList.channels.find((candidate) => candidate.id === selected.id)
         ?? state.sidebar.cachedChannelsByGuildId[selected.guildId]?.find((candidate) => candidate.id === selected.id)
@@ -1229,6 +1266,14 @@ function handleSidebarFocused(key: KeyEvent): boolean {
         return true;
       }
 
+      if (selected.guildId === WHATSAPP_GUILD_ID) {
+        whatsAppController.openChannel(channel.id);
+        return true;
+      }
+
+      const token = tokenOrWarn();
+      if (!token) return true;
+
       void loadChannelMessages(state, token, channel.id, { scheduleRender });
       return true;
     }
@@ -1237,6 +1282,18 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       if (selectedBefore.kind === "folder" || selectedBefore.kind === "up") {
         activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
         scheduleRender();
+        return true;
+      }
+
+      if (selectedBefore.kind === "guild" && selectedBefore.guildId === WHATSAPP_GUILD_ID) {
+        const entry = activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()) ?? selectedBefore;
+        if (state.sidebar.expandedGuildId === entry.guildId) whatsAppController.openRoot();
+        else scheduleRender();
+        return true;
+      }
+
+      if (selectedBefore.kind === "channel" && selectedBefore.guildId === WHATSAPP_GUILD_ID) {
+        whatsAppController.openChannel(selectedBefore.id);
         return true;
       }
 
@@ -1505,8 +1562,16 @@ function handleKey(key: KeyEvent): void {
     return;
   }
 
-  if (voiceMessageController?.handleKey(key)) return;
   if (key.event === "release") return;
+
+  if (state.whatsapp.loginModal) {
+    const result = handleLoginModalKey(state.whatsapp.loginModal, key);
+    if (result.type === "cancel") whatsAppController.cancelLogin();
+    else scheduleRender();
+    return;
+  }
+
+  if (voiceMessageController?.handleKey(key)) return;
 
   if (state.sidebar.serverActionModal) {
     handleServerModalKey(key);
@@ -1565,12 +1630,14 @@ function restoreTerminal(): void {
   if (!terminalReady) return;
   process.stdin.setRawMode(false);
   process.stdout.write(
-    disableKittyKeyboard
+    (terminalGraphicsCells ? setStGraphicsCells(false) : "")
+      + disableKittyKeyboard
       + disableBracketedPaste
       + showCursor
       + resetCursorColor
       + leaveAlt,
   );
+  terminalGraphicsCells = false;
   terminalReady = false;
 }
 
@@ -1587,7 +1654,19 @@ function cleanup(): void {
   disconnectAppGateway();
   flushDataCacheSync();
   restoreTerminal();
-  process.exit(0);
+  const forceExit = setTimeout(() => process.exit(0), 1_000);
+  void whatsAppController.shutdown().finally(() => {
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
+}
+
+function loginWhatsApp(): void {
+  whatsAppController.login();
+}
+
+function logoutWhatsApp(): void {
+  whatsAppController.logout();
 }
 
 const effects: AppEffects = {
@@ -1595,11 +1674,16 @@ const effects: AppEffects = {
   quit: cleanup,
   applyThemeCursor,
   bootstrapSession,
+  loginWhatsApp,
+  logoutWhatsApp,
+  sendWhatsAppMessage: (content) => whatsAppController.sendText(content),
 };
 
 voiceMessageController = createVoiceMessageController(state, scheduleRender, {
   sendVoiceMessage: (clip) => sendCurrentChannelVoiceMessage(state, state.auth.savedToken, clip, effects),
 });
+
+const whatsAppController = new WhatsAppController(state, scheduleRender);
 
 async function main(): Promise<void> {
   setupTerminal();
@@ -1612,6 +1696,8 @@ async function main(): Promise<void> {
   });
 
   render(state);
+
+  whatsAppController.restoreSavedSession();
 
   if (initialToken) {
     void validateAndMaybeSave(state, initialToken, false, "Validating saved token…", effects);
@@ -1640,9 +1726,10 @@ process.on("SIGINT", cleanup);
 process.on("SIGTERM", cleanup);
 process.on("SIGHUP", cleanup);
 
-main().catch((error) => {
+main().catch(async (error) => {
   disconnectMemberListGateway();
   disconnectAppGateway();
+  await whatsAppController.shutdown().catch(() => {});
   flushDataCacheSync();
   restoreTerminal();
   console.error(`Fatal: ${(error as Error).message}`);

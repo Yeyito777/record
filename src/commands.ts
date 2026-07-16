@@ -22,7 +22,9 @@ export type CommandResult =
   | { type: "handled" }
   | { type: "quit" }
   | { type: "login"; credential: string }
+  | { type: "login_whatsapp" }
   | { type: "logout" }
+  | { type: "logout_whatsapp" }
   | { type: "refresh" }
   | { type: "upload"; path: string }
   | { type: "call" }
@@ -80,6 +82,15 @@ const STATUS_ARGS: CompletionItem[] = [
   { name: "idle", desc: "Show as idle" },
   { name: "dnd", desc: "Show as Do Not Disturb" },
   { name: "invisible", desc: "Show as offline" },
+];
+
+const LOGIN_PROVIDER_ARGS: CompletionItem[] = [
+  { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
+  { name: "discord", desc: "Log in to Discord explicitly" },
+];
+
+const LOGOUT_PROVIDER_ARGS: CompletionItem[] = [
+  { name: "whatsapp", desc: "Disconnect the saved WhatsApp account" },
 ];
 
 function parseOnOff(value: string | undefined): boolean | null {
@@ -180,25 +191,36 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/login",
-    description: "Validate and save a Discord token, or reuse a saved login",
+    description: "Log in to Discord or link WhatsApp",
     handler: (text, state) => {
       const match = text.match(/^\/login\s+(.+)$/);
-      if (!match) return usage(state, "Usage: /login <token|username>");
+      if (!match) return usage(state, "Usage: /login <token|username> | /login whatsapp");
       const credential = match[1].trim();
-      if (!credential) return usage(state, "Usage: /login <token|username>");
+      if (!credential) return usage(state, "Usage: /login <token|username> | /login whatsapp");
       clearPrompt(state);
+      if (credential.toLowerCase() === "whatsapp") return { type: "login_whatsapp" };
+      const explicitDiscord = credential.match(/^discord\s+(.+)$/i)?.[1]?.trim();
+      if (/^discord(?:\s|$)/i.test(credential)) {
+        if (!explicitDiscord) return usage(state, "Usage: /login discord <token|username>");
+        return { type: "login", credential: explicitDiscord };
+      }
       return { type: "login", credential };
     },
   },
   {
     name: "/logout",
-    description: "Clear the saved Discord token",
+    description: "Log out of Discord or WhatsApp",
     handler: (text, state) => {
       const parts = text.trim().split(/\s+/).filter(Boolean);
-      if (parts.length !== 1) return usage(state, "Usage: /logout");
+      if (parts.length === 2 && parts[1]?.toLowerCase() === "whatsapp") {
+        clearPrompt(state);
+        return { type: "logout_whatsapp" };
+      }
+      if (parts.length !== 1) return usage(state, "Usage: /logout [whatsapp]");
       clearPrompt(state);
       return { type: "logout" };
     },
+    args: LOGOUT_PROVIDER_ARGS,
   },
   {
     name: "/refresh",
@@ -410,10 +432,13 @@ export function getCommandArgs(state: AppState): Record<string, CompletionItem[]
     }
   }
 
-  const loginArgs = Object.keys(state.auth.savedLogins)
+  const savedLoginArgs = Object.keys(state.auth.savedLogins)
     .sort((a, b) => a.localeCompare(b))
     .map((name) => ({ name, desc: "saved login" }));
-  if (loginArgs.length > 0) registry["/login"] = loginArgs;
+  registry["/login"] = [
+    ...LOGIN_PROVIDER_ARGS,
+    ...savedLoginArgs.filter((item) => !LOGIN_PROVIDER_ARGS.some((provider) => provider.name === item.name.toLowerCase())),
+  ];
 
   return registry;
 }
