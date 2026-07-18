@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { renderPromptSeparator } from "./promptbar";
 import { createInitialState } from "./state";
 import { termWidth } from "./textwidth";
-import { theme } from "./theme";
+import { ansiTrueColor, theme } from "./theme";
 
 function stripAnsi(line: string): string {
   return line.replace(/\x1b\[[0-9;]*m/g, "");
@@ -70,6 +70,62 @@ describe("promptbar", () => {
 
     expect(plain).toContain("────↩ Replying: Other: original message");
     expect(plain).not.toContain("PING");
+  });
+
+  test("renders user mentions as display names in reply summaries", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.guildRolesByGuildId["guild-1"] = [
+      { id: "role-1", name: "Blue", color: 0x010203, position: 1 },
+    ];
+    state.replyTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      authorId: "user-2",
+      authorDisplayName: "Other",
+      authorColor: theme.accent,
+      summary: "hey <@123456789012345678> and <@!987654321098765432>",
+      mentionUsers: [
+        { id: "123456789012345678", username: "alice", displayName: "Alice", bot: false, roleIds: ["role-1"] },
+        { id: "987654321098765432", username: "bob", displayName: "Bob", bot: false },
+      ],
+      timestamp: null,
+      mention: false,
+    };
+
+    const line = renderPromptSeparator(state, 100, theme.accent);
+    const plain = stripAnsi(line);
+
+    expect(plain).toContain("Other: hey @Alice and @Bob");
+    expect(plain).not.toContain("<@");
+    expect(line).toContain(`${ansiTrueColor(0x010203)}@Alice${theme.text}`);
+  });
+
+  test("renders role and broadcast mentions by name in reply summaries", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.guildRolesByGuildId["guild-1"] = [
+      { id: "role-1", name: "Block Tales", color: 0x00aaff, position: 1 },
+    ];
+    state.replyTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      authorId: "user-2",
+      authorDisplayName: "Other",
+      authorColor: theme.accent,
+      summary: "<@&role-1> @here",
+      mentionRoleIds: ["role-1"],
+      timestamp: null,
+      mention: false,
+    };
+
+    const line = renderPromptSeparator(state, 100, theme.accent);
+    const plain = stripAnsi(line);
+
+    expect(plain).toContain("Other: @Block Tales @here");
+    expect(plain).not.toContain("<@&role-1>");
+    expect(line).toContain(`${ansiTrueColor(0x00aaff)}@Block Tales${theme.text}`);
+    expect(line).toContain(`${theme.accent}@here${theme.text}`);
   });
 
   test("truncates inline context to stay inside the separator width", () => {
