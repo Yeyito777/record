@@ -13,6 +13,8 @@ import type {
 } from "./types";
 import type {
   WhatsAppMarkReadParams,
+  WhatsAppImageUpload,
+  WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
   WhatsAppWorkerMessage,
   WhatsAppWorkerMethod,
@@ -94,6 +96,17 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
   ): Promise<WhatsAppMessage> {
     const params: WhatsAppSendTextParams = { chatId, text, quoted, ephemeralExpirationSeconds };
     return await this.request("send-text", params as unknown as Record<string, unknown>) as WhatsAppMessage;
+  }
+
+  async sendImages(
+    chatId: string,
+    images: WhatsAppImageUpload[],
+    caption: string,
+    quoted?: WhatsAppMessage,
+    ephemeralExpirationSeconds?: number,
+  ): Promise<WhatsAppMessage[]> {
+    const params: WhatsAppSendImagesParams = { chatId, images, caption, quoted, ephemeralExpirationSeconds };
+    return await this.request("send-images", params as unknown as Record<string, unknown>) as WhatsAppMessage[];
   }
 
   async markRead(keys: WhatsAppMessageKey[]): Promise<void> {

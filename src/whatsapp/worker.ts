@@ -4,13 +4,14 @@ import { createRecordWhatsAppBackend } from "./backend";
 import type { WhatsAppMessage } from "./types";
 import type {
   WhatsAppMarkReadParams,
+  WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
   WhatsAppWorkerEvent,
   WhatsAppWorkerRequest,
   WhatsAppWorkerResponse,
 } from "./worker-protocol";
 import { toWhatsAppMessage } from "./converters";
-import { buildWhatsAppSendOptions, resolveWhatsAppEphemeralExpiration } from "./sending";
+import { buildWhatsAppSendOptions, resolveWhatsAppEphemeralExpiration, sendWhatsAppImages } from "./sending";
 
 // Baileys creates credential/key files itself. A private process umask ensures
 // they are private from the instant they are opened, before our auth wrapper's
@@ -107,6 +108,29 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
       );
       const converted = sent ? toWhatsAppMessage(sent, { selfId: socket.user?.id }) : null;
       if (!converted) throw new Error("WhatsApp did not return the sent message.");
+      return converted;
+    }
+    case "send-images": {
+      const params = request.params as unknown as WhatsAppSendImagesParams;
+      if (!params?.chatId || !Array.isArray(params.images) || typeof params.caption !== "string") {
+        throw new Error("Invalid send-images request.");
+      }
+      const socket = backend.getSocket();
+      const expiration = await resolveWhatsAppEphemeralExpiration(
+        socket,
+        params.chatId,
+        params.ephemeralExpirationSeconds,
+      );
+      const sent = await sendWhatsAppImages(
+        socket,
+        params.chatId,
+        params.images,
+        params.caption,
+        params.quoted ? quotedMessage(params.quoted) : undefined,
+        expiration,
+      );
+      const converted = sent.map((message) => toWhatsAppMessage(message, { selfId: socket.user?.id }));
+      if (converted.some((message) => message === null)) throw new Error("WhatsApp returned an invalid sent image.");
       return converted;
     }
     case "mark-read": {

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createChannelActionModal,
   createServerActionModal,
+  createVoiceMemberActionModal,
   handleServerActionModalKey,
   renderServerActionModal,
 } from "./serveractions";
@@ -38,7 +39,7 @@ describe("server actions modal", () => {
     handleServerActionModalKey(modal, { type: "char", char: "j" });
 
     expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "handled" });
-    expect(modal.leaveConfirmation).toBe(true);
+    expect(modal.confirmationAction).toBe("leave_server");
     expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({
       type: "action",
       action: "leave_server",
@@ -63,16 +64,16 @@ describe("server actions modal", () => {
     });
   });
 
-  test("renders beside the sidebar with destructive text in theme red", () => {
+  test("renders title-cased actions beside the sidebar with destructive text in theme red", () => {
     const modal = createServerActionModal("guild-1", "Example");
     modal.selection = "leave_server";
-    modal.leaveConfirmation = true;
+    modal.confirmationAction = "leave_server";
     const rendered = renderServerActionModal(modal, 3, 29, 20, 80);
     const plain = stripAnsi(rendered);
 
-    expect(plain).toContain("Copy invite");
-    expect(plain).toContain("Mute server");
-    expect(plain).toContain("You sure?");
+    expect(plain).toContain("Copy Invite");
+    expect(plain).toContain("Mute Server");
+    expect(plain).toContain("You Sure?");
     expect(rendered).toContain(theme.error);
     expect(rendered).toContain("\x1b[3;29H");
   });
@@ -81,19 +82,19 @@ describe("server actions modal", () => {
     const modal = createServerActionModal("guild-1", "Example", true);
     const rendered = stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80));
 
-    expect(rendered).toContain("Unmute server");
+    expect(rendered).toContain("Unmute Server");
   });
 
-  test("shows only the relevant mute action for categories and channels", () => {
+  test("shows only the relevant title-cased mute action for categories and channels", () => {
     const category = createChannelActionModal("category", "guild-1", "category-1", "News", false);
     const channel = createChannelActionModal("channel", "guild-1", "channel-1", "general", true);
 
     const categoryRendered = stripAnsi(renderServerActionModal(category, 3, 29, 20, 80));
     const channelRendered = stripAnsi(renderServerActionModal(channel, 3, 29, 20, 80));
-    expect(categoryRendered).toContain("Mute category");
-    expect(categoryRendered).not.toContain("Copy invite");
-    expect(categoryRendered).not.toContain("Leave server");
-    expect(channelRendered).toContain("Unmute channel");
+    expect(categoryRendered).toContain("Mute Category");
+    expect(categoryRendered).not.toContain("Copy Invite");
+    expect(categoryRendered).not.toContain("Leave Server");
+    expect(channelRendered).toContain("Unmute Channel");
     expect(handleServerActionModalKey(category, { type: "enter" })).toEqual({
       type: "action",
       action: "toggle_mute",
@@ -105,7 +106,113 @@ describe("server actions modal", () => {
     const rendered = renderServerActionModal(modal, 3, 29, 20, 80);
     const copyRow = rendered.split("\x1b[5;29H")[0]?.split("\x1b[4;29H")[1] ?? "";
 
-    expect(copyRow).toContain(`│${theme.sidebarSelBg}${theme.text}▸ Copy invite`);
-    expect(copyRow).not.toContain(`│${theme.sidebarSelBg}${theme.accent}▸ Copy invite`);
+    expect(copyRow).toContain(`│${theme.sidebarSelBg}${theme.text}▸ Copy Invite`);
+    expect(copyRow).not.toContain(`│${theme.sidebarSelBg}${theme.accent}▸ Copy Invite`);
+  });
+
+  test("offers every permitted voice-member action in the requested order", () => {
+    const modal = createVoiceMemberActionModal({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "user-1",
+      displayName: "Alice",
+      muted: true,
+      streaming: true,
+      serverMuted: true,
+      serverDeafened: true,
+      canServerMute: true,
+      canServerDeafen: true,
+      canKickFromVc: true,
+      canKickFromServer: true,
+      canBanFromServer: true,
+    });
+
+    expect(modal.actions).toEqual([
+      "toggle_mute",
+      "watch_stream",
+      "toggle_server_mute",
+      "toggle_server_deafen",
+      "kick_from_vc",
+      "kick_from_server",
+      "ban_from_server",
+    ]);
+    const rendered = stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80));
+    expect(rendered).toContain("Unmute");
+    expect(rendered).toContain("Watch Stream");
+    expect(rendered).toContain("Server Unmute");
+    expect(rendered).toContain("Server Undeafen");
+    expect(rendered).toContain("Kick From VC");
+    expect(rendered).toContain("Kick From Server");
+    expect(rendered).toContain("Ban From Server");
+  });
+
+  test("omits unavailable stream and moderation actions", () => {
+    const modal = createVoiceMemberActionModal({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "user-1",
+      displayName: "Alice",
+    });
+
+    expect(modal.actions).toEqual(["toggle_mute"]);
+    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("Mute");
+  });
+
+  test("labels an already watched stream action as Stop Watching", () => {
+    const modal = createVoiceMemberActionModal({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "user-1",
+      displayName: "Alice",
+      streaming: true,
+      watching: true,
+    });
+
+    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("Stop Watching");
+  });
+
+  test("kick and ban are red and each requires its own confirmation", () => {
+    const modal = createVoiceMemberActionModal({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "user-1",
+      displayName: "Alice",
+      canKickFromServer: true,
+      canBanFromServer: true,
+    });
+    modal.selection = "kick_from_server";
+
+    expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "handled" });
+    expect(modal.confirmationAction).toBe("kick_from_server");
+    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("You Sure?");
+    expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "action", action: "kick_from_server" });
+
+    handleServerActionModalKey(modal, { type: "char", char: "j" });
+    expect(String(modal.selection)).toBe("ban_from_server");
+    expect(modal.confirmationAction).toBeNull();
+    expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "handled" });
+    const rendered = renderServerActionModal(modal, 3, 29, 20, 80);
+    expect(rendered).toContain(theme.error);
+    expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "action", action: "ban_from_server" });
+  });
+
+  test("scrolls a long voice menu so the selected action remains visible on short terminals", () => {
+    const modal = createVoiceMemberActionModal({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "user-1",
+      displayName: "Alice",
+      streaming: true,
+      canServerMute: true,
+      canServerDeafen: true,
+      canKickFromVc: true,
+      canKickFromServer: true,
+      canBanFromServer: true,
+    });
+    modal.selection = "ban_from_server";
+
+    const rendered = stripAnsi(renderServerActionModal(modal, 3, 29, 5, 80));
+    expect(rendered).toContain("Ban From Server");
+    expect(rendered).not.toContain("Watch Stream");
   });
 });

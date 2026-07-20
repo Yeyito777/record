@@ -8,7 +8,7 @@ import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarFolder
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile } from "./session";
+import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile, voiceMemberModerationContext } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -1204,6 +1204,7 @@ describe("session", () => {
       displayName: "Friend",
       selfMute: false,
       selfDeaf: false,
+      selfStream: true,
       mute: false,
       deaf: false,
     });
@@ -1212,12 +1213,98 @@ describe("session", () => {
 
     toggleSelectedGuildMute(state, effects);
 
-    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]).toMatchObject({ userId: "friend", localMuted: true });
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]).toMatchObject({ userId: "friend", localMuted: true, streaming: true });
     expect(state.notice.text).toBe("");
     expect(effects.renders).toBeGreaterThan(0);
 
     toggleSelectedGuildMute(state, effects);
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.localMuted).toBe(false);
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "friend",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "voice-session-friend",
+      displayName: "Friend",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.streaming).toBe(false);
+
+    clearReadOnlyClient(state);
+  });
+
+  test("voice actions use channel permissions while kick and ban also use role hierarchy", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null, permissions: "29360134" }];
+    state.guildRolesByGuildId["guild-1"] = [
+      { id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "0" },
+      { id: "target-role", name: "Member", color: 0, position: 1, permissions: "0" },
+      { id: "mod-role", name: "Moderator", color: 0, position: 10, permissions: "29360134" },
+      { id: "higher-role", name: "Admin", color: 0, position: 20, permissions: "0" },
+    ];
+    state.roleIdsByGuildId["guild-1"] = ["mod-role"];
+    state.channelList.channels = [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Voice", topic: null, position: 0, type: 2, nsfw: false }];
+    const effects = { scheduleRender: () => {} };
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "friend",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "voice-session-friend",
+      roleIds: ["target-role"],
+      selfMute: false,
+      selfDeaf: false,
+      mute: true,
+      deaf: false,
+    });
+
+    expect(voiceMemberModerationContext(state, "guild-1", "voice-1", "friend")).toEqual({
+      serverMuted: true,
+      serverDeafened: false,
+      canServerMute: true,
+      canServerDeafen: true,
+      canKickFromVc: true,
+      canKickFromServer: true,
+      canBanFromServer: true,
+    });
+
+    handleGuildMembersChunk(state, effects, "guild-1", [{
+      id: "friend",
+      username: "friend",
+      displayName: "Friend",
+      bot: false,
+      roleIds: ["higher-role"],
+    }]);
+    expect(voiceMemberModerationContext(state, "guild-1", "voice-1", "friend")).toMatchObject({
+      canServerMute: true,
+      canServerDeafen: true,
+      canKickFromVc: true,
+      canKickFromServer: false,
+      canBanFromServer: false,
+    });
+
+    state.channelList.channels[0] = { ...state.channelList.channels[0]!, type: 13 };
+    expect(voiceMemberModerationContext(state, "guild-1", "voice-1", "friend")).toMatchObject({
+      canServerMute: true,
+      canServerDeafen: false,
+      canKickFromVc: true,
+    });
+
+    const voicePermissionDeny = String((1 << 22) + (1 << 23) + (1 << 24));
+    state.channelList.channels[0] = {
+      ...state.channelList.channels[0]!,
+      type: 2,
+      permissionOverwrites: [{ id: "self", type: 1, allow: "0", deny: voicePermissionDeny }],
+    };
+    expect(voiceMemberModerationContext(state, "guild-1", "voice-1", "friend")).toMatchObject({
+      canServerMute: false,
+      canServerDeafen: false,
+      canKickFromVc: false,
+    });
 
     clearReadOnlyClient(state);
   });

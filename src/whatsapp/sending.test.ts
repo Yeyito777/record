@@ -4,6 +4,7 @@ import { generateWAMessage, type WAMessage, type WASocket } from "@whiskeysocket
 import {
   buildWhatsAppSendOptions,
   resolveWhatsAppEphemeralExpiration,
+  sendWhatsAppImages,
 } from "./sending";
 
 describe("WhatsApp sending options", () => {
@@ -65,5 +66,56 @@ describe("WhatsApp sending options", () => {
       groupMetadata: async () => { throw new Error("offline"); },
     } as unknown as Pick<WASocket, "groupMetadata">;
     expect(await resolveWhatsAppEphemeralExpiration(socket, "group@g.us", undefined)).toBeUndefined();
+  });
+
+  test("sends multiple images in order with caption/reply only on the first", async () => {
+    const calls: Array<{ content: Record<string, unknown>; options?: Record<string, unknown> }> = [];
+    const socket = {
+      sendMessage: async (_jid: string, content: Record<string, unknown>, options?: Record<string, unknown>) => {
+        calls.push({ content, options });
+        return {
+          key: { id: `sent-${calls.length}`, remoteJid: "person@s.whatsapp.net", fromMe: true },
+          message: { imageMessage: {} },
+        };
+      },
+    } as unknown as Pick<WASocket, "sendMessage">;
+    const quoted = { key: { id: "quoted", remoteJid: "person@s.whatsapp.net" } } as WAMessage;
+    const sent = await sendWhatsAppImages(
+      socket,
+      "person@s.whatsapp.net",
+      [
+        { mediaType: "image/png", base64: Buffer.from("one").toString("base64"), sizeBytes: 3 },
+        { mediaType: "image/jpeg", base64: Buffer.from("two").toString("base64"), sizeBytes: 3 },
+      ],
+      "caption",
+      quoted,
+      86_400,
+    );
+
+    expect(sent).toHaveLength(2);
+    expect(calls[0]?.content).toMatchObject({ image: Buffer.from("one"), mimetype: "image/png", caption: "caption" });
+    expect(calls[0]?.options).toEqual({ quoted, ephemeralExpiration: 86_400 });
+    expect(calls[1]?.content).toMatchObject({ image: Buffer.from("two"), mimetype: "image/jpeg" });
+    expect(calls[1]?.content.caption).toBeUndefined();
+    expect(calls[1]?.options).toEqual({ ephemeralExpiration: 86_400 });
+  });
+
+  test("validates all image data before beginning a multi-image send", async () => {
+    let sends = 0;
+    const socket = {
+      sendMessage: async () => { sends += 1; return undefined; },
+    } as unknown as Pick<WASocket, "sendMessage">;
+    await expect(sendWhatsAppImages(
+      socket,
+      "person@s.whatsapp.net",
+      [
+        { mediaType: "image/png", base64: Buffer.from("valid").toString("base64"), sizeBytes: 5 },
+        { mediaType: "image/png", base64: "not base64", sizeBytes: 4 },
+      ],
+      "",
+      undefined,
+      undefined,
+    )).rejects.toThrow("image 2 has invalid data");
+    expect(sends).toBe(0);
   });
 });

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   DIRECT_MESSAGES_GUILD_ID,
   acceptDiscordInvite,
+  banGuildMember,
   createGuildInvite,
   ackChannelMessage,
   fetchChannelMessagesAfter,
@@ -28,7 +29,11 @@ import {
   setCurrentUserSettingsProtoStatus,
   fetchCurrentUserPresenceStatus,
   discordInviteCodeFromUrl,
+  disconnectGuildMemberFromVoice,
+  kickGuildMember,
   leaveGuild,
+  setGuildMemberServerDeafen,
+  setGuildMemberServerMute,
 } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -219,6 +224,32 @@ describe("discord helpers", () => {
       method: "DELETE",
       body: undefined,
     }]);
+  });
+
+  test("moderates guild voice members through Discord's member routes", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await setGuildMemberServerMute("token", "guild-1", "user-1", true);
+    await setGuildMemberServerDeafen("token", "guild-1", "user-1", false);
+    await disconnectGuildMemberFromVoice("token", "guild-1", "user-1");
+    await kickGuildMember("token", "guild-1", "user-1");
+    await banGuildMember("token", "guild-1", "user-1");
+
+    expect(requests).toEqual([
+      { url: "https://discord.com/api/v9/guilds/guild-1/members/user-1", method: "PATCH", body: { mute: true } },
+      { url: "https://discord.com/api/v9/guilds/guild-1/members/user-1", method: "PATCH", body: { deaf: false } },
+      { url: "https://discord.com/api/v9/guilds/guild-1/members/user-1", method: "PATCH", body: { channel_id: null } },
+      { url: "https://discord.com/api/v9/guilds/guild-1/members/user-1", method: "DELETE", body: null },
+      { url: "https://discord.com/api/v9/guilds/guild-1/bans/user-1", method: "PUT", body: { delete_message_seconds: 0 } },
+    ]);
   });
 
   test("persists presence status through Discord settings-proto", async () => {

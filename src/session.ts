@@ -196,6 +196,20 @@ let voiceCallController: VoiceCallController | null = null;
 let streamController: ScreenStreamController | null = null;
 let watchStreamController: WatchStreamController | null = null;
 let guildOrderSync: { accountId: string; state: AppState; stop: () => void } | null = null;
+interface GuildRoleFetchState {
+  pending: Set<string>;
+  fresh: Set<string>;
+  revisions: Map<string, number>;
+}
+const guildRoleFetchState = new WeakMap<AppState, GuildRoleFetchState>();
+
+function roleFetchStateFor(state: AppState): GuildRoleFetchState {
+  const existing = guildRoleFetchState.get(state);
+  if (existing) return existing;
+  const created = { pending: new Set<string>(), fresh: new Set<string>(), revisions: new Map<string, number>() };
+  guildRoleFetchState.set(state, created);
+  return created;
+}
 interface TrackedStreamState {
   create: import("./appgateway").StreamCreateEvent;
   serverUpdate: import("./appgateway").StreamServerUpdateEvent | null;
@@ -210,6 +224,7 @@ interface TrackedCallVoiceState {
   roleIds?: string[];
   selfMute: boolean;
   selfDeaf: boolean;
+  streaming: boolean;
   mute: boolean;
   deaf: boolean;
 }
@@ -481,11 +496,14 @@ function ansiTextColorToHex(color: string): string | null {
   return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function roleIdsForUser(state: AppState, guildId: string, channelId: string, userId: string): readonly string[] {
+function knownRoleIdsForUser(state: AppState, guildId: string, channelId: string, userId: string): readonly string[] | undefined {
   if (state.auth.user?.id === userId && state.roleIdsByGuildId[guildId]) return state.roleIdsByGuildId[guildId];
 
   const cachedRoleIds = state.memberRoleIdsByGuildId[guildId]?.[userId];
   if (cachedRoleIds) return cachedRoleIds;
+
+  const fromVoiceState = callVoiceStatesByChannelId.get(channelId)?.get(userId)?.roleIds;
+  if (fromVoiceState) return fromVoiceState;
 
   const fromActiveMemberList = (state.memberList.channelId === channelId || state.memberList.guildId === guildId)
     ? state.memberList.members.find((member) => member.id === userId)?.roleIds
@@ -512,7 +530,11 @@ function roleIdsForUser(state: AppState, guildId: string, channelId: string, use
     if (roleIds) return roleIds;
   }
 
-  return [];
+  return undefined;
+}
+
+function roleIdsForUser(state: AppState, guildId: string, channelId: string, userId: string): readonly string[] {
+  return knownRoleIdsForUser(state, guildId, channelId, userId) ?? [];
 }
 
 function maybeResortDirectMessages(state: AppState, channelId: string, messageId?: string): void {
@@ -921,26 +943,33 @@ function sidebarVoiceMemberColor(state: AppState, channelId: string, userId: str
   return color ? ansiTrueColor(color) : undefined;
 }
 
+function voiceMemberHasTrackedStream(channelId: string, userId: string): boolean {
+  for (const stream of availableStreamsByKey.values()) {
+    const parsed = parseStreamKey(stream.create.streamKey);
+    if (parsed?.channelId === channelId && parsed.ownerUserId === userId) return true;
+  }
+  return false;
+}
+
 function sidebarVoiceMemberFromState(state: AppState, channelId: string, userId: string, voiceState: TrackedCallVoiceState): SidebarVoiceMember {
   return {
     userId,
     displayName: voiceState.displayName ?? displayNameForUser(state, channelId, userId, userId),
     muted: voiceState.selfMute || voiceState.mute,
+    selfMuted: voiceState.selfMute,
     deafened: voiceState.selfDeaf || voiceState.deaf,
     localMuted: locallyMutedCallUserIds.has(userId),
+    streaming: voiceState.streaming || voiceMemberHasTrackedStream(channelId, userId),
     self: userId === state.auth.user?.id,
     color: sidebarVoiceMemberColor(state, channelId, userId, voiceState),
   };
 }
 
-function toggleSelectedVoiceMemberMute(state: AppState, effects: SessionEffects, entry: ReturnType<typeof getSelectedSidebarEntry>): boolean {
-  if (entry.kind !== "voice-member" || !entry.userId) return false;
-
-  const userId = entry.userId;
-  const isSelf = entry.self || userId === state.auth.user?.id;
+export function toggleVoiceMemberMute(state: AppState, effects: SessionEffects, userId: string): void {
+  const isSelf = userId === state.auth.user?.id;
   if (isSelf) {
     setCurrentCallMute(state, effects, null);
-    return true;
+    return;
   }
 
   const nextMuted = !locallyMutedCallUserIds.has(userId);
@@ -953,6 +982,11 @@ function toggleSelectedVoiceMemberMute(state: AppState, effects: SessionEffects,
   if (activeSession) syncVoiceCallStatus(state, activeSession);
   setNotice(state, "", "muted");
   effects.scheduleRender();
+}
+
+function toggleSelectedVoiceMemberMute(state: AppState, effects: SessionEffects, entry: ReturnType<typeof getSelectedSidebarEntry>): boolean {
+  if (entry.kind !== "voice-member" || !entry.userId) return false;
+  toggleVoiceMemberMute(state, effects, entry.userId);
   return true;
 }
 
@@ -974,6 +1008,35 @@ function syncSidebarVoiceMembersForChannels(state: AppState, channelIds: Iterabl
 
 function syncAllSidebarVoiceMembers(state: AppState): void {
   syncSidebarVoiceMembersForChannels(state, callVoiceStatesByChannelId.keys());
+}
+
+export function canWatchVoiceMemberStream(state: AppState, channelId: string, userId: string): boolean {
+  if (userId === state.auth.user?.id) return false;
+  const session = voiceCallController?.activeSession;
+  if (!session || session.state !== "ready" || session.target.channelId !== channelId) return false;
+  const voiceState = callVoiceStatesByChannelId.get(channelId)?.get(userId);
+  return Boolean(voiceState?.streaming || voiceMemberHasTrackedStream(channelId, userId));
+}
+
+export function isWatchingVoiceMemberStream(channelId: string, userId: string): boolean {
+  const parsed = watchStreamController ? parseStreamKey(watchStreamController.streamKey) : null;
+  return parsed?.channelId === channelId && parsed.ownerUserId === userId;
+}
+
+function syncOpenVoiceMemberStreamAction(state: AppState, channelId: string, userId: string): void {
+  const modal = state.sidebar.serverActionModal;
+  if (modal?.targetKind !== "voice_member" || modal.channelId !== channelId || modal.targetId !== userId) return;
+  const shouldOffer = canWatchVoiceMemberStream(state, channelId, userId);
+  const actionIndex = modal.actions.indexOf("watch_stream");
+  if (shouldOffer && actionIndex < 0) {
+    modal.actions.splice(Math.min(1, modal.actions.length), 0, "watch_stream");
+  } else if (!shouldOffer && actionIndex >= 0) {
+    modal.actions.splice(actionIndex, 1);
+    if (modal.selection === "watch_stream") {
+      modal.selection = modal.actions[Math.min(actionIndex, modal.actions.length - 1)] ?? "toggle_mute";
+    }
+  }
+  modal.watchingStream = shouldOffer && isWatchingVoiceMemberStream(channelId, userId);
 }
 
 function warmCachedMemberLists(state: AppState, accountId: string): void {
@@ -1088,6 +1151,10 @@ export function handleGuildMembersChunk(state: AppState, effects: SessionEffects
         voiceState.displayName = member.displayName;
         changed = true;
       }
+      if (voiceState && member.roleIds && JSON.stringify(voiceState.roleIds ?? []) !== JSON.stringify(member.roleIds)) {
+        voiceState.roleIds = [...member.roleIds];
+        changed = true;
+      }
       changed = mergeMemberIntoChannelMemberCache(state, guildId, channelId, member) || changed;
     }
   }
@@ -1132,6 +1199,7 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
     ...(update.roleIds ? { roleIds: update.roleIds } : {}),
     selfMute: update.selfMute,
     selfDeaf: update.selfDeaf,
+    streaming: update.selfStream ?? false,
     mute: update.mute,
     deaf: update.deaf,
   });
@@ -1144,15 +1212,16 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
   return affectedChannelIds.size > 0 || rolesChanged;
 }
 
-function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; mute: boolean; deaf: boolean }[] }): void {
+function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; selfStream?: boolean; mute: boolean; deaf: boolean }[] }): void {
   if (event.voiceStates.length === 0) return;
   const states = callVoiceStatesByChannelId.get(event.channelId) ?? new Map<string, TrackedCallVoiceState>();
-  for (const state of event.voiceStates) {
-    states.set(state.userId, {
-      selfMute: state.selfMute,
-      selfDeaf: state.selfDeaf,
-      mute: state.mute,
-      deaf: state.deaf,
+  for (const voiceState of event.voiceStates) {
+    states.set(voiceState.userId, {
+      selfMute: voiceState.selfMute,
+      selfDeaf: voiceState.selfDeaf,
+      streaming: voiceState.selfStream ?? false,
+      mute: voiceState.mute,
+      deaf: voiceState.deaf,
     });
   }
   callVoiceStatesByChannelId.set(event.channelId, states);
@@ -1637,8 +1706,18 @@ function guildRolesIncludeNamesAndPermissions(roles: readonly DiscordRole[] | un
     && roles.some((role) => typeof role.name === "string" && role.name.trim().length > 0));
 }
 
-export function loadGuildRolesInBackground(state: AppState, token: string, guildId: string, effects: SessionEffects): void {
-  if (guildId === DIRECT_MESSAGES_GUILD_ID || guildRolesIncludeNamesAndPermissions(state.guildRolesByGuildId[guildId])) return;
+export function loadGuildRolesInBackground(
+  state: AppState,
+  token: string,
+  guildId: string,
+  effects: SessionEffects,
+  options: { revalidate?: boolean } = {},
+): void {
+  const fetchState = roleFetchStateFor(state);
+  if (guildId === DIRECT_MESSAGES_GUILD_ID || fetchState.pending.has(guildId) || fetchState.fresh.has(guildId)) return;
+  if (!options.revalidate && guildRolesIncludeNamesAndPermissions(state.guildRolesByGuildId[guildId])) return;
+  fetchState.pending.add(guildId);
+  const revision = fetchState.revisions.get(guildId) ?? 0;
   void fetchGuildRoles(token, guildId).then((roles) => {
     debugLog("guild_roles.fetched", {
       guildId,
@@ -1646,6 +1725,8 @@ export function loadGuildRolesInBackground(state: AppState, token: string, guild
       withPermissions: roles.filter((role) => typeof role.permissions === "string").length,
       withNames: roles.filter((role) => typeof role.name === "string" && role.name.trim().length > 0).length,
     });
+    if (guildRoleFetchState.get(state) !== fetchState || (fetchState.revisions.get(guildId) ?? 0) !== revision) return;
+    fetchState.fresh.add(guildId);
     state.guildRolesByGuildId[guildId] = roles;
     refreshHiddenChannelFlags(state, guildId);
     const accountId = currentAccountId(state);
@@ -1655,7 +1736,37 @@ export function loadGuildRolesInBackground(state: AppState, token: string, guild
     effects.scheduleRender();
   }).catch(() => {
     // Role colors are opportunistic. Missing role metadata should not disrupt chat.
+  }).finally(() => {
+    if (guildRoleFetchState.get(state) !== fetchState) return;
+    fetchState.pending.delete(guildId);
+    if ((fetchState.revisions.get(guildId) ?? 0) !== revision) {
+      fetchState.fresh.delete(guildId);
+      loadGuildRolesInBackground(state, token, guildId, effects, { revalidate: true });
+    }
   });
+}
+
+function applyGatewayGuildRoleUpdate(
+  state: AppState,
+  effects: SessionEffects,
+  guildId: string,
+  update: { role: DiscordRole } | { deletedRoleId: string },
+): void {
+  const fetchState = roleFetchStateFor(state);
+  fetchState.revisions.set(guildId, (fetchState.revisions.get(guildId) ?? 0) + 1);
+  const current = state.guildRolesByGuildId[guildId] ?? [];
+  const next = "role" in update
+    ? current.some((role) => role.id === update.role.id)
+      ? current.map((role) => role.id === update.role.id ? update.role : role)
+      : [...current, update.role]
+    : current.filter((role) => role.id !== update.deletedRoleId);
+  state.guildRolesByGuildId[guildId] = next;
+  refreshHiddenChannelFlags(state, guildId);
+  const accountId = currentAccountId(state);
+  if (accountId) saveCachedGuildRoles(accountId, guildId, next);
+  state.memberRoleCacheVersion += 1;
+  syncAllSidebarVoiceMembers(state);
+  effects.scheduleRender();
 }
 
 function currentGuildOrderNeedsSave(currentGuildIds: readonly string[], cachedGuildOrder: readonly string[] | null | undefined): boolean {
@@ -1688,8 +1799,13 @@ export function persistSidebarFolders(state: AppState): void {
   saveCachedSidebarFolders(accountId, sidebarFolderLayout(state.sidebar));
 }
 
-const VIEW_CHANNEL_PERMISSION = 1n << 10n;
+const KICK_MEMBERS_PERMISSION = 1n << 1n;
+const BAN_MEMBERS_PERMISSION = 1n << 2n;
 const ADMINISTRATOR_PERMISSION = 1n << 3n;
+const VIEW_CHANNEL_PERMISSION = 1n << 10n;
+const MUTE_MEMBERS_PERMISSION = 1n << 22n;
+const DEAFEN_MEMBERS_PERMISSION = 1n << 23n;
+const MOVE_MEMBERS_PERMISSION = 1n << 24n;
 
 function permissionBits(value: string | number | null | undefined): bigint {
   try {
@@ -1703,6 +1819,144 @@ function permissionBits(value: string | number | null | undefined): bigint {
 
 function applyOverwrite(permissions: bigint, overwrite: { allow: string; deny: string }): bigint {
   return (permissions & ~permissionBits(overwrite.deny)) | permissionBits(overwrite.allow);
+}
+
+function currentGuildPermissionBits(
+  state: AppState,
+  guildId: string,
+  currentUserRoleIds: readonly string[],
+): bigint | null {
+  const roles = state.guildRolesByGuildId[guildId];
+  if (guildRolesIncludePermissions(roles)) {
+    const rolesById = new Map((roles ?? []).map((role) => [role.id, role]));
+    let permissions = permissionBits(rolesById.get(guildId)?.permissions);
+    for (const roleId of currentUserRoleIds) permissions |= permissionBits(rolesById.get(roleId)?.permissions);
+    return permissions;
+  }
+
+  const guild = state.sidebar.guilds.find((candidate) => candidate.id === guildId);
+  return typeof guild?.permissions === "string" ? permissionBits(guild.permissions) : null;
+}
+
+function applyGuildChannelOverwrites(
+  permissions: bigint,
+  channel: DiscordChannel,
+  guildId: string,
+  roleIds: readonly string[],
+  userId: string,
+): bigint {
+  if ((permissions & ADMINISTRATOR_PERMISSION) !== 0n) return permissions;
+  const overwrites = channel.permissionOverwrites ?? [];
+  const everyoneOverwrite = overwrites.find((overwrite) => overwrite.type === 0 && overwrite.id === guildId);
+  if (everyoneOverwrite) permissions = applyOverwrite(permissions, everyoneOverwrite);
+
+  let roleAllow = 0n;
+  let roleDeny = 0n;
+  const roleIdSet = new Set(roleIds);
+  for (const overwrite of overwrites) {
+    if (overwrite.type !== 0 || !roleIdSet.has(overwrite.id)) continue;
+    roleAllow |= permissionBits(overwrite.allow);
+    roleDeny |= permissionBits(overwrite.deny);
+  }
+  permissions = (permissions & ~roleDeny) | roleAllow;
+
+  const memberOverwrite = overwrites.find((overwrite) => overwrite.type === 1 && overwrite.id === userId);
+  return memberOverwrite ? applyOverwrite(permissions, memberOverwrite) : permissions;
+}
+
+function currentUserChannelPermissionBits(
+  state: AppState,
+  guildId: string,
+  channelId: string,
+  currentUserRoleIds: readonly string[],
+  currentUserId: string,
+): bigint | null {
+  const channel = channelById(state, channelId);
+  const permissions = currentGuildPermissionBits(state, guildId, currentUserRoleIds);
+  if (!channel || permissions === null) return null;
+  return applyGuildChannelOverwrites(permissions, channel, guildId, currentUserRoleIds, currentUserId);
+}
+
+function highestGuildRolePosition(roles: readonly DiscordRole[], roleIds: readonly string[]): number {
+  const selectedRoleIds = new Set(roleIds);
+  return roles.reduce((highest, role) => selectedRoleIds.has(role.id) ? Math.max(highest, role.position) : highest, 0);
+}
+
+function guildMemberIsManageable(
+  state: AppState,
+  guildId: string,
+  channelId: string,
+  userId: string,
+  currentUserRoleIds: readonly string[],
+): boolean {
+  const currentUserId = state.auth.user?.id;
+  if (!currentUserId || currentUserId === userId) return false;
+  const guild = state.sidebar.guilds.find((candidate) => candidate.id === guildId);
+  const currentUserIsOwner = guild?.owner === true || guild?.ownerId === currentUserId;
+  if (currentUserIsOwner) return true;
+  if (guild?.ownerId === userId) return false;
+
+  const roles = state.guildRolesByGuildId[guildId];
+  if (!roles || roles.length === 0) return false;
+  const targetRoleIds = knownRoleIdsForUser(state, guildId, channelId, userId);
+  if (!targetRoleIds) return false;
+  return highestGuildRolePosition(roles, currentUserRoleIds) > highestGuildRolePosition(roles, targetRoleIds);
+}
+
+export interface VoiceMemberModerationContext {
+  serverMuted: boolean;
+  serverDeafened: boolean;
+  canServerMute: boolean;
+  canServerDeafen: boolean;
+  canKickFromVc: boolean;
+  canKickFromServer: boolean;
+  canBanFromServer: boolean;
+}
+
+export function voiceMemberModerationContext(
+  state: AppState,
+  guildId: string,
+  channelId: string,
+  userId: string,
+): VoiceMemberModerationContext {
+  const voiceState = callVoiceStatesByChannelId.get(channelId)?.get(userId);
+  const unavailable = {
+    serverMuted: voiceState?.mute ?? false,
+    serverDeafened: voiceState?.deaf ?? false,
+    canServerMute: false,
+    canServerDeafen: false,
+    canKickFromVc: false,
+    canKickFromServer: false,
+    canBanFromServer: false,
+  };
+  if (guildId === DIRECT_MESSAGES_GUILD_ID) return unavailable;
+
+  const currentUserId = state.auth.user?.id;
+  if (!currentUserId || currentUserId === userId) return unavailable;
+  const guild = state.sidebar.guilds.find((candidate) => candidate.id === guildId);
+  const currentUserIsOwner = guild?.owner === true || guild?.ownerId === currentUserId;
+  const currentUserRoleIds = state.roleIdsByGuildId[guildId]
+    ?? state.memberRoleIdsByGuildId[guildId]?.[currentUserId]
+    ?? (currentUserIsOwner ? [] : undefined);
+  if (!currentUserRoleIds) return unavailable;
+  const guildPermissions = currentGuildPermissionBits(state, guildId, currentUserRoleIds);
+  const channelPermissions = currentUserChannelPermissionBits(state, guildId, channelId, currentUserRoleIds, currentUserId);
+  if (guildPermissions === null && !currentUserIsOwner) return unavailable;
+  const guildAdministrator = currentUserIsOwner || (guildPermissions !== null && (guildPermissions & ADMINISTRATOR_PERMISSION) !== 0n);
+  const hasGuildPermission = (permission: bigint): boolean => guildAdministrator
+    || (guildPermissions !== null && (guildPermissions & permission) !== 0n);
+  const hasChannelPermission = (permission: bigint): boolean => guildAdministrator
+    || (channelPermissions !== null && (channelPermissions & permission) !== 0n);
+  const canManageTarget = guildMemberIsManageable(state, guildId, channelId, userId, currentUserRoleIds);
+  const channel = channelById(state, channelId);
+  return {
+    ...unavailable,
+    canServerMute: hasChannelPermission(MUTE_MEMBERS_PERMISSION),
+    canServerDeafen: channel?.type === 2 && hasChannelPermission(DEAFEN_MEMBERS_PERMISSION),
+    canKickFromVc: hasChannelPermission(MOVE_MEMBERS_PERMISSION),
+    canKickFromServer: canManageTarget && hasGuildPermission(KICK_MEMBERS_PERMISSION),
+    canBanFromServer: canManageTarget && hasGuildPermission(BAN_MEMBERS_PERMISSION),
+  };
 }
 
 function canViewGuildChannel(
@@ -1815,8 +2069,8 @@ function mergeGatewayGuilds(
       orderChanged = true;
       continue;
     }
-    const merged = { ...existing, name: guild.name, icon: guild.icon };
-    if (existing.name !== merged.name || existing.icon !== merged.icon) changed = true;
+    const merged = { ...existing, ...guild, muted: guild.muted ?? existing.muted };
+    if (JSON.stringify(existing) !== JSON.stringify(merged)) changed = true;
     byGuildId.set(guild.id, merged);
   }
 
@@ -1840,7 +2094,7 @@ function mergeRestGuilds(
     .filter((guild) => restByGuildId.has(guild.id))
     .map((guild) => {
       const fresh = restByGuildId.get(guild.id)!;
-      return { ...guild, name: fresh.name, icon: fresh.icon };
+      return { ...guild, ...fresh, muted: fresh.muted ?? guild.muted };
     });
   const included = new Set(existingGuilds.map((guild) => guild.id));
   const newGuilds = guilds.filter((guild) => !included.has(guild.id));
@@ -2261,7 +2515,10 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onVoiceServerUpdate: (update) => {
       voiceCallController?.handleVoiceServerUpdate(update);
     },
+    onGuildMemberUpdate: (guildId, member) => handleGuildMembersChunk(state, effects, guildId, [member]),
     onGuildMembersChunk: (guildId, members) => handleGuildMembersChunk(state, effects, guildId, members),
+    onGuildRoleUpdate: (guildId, role) => applyGatewayGuildRoleUpdate(state, effects, guildId, { role }),
+    onGuildRoleDelete: (guildId, deletedRoleId) => applyGatewayGuildRoleUpdate(state, effects, guildId, { deletedRoleId }),
     onCallCreate: (event) => {
       handleCallGatewayEvent(state, event.channelId, event.ringingUserIds);
       rememberCallGatewayVoiceStates(state, event);
@@ -2293,6 +2550,12 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       rememberStreamCreate(event);
       streamController?.handleCreate(event);
       watchStreamController?.handleCreate(event);
+      const parsed = parseStreamKey(event.streamKey);
+      if (parsed) {
+        syncSidebarVoiceMembersForChannel(state, parsed.channelId);
+        syncOpenVoiceMemberStreamAction(state, parsed.channelId, parsed.ownerUserId);
+      }
+      effects.scheduleRender();
     },
     onStreamServerUpdate: (event) => {
       rememberStreamServerUpdate(event);
@@ -2300,11 +2563,19 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       watchStreamController?.handleServerUpdate(event);
     },
     onStreamDelete: (event) => {
+      const parsed = parseStreamKey(event.streamKey);
       streamController?.handleDelete(event);
       if (streamController?.streamKey === event.streamKey) streamController = null;
       watchStreamController?.handleDelete(event);
       if (watchStreamController?.streamKey === event.streamKey && !watchStreamController.active) watchStreamController = null;
       forgetTrackedStream(event.streamKey);
+      if (parsed) {
+        const voiceState = callVoiceStatesByChannelId.get(parsed.channelId)?.get(parsed.ownerUserId);
+        if (voiceState) voiceState.streaming = false;
+        syncSidebarVoiceMembersForChannel(state, parsed.channelId);
+        syncOpenVoiceMemberStreamAction(state, parsed.channelId, parsed.ownerUserId);
+      }
+      effects.scheduleRender();
     },
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
     onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
@@ -2358,6 +2629,7 @@ export function currentAppGatewaySessionId(token: string | null | undefined): st
 }
 
 export function clearReadOnlyClient(state: AppState): void {
+  guildRoleFetchState.delete(state);
   const whatsAppChannelsBeforeClear = whatsAppChannels(state.whatsapp);
   const activeWhatsAppChannelId = state.channelList.guildId === WHATSAPP_GUILD_ID
     ? state.channelList.activeChannelId
@@ -2676,7 +2948,7 @@ export async function bootstrapReadOnlyClient(
       persistSidebarGuilds(state, { order: currentGuildOrderNeedsSave(sidebarCachedGuilds(state.sidebar).map((guild) => guild.id), guildOrder) });
     }
     for (const guild of guilds) {
-      loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects);
+      loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects, { revalidate: true });
     }
     startAppGateway(state, currentAuthToken(state, token), effects);
 
@@ -3940,6 +4212,11 @@ export function stopCurrentStream(state: AppState, effects: SessionEffects, opti
 }
 
 export function watchCurrentStream(state: AppState, effects: SessionEffects, target: string | null = null): void {
+  const normalizedTarget = normalizeWatchTarget(target);
+  if (normalizedTarget && watchStreamController?.streamKey === normalizedTarget) {
+    stopCurrentWatchedStream(state, effects);
+    return;
+  }
   const token = state.auth.savedToken;
   const selfUserId = state.auth.user?.id;
   if (!token || !selfUserId) {
@@ -3991,6 +4268,8 @@ export function watchCurrentStream(state: AppState, effects: SessionEffects, tar
       if (watchStreamController !== controller) return;
       watchStreamController = null;
       controller.stop("playback_ended");
+      const parsed = parseStreamKey(controller.streamKey);
+      if (parsed) syncOpenVoiceMemberStreamAction(state, parsed.channelId, parsed.ownerUserId);
       if (error) setNotice(state, `Stream playback ended: ${error.message}`, "warning", { statusLine: false });
       else setNotice(state, `Stopped watching ${ownerLabel}'s stream.`, "muted", { statusLine: false });
       effects.scheduleRender();
@@ -4020,6 +4299,8 @@ export function watchCurrentStream(state: AppState, effects: SessionEffects, tar
     effects.scheduleRender();
   }).catch((error) => {
     if (watchStreamController === controller) watchStreamController = null;
+    const parsed = parseStreamKey(controller.streamKey);
+    if (parsed) syncOpenVoiceMemberStreamAction(state, parsed.channelId, parsed.ownerUserId);
     const message = error instanceof Error ? error.message : String(error);
     setNotice(state, `Failed to watch stream: ${message}`, "error", { statusLine: false });
     effects.scheduleRender();
@@ -4037,8 +4318,12 @@ export function stopCurrentWatchedStream(state: AppState, effects: SessionEffect
   }
   watchStreamController = null;
   controller.stop("command");
+  const parsed = parseStreamKey(controller.streamKey);
+  if (parsed) syncOpenVoiceMemberStreamAction(state, parsed.channelId, parsed.ownerUserId);
   if (!options.silent) {
     setNotice(state, "Stopped watching stream.", "muted", { statusLine: false });
+    effects.scheduleRender();
+  } else if (parsed) {
     effects.scheduleRender();
   }
 }

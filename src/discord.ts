@@ -45,6 +45,9 @@ interface DiscordGuildResponse {
   id: string;
   name: string;
   icon: string | null;
+  owner?: boolean;
+  owner_id?: string;
+  permissions?: string;
 }
 
 interface DiscordInviteGuildResponse {
@@ -263,6 +266,11 @@ export interface DiscordGuild {
   name: string;
   icon: string | null;
   muted?: boolean;
+  /** Whether the authenticated user owns this guild (from /users/@me/guilds). */
+  owner?: boolean;
+  ownerId?: string;
+  /** Authenticated user's base guild permissions, before channel overwrites. */
+  permissions?: string;
 }
 
 export interface DiscordPermissionOverwrite {
@@ -1096,6 +1104,9 @@ export async function fetchGuilds(
       id: guild.id,
       name: guild.name,
       icon: guild.icon ?? null,
+      ...(typeof guild.owner === "boolean" ? { owner: guild.owner } : {}),
+      ...(typeof guild.owner_id === "string" ? { ownerId: guild.owner_id } : {}),
+      ...(typeof guild.permissions === "string" ? { permissions: guild.permissions } : {}),
     })));
 
     if (page.length < GUILD_PAGE_LIMIT) break;
@@ -1162,6 +1173,50 @@ function inviteChannelPriority(channelType: number): number {
 export async function leaveGuild(token: string, guildId: string): Promise<void> {
   await requestJson<unknown>(token, `/users/@me/guilds/${guildId}`, {
     method: "DELETE",
+  });
+}
+
+export async function setGuildMemberServerMute(
+  token: string,
+  guildId: string,
+  userId: string,
+  muted: boolean,
+): Promise<void> {
+  await requestJson<unknown>(token, `/guilds/${guildId}/members/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ mute: muted }),
+  });
+}
+
+export async function setGuildMemberServerDeafen(
+  token: string,
+  guildId: string,
+  userId: string,
+  deafened: boolean,
+): Promise<void> {
+  await requestJson<unknown>(token, `/guilds/${guildId}/members/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ deaf: deafened }),
+  });
+}
+
+export async function disconnectGuildMemberFromVoice(token: string, guildId: string, userId: string): Promise<void> {
+  await requestJson<unknown>(token, `/guilds/${guildId}/members/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ channel_id: null }),
+  });
+}
+
+export async function kickGuildMember(token: string, guildId: string, userId: string): Promise<void> {
+  await requestJson<unknown>(token, `/guilds/${guildId}/members/${userId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function banGuildMember(token: string, guildId: string, userId: string): Promise<void> {
+  await requestJson<unknown>(token, `/guilds/${guildId}/bans/${userId}`, {
+    method: "PUT",
+    body: JSON.stringify({ delete_message_seconds: 0 }),
   });
 }
 

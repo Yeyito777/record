@@ -1,5 +1,5 @@
 /**
- * State and rendering for the sidebar server-actions context menu.
+ * State and rendering for sidebar semicolon action menus.
  */
 
 import type { KeyEvent } from "./input";
@@ -7,19 +7,50 @@ import { moveTo } from "./frame";
 import { theme } from "./theme";
 import { padRight, termWidth, truncate } from "./textwidth";
 
-export type ServerAction = "copy_invite" | "toggle_mute" | "leave_server";
-export type ServerActionTargetKind = "guild" | "category" | "channel";
+export type ServerAction =
+  | "copy_invite"
+  | "toggle_mute"
+  | "leave_server"
+  | "watch_stream"
+  | "toggle_server_mute"
+  | "toggle_server_deafen"
+  | "kick_from_vc"
+  | "kick_from_server"
+  | "ban_from_server";
+export type ServerActionTargetKind = "guild" | "category" | "channel" | "voice_member";
 
 export interface ServerActionModalState {
   guildId: string;
   guildName: string;
   targetKind: ServerActionTargetKind;
   targetId: string;
+  channelId: string | null;
   muted: boolean;
+  serverMuted: boolean;
+  serverDeafened: boolean;
+  watchingStream: boolean;
+  actions: ServerAction[];
   selection: ServerAction;
-  leaveConfirmation: boolean;
+  confirmationAction: ServerAction | null;
   busy: boolean;
   error: string | null;
+}
+
+export interface VoiceMemberActionModalOptions {
+  guildId: string;
+  channelId: string;
+  userId: string;
+  displayName: string;
+  muted?: boolean;
+  streaming?: boolean;
+  serverMuted?: boolean;
+  serverDeafened?: boolean;
+  watching?: boolean;
+  canServerMute?: boolean;
+  canServerDeafen?: boolean;
+  canKickFromVc?: boolean;
+  canKickFromServer?: boolean;
+  canBanFromServer?: boolean;
 }
 
 export type ServerActionModalKeyResult =
@@ -27,15 +58,26 @@ export type ServerActionModalKeyResult =
   | { type: "close" }
   | { type: "action"; action: ServerAction };
 
+const DESTRUCTIVE_ACTIONS = new Set<ServerAction>([
+  "leave_server",
+  "kick_from_server",
+  "ban_from_server",
+]);
+
 export function createServerActionModal(guildId: string, guildName: string, muted = false): ServerActionModalState {
   return {
     guildId,
     guildName,
     targetKind: "guild",
     targetId: guildId,
+    channelId: null,
     muted,
+    serverMuted: false,
+    serverDeafened: false,
+    watchingStream: false,
+    actions: ["copy_invite", "toggle_mute", "leave_server"],
     selection: "copy_invite",
-    leaveConfirmation: false,
+    confirmationAction: null,
     busy: false,
     error: null,
   };
@@ -53,18 +95,44 @@ export function createChannelActionModal(
     guildName: targetName,
     targetKind,
     targetId,
+    channelId: targetKind === "channel" ? targetId : null,
     muted,
+    serverMuted: false,
+    serverDeafened: false,
+    watchingStream: false,
+    actions: ["toggle_mute"],
     selection: "toggle_mute",
-    leaveConfirmation: false,
+    confirmationAction: null,
     busy: false,
     error: null,
   };
 }
 
-function availableActions(modal: ServerActionModalState): ServerAction[] {
-  return modal.targetKind === "guild"
-    ? ["copy_invite", "toggle_mute", "leave_server"]
-    : ["toggle_mute"];
+export function createVoiceMemberActionModal(options: VoiceMemberActionModalOptions): ServerActionModalState {
+  const actions: ServerAction[] = ["toggle_mute"];
+  if (options.streaming) actions.push("watch_stream");
+  if (options.canServerMute) actions.push("toggle_server_mute");
+  if (options.canServerDeafen) actions.push("toggle_server_deafen");
+  if (options.canKickFromVc) actions.push("kick_from_vc");
+  if (options.canKickFromServer) actions.push("kick_from_server");
+  if (options.canBanFromServer) actions.push("ban_from_server");
+
+  return {
+    guildId: options.guildId,
+    guildName: options.displayName,
+    targetKind: "voice_member",
+    targetId: options.userId,
+    channelId: options.channelId,
+    muted: Boolean(options.muted),
+    serverMuted: Boolean(options.serverMuted),
+    serverDeafened: Boolean(options.serverDeafened),
+    watchingStream: Boolean(options.watching),
+    actions,
+    selection: actions[0] ?? "toggle_mute",
+    confirmationAction: null,
+    busy: false,
+    error: null,
+  };
 }
 
 export function handleServerActionModalKey(modal: ServerActionModalState, key: KeyEvent): ServerActionModalKeyResult {
@@ -77,28 +145,53 @@ export function handleServerActionModalKey(modal: ServerActionModalState, key: K
       ? 1
       : 0;
   if (direction !== 0) {
-    const actions = availableActions(modal);
-    const currentIndex = actions.indexOf(modal.selection);
-    const nextIndex = Math.max(0, Math.min(actions.length - 1, currentIndex + direction));
-    modal.selection = actions[nextIndex] ?? "copy_invite";
-    modal.leaveConfirmation = false;
+    const currentIndex = modal.actions.indexOf(modal.selection);
+    const nextIndex = Math.max(0, Math.min(modal.actions.length - 1, currentIndex + direction));
+    modal.selection = modal.actions[nextIndex] ?? modal.actions[0] ?? "toggle_mute";
+    modal.confirmationAction = null;
     modal.error = null;
     return { type: "handled" };
   }
 
   if (key.type !== "enter") return { type: "handled" };
   modal.error = null;
-  if (modal.selection === "copy_invite") {
-    return { type: "action", action: "copy_invite" };
+  if (!DESTRUCTIVE_ACTIONS.has(modal.selection)) {
+    modal.confirmationAction = null;
+    return { type: "action", action: modal.selection };
   }
-  if (modal.selection === "toggle_mute") {
-    return { type: "action", action: "toggle_mute" };
-  }
-  if (!modal.leaveConfirmation) {
-    modal.leaveConfirmation = true;
+  if (modal.confirmationAction !== modal.selection) {
+    modal.confirmationAction = modal.selection;
     return { type: "handled" };
   }
-  return { type: "action", action: "leave_server" };
+  return { type: "action", action: modal.selection };
+}
+
+function actionLabel(modal: ServerActionModalState, action: ServerAction): string {
+  if (modal.confirmationAction === action && DESTRUCTIVE_ACTIONS.has(action)) return "You Sure?";
+
+  switch (action) {
+    case "copy_invite":
+      return "Copy Invite";
+    case "toggle_mute": {
+      if (modal.targetKind === "voice_member") return modal.muted ? "Unmute" : "Mute";
+      const muteTarget = modal.targetKind === "guild" ? "Server" : modal.targetKind === "category" ? "Category" : "Channel";
+      return `${modal.muted ? "Unmute" : "Mute"} ${muteTarget}`;
+    }
+    case "leave_server":
+      return "Leave Server";
+    case "watch_stream":
+      return modal.watchingStream ? "Stop Watching" : "Watch Stream";
+    case "toggle_server_mute":
+      return `Server ${modal.serverMuted ? "Unmute" : "Mute"}`;
+    case "toggle_server_deafen":
+      return `Server ${modal.serverDeafened ? "Undeafen" : "Deafen"}`;
+    case "kick_from_vc":
+      return "Kick From VC";
+    case "kick_from_server":
+      return "Kick From Server";
+    case "ban_from_server":
+      return "Ban From Server";
+  }
 }
 
 /** Render the menu immediately to the right of the fixed-width sidebar. */
@@ -112,17 +205,15 @@ export function renderServerActionModal(
   const availableWidth = totalCols - leftCol + 1;
   if (availableWidth < 6 || totalRows < 4) return "";
 
-  const muteTarget = modal.targetKind === "guild" ? "server" : modal.targetKind;
-  const muteLabel = `${modal.muted ? "Unmute" : "Mute"} ${muteTarget}`;
-  const actions = availableActions(modal);
-  const labels = actions.map((action) => (
-    action === "copy_invite"
-      ? "Copy invite"
-      : action === "toggle_mute"
-        ? muteLabel
-        : modal.leaveConfirmation ? "You sure?" : "Leave server"
-  ));
   const errorText = modal.error ? truncate(modal.error, Math.max(1, Math.min(38, availableWidth - 4))) : null;
+  const maxVisibleActions = Math.max(1, totalRows - 2 - (errorText ? 1 : 0));
+  const selectionIndex = Math.max(0, modal.actions.indexOf(modal.selection));
+  const windowStart = Math.max(0, Math.min(
+    selectionIndex - Math.floor(maxVisibleActions / 2),
+    modal.actions.length - maxVisibleActions,
+  ));
+  const visibleActions = modal.actions.slice(windowStart, windowStart + maxVisibleActions);
+  const labels = visibleActions.map((action) => actionLabel(modal, action));
   const rawLines = labels.map((label) => `  ${label} `);
   if (errorText) rawLines.push(`  ${errorText} `);
 
@@ -138,12 +229,12 @@ export function renderServerActionModal(
   ];
 
   for (let index = 0; index < rawLines.length; index++) {
-    const action = actions[index];
+    const action = visibleActions[index];
     const selected = action !== undefined && modal.selection === action;
     const marker = selected ? "▸ " : "  ";
     const label = labels[index] ?? errorText!;
     const bg = selected ? theme.sidebarSelBg : theme.sidebarBg;
-    const fg = action === "leave_server"
+    const fg = action !== undefined && DESTRUCTIVE_ACTIONS.has(action)
       ? theme.error
       : action === undefined
         ? theme.warning

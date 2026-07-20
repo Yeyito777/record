@@ -12,6 +12,7 @@ export interface VoiceStateUpdate {
   roleIds?: string[];
   selfMute: boolean;
   selfDeaf: boolean;
+  selfStream?: boolean;
   mute: boolean;
   deaf: boolean;
 }

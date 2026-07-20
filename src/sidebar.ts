@@ -91,8 +91,10 @@ export interface SidebarEntry {
   channelType?: number;
   notificationCount?: number;
   muted?: boolean;
+  selfMuted?: boolean;
   deafened?: boolean;
   localMuted?: boolean;
+  streaming?: boolean;
   self?: boolean;
   color?: string;
   hidden?: boolean;
@@ -108,8 +110,10 @@ export interface SidebarVoiceMember {
   userId: string;
   displayName: string;
   muted?: boolean;
+  selfMuted?: boolean;
   deafened?: boolean;
   localMuted?: boolean;
+  streaming?: boolean;
   self?: boolean;
   color?: string;
 }
@@ -975,8 +979,10 @@ function pushSidebarVoiceMemberEntry(
     label: member.displayName || member.userId,
     depth,
     muted: member.muted,
+    selfMuted: member.selfMuted,
     deafened: member.deafened,
     localMuted: member.localMuted,
+    streaming: member.streaming,
     self: member.self,
     color: member.color,
     selected: false,

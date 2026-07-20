@@ -21,6 +21,7 @@ import {
   type DiscordMessageResponse,
   type DiscordGuildMember,
   type DiscordPresenceStatus,
+  type DiscordRole,
 } from "./discord";
 import { debugLog } from "./debuglog";
 import { buildVoiceStatePayload, type VoiceServerUpdate, type VoiceSignalingClient, type VoiceStateRequest, type VoiceStateUpdate } from "./voice";
@@ -57,6 +58,7 @@ export interface CallGatewayVoiceState {
   userId: string;
   selfMute: boolean;
   selfDeaf: boolean;
+  selfStream?: boolean;
   mute: boolean;
   deaf: boolean;
 }
@@ -107,7 +109,10 @@ export interface AppGatewayCallbacks {
   onChannelMuteSettings?: (mutedByChannelId: Record<string, boolean>, options?: { reset?: boolean }) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
   onCurrentUserGuildRoles?: (guildId: string, roleIds: string[]) => void;
+  onGuildMemberUpdate?: (guildId: string, member: DiscordGuildMember) => void;
   onGuildMembersChunk?: (guildId: string, members: DiscordGuildMember[]) => void;
+  onGuildRoleUpdate?: (guildId: string, role: DiscordRole) => void;
+  onGuildRoleDelete?: (guildId: string, roleId: string) => void;
   onReadyGuilds?: (guilds: DiscordGuild[]) => void;
   onGuildCreate?: (guild: DiscordGuild) => void;
   onGuildUpdate?: (guild: DiscordGuild) => void;
@@ -618,9 +623,23 @@ export class AppGatewayClient implements VoiceSignalingClient {
         }
         case "GUILD_MEMBER_UPDATE": {
           if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.roles)) break;
+          const member = mapGatewayMember(data);
+          if (member) this.callbacks.onGuildMemberUpdate?.(data.guild_id, member);
           const user = isObject(data.user) ? data.user : null;
           if (!this.currentUserId || !user || user.id !== this.currentUserId) break;
           this.callbacks.onCurrentUserGuildRoles?.(data.guild_id, data.roles.filter((roleId): roleId is string => typeof roleId === "string"));
+          break;
+        }
+        case "GUILD_ROLE_CREATE":
+        case "GUILD_ROLE_UPDATE": {
+          if (!isObject(data) || typeof data.guild_id !== "string") break;
+          const role = mapGatewayRole(data.role);
+          if (role) this.callbacks.onGuildRoleUpdate?.(data.guild_id, role);
+          break;
+        }
+        case "GUILD_ROLE_DELETE": {
+          if (!isObject(data) || typeof data.guild_id !== "string" || typeof data.role_id !== "string") break;
+          this.callbacks.onGuildRoleDelete?.(data.guild_id, data.role_id);
           break;
         }
         case "GUILD_MEMBERS_CHUNK": {
@@ -883,6 +902,7 @@ export function mapVoiceStateUpdate(data: unknown, fallbackGuildId: string | nul
     ...(roleIds ? { roleIds } : {}),
     selfMute: Boolean(data.self_mute),
     selfDeaf: Boolean(data.self_deaf),
+    ...(typeof data.self_stream === "boolean" ? { selfStream: data.self_stream } : {}),
     mute: Boolean(data.mute),
     deaf: Boolean(data.deaf),
   };
@@ -995,6 +1015,7 @@ function mapCallGatewayVoiceState(data: unknown): CallGatewayVoiceState | null {
     userId,
     selfMute: Boolean(data.self_mute),
     selfDeaf: Boolean(data.self_deaf),
+    ...(typeof data.self_stream === "boolean" ? { selfStream: data.self_stream } : {}),
     mute: Boolean(data.mute),
     deaf: Boolean(data.deaf),
   };
@@ -1035,6 +1056,17 @@ function mapGatewayMember(data: unknown): DiscordGuildMember | null {
   };
 }
 
+function mapGatewayRole(data: unknown): DiscordRole | null {
+  if (!isObject(data) || typeof data.id !== "string") return null;
+  return {
+    id: data.id,
+    ...(typeof data.name === "string" ? { name: data.name } : {}),
+    color: typeof data.color === "number" ? data.color : 0,
+    position: typeof data.position === "number" ? data.position : 0,
+    permissions: typeof data.permissions === "string" ? data.permissions : "0",
+  };
+}
+
 function mapGatewayGuild(data: unknown): DiscordGuild | null {
   if (!isObject(data)) return null;
   const properties = isObject(data.properties) ? data.properties : data;
@@ -1049,6 +1081,7 @@ function mapGatewayGuild(data: unknown): DiscordGuild | null {
     id,
     name,
     icon: typeof properties.icon === "string" ? properties.icon : null,
+    ...(typeof properties.owner_id === "string" ? { ownerId: properties.owner_id } : {}),
   };
 }
 

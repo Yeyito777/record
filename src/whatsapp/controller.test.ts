@@ -21,6 +21,7 @@ class FakeBackend implements WhatsAppBackendHandle {
   shutdownCalled = false;
   started = 0;
   sentTexts: string[] = [];
+  sentImageBatches: Array<{ caption: string; count: number }> = [];
   sentExpirations: Array<number | undefined> = [];
   private resolveLogin: ((result: WhatsAppLoginResult) => void) | null = null;
   private readonly listeners = new Map<WhatsAppBackendEventName, Set<(event: unknown) => void>>();
@@ -62,6 +63,28 @@ class FakeBackend implements WhatsAppBackendHandle {
       timestampMs: 123_000,
       content: { kind: "text" as const, text },
     };
+  }
+
+  async sendImages(
+    chatId: string,
+    images: import("./worker-protocol").WhatsAppImageUpload[],
+    caption: string,
+  ) {
+    this.sentImageBatches.push({ caption, count: images.length });
+    return images.map((image, index) => ({
+      key: { id: `sent-image-${index + 1}`, chatId, fromMe: true },
+      id: `sent-image-${index + 1}`,
+      chatId,
+      senderId: "self@s.whatsapp.net",
+      fromMe: true,
+      timestampMs: 123_000 + index,
+      content: {
+        kind: "media" as const,
+        mediaKind: "image" as const,
+        mimeType: image.mediaType,
+        ...(index === 0 && caption ? { caption } : {}),
+      },
+    }));
   }
 
   async markRead(): Promise<void> {
@@ -179,13 +202,49 @@ describe("WhatsApp controller", () => {
     controller.openRoot();
     controller.openChannel(whatsappChannelId(jid));
 
-    expect(controller.sendText("hello")).toBe(true);
+    expect(controller.sendMessage("hello")).toBe(true);
     expect(state.timeline.messages.at(-1)?.localStatus).toBe("pending");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(backend.sentTexts).toEqual(["hello"]);
     expect(backend.sentExpirations).toEqual([86_400]);
     expect(state.timeline.messages.at(-1)).toMatchObject({ id: "sent-1", content: "hello" });
+  });
+
+  test("sends pasted WhatsApp images with text and optimistic attachments", async () => {
+    const { state, backend, controller } = fixture();
+    const jid = "15551234567@s.whatsapp.net";
+    backend.emit("state", {
+      status: "connected",
+      resumed: false,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net", name: "Me" },
+    });
+    backend.emit("chats", { kind: "upsert", chats: [{ id: jid, kind: "direct", name: "Mom" }] });
+    controller.openRoot();
+    controller.openChannel(whatsappChannelId(jid));
+    state.pendingImages = [
+      { mediaType: "image/png", base64: Buffer.from("one").toString("base64"), sizeBytes: 3, filename: "one.png" },
+      { mediaType: "image/png", base64: Buffer.from("two").toString("base64"), sizeBytes: 3, filename: "two.png" },
+    ];
+
+    expect(controller.sendMessage("it's finished......")).toBe(true);
+    expect(state.pendingImages).toEqual([]);
+    expect(state.timeline.messages.at(-1)).toMatchObject({
+      content: "it's finished......",
+      localStatus: "pending",
+      attachments: [
+        { filename: "one.png", contentType: "image/png", size: 3 },
+        { filename: "two.png", contentType: "image/png", size: 3 },
+      ],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(backend.sentImageBatches).toEqual([{ caption: "it's finished......", count: 2 }]);
+    expect(state.timeline.messages.slice(-2).map((message) => [message.id, message.content])).toEqual([
+      ["sent-image-1", "it's finished......"],
+      ["sent-image-2", ""],
+    ]);
   });
 
   test("keeps a live unread notification when the cached chat count was zero", () => {

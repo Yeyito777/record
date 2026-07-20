@@ -10,6 +10,7 @@ export type WhatsAppWorkerMethod =
   | "start-login"
   | "cancel-login"
   | "send-text"
+  | "send-images"
   | "mark-read"
   | "logout"
   | "shutdown";
@@ -39,6 +40,22 @@ export type WhatsAppWorkerMessage = WhatsAppWorkerResponse | WhatsAppWorkerEvent
 export interface WhatsAppSendTextParams {
   chatId: string;
   text: string;
+  quoted?: WhatsAppMessage;
+  /** Known per-chat disappearing-message duration. Zero explicitly means off. */
+  ephemeralExpirationSeconds?: number;
+}
+
+export interface WhatsAppImageUpload {
+  mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  base64: string;
+  sizeBytes: number;
+  filename?: string;
+}
+
+export interface WhatsAppSendImagesParams {
+  chatId: string;
+  caption: string;
+  images: WhatsAppImageUpload[];
   quoted?: WhatsAppMessage;
   /** Known per-chat disappearing-message duration. Zero explicitly means off. */
   ephemeralExpirationSeconds?: number;

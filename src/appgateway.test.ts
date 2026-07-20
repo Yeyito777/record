@@ -311,6 +311,7 @@ describe("app gateway helpers", () => {
       member: { nick: "Server Nick", roles: ["role-1"], user: { username: "yeyito", global_name: "Yeyito" } },
       self_mute: true,
       self_deaf: false,
+      self_stream: true,
       mute: false,
       deaf: false,
     })).toEqual({
@@ -322,6 +323,7 @@ describe("app gateway helpers", () => {
       roleIds: ["role-1"],
       selfMute: true,
       selfDeaf: false,
+      selfStream: true,
       mute: false,
       deaf: false,
     });

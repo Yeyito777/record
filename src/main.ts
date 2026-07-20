@@ -50,6 +50,7 @@ import { render } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
   bootstrapReadOnlyClient,
+  canWatchVoiceMemberStream,
   currentAppGatewaySessionId,
   disconnectAppGateway,
   disconnectMemberListGateway,
@@ -67,7 +68,11 @@ import {
   sendCurrentChannelVoiceMessage,
   startCurrentVoiceCall,
   syncMemberListForCurrentChannel,
+  isWatchingVoiceMemberStream,
+  toggleVoiceMemberMute,
   toggleSelectedGuildMute,
+  voiceMemberModerationContext,
+  watchCurrentStream,
 } from "./session";
 import { renderStatusLine } from "./statusline";
 import {
@@ -103,7 +108,7 @@ import {
   moveSidebarSelectionToPrevGuild,
   SIDEBAR_WIDTH,
 } from "./sidebar";
-import { createChannelActionModal, createServerActionModal, handleServerActionModalKey } from "./serveractions";
+import { createChannelActionModal, createServerActionModal, createVoiceMemberActionModal, handleServerActionModalKey, type ServerAction } from "./serveractions";
 import {
   createInitialState,
   cycleFocus,
@@ -127,7 +132,7 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, createGuildInvite, DiscordCaptchaRequiredError, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isGuildVoiceChannel, leaveGuild, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, banGuildMember, createGuildInvite, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isGuildVoiceChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
@@ -974,7 +979,7 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
 
 function openSelectedServerActionModal(): boolean {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
-  if (selected.kind !== "guild" && selected.kind !== "category" && selected.kind !== "channel") return false;
+  if (selected.kind !== "guild" && selected.kind !== "category" && selected.kind !== "channel" && selected.kind !== "voice-member") return false;
   if (selected.guildId === WHATSAPP_GUILD_ID) return false;
   state.navigationPendingKeys = "";
   state.sidebar.visualAnchor = null;
@@ -984,6 +989,24 @@ function openSelectedServerActionModal(): boolean {
     const guild = state.sidebar.guilds.find((candidate) => candidate.id === selected.guildId);
     if (!guild) return false;
     state.sidebar.serverActionModal = createServerActionModal(guild.id, guild.name, Boolean(guild.muted));
+  } else if (selected.kind === "voice-member") {
+    if (!selected.channelId || !selected.userId) return false;
+    const moderation = voiceMemberModerationContext(
+      state,
+      selected.guildId,
+      selected.channelId,
+      selected.userId,
+    );
+    state.sidebar.serverActionModal = createVoiceMemberActionModal({
+      guildId: selected.guildId,
+      channelId: selected.channelId,
+      userId: selected.userId,
+      displayName: selected.label,
+      muted: selected.self ? Boolean(selected.selfMuted) : Boolean(selected.localMuted),
+      streaming: canWatchVoiceMemberStream(state, selected.channelId, selected.userId),
+      watching: isWatchingVoiceMemberStream(selected.channelId, selected.userId),
+      ...moderation,
+    });
   } else {
     const channel = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, selected.guildId)
       .find((candidate) => candidate.id === selected.id);
@@ -1005,9 +1028,25 @@ function serverActionErrorMessage(error: unknown, fallback: string): string {
   return detail ? `${fallback}: ${detail}` : fallback;
 }
 
-function runServerModalAction(action: "copy_invite" | "toggle_mute" | "leave_server"): void {
+function runServerModalAction(action: ServerAction): void {
   const modal = state.sidebar.serverActionModal;
   if (!modal || modal.busy) return;
+
+  if (action === "toggle_mute" && modal.targetKind === "voice_member") {
+    state.sidebar.serverActionModal = null;
+    toggleVoiceMemberMute(state, { scheduleRender }, modal.targetId);
+    return;
+  }
+
+  if (action === "watch_stream" && modal.targetKind === "voice_member") {
+    state.sidebar.serverActionModal = null;
+    const streamKey = modal.guildId === DIRECT_MESSAGES_GUILD_ID
+      ? `call:${modal.channelId}:${modal.targetId}`
+      : `guild:${modal.guildId}:${modal.channelId}:${modal.targetId}`;
+    watchCurrentStream(state, { scheduleRender }, streamKey);
+    return;
+  }
+
   const token = tokenOrWarn();
   if (!token) return;
   modal.busy = true;
@@ -1044,6 +1083,57 @@ function runServerModalAction(action: "copy_invite" | "toggle_mute" | "leave_ser
     state.sidebar.serverActionModal = null;
     toggleSelectedGuildMute(state, { scheduleRender });
     return;
+  }
+
+  const failVoiceMemberAction = (error: unknown, fallback: string): void => {
+    if (state.sidebar.serverActionModal !== modal) return;
+    modal.busy = false;
+    modal.error = serverActionErrorMessage(error, fallback);
+    scheduleRender();
+  };
+
+  const finishVoiceMemberAction = (): void => {
+    if (state.sidebar.serverActionModal === modal) state.sidebar.serverActionModal = null;
+    scheduleRender();
+  };
+
+  if (modal.targetKind === "voice_member" && modal.channelId) {
+    if (action === "toggle_server_mute") {
+      const muted = !modal.serverMuted;
+      void setGuildMemberServerMute(token, modal.guildId, modal.targetId, muted).then(() => {
+        finishVoiceMemberAction();
+      }).catch((error) => failVoiceMemberAction(error, `Could Not ${muted ? "Server Mute" : "Server Unmute"}`));
+      return;
+    }
+
+    if (action === "toggle_server_deafen") {
+      const deafened = !modal.serverDeafened;
+      void setGuildMemberServerDeafen(token, modal.guildId, modal.targetId, deafened).then(() => {
+        finishVoiceMemberAction();
+      }).catch((error) => failVoiceMemberAction(error, `Could Not Server ${deafened ? "Deafen" : "Undeafen"}`));
+      return;
+    }
+
+    if (action === "kick_from_vc") {
+      void disconnectGuildMemberFromVoice(token, modal.guildId, modal.targetId).then(() => {
+        finishVoiceMemberAction();
+      }).catch((error) => failVoiceMemberAction(error, "Could Not Kick From VC"));
+      return;
+    }
+
+    if (action === "kick_from_server") {
+      void kickGuildMember(token, modal.guildId, modal.targetId).then(() => {
+        finishVoiceMemberAction();
+      }).catch((error) => failVoiceMemberAction(error, "Could Not Kick From Server"));
+      return;
+    }
+
+    if (action === "ban_from_server") {
+      void banGuildMember(token, modal.guildId, modal.targetId).then(() => {
+        finishVoiceMemberAction();
+      }).catch((error) => failVoiceMemberAction(error, "Could Not Ban From Server"));
+      return;
+    }
   }
 
   void leaveGuild(token, modal.guildId).then(() => {
@@ -1676,7 +1766,7 @@ const effects: AppEffects = {
   bootstrapSession,
   loginWhatsApp,
   logoutWhatsApp,
-  sendWhatsAppMessage: (content) => whatsAppController.sendText(content),
+  sendWhatsAppMessage: (content) => whatsAppController.sendMessage(content),
 };
 
 voiceMessageController = createVoiceMessageController(state, scheduleRender, {

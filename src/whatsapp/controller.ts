@@ -45,6 +45,7 @@ import type {
   WhatsAppConnectionState,
   WhatsAppLoginResult,
 } from "./types";
+import type { WhatsAppImageUpload } from "./worker-protocol";
 
 export interface WhatsAppBackendHandle {
   readonly state: WhatsAppConnectionState;
@@ -59,6 +60,13 @@ export interface WhatsAppBackendHandle {
     quoted?: import("./types").WhatsAppMessage,
     ephemeralExpirationSeconds?: number,
   ): Promise<import("./types").WhatsAppMessage>;
+  sendImages(
+    chatId: string,
+    images: WhatsAppImageUpload[],
+    caption: string,
+    quoted?: import("./types").WhatsAppMessage,
+    ephemeralExpirationSeconds?: number,
+  ): Promise<import("./types").WhatsAppMessage[]>;
   markRead(keys: import("./types").WhatsAppMessageKey[]): Promise<void>;
   on<K extends WhatsAppBackendEventName>(event: K, listener: WhatsAppBackendEventListener<K>): () => void;
 }
@@ -239,7 +247,7 @@ export class WhatsAppController {
     return true;
   }
 
-  sendText(content: string): boolean {
+  sendMessage(content: string): boolean {
     let channelId = this.state.channelList.activeChannelId ?? this.state.timeline.channelId;
     const decodedJid = channelId ? whatsappJidFromChannelId(channelId) : null;
     const jid = decodedJid ? canonicalWhatsAppJid(this.state.whatsapp, decodedJid) : null;
@@ -250,13 +258,8 @@ export class WhatsAppController {
       this.scheduleRender();
       return true;
     }
-    if (this.state.pendingImages.length > 0) {
-      setNotice(this.state, "WhatsApp image sending is not wired yet; remove the pending image or use text for now.", "warning", { statusLine: false, chat: true });
-      this.scheduleRender();
-      return true;
-    }
-
     const text = content;
+    const pendingImages = this.state.pendingImages.slice();
     const localMessageId = `local:wa:${Date.now()}:${Math.random().toString(36).slice(2)}`;
     const replyTarget = this.state.replyTarget?.channelId === channelId ? this.state.replyTarget : null;
     const storedReply = replyTarget
@@ -289,13 +292,20 @@ export class WhatsAppController {
         summary: replyTarget.summary,
       } : null,
       call: null,
-      attachments: [],
+      attachments: pendingImages.map((image, index) => ({
+        id: `${localMessageId}:image:${index}`,
+        filename: image.filename ?? `image-${index + 1}`,
+        contentType: image.mediaType,
+        size: image.sizeBytes,
+        url: "",
+      })),
       stickerNames: [],
       embedsCount: 0,
       localStatus: "pending" as const,
     };
 
     clearPrompt(this.state);
+    this.state.pendingImages = [];
     this.state.replyTarget = null;
     setNotice(this.state, "", "muted");
     appendTimelineMessage(this.state.timeline, localMessage);
@@ -303,16 +313,22 @@ export class WhatsAppController {
     this.scheduleRender();
 
     const ephemeralExpirationSeconds = this.state.whatsapp.chatsById[jid]?.ephemeralExpirationSeconds;
-    void this.backend.sendText(jid, text, storedReply ?? undefined, ephemeralExpirationSeconds).then((sent) => {
-      upsertWhatsAppMessages(this.state.whatsapp, [sent]);
-      const mapped = whatsAppMessageToTimeline(this.state.whatsapp, sent);
-      replaceTimelineMessage(this.state.timeline, localMessageId, mapped);
+    const send = pendingImages.length > 0
+      ? this.backend.sendImages(jid, pendingImages, text, storedReply ?? undefined, ephemeralExpirationSeconds)
+      : this.backend.sendText(jid, text, storedReply ?? undefined, ephemeralExpirationSeconds).then((sent) => [sent]);
+    void send.then((sentMessages) => {
+      if (sentMessages.length === 0) throw new Error("WhatsApp did not return the sent message.");
+      upsertWhatsAppMessages(this.state.whatsapp, sentMessages);
+      const mapped = sentMessages.map((sent) => whatsAppMessageToTimeline(this.state.whatsapp, sent));
+      replaceTimelineMessage(this.state.timeline, localMessageId, mapped[0]);
+      for (const message of mapped.slice(1)) appendTimelineMessage(this.state.timeline, message);
       this.queueCacheSave();
       this.syncProviderState();
     }).catch((error) => {
       const message = safeErrorMessage(error);
       markTimelineMessageFailed(this.state.timeline, localMessageId, message);
       this.state.replyTarget = replyTarget;
+      this.state.pendingImages = pendingImages;
       this.state.editor.buffer = text;
       this.state.editor.cursor = text.length;
       setNotice(this.state, `WhatsApp send failed: ${message}`, "warning", { statusLine: false, chat: true });
