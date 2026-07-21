@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
+import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
 import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
@@ -111,6 +111,10 @@ describe("session", () => {
     state.memberList.channelId = "channel-1";
     state.memberList.members = [{ id: "user-1", username: "user", displayName: "User", bot: false }];
     state.memberList.requestId = 13;
+    const whatsAppChannel = whatsappChannelId("person@s.whatsapp.net");
+    state.notifications.byChannelId[whatsAppChannel] = 2;
+    // Prefix detection must preserve this even if a concurrent provider event
+    // has not populated channelGuildIds yet.
 
     clearReadOnlyClient(state);
 
@@ -124,6 +128,8 @@ describe("session", () => {
     expect(state.channelList.requestId).toBe(8);
     expect(state.timeline.requestId).toBe(12);
     expect(state.memberList.requestId).toBe(14);
+    expect(state.notifications.byChannelId[whatsAppChannel]).toBe(2);
+    expect(state.notifications.channelGuildIds[whatsAppChannel]).toBe(WHATSAPP_GUILD_ID);
   });
 
   test("bootstrap shows direct messages before DM channel data has loaded", async () => {

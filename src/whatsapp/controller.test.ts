@@ -23,6 +23,10 @@ class FakeBackend implements WhatsAppBackendHandle {
   sentTexts: string[] = [];
   sentImageBatches: Array<{ caption: string; count: number }> = [];
   sentExpirations: Array<number | undefined> = [];
+  historyRequests: Array<{ count: number; oldestId: string; oldestTimestampMs: number }> = [];
+  readMessageIds: string[] = [];
+  muteRequests: Array<{ chatId: string; muted: boolean }> = [];
+  muteError: Error | null = null;
   private resolveLogin: ((result: WhatsAppLoginResult) => void) | null = null;
   private readonly listeners = new Map<WhatsAppBackendEventName, Set<(event: unknown) => void>>();
 
@@ -87,7 +91,23 @@ class FakeBackend implements WhatsAppBackendHandle {
     }));
   }
 
-  async markRead(): Promise<void> {
+  async markRead(keys: import("./types").WhatsAppMessageKey[]): Promise<void> {
+    this.readMessageIds.push(...keys.map((key) => key.id));
+  }
+
+  async fetchHistory(
+    count: number,
+    oldestKey: import("./types").WhatsAppMessageKey,
+    oldestTimestampMs: number,
+  ): Promise<string> {
+    this.historyRequests.push({ count, oldestId: oldestKey.id, oldestTimestampMs });
+    return `history-${this.historyRequests.length}`;
+  }
+
+  async setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult> {
+    this.muteRequests.push({ chatId, muted });
+    if (this.muteError) throw this.muteError;
+    return { mutedUntilMs: muted ? Date.now() + 7 * 24 * 60 * 60 * 1_000 : null };
   }
 
   on<K extends WhatsAppBackendEventName>(event: K, listener: WhatsAppBackendEventListener<K>): () => void {
@@ -122,7 +142,7 @@ class DelayedShutdownBackend extends FakeBackend {
   }
 }
 
-function fixture() {
+function fixture(options: { historyPageDelayMs?: number; historyRequestTimeoutMs?: number } = {}) {
   const state = createInitialState(null, "/tmp/config.json");
   const backend = new FakeBackend();
   let renders = 0;
@@ -131,15 +151,18 @@ function fixture() {
     backendFactory: () => backend,
     authDirectory,
     successModalDelayMs: 0,
+    historyPageDelayMs: options.historyPageDelayMs ?? 0,
+    historyRequestTimeoutMs: options.historyRequestTimeoutMs ?? 1_000,
   });
   return { state, backend, controller, renders: () => renders };
 }
 
 describe("WhatsApp controller", () => {
-  test("drives the QR modal from backend events and cancels without Discord auth", () => {
+  test("drives the QR modal from backend events and cancels without Discord auth", async () => {
     const { state, backend, controller, renders } = fixture();
 
     controller.login();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(backend.started).toBe(1);
     expect(state.whatsapp.loginModal?.phase).toBe("starting");
 
@@ -211,6 +234,122 @@ describe("WhatsApp controller", () => {
     expect(state.timeline.messages.at(-1)).toMatchObject({ id: "sent-1", content: "hello" });
   });
 
+  test("keeps the draft and shows status-line feedback while reconnecting", () => {
+    const { state, backend, controller } = fixture();
+    const jid = "15551234567@s.whatsapp.net";
+    backend.emit("chats", { kind: "upsert", chats: [{ id: jid, kind: "direct", name: "Mom" }] });
+    backend.emit("state", {
+      status: "reconnecting",
+      attempt: 3,
+      delayMs: 1_000,
+      disconnect: { code: 428, name: "connectionClosed" },
+    });
+    controller.openRoot();
+    controller.openChannel(whatsappChannelId(jid));
+    state.editor.buffer = "please send this";
+    state.editor.cursor = state.editor.buffer.length;
+
+    expect(controller.sendMessage(state.editor.buffer)).toBe(true);
+
+    expect(state.editor.buffer).toBe("please send this");
+    expect(state.timeline.messages).toHaveLength(0);
+    expect(state.notice).toMatchObject({
+      text: "WhatsApp is reconnecting (attempt 3); your draft was not sent.",
+      tone: "warning",
+      statusLine: true,
+      chat: false,
+    });
+  });
+
+  test("shows background WhatsApp connection state in the status line", () => {
+    const { state, backend } = fixture();
+    backend.emit("state", {
+      status: "reconnecting",
+      attempt: 2,
+      delayMs: 4_200,
+      disconnect: { code: 428, name: "connectionClosed" },
+    });
+    expect(state.notice).toMatchObject({
+      text: "WhatsApp reconnecting in 5s…",
+      loading: true,
+      statusLine: true,
+      chat: false,
+    });
+
+    backend.emit("state", {
+      status: "connected",
+      resumed: true,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net" },
+    });
+    expect(state.notice.text).toBe("");
+
+    backend.emit("state", { status: "failed", error: new Error("stream closed") });
+    expect(state.notice).toMatchObject({
+      text: "WhatsApp connection failed: stream closed",
+      tone: "error",
+      statusLine: true,
+      chat: false,
+    });
+  });
+
+  test("mutes and unmutes a WhatsApp chat optimistically", async () => {
+    const { state, backend, controller } = fixture();
+    const jid = "15551234567@s.whatsapp.net";
+    const channelId = whatsappChannelId(jid);
+    backend.emit("state", {
+      status: "connected",
+      resumed: true,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net" },
+    });
+    backend.emit("chats", { kind: "upsert", chats: [{ id: jid, kind: "direct", name: "Mom" }] });
+    state.notifications.byChannelId[channelId] = 3;
+    state.notifications.channelGuildIds[channelId] = WHATSAPP_GUILD_ID;
+
+    expect(controller.toggleChatMute(channelId)).toBe(true);
+    expect(state.whatsapp.chatsById[jid]?.mutedUntilMs).toBeGreaterThan(Date.now());
+    expect(state.notifications.byChannelId[channelId]).toBeUndefined();
+    expect(state.sidebar.cachedChannelsByGuildId[WHATSAPP_GUILD_ID]?.[0]?.muted).toBe(true);
+    await Promise.resolve();
+    expect(backend.muteRequests).toEqual([{ chatId: jid, muted: true }]);
+
+    expect(controller.toggleChatMute(channelId)).toBe(true);
+    expect(state.whatsapp.chatsById[jid]?.mutedUntilMs).toBeNull();
+    await Promise.resolve();
+    expect(backend.muteRequests).toEqual([
+      { chatId: jid, muted: true },
+      { chatId: jid, muted: false },
+    ]);
+  });
+
+  test("rolls back a failed WhatsApp mute and reports it in the status line", async () => {
+    const { state, backend, controller } = fixture();
+    const jid = "15551234567@s.whatsapp.net";
+    const channelId = whatsappChannelId(jid);
+    backend.emit("state", {
+      status: "connected",
+      resumed: true,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net" },
+    });
+    backend.emit("chats", { kind: "upsert", chats: [{ id: jid, kind: "direct", name: "Mom" }] });
+    backend.muteError = new Error("app-state rejected");
+
+    expect(controller.toggleChatMute(channelId)).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(state.whatsapp.chatsById[jid]?.mutedUntilMs).toBeUndefined();
+    expect(state.sidebar.cachedChannelsByGuildId[WHATSAPP_GUILD_ID]?.[0]?.muted).toBe(false);
+    expect(state.notice).toMatchObject({
+      text: "Failed to mute Mom: app-state rejected",
+      tone: "error",
+      statusLine: true,
+      chat: false,
+    });
+  });
+
   test("sends pasted WhatsApp images with text and optimistic attachments", async () => {
     const { state, backend, controller } = fixture();
     const jid = "15551234567@s.whatsapp.net";
@@ -251,6 +390,7 @@ describe("WhatsApp controller", () => {
     const { state, backend } = fixture();
     const jid = "15551234567@s.whatsapp.net";
     backend.emit("chats", { kind: "upsert", chats: [{ id: jid, kind: "direct", name: "Mom", unreadCount: 0 }] });
+    backend.emit("chats", { kind: "update", chats: [{ id: jid, kind: "direct", unreadCount: 1 }] });
     backend.emit("messages", {
       kind: "upsert",
       upsertType: "notify",
@@ -267,6 +407,262 @@ describe("WhatsApp controller", () => {
     });
 
     expect(state.notifications.byChannelId[whatsappChannelId(jid)]).toBe(1);
+    expect(state.whatsapp.chatsById[jid]?.unreadCount).toBe(1);
+  });
+
+  test("keeps an open chat read across stale unread-count updates and new messages", () => {
+    const { state, backend, controller } = fixture();
+    const jid = "15551234567@s.whatsapp.net";
+    backend.emit("state", {
+      status: "connected",
+      resumed: true,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net" },
+    });
+    backend.emit("history", {
+      chats: [{ id: jid, kind: "direct", name: "Mom", unreadCount: 2 }],
+      contacts: [],
+      messages: [{
+        key: { id: "existing", chatId: jid, fromMe: false },
+        id: "existing",
+        chatId: jid,
+        senderId: jid,
+        fromMe: false,
+        timestampMs: 10,
+        content: { kind: "text", text: "existing" },
+      }],
+      skippedMessages: 0,
+      syncKind: "recent",
+    });
+    controller.openRoot();
+    controller.openChannel(whatsappChannelId(jid));
+    expect(state.whatsapp.chatsById[jid]?.unreadCount).toBe(0);
+    expect(state.notifications.byChannelId[whatsappChannelId(jid)]).toBeUndefined();
+
+    backend.emit("chats", { kind: "update", chats: [{ id: jid, kind: "direct", unreadCount: 2 }] });
+    expect(state.whatsapp.chatsById[jid]?.unreadCount).toBe(0);
+    expect(state.notifications.byChannelId[whatsappChannelId(jid)]).toBeUndefined();
+
+    backend.emit("messages", {
+      kind: "upsert",
+      upsertType: "notify",
+      skippedMessages: 0,
+      messages: [{
+        key: { id: "new", chatId: jid, fromMe: false },
+        id: "new",
+        chatId: jid,
+        senderId: jid,
+        fromMe: false,
+        timestampMs: 20,
+        content: { kind: "text", text: "new" },
+      }],
+    });
+    expect(state.notifications.byChannelId[whatsappChannelId(jid)]).toBeUndefined();
+    expect(backend.readMessageIds).toContain("new");
+  });
+
+  test("requests and displays older WhatsApp history when opening a sparse chat", async () => {
+    const { state, backend, controller } = fixture();
+    const jid = "group@g.us";
+    backend.emit("state", {
+      status: "connected",
+      resumed: true,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net" },
+    });
+    backend.emit("history", {
+      chats: [{ id: jid, kind: "group", name: "Family" }],
+      contacts: [],
+      messages: [{
+        key: { id: "preview", chatId: jid, fromMe: true },
+        id: "preview",
+        chatId: jid,
+        senderId: "self@s.whatsapp.net",
+        fromMe: true,
+        timestampMs: 1,
+        content: { kind: "text", text: "old preview" },
+      }, {
+        key: { id: "recent", chatId: jid, fromMe: false, participantId: "person@s.whatsapp.net" },
+        id: "recent",
+        chatId: jid,
+        senderId: "person@s.whatsapp.net",
+        fromMe: false,
+        timestampMs: 10 * 24 * 60 * 60 * 1_000,
+        content: { kind: "text", text: "recent" },
+      }],
+      skippedMessages: 0,
+      syncKind: "recent",
+    });
+    controller.openRoot();
+    controller.openChannel(whatsappChannelId(jid));
+    await Promise.resolve();
+    expect(backend.historyRequests).toEqual([{
+      count: 50,
+      oldestId: "recent",
+      oldestTimestampMs: 10 * 24 * 60 * 60 * 1_000,
+    }]);
+
+    backend.emit("history", {
+      chats: [],
+      contacts: [],
+      messages: [{
+        key: { id: "older", chatId: jid, fromMe: false, participantId: "person@s.whatsapp.net" },
+        id: "older",
+        chatId: jid,
+        senderId: "person@s.whatsapp.net",
+        fromMe: false,
+        timestampMs: 9 * 24 * 60 * 60 * 1_000,
+        content: { kind: "text", text: "older" },
+      }],
+      skippedMessages: 0,
+      syncKind: "on-demand",
+      requestId: "history-1",
+    });
+    expect(state.timeline.messages.map((message) => message.id)).toEqual(["preview", "older", "recent"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(backend.historyRequests.at(-1)).toEqual({
+      count: 50,
+      oldestId: "older",
+      oldestTimestampMs: 9 * 24 * 60 * 60 * 1_000,
+    });
+  });
+
+  test("keeps conversation order stable when focusing triggers stale on-demand metadata", async () => {
+    const { state, backend, controller } = fixture();
+    const focusedJid = "focused@s.whatsapp.net";
+    const otherJid = "other@s.whatsapp.net";
+    backend.emit("state", {
+      status: "connected",
+      resumed: true,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net" },
+    });
+    backend.emit("history", {
+      chats: [
+        { id: focusedJid, kind: "direct", name: "Focused", lastMessageAtMs: 300 },
+        { id: otherJid, kind: "direct", name: "Other", lastMessageAtMs: 200 },
+      ],
+      contacts: [],
+      messages: [
+        {
+          key: { id: "focused-recent", chatId: focusedJid, fromMe: false },
+          id: "focused-recent",
+          chatId: focusedJid,
+          senderId: focusedJid,
+          fromMe: false,
+          timestampMs: 300,
+          content: { kind: "text", text: "recent" },
+        },
+        {
+          key: { id: "other-recent", chatId: otherJid, fromMe: false },
+          id: "other-recent",
+          chatId: otherJid,
+          senderId: otherJid,
+          fromMe: false,
+          timestampMs: 200,
+          content: { kind: "text", text: "other" },
+        },
+      ],
+      skippedMessages: 0,
+      syncKind: "recent",
+    });
+    controller.openRoot();
+    expect(state.channelList.channels.map((channel) => channel.name)).toEqual(["Focused", "Other"]);
+    controller.openChannel(whatsappChannelId(focusedJid));
+    await Promise.resolve();
+
+    backend.emit("history", {
+      chats: [{ id: focusedJid, kind: "direct", lastMessageAtMs: 100 }],
+      contacts: [],
+      messages: [{
+        key: { id: "focused-old", chatId: focusedJid, fromMe: false },
+        id: "focused-old",
+        chatId: focusedJid,
+        senderId: focusedJid,
+        fromMe: false,
+        timestampMs: 100,
+        content: { kind: "text", text: "old" },
+      }],
+      skippedMessages: 0,
+      syncKind: "on-demand",
+      requestId: "history-1",
+    });
+
+    expect(state.whatsapp.chatsById[focusedJid]?.lastMessageAtMs).toBe(300);
+    expect(state.channelList.channels.map((channel) => channel.name)).toEqual(["Focused", "Other"]);
+  });
+
+  test("does not let a late timed-out history page complete its retry", async () => {
+    const { backend, controller } = fixture({ historyRequestTimeoutMs: 5 });
+    const jid = "group@g.us";
+    backend.emit("state", {
+      status: "connected",
+      resumed: true,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net" },
+    });
+    backend.emit("history", {
+      chats: [{ id: jid, kind: "group", name: "Family" }],
+      contacts: [],
+      messages: [{
+        key: { id: "recent", chatId: jid, fromMe: false, participantId: "person@s.whatsapp.net" },
+        id: "recent",
+        chatId: jid,
+        senderId: "person@s.whatsapp.net",
+        fromMe: false,
+        timestampMs: 30_000,
+        content: { kind: "text", text: "recent" },
+      }],
+      skippedMessages: 0,
+      syncKind: "recent",
+    });
+    controller.openRoot();
+    controller.openChannel(whatsappChannelId(jid));
+    await Promise.resolve();
+    expect(backend.historyRequests).toHaveLength(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.openChannel(whatsappChannelId(jid));
+    await Promise.resolve();
+    expect(backend.historyRequests).toHaveLength(2);
+
+    backend.emit("history", {
+      chats: [],
+      contacts: [],
+      messages: [{
+        key: { id: "late", chatId: jid, fromMe: false, participantId: "person@s.whatsapp.net" },
+        id: "late",
+        chatId: jid,
+        senderId: "person@s.whatsapp.net",
+        fromMe: false,
+        timestampMs: 20_000,
+        content: { kind: "text", text: "late first page" },
+      }],
+      skippedMessages: 0,
+      syncKind: "on-demand",
+      requestId: "history-1",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(backend.historyRequests).toHaveLength(2);
+
+    backend.emit("history", {
+      chats: [],
+      contacts: [],
+      messages: [{
+        key: { id: "retry", chatId: jid, fromMe: false, participantId: "person@s.whatsapp.net" },
+        id: "retry",
+        chatId: jid,
+        senderId: "person@s.whatsapp.net",
+        fromMe: false,
+        timestampMs: 10_000,
+        content: { kind: "text", text: "retry page" },
+      }],
+      skippedMessages: 0,
+      syncKind: "on-demand",
+      requestId: "history-2",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(backend.historyRequests).toHaveLength(3);
   });
 
   test("routes a new LID message into the existing phone-JID chat", () => {
@@ -279,6 +675,12 @@ describe("WhatsApp controller", () => {
     });
     controller.openRoot();
     controller.openChannel(whatsappChannelId(phoneId));
+
+    backend.emit("chats", {
+      kind: "update",
+      chats: [{ id: lid, kind: "direct", unreadCount: 1 }],
+    });
+    expect(state.notifications.byChannelId[whatsappChannelId(lid)]).toBe(1);
 
     backend.emit("messages", {
       kind: "upsert",
@@ -301,6 +703,42 @@ describe("WhatsApp controller", () => {
     expect(state.channelList.channels.filter((channel) => channel.name === "Mom")).toHaveLength(1);
     expect(state.timeline.channelId).toBe(whatsappChannelId(phoneId));
     expect(state.timeline.messages.at(-1)?.id).toBe("incoming-lid");
+    expect(state.notifications.byChannelId[whatsappChannelId(phoneId)]).toBeUndefined();
+    expect(state.notifications.byChannelId[whatsappChannelId(lid)]).toBeUndefined();
+  });
+
+  test("adds a new LID unread delta to the existing phone-JID unread total", () => {
+    const { state, backend } = fixture();
+    const phoneId = "15551234567@s.whatsapp.net";
+    const lid = "opaque-person@lid";
+    backend.emit("chats", {
+      kind: "upsert",
+      chats: [{ id: phoneId, kind: "direct", name: "Mom", unreadCount: 5 }],
+    });
+    backend.emit("chats", {
+      kind: "update",
+      chats: [{ id: lid, kind: "direct", unreadCount: 1 }],
+    });
+    backend.emit("messages", {
+      kind: "upsert",
+      upsertType: "notify",
+      skippedMessages: 0,
+      messages: [{
+        key: { id: "incoming-lid", chatId: lid, alternateChatId: phoneId },
+        id: "incoming-lid",
+        chatId: lid,
+        senderId: lid,
+        senderName: "Mom",
+        fromMe: false,
+        timestampMs: 20,
+        content: { kind: "text", text: "hello" },
+      }],
+    });
+
+    expect(state.whatsapp.chatsById[lid]).toBeUndefined();
+    expect(state.whatsapp.chatsById[phoneId]?.unreadCount).toBe(6);
+    expect(state.notifications.byChannelId[whatsappChannelId(phoneId)]).toBe(6);
+    expect(state.notifications.byChannelId[whatsappChannelId(lid)]).toBeUndefined();
   });
 
   test("applies edits in place without adding unread notifications", () => {

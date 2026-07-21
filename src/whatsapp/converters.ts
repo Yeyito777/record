@@ -19,6 +19,8 @@ import type {
   WhatsAppMessage,
   WhatsAppMessageContent,
   WhatsAppMessageKey,
+  WhatsAppReactionEvent,
+  WhatsAppTextContent,
 } from "./types";
 
 function finiteNumber(value: unknown): number | undefined {
@@ -32,6 +34,18 @@ function epochMilliseconds(value: unknown): number | undefined {
   if (number === undefined) return undefined;
   // WhatsApp fields are not fully consistent: normalize seconds and millis.
   return Math.abs(number) < 100_000_000_000 ? number * 1_000 : number;
+}
+
+function muteEndMilliseconds(value: unknown): number | null | undefined {
+  const number = finiteNumber(value);
+  if (number === undefined) return undefined;
+  if (number <= 0) return null;
+  // Baileys emits our own documented 8-hour/7-day chatModify values as a
+  // duration, while synchronized WhatsApp snapshots use an epoch timestamp.
+  const MAX_DOCUMENTED_MUTE_DURATION_MS = 7 * 24 * 60 * 60 * 1_000;
+  return number <= MAX_DOCUMENTED_MUTE_DURATION_MS
+    ? Date.now() + number
+    : epochMilliseconds(number);
 }
 
 function chatKind(id: string): WhatsAppChatKind {
@@ -70,6 +84,14 @@ function contextInfoFor(message: proto.IMessage): proto.IContextInfo | undefined
     message.audioMessage?.contextInfo ??
     message.documentMessage?.contextInfo ??
     message.stickerMessage?.contextInfo ??
+    message.ptvMessage?.contextInfo ??
+    message.contactMessage?.contextInfo ??
+    message.contactsArrayMessage?.contextInfo ??
+    message.locationMessage?.contextInfo ??
+    message.liveLocationMessage?.contextInfo ??
+    message.buttonsMessage?.contextInfo ??
+    message.buttonsResponseMessage?.contextInfo ??
+    message.interactiveMessage?.contextInfo ??
     undefined;
 }
 
@@ -153,6 +175,30 @@ function mediaContent(
   return content;
 }
 
+function normalizedRecordContent(content: proto.IMessage | null | undefined): proto.IMessage | undefined {
+  let message = normalizeMessageContent(content);
+  for (let index = 0; message && index < 5; index++) {
+    const wrapped = message.associatedChildMessage?.message ?? message.lottieStickerMessage?.message;
+    if (!wrapped) break;
+    message = normalizeMessageContent(wrapped);
+  }
+  return message;
+}
+
+function usefulText(parts: Array<string | null | undefined>, fallback: string): WhatsAppTextContent {
+  const text = parts.map((part) => part?.trim()).filter(Boolean).join("\n");
+  return { kind: "text", text: text || fallback };
+}
+
+function locationText(location: proto.Message.ILocationMessage): WhatsAppTextContent {
+  const latitude = finiteNumber(location.degreesLatitude);
+  const longitude = finiteNumber(location.degreesLongitude);
+  const mapUrl = latitude !== undefined && longitude !== undefined
+    ? `https://maps.google.com/?q=${latitude},${longitude}`
+    : undefined;
+  return usefulText(["[Location]", location.name, location.address, location.url, mapUrl], "[Location]");
+}
+
 function contentFor(message: proto.IMessage): WhatsAppMessageContent {
   if (message.conversation != null) {
     return { kind: "text", text: message.conversation };
@@ -165,7 +211,48 @@ function contentFor(message: proto.IMessage): WhatsAppMessageContent {
   if (message.audioMessage) return mediaContent("audio", message.audioMessage);
   if (message.documentMessage) return mediaContent("document", message.documentMessage);
   if (message.stickerMessage) return mediaContent("sticker", message.stickerMessage);
-  return { kind: "unsupported", sourceType: getContentType(message) };
+  if (message.ptvMessage) return mediaContent("video", message.ptvMessage);
+  if (message.contactMessage) return usefulText([
+    `[Contact] ${message.contactMessage.displayName ?? ""}`,
+  ], "[Contact]");
+  if (message.contactsArrayMessage) {
+    return usefulText([
+      `[Contacts] ${message.contactsArrayMessage.displayName ?? ""}`,
+      ...(message.contactsArrayMessage.contacts ?? []).map((contact) => contact.displayName),
+    ], "[Contacts]");
+  }
+  if (message.locationMessage) return locationText(message.locationMessage);
+  if (message.liveLocationMessage) return locationText(message.liveLocationMessage);
+  if (message.buttonsMessage) {
+    return usefulText([message.buttonsMessage.contentText, message.buttonsMessage.footerText], "[Interactive message]");
+  }
+  if (message.buttonsResponseMessage) {
+    return usefulText([
+      message.buttonsResponseMessage.selectedDisplayText,
+      message.buttonsResponseMessage.selectedButtonId,
+    ], "[Button response]");
+  }
+  if (message.interactiveMessage) {
+    return usefulText([
+      message.interactiveMessage.header?.title,
+      message.interactiveMessage.header?.subtitle,
+      message.interactiveMessage.body?.text,
+      message.interactiveMessage.footer?.text,
+    ], "[Interactive message]");
+  }
+  const poll = message.pollCreationMessage ?? message.pollCreationMessageV2 ?? message.pollCreationMessageV3;
+  if (poll) {
+    return usefulText([
+      `[Poll] ${poll.name ?? ""}`,
+      ...(poll.options ?? []).map((option) => option.optionName ? `• ${option.optionName}` : undefined),
+    ], "[Poll]");
+  }
+  const sourceFields = Object.entries(message).filter(([, value]) => value != null).map(([key]) => key);
+  return {
+    kind: "unsupported",
+    sourceType: getContentType(message) ?? sourceFields[0] ?? "unknown",
+    sourceFields,
+  };
 }
 
 export function toWhatsAppMessage(
@@ -173,11 +260,11 @@ export function toWhatsAppMessage(
   options: WhatsAppMessageConversionOptions = {},
 ): WhatsAppMessage | null {
   const key = message.key ? toWhatsAppMessageKey(message.key as WAMessageKey) : null;
-  const normalized = normalizeMessageContent(message.message);
+  const normalized = normalizedRecordContent(message.message);
   if (!key || !normalized) return null;
   // A disappearing-message toggle updates chat state; it is not a timeline
   // message. The backend forwards it separately as a WhatsAppChat patch.
-  if (normalized.protocolMessage) return null;
+  if (normalized.protocolMessage || normalized.reactionMessage || normalized.albumMessage || normalized.secretEncryptedMessage) return null;
 
   const participant = message.key?.participant || (message.key as WAMessageKey | undefined)?.participantAlt;
   const fromMe = Boolean(message.key?.fromMe);
@@ -197,7 +284,36 @@ export function toWhatsAppMessage(
   if (message.pushName) result.senderName = message.pushName;
   const replyTo = replyKeyFor(normalized, key.chatId);
   if (replyTo) result.replyTo = replyTo;
+  const reactions = new Map<string, NonNullable<WhatsAppMessage["reactions"]>[number]>();
+  for (const reaction of message.reactions ?? []) {
+    const converted = toWhatsAppReactionEvent(message.key, reaction, options.selfId)?.reaction;
+    if (!converted) continue;
+    if (converted.emoji) reactions.set(converted.senderId, converted);
+    else reactions.delete(converted.senderId);
+  }
+  if (reactions.size > 0) result.reactions = [...reactions.values()];
   return result;
+}
+
+export function toWhatsAppReactionEvent(
+  targetKey: WAMessageKey | proto.IMessageKey | null | undefined,
+  reaction: proto.IReaction | proto.Message.IReactionMessage | null | undefined,
+  selfId?: string,
+): WhatsAppReactionEvent | null {
+  const target = targetKey ? toWhatsAppMessageKey(targetKey) : null;
+  const source = reaction?.key ? toWhatsAppMessageKey(reaction.key) : null;
+  if (!target || !source) return null;
+  const fromMe = Boolean(source.fromMe);
+  const senderId = source.participantId ?? (fromMe ? selfId : target.chatId);
+  if (!senderId) return null;
+  return {
+    target,
+    reaction: {
+      senderId,
+      fromMe,
+      emoji: reaction?.text ?? "",
+    },
+  };
 }
 
 /** Converts content-bearing Baileys patches, including message edits. */
@@ -234,8 +350,7 @@ export function toWhatsAppChat(chat: Chat | ChatUpdate): WhatsAppChat | null {
     result.ephemeralExpirationSeconds = chat.ephemeralExpiration;
   }
   if (chat.muteEndTime != null) {
-    const mute = finiteNumber(chat.muteEndTime);
-    result.mutedUntilMs = mute && mute > 0 ? epochMilliseconds(mute) ?? null : null;
+    result.mutedUntilMs = muteEndMilliseconds(chat.muteEndTime);
   }
   return result;
 }

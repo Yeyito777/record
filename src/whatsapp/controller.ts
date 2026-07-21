@@ -6,7 +6,6 @@ import { clearChannelList, setActiveChannelEntry, setChannelList } from "../chan
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME } from "../discord";
 import {
   clearChannelNotifications,
-  recordChannelNotification,
   setChannelNotificationCount,
 } from "../notifications";
 import { setSidebarCachedChannels, setSidebarGuilds, sidebarCachedGuilds } from "../sidebar";
@@ -17,16 +16,21 @@ import { markTimelineMessageFailed, replaceTimelineMessage } from "../timeline";
 import { clearPrompt } from "../promptstate";
 import {
   beginWhatsAppLoginUi,
+  applyWhatsAppReactions,
   canonicalWhatsAppJid,
+  MAX_WHATSAPP_MESSAGES_PER_CHAT,
   registerWhatsAppLidMapping,
   resetWhatsAppUiState,
   upsertWhatsAppChats,
   upsertWhatsAppContacts,
   upsertWhatsAppMessages,
+  updateWhatsAppChats,
   whatsAppChannels,
+  whatsAppDisplayName,
   whatsAppMessageToTimeline,
   whatsAppTimelineMessages,
 } from "./integration";
+import { WHATSAPP_CHAT_MUTE_DURATION_MS } from "./worker-protocol";
 import { setLoginModalPhase } from "./loginmodal";
 import { getRecordWhatsAppPaths } from "./paths";
 import { sanitizeTerminalLabel } from "./sanitize";
@@ -68,6 +72,12 @@ export interface WhatsAppBackendHandle {
     ephemeralExpirationSeconds?: number,
   ): Promise<import("./types").WhatsAppMessage[]>;
   markRead(keys: import("./types").WhatsAppMessageKey[]): Promise<void>;
+  fetchHistory(
+    count: number,
+    oldestKey: import("./types").WhatsAppMessageKey,
+    oldestTimestampMs: number,
+  ): Promise<string>;
+  setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult>;
   on<K extends WhatsAppBackendEventName>(event: K, listener: WhatsAppBackendEventListener<K>): () => void;
 }
 
@@ -77,10 +87,21 @@ export interface WhatsAppControllerOptions {
   cacheFile?: string;
   cacheSaveDelayMs?: number;
   successModalDelayMs?: number;
+  historyPageDelayMs?: number;
+  historyRequestTimeoutMs?: number;
 }
 
 const DEFAULT_SUCCESS_MODAL_DELAY_MS = 900;
 const DEFAULT_CACHE_SAVE_DELAY_MS = 250;
+const DEFAULT_HISTORY_PAGE_DELAY_MS = 250;
+const DEFAULT_HISTORY_REQUEST_TIMEOUT_MS = 20_000;
+const HISTORY_GAP_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
+
+interface PendingHistoryRequest {
+  anchorId: string;
+  requestId: string | null;
+  timeout: ReturnType<typeof setTimeout>;
+}
 
 function safeErrorMessage(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error || "Unknown error");
@@ -100,8 +121,11 @@ export class WhatsAppController {
   private readonly backendFactory: () => WhatsAppBackendHandle;
   private readonly authDirectory: string;
   private readonly cacheFile: string;
+  private readonly cacheReady: Promise<void>;
   private readonly cacheSaveDelayMs: number;
   private readonly successModalDelayMs: number;
+  private readonly historyPageDelayMs: number;
+  private readonly historyRequestTimeoutMs: number;
   private readonly unsubscribers: Array<() => void> = [];
   private successModalTimer: ReturnType<typeof setTimeout> | null = null;
   private loginStartedWithSavedAuth = false;
@@ -110,6 +134,11 @@ export class WhatsAppController {
   private cacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private cacheWrites: Promise<void> = Promise.resolve();
   private cacheEnabled = true;
+  private restoreScheduled = false;
+  private historyRequestGeneration = 0;
+  private readonly pendingHistoryByChatId = new Map<string, PendingHistoryRequest>();
+  private muteRequestSequence = 0;
+  private readonly muteRequestIdByChatId = new Map<string, number>();
 
   constructor(
     private readonly state: AppState,
@@ -120,11 +149,13 @@ export class WhatsAppController {
     this.cacheFile = options.cacheFile ?? join(dirname(this.authDirectory), "cache.json");
     this.cacheSaveDelayMs = options.cacheSaveDelayMs ?? DEFAULT_CACHE_SAVE_DELAY_MS;
     this.successModalDelayMs = options.successModalDelayMs ?? DEFAULT_SUCCESS_MODAL_DELAY_MS;
+    this.historyPageDelayMs = options.historyPageDelayMs ?? DEFAULT_HISTORY_PAGE_DELAY_MS;
+    this.historyRequestTimeoutMs = options.historyRequestTimeoutMs ?? DEFAULT_HISTORY_REQUEST_TIMEOUT_MS;
     this.backendFactory = options.backendFactory ?? (() => createNodeWhatsAppBackendClient({ authDirectory: this.authDirectory }));
     this.backend = this.backendFactory();
     this.bindBackend();
     ensureWhatsAppRoot(this.state);
-    void this.loadCachedState();
+    this.cacheReady = this.loadCachedState();
   }
 
   get isConnected(): boolean {
@@ -136,9 +167,14 @@ export class WhatsAppController {
   }
 
   restoreSavedSession(): void {
-    if (!this.hasStoredAuth || this.backend.isConnected) return;
-    this.loginStartedWithSavedAuth = true;
-    void this.backend.startLogin().catch((error) => this.handleStartFailure(error, false));
+    if (!this.hasStoredAuth || this.backend.isConnected || this.restoreScheduled) return;
+    this.restoreScheduled = true;
+    void this.cacheReady.then(() => {
+      this.restoreScheduled = false;
+      if (!this.hasStoredAuth || this.backend.isConnected) return;
+      this.loginStartedWithSavedAuth = true;
+      void this.backend.startLogin().catch((error) => this.handleStartFailure(error, false));
+    });
   }
 
   login(): void {
@@ -160,9 +196,9 @@ export class WhatsAppController {
         this.handleStartFailure(error, true);
       });
     };
-    const ready = mustReset ? this.recreateBackend(true) : this.backendResetPromise;
-    if (ready) void ready.then(start).catch((error) => this.handleStartFailure(error, true));
-    else start();
+    const backendReady = mustReset ? this.recreateBackend(true) : this.backendResetPromise;
+    const ready = backendReady ? Promise.all([this.cacheReady, backendReady]) : this.cacheReady;
+    void ready.then(start).catch((error) => this.handleStartFailure(error, true));
   }
 
   cancelLogin(): void {
@@ -177,6 +213,7 @@ export class WhatsAppController {
   }
 
   logout(): void {
+    this.clearPendingHistoryRequests();
     this.state.whatsapp.loginRequestId += 1;
     this.state.whatsapp.loginModal = null;
     this.cacheEnabled = false;
@@ -191,14 +228,14 @@ export class WhatsAppController {
         rmSync(this.authDirectory, { recursive: true, force: true });
         await removeWhatsAppCache(this.cacheFile);
       } catch (error) {
-        setNotice(this.state, `Could not remove WhatsApp login: ${safeErrorMessage(error)}`, "warning", { statusLine: false, chat: true });
+        setNotice(this.state, `Could not remove WhatsApp login: ${safeErrorMessage(error)}`, "warning", { statusLine: true, chat: false });
       }
       resetWhatsAppUiState(this.state.whatsapp);
       this.removeWhatsAppChannels();
       this.backend = this.backendFactory();
       this.bindBackend();
       this.cacheEnabled = true;
-      setNotice(this.state, "WhatsApp disconnected.", "success", { statusLine: false, chat: true });
+      setNotice(this.state, "WhatsApp disconnected.", "success", { statusLine: true, chat: false });
       this.scheduleRender();
     });
   }
@@ -215,7 +252,7 @@ export class WhatsAppController {
       ? WHATSAPP_GUILD_ID
       : null;
     if (!this.backend.isConnected && channels.length === 0) {
-      setNotice(this.state, "Connect with /login whatsapp to load WhatsApp chats.", "muted", { statusLine: false, chat: true });
+      setNotice(this.state, "Connect with /login whatsapp to load WhatsApp chats.", "muted", { statusLine: true, chat: false });
     }
     this.scheduleRender();
   }
@@ -235,15 +272,24 @@ export class WhatsAppController {
     this.state.sidebar.focusedGuildId = WHATSAPP_GUILD_ID;
     this.state.sidebar.activeGuildId = WHATSAPP_GUILD_ID;
     clearChannelNotifications(this.state.notifications, channelId);
+    const chat = this.state.whatsapp.chatsById[jid];
+    if (chat) {
+      chat.unreadCount = 0;
+      this.queueCacheSave();
+    }
     const messages = whatsAppTimelineMessages(this.state.whatsapp, channelId);
     setTimelineMessages(this.state.timeline, channelId, messages, { hasOlder: false });
     setNotice(this.state, "", "muted");
     this.scheduleRender();
 
-    const newest = this.state.whatsapp.messagesByChatId[jid]?.at(-1);
-    if (newest && this.backend.isConnected) {
-      void this.backend.markRead([newest.key]).catch(() => {});
+    const unreadKeys = (this.state.whatsapp.messagesByChatId[jid] ?? [])
+      .filter((message) => !message.fromMe)
+      .slice(-100)
+      .map((message) => message.key);
+    if (unreadKeys.length > 0 && this.backend.isConnected) {
+      void this.backend.markRead(unreadKeys).catch(() => {});
     }
+    this.requestOlderHistory(jid);
     return true;
   }
 
@@ -254,7 +300,13 @@ export class WhatsAppController {
     if (jid) channelId = whatsappChannelId(jid);
     if (!channelId || !jid) return false;
     if (!this.backend.isConnected) {
-      setNotice(this.state, "WhatsApp is not connected. Run /login whatsapp.", "warning", { statusLine: false, chat: true });
+      const connection = this.backend.state;
+      const message = connection.status === "reconnecting"
+        ? `WhatsApp is reconnecting (attempt ${connection.attempt}); your draft was not sent.`
+        : connection.status === "connecting" || connection.status === "loading-auth"
+          ? "WhatsApp is still connecting; your draft was not sent."
+          : "WhatsApp is not connected. Run /login whatsapp; your draft was not sent.";
+      setNotice(this.state, message, "warning", { statusLine: true, chat: false });
       this.scheduleRender();
       return true;
     }
@@ -331,13 +383,61 @@ export class WhatsAppController {
       this.state.pendingImages = pendingImages;
       this.state.editor.buffer = text;
       this.state.editor.cursor = text.length;
-      setNotice(this.state, `WhatsApp send failed: ${message}`, "warning", { statusLine: false, chat: true });
+      setNotice(this.state, `WhatsApp send failed: ${message}`, "warning", { statusLine: true, chat: false });
       this.scheduleRender();
     });
     return true;
   }
 
+  toggleChatMute(channelId: string): boolean {
+    const decodedJid = whatsappJidFromChannelId(channelId);
+    const jid = decodedJid ? canonicalWhatsAppJid(this.state.whatsapp, decodedJid) : null;
+    const chat = jid ? this.state.whatsapp.chatsById[jid] : undefined;
+    if (!jid || !chat) return false;
+    if (!this.backend.isConnected) {
+      setNotice(this.state, "WhatsApp is not connected; the chat's mute setting was not changed.", "warning", { statusLine: true, chat: false });
+      this.scheduleRender();
+      return true;
+    }
+
+    const now = Date.now();
+    const previousMutedUntilMs = chat.mutedUntilMs;
+    const previousMuted = Boolean(previousMutedUntilMs && previousMutedUntilMs > now);
+    const nextMuted = !previousMuted;
+    chat.mutedUntilMs = nextMuted ? now + WHATSAPP_CHAT_MUTE_DURATION_MS : null;
+    if (nextMuted) clearChannelNotifications(this.state.notifications, whatsappChannelId(jid));
+    this.queueCacheSave();
+    setNotice(this.state, "", "muted");
+    this.syncProviderState(true);
+    const requestId = ++this.muteRequestSequence;
+    this.muteRequestIdByChatId.set(jid, requestId);
+
+    void this.backend.setChatMuted(jid, nextMuted).then((result) => {
+      if (this.muteRequestIdByChatId.get(jid) !== requestId) return;
+      this.muteRequestIdByChatId.delete(jid);
+      const current = this.state.whatsapp.chatsById[jid];
+      if (current) current.mutedUntilMs = result.mutedUntilMs;
+      this.queueCacheSave();
+      this.syncProviderState(true);
+    }).catch((error) => {
+      if (this.muteRequestIdByChatId.get(jid) !== requestId) return;
+      this.muteRequestIdByChatId.delete(jid);
+      const current = this.state.whatsapp.chatsById[jid];
+      if (current) current.mutedUntilMs = previousMutedUntilMs;
+      this.queueCacheSave();
+      setNotice(
+        this.state,
+        `Failed to ${nextMuted ? "mute" : "unmute"} ${whatsAppDisplayName(this.state.whatsapp, jid)}: ${safeErrorMessage(error)}`,
+        "error",
+        { statusLine: true, chat: false },
+      );
+      this.syncProviderState(true);
+    });
+    return true;
+  }
+
   async shutdown(): Promise<void> {
+    this.clearPendingHistoryRequests();
     this.clearSuccessModalTimer();
     this.backendResetGeneration += 1;
     this.unbindBackend();
@@ -357,10 +457,39 @@ export class WhatsAppController {
       }),
       this.backend.on("history", (event) => {
         upsertWhatsAppContacts(this.state.whatsapp, event.contacts);
-        upsertWhatsAppChats(this.state.whatsapp, event.chats);
+        // On-demand history is a message backfill, not authoritative current
+        // chat metadata. Old pages can contain an old last-message timestamp;
+        // applying it would make the focused conversation suddenly move down.
+        const chats = event.syncKind === "on-demand"
+          ? event.chats.map(({ unreadCount: _unreadCount, lastMessageAtMs: _lastMessageAtMs, ...chat }) => chat)
+          : event.chats;
+        upsertWhatsAppChats(this.state.whatsapp, chats);
         upsertWhatsAppMessages(this.state.whatsapp, event.messages);
+        applyWhatsAppReactions(this.state.whatsapp, event.reactions ?? []);
+        const completedHistoryRequest = this.completeHistoryRequest(event.requestId, event.messages);
         this.queueCacheSave();
+        const activeJid = this.activeWhatsAppJid();
+        if (activeJid) {
+          const channelId = whatsappChannelId(activeJid);
+          setTimelineMessages(
+            this.state.timeline,
+            channelId,
+            whatsAppTimelineMessages(this.state.whatsapp, channelId),
+            {
+              hasOlder: (this.state.whatsapp.messagesByChatId[activeJid]?.length ?? 0) < MAX_WHATSAPP_MESSAGES_PER_CHAT,
+              preserveScroll: true,
+            },
+          );
+        }
         this.syncProviderState(true);
+        if (activeJid && completedHistoryRequest?.chatId === activeJid && completedHistoryRequest.anchorAdvanced) {
+          const generation = this.historyRequestGeneration;
+          setTimeout(() => {
+            if (generation === this.historyRequestGeneration && this.activeWhatsAppJid() === activeJid) {
+              this.requestOlderHistory(activeJid);
+            }
+          }, this.historyPageDelayMs);
+        }
       }),
       this.backend.on("contacts", (event) => {
         upsertWhatsAppContacts(this.state.whatsapp, event.contacts);
@@ -368,12 +497,17 @@ export class WhatsAppController {
         this.syncProviderState();
       }),
       this.backend.on("chats", (event) => {
-        upsertWhatsAppChats(this.state.whatsapp, event.chats);
+        if (event.kind === "update") updateWhatsAppChats(this.state.whatsapp, event.chats);
+        else upsertWhatsAppChats(this.state.whatsapp, event.chats);
         this.queueCacheSave();
         this.syncProviderState(true);
       }),
       this.backend.on("messages", (event) => {
         upsertWhatsAppMessages(this.state.whatsapp, event.messages);
+        // A message can reveal an LID→phone mapping after the corresponding
+        // chats.update already created a temporary LID notification. Reconcile
+        // before deciding whether the active chat should be cleared.
+        this.reconcileProviderChannelIds();
         this.queueCacheSave();
         for (const message of event.messages) {
           const storedChatId = canonicalWhatsAppJid(this.state.whatsapp, message.chatId);
@@ -383,11 +517,31 @@ export class WhatsAppController {
           if (this.state.timeline.channelId === mapped.channelId) {
             appendTimelineMessage(this.state.timeline, mapped);
             if (event.kind === "upsert") this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
-          } else if (!message.fromMe && event.kind === "upsert" && event.upsertType === "notify") {
-            recordChannelNotification(this.state.notifications, mapped.channelId, WHATSAPP_GUILD_ID);
+            if (!message.fromMe && event.kind === "upsert" && event.upsertType === "notify") {
+              const chat = this.state.whatsapp.chatsById[storedChatId];
+              if (chat) chat.unreadCount = 0;
+              clearChannelNotifications(this.state.notifications, mapped.channelId);
+              void this.backend.markRead([message.key]).catch(() => {});
+            }
           }
         }
         this.syncProviderState();
+      }),
+      this.backend.on("reactions", (events) => {
+        const changedChatIds = applyWhatsAppReactions(this.state.whatsapp, events);
+        if (changedChatIds.length === 0) return;
+        this.queueCacheSave();
+        const activeJid = this.activeWhatsAppJid();
+        if (activeJid && changedChatIds.includes(activeJid)) {
+          const channelId = whatsappChannelId(activeJid);
+          setTimelineMessages(
+            this.state.timeline,
+            channelId,
+            whatsAppTimelineMessages(this.state.whatsapp, channelId),
+            { preserveScroll: true, hasOlder: this.state.timeline.hasOlder },
+          );
+        }
+        this.scheduleRender();
       }),
       this.backend.on("lid-mapping", ({ lid, phoneId }) => {
         registerWhatsAppLidMapping(this.state.whatsapp, lid, phoneId);
@@ -457,6 +611,25 @@ export class WhatsAppController {
       }
     }
 
+    if (!modal) {
+      if (connection.status === "loading-auth" || connection.status === "connecting") {
+        setNotice(this.state, "WhatsApp connecting…", "muted", { loading: true, statusLine: true, chat: false });
+      } else if (connection.status === "reconnecting") {
+        const delay = connection.delayMs > 0 ? ` in ${Math.ceil(connection.delayMs / 1_000)}s` : "";
+        setNotice(this.state, `WhatsApp reconnecting${delay}…`, "muted", { loading: true, statusLine: true, chat: false });
+      } else if (connection.status === "failed") {
+        setNotice(this.state, `WhatsApp connection failed: ${safeErrorMessage(connection.error)}`, "error", { statusLine: true, chat: false });
+      } else if (connection.status === "logged-out") {
+        setNotice(this.state, "WhatsApp logged this linked device out. Run /logout whatsapp, then log in again.", "warning", { statusLine: true, chat: false });
+      } else if (connection.status === "connection-replaced") {
+        setNotice(this.state, "WhatsApp was opened by another client and this session was replaced.", "warning", { statusLine: true, chat: false });
+      } else if (connection.status === "connected"
+        && (this.state.notice.text.startsWith("WhatsApp connect")
+          || this.state.notice.text.startsWith("WhatsApp reconnect"))) {
+        setNotice(this.state, "", "muted");
+      }
+    }
+
     this.scheduleRender();
   }
 
@@ -486,9 +659,24 @@ export class WhatsAppController {
     const channels = whatsAppChannels(this.state.whatsapp);
     setSidebarCachedChannels(this.state.sidebar, WHATSAPP_GUILD_ID, channels);
     if (syncUnreadCounts) {
+      const activeJid = this.activeWhatsAppJid();
+      const visibleChannels = new Map(channels.map((channel) => [
+        whatsappJidFromChannelId(channel.id),
+        channel,
+      ]));
       for (const chat of Object.values(this.state.whatsapp.chatsById)) {
         if (chat.unreadCount === undefined) continue;
         const channelId = whatsappChannelId(chat.id);
+        const visibleChannel = visibleChannels.get(chat.id);
+        if (!visibleChannel || visibleChannel.muted) {
+          clearChannelNotifications(this.state.notifications, channelId);
+          continue;
+        }
+        if (chat.id === activeJid) {
+          chat.unreadCount = 0;
+          clearChannelNotifications(this.state.notifications, channelId);
+          continue;
+        }
         setChannelNotificationCount(
           this.state.notifications,
           channelId,
@@ -507,6 +695,92 @@ export class WhatsAppController {
     this.scheduleRender();
   }
 
+  private activeWhatsAppJid(): string | null {
+    const channelId = this.state.timeline.channelId ?? this.state.channelList.activeChannelId;
+    const jid = channelId ? whatsappJidFromChannelId(channelId) : null;
+    return jid ? canonicalWhatsAppJid(this.state.whatsapp, jid) : null;
+  }
+
+  private requestOlderHistory(jid: string): void {
+    if (!this.backend.isConnected) return;
+    const messages = this.state.whatsapp.messagesByChatId[jid] ?? [];
+    if (messages.length === 0 || messages.length >= MAX_WHATSAPP_MESSAGES_PER_CHAT) return;
+    const oldest = this.historyAnchor(messages);
+    if (!oldest?.key.id || !oldest.key.chatId || !oldest.timestampMs) return;
+    if (this.pendingHistoryByChatId.has(jid)) return;
+    if (this.state.timeline.channelId === whatsappChannelId(jid)) this.state.timeline.loadingOlder = true;
+    const timeout = setTimeout(() => {
+      const pending = this.pendingHistoryByChatId.get(jid);
+      if (!pending || pending.anchorId !== oldest.key.id) return;
+      this.pendingHistoryByChatId.delete(jid);
+      if (this.state.timeline.channelId === whatsappChannelId(jid)) {
+        this.state.timeline.loadingOlder = false;
+        this.scheduleRender();
+      }
+    }, this.historyRequestTimeoutMs);
+    const pending: PendingHistoryRequest = { anchorId: oldest.key.id, requestId: null, timeout };
+    this.pendingHistoryByChatId.set(jid, pending);
+    const count = Math.min(50, MAX_WHATSAPP_MESSAGES_PER_CHAT - messages.length);
+    void this.backend.fetchHistory(count, oldest.key, oldest.timestampMs).then((requestId) => {
+      if (this.pendingHistoryByChatId.get(jid) === pending) pending.requestId = requestId;
+    }).catch(() => {
+      if (this.pendingHistoryByChatId.get(jid) !== pending) return;
+      clearTimeout(timeout);
+      this.pendingHistoryByChatId.delete(jid);
+      if (this.state.timeline.channelId === whatsappChannelId(jid)) {
+        this.state.timeline.loadingOlder = false;
+        this.scheduleRender();
+      }
+    });
+  }
+
+  private completeHistoryRequest(
+    requestId: string | undefined,
+    messages: readonly import("./types").WhatsAppMessage[],
+  ): { chatId: string; anchorAdvanced: boolean } | null {
+    let match: [string, PendingHistoryRequest] | undefined;
+    if (requestId) {
+      match = [...this.pendingHistoryByChatId].find(([, pending]) => pending.requestId === requestId);
+      if (!match) return null;
+    } else if (messages[0]) {
+      const chatId = canonicalWhatsAppJid(this.state.whatsapp, messages[0].chatId);
+      const pending = this.pendingHistoryByChatId.get(chatId);
+      if (pending) match = [chatId, pending];
+    }
+    if (!match) return null;
+    const [chatId, pending] = match;
+    clearTimeout(pending.timeout);
+    this.pendingHistoryByChatId.delete(chatId);
+    const nextAnchorId = this.historyAnchor(this.state.whatsapp.messagesByChatId[chatId] ?? [])?.id;
+    return { chatId, anchorAdvanced: Boolean(nextAnchorId && nextAnchorId !== pending.anchorId) };
+  }
+
+  /**
+   * Initial sync often contains one old preview plus a recent cluster. Fetching
+   * before the absolute oldest preview cannot fill the large hole in between,
+   * so page backward from the newer side of the largest significant gap.
+   */
+  private historyAnchor(messages: readonly import("./types").WhatsAppMessage[]): import("./types").WhatsAppMessage | null {
+    const timestamped = messages.filter((message) => message.timestampMs != null);
+    if (timestamped.length === 0) return null;
+    let anchorIndex = 0;
+    let largestGap = HISTORY_GAP_THRESHOLD_MS;
+    for (let index = 1; index < timestamped.length; index++) {
+      const gap = (timestamped[index].timestampMs ?? 0) - (timestamped[index - 1].timestampMs ?? 0);
+      if (gap > largestGap) {
+        largestGap = gap;
+        anchorIndex = index;
+      }
+    }
+    return timestamped[anchorIndex] ?? null;
+  }
+
+  private clearPendingHistoryRequests(): void {
+    this.historyRequestGeneration += 1;
+    for (const pending of this.pendingHistoryByChatId.values()) clearTimeout(pending.timeout);
+    this.pendingHistoryByChatId.clear();
+  }
+
   private reconcileProviderChannelIds(): void {
     for (const [oldChannelId, oldCount] of Object.entries(this.state.notifications.byChannelId)) {
       const oldJid = whatsappJidFromChannelId(oldChannelId);
@@ -514,7 +788,11 @@ export class WhatsAppController {
       const canonicalJid = canonicalWhatsAppJid(this.state.whatsapp, oldJid);
       const canonicalChannelId = whatsappChannelId(canonicalJid);
       if (canonicalChannelId === oldChannelId) continue;
-      const count = oldCount + (this.state.notifications.byChannelId[canonicalChannelId] ?? 0);
+      // Prefer the canonical reduced chat count. It understands whether a
+      // temporary LID count was a new delta (and should be added) or merely an
+      // alias snapshot (and should be deduplicated).
+      const count = this.state.whatsapp.chatsById[canonicalJid]?.unreadCount
+        ?? Math.max(oldCount, this.state.notifications.byChannelId[canonicalChannelId] ?? 0);
       delete this.state.notifications.byChannelId[oldChannelId];
       delete this.state.notifications.channelGuildIds[oldChannelId];
       setChannelNotificationCount(
@@ -584,20 +862,21 @@ export class WhatsAppController {
   }
 
   private async performBackendRecreation(removeAuth: boolean): Promise<void> {
+    this.clearPendingHistoryRequests();
     const generation = ++this.backendResetGeneration;
     const previous = this.backend;
     this.unbindBackend();
     try {
       await previous.shutdown();
     } catch (error) {
-      setNotice(this.state, `Could not stop the previous WhatsApp session cleanly: ${safeErrorMessage(error)}`, "warning", { statusLine: false, chat: true });
+      setNotice(this.state, `Could not stop the previous WhatsApp session cleanly: ${safeErrorMessage(error)}`, "warning", { statusLine: true, chat: false });
     }
     if (generation !== this.backendResetGeneration) return;
     if (removeAuth) {
       try {
         rmSync(this.authDirectory, { recursive: true, force: true });
       } catch (error) {
-        setNotice(this.state, `Could not reset the WhatsApp login: ${safeErrorMessage(error)}`, "warning", { statusLine: false, chat: true });
+        setNotice(this.state, `Could not reset the WhatsApp login: ${safeErrorMessage(error)}`, "warning", { statusLine: true, chat: false });
       }
     }
     if (generation !== this.backendResetGeneration) return;
@@ -619,7 +898,7 @@ export class WhatsAppController {
       hydrateWhatsAppUiState(this.state.whatsapp, cached);
       this.syncProviderState(true);
     } catch (error) {
-      setNotice(this.state, `Could not load the WhatsApp chat cache: ${safeErrorMessage(error)}`, "warning", { statusLine: false, chat: true });
+      setNotice(this.state, `Could not load the WhatsApp chat cache: ${safeErrorMessage(error)}`, "warning", { statusLine: true, chat: false });
       this.scheduleRender();
     }
   }
@@ -641,7 +920,7 @@ export class WhatsAppController {
       () => saveWhatsAppCache(this.cacheFile, snapshot),
     ).catch((error) => {
       if (!this.cacheEnabled) return;
-      setNotice(this.state, `Could not save the WhatsApp chat cache: ${safeErrorMessage(error)}`, "warning", { statusLine: false, chat: true });
+      setNotice(this.state, `Could not save the WhatsApp chat cache: ${safeErrorMessage(error)}`, "warning", { statusLine: true, chat: false });
       this.scheduleRender();
     });
   }

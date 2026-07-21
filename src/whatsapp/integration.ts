@@ -8,6 +8,7 @@ import type {
   WhatsAppConnectionState,
   WhatsAppContact,
   WhatsAppMessage,
+  WhatsAppReactionEvent,
 } from "./types";
 
 export interface WhatsAppUiState {
@@ -17,11 +18,13 @@ export interface WhatsAppUiState {
   chatsById: Record<string, WhatsAppChat>;
   contactsById: Record<string, WhatsAppContact>;
   messagesByChatId: Record<string, WhatsAppMessage[]>;
+  /** Chats whose unread total was built only from Baileys delta updates. */
+  unreadDeltaChatIds: Record<string, true>;
   loginRequestId: number;
   receivedQr: boolean;
 }
 
-const MAX_MESSAGES_PER_CHAT = 300;
+export const MAX_WHATSAPP_MESSAGES_PER_CHAT = 300;
 
 function normalizedDirectJid(jid: string): string {
   const at = jid.lastIndexOf("@");
@@ -52,6 +55,7 @@ export function createWhatsAppUiState(): WhatsAppUiState {
     chatsById: {},
     contactsById: {},
     messagesByChatId: {},
+    unreadDeltaChatIds: {},
     loginRequestId: 0,
     receivedQr: false,
   };
@@ -89,7 +93,43 @@ export function upsertWhatsAppChats(state: WhatsAppUiState, chats: readonly What
     if (!chat.id || chat.id === "status@broadcast") continue;
     const id = canonicalWhatsAppJid(state, chat.id);
     const patch = id === chat.id ? chat : { ...chat, id };
-    state.chatsById[id] = mergeDefined(state.chatsById[id], patch);
+    const previous = state.chatsById[id];
+    const merged = mergeDefined(previous, patch);
+    const newestTimestamp = Math.max(previous?.lastMessageAtMs ?? 0, patch.lastMessageAtMs ?? 0);
+    if (newestTimestamp > 0) merged.lastMessageAtMs = newestTimestamp;
+    state.chatsById[id] = merged;
+    if (chat.unreadCount !== undefined) delete state.unreadDeltaChatIds[id];
+  }
+}
+
+/** Applies Baileys chats.update semantics, where unreadCount is a delta/sentinel. */
+export function updateWhatsAppChats(state: WhatsAppUiState, chats: readonly WhatsAppChat[]): void {
+  for (const chat of chats) {
+    if (!chat.id || chat.id === "status@broadcast") continue;
+    const id = canonicalWhatsAppJid(state, chat.id);
+    const previous = state.chatsById[id];
+    const patch = id === chat.id ? chat : { ...chat, id };
+    const unreadDelta = patch.unreadCount;
+    const withoutUnread = unreadDelta === undefined
+      ? patch
+      : Object.fromEntries(Object.entries(patch).filter(([key]) => key !== "unreadCount")) as unknown as WhatsAppChat;
+    const merged = mergeDefined(previous, withoutUnread);
+    const newestTimestamp = Math.max(previous?.lastMessageAtMs ?? 0, patch.lastMessageAtMs ?? 0);
+    if (newestTimestamp > 0) merged.lastMessageAtMs = newestTimestamp;
+    if (unreadDelta !== undefined) {
+      const oldCount = Math.max(0, previous?.unreadCount ?? 0);
+      merged.unreadCount = unreadDelta > 0
+        ? oldCount + unreadDelta
+        : unreadDelta === 0
+          ? 0
+          : Math.max(1, oldCount);
+      if (unreadDelta > 0 && (previous?.unreadCount === undefined || state.unreadDeltaChatIds[id])) {
+        state.unreadDeltaChatIds[id] = true;
+      } else if (unreadDelta <= 0) {
+        delete state.unreadDeltaChatIds[id];
+      }
+    }
+    state.chatsById[id] = merged;
   }
 }
 
@@ -138,8 +178,17 @@ export function registerWhatsAppLidMapping(state: WhatsAppUiState, lid: string, 
     });
     const newestTimestamp = Math.max(phoneChat?.lastMessageAtMs ?? 0, lidChat?.lastMessageAtMs ?? 0);
     if (newestTimestamp > 0) mergedChat.lastMessageAtMs = newestTimestamp;
+    const phoneUnread = phoneChat?.unreadCount;
+    const lidUnread = lidChat?.unreadCount;
+    const lidIsDelta = Boolean(state.unreadDeltaChatIds[lid]);
+    if (phoneUnread !== undefined && lidUnread !== undefined) {
+      mergedChat.unreadCount = lidIsDelta ? phoneUnread + lidUnread : Math.max(phoneUnread, lidUnread);
+    }
     state.chatsById[phoneId] = mergedChat;
     delete state.chatsById[lid];
+    if (lidIsDelta && phoneUnread === undefined) state.unreadDeltaChatIds[phoneId] = true;
+    else delete state.unreadDeltaChatIds[phoneId];
+    delete state.unreadDeltaChatIds[lid];
   }
 
   const combined = [
@@ -150,7 +199,7 @@ export function registerWhatsAppLidMapping(state: WhatsAppUiState, lid: string, 
     const byId = new Map<string, WhatsAppMessage>();
     for (const message of combined) byId.set(message.id, message);
     const sorted = [...byId.values()].sort(compareWhatsAppMessages);
-    state.messagesByChatId[phoneId] = sorted.slice(Math.max(0, sorted.length - MAX_MESSAGES_PER_CHAT));
+    state.messagesByChatId[phoneId] = sorted.slice(Math.max(0, sorted.length - MAX_WHATSAPP_MESSAGES_PER_CHAT));
   }
   delete state.messagesByChatId[lid];
   return Boolean(lidChat || phoneChat || combined.length > 0 || lidContact || phoneContact);
@@ -182,7 +231,13 @@ export function upsertWhatsAppMessages(state: WhatsAppUiState, messages: readonl
   for (const incoming of messages) {
     // Protocol control envelopes from caches produced by older Record builds are
     // not user-visible messages (edits now arrive through messages.update).
-    if (incoming.content.kind === "unsupported" && incoming.content.sourceType === "protocolMessage") continue;
+    if (incoming.content.kind === "unsupported" && [
+      "protocolMessage",
+      "reactionMessage",
+      "albumMessage",
+      "secretEncryptedMessage",
+      "associatedChildMessage",
+    ].includes(incoming.content.sourceType ?? "")) continue;
     const pair = directIdentityPair([
       incoming.chatId,
       incoming.key.chatId,
@@ -221,8 +276,28 @@ export function upsertWhatsAppMessages(state: WhatsAppUiState, messages: readonl
 
   for (const chatId of touched) {
     const sorted = (state.messagesByChatId[chatId] ?? []).slice().sort(compareWhatsAppMessages);
-    state.messagesByChatId[chatId] = sorted.slice(Math.max(0, sorted.length - MAX_MESSAGES_PER_CHAT));
+    const retained = sorted.slice(Math.max(0, sorted.length - MAX_WHATSAPP_MESSAGES_PER_CHAT));
+    state.messagesByChatId[chatId] = retained;
+    const newestMessageTimestamp = retained.at(-1)?.timestampMs ?? 0;
+    const chat = state.chatsById[chatId];
+    if (chat && newestMessageTimestamp > (chat.lastMessageAtMs ?? 0)) {
+      chat.lastMessageAtMs = newestMessageTimestamp;
+    }
   }
+}
+
+export function applyWhatsAppReactions(state: WhatsAppUiState, events: readonly WhatsAppReactionEvent[]): string[] {
+  const changedChatIds = new Set<string>();
+  for (const event of events) {
+    const chatId = canonicalWhatsAppJid(state, event.target.chatId);
+    const message = (state.messagesByChatId[chatId] ?? []).find((candidate) => candidate.id === event.target.id);
+    if (!message) continue;
+    const reactions = (message.reactions ?? []).filter((reaction) => reaction.senderId !== event.reaction.senderId);
+    if (event.reaction.emoji) reactions.push(event.reaction);
+    message.reactions = reactions;
+    changedChatIds.add(chatId);
+  }
+  return [...changedChatIds];
 }
 
 function compareWhatsAppMessages(left: WhatsAppMessage, right: WhatsAppMessage): number {
@@ -313,7 +388,19 @@ function mediaAttachment(message: WhatsAppMessage): DiscordMessageAttachment[] {
 function messageText(message: WhatsAppMessage): string {
   if (message.content.kind === "text") return sanitizeTerminalText(message.content.text, { multiline: true });
   if (message.content.kind === "media") return sanitizeTerminalText(message.content.caption ?? "", { multiline: true });
-  return "[Unsupported WhatsApp message]";
+  const knownFallbacks: Record<string, string> = {
+    contactMessage: "[Contact]",
+    contactsArrayMessage: "[Contacts]",
+    locationMessage: "[Location]",
+    liveLocationMessage: "[Live location]",
+    interactiveMessage: "[Interactive message]",
+    buttonsMessage: "[Interactive message]",
+    buttonsResponseMessage: "[Button response]",
+    ptvMessage: "[Video message]",
+    lottieStickerMessage: "[Animated sticker]",
+  };
+  return knownFallbacks[message.content.sourceType ?? ""]
+    ?? `[Unsupported WhatsApp message: ${sanitizeTerminalLabel(message.content.sourceType ?? "unknown")}]`;
 }
 
 function replyPreview(state: WhatsAppUiState, message: WhatsAppMessage): DiscordMessageReply | null {
@@ -341,6 +428,14 @@ export function whatsAppMessageToTimeline(state: WhatsAppUiState, message: Whats
   const stickerNames = message.content.kind === "media" && message.content.mediaKind === "sticker"
     ? ["WhatsApp sticker"]
     : [];
+  const reactions = new Map<string, { count: number; me: boolean }>();
+  for (const reaction of message.reactions ?? []) {
+    if (!reaction.emoji) continue;
+    const aggregate = reactions.get(reaction.emoji) ?? { count: 0, me: false };
+    aggregate.count += 1;
+    aggregate.me ||= reaction.fromMe;
+    reactions.set(reaction.emoji, aggregate);
+  }
   return {
     id: message.id,
     channelId: whatsappChannelId(message.chatId),
@@ -364,6 +459,11 @@ export function whatsAppMessageToTimeline(state: WhatsAppUiState, message: Whats
     attachments: mediaAttachment(message),
     stickerNames,
     embedsCount: 0,
+    reactions: [...reactions].map(([name, reaction]) => ({
+      count: reaction.count,
+      me: reaction.me,
+      emoji: { id: null, name, animated: false },
+    })),
   };
 }
 

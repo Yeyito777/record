@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+import json
+import os
+import socket
+import sys
+
+config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+socket_path = os.environ.get("RECORD_WHATSAPP_DIAGNOSTICS_SOCKET") or os.path.join(
+    config_home, "record", "whatsapp", "diagnostics.sock"
+)
+
+try:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(socket_path)
+    client.sendall(b'{"command":"summary"}\n')
+    chunks = []
+    while True:
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    response = json.loads(b"".join(chunks))
+    if "error" in response:
+        print(response["error"], file=sys.stderr)
+        raise SystemExit(1)
+    json.dump(response["result"], sys.stdout, indent=2, ensure_ascii=False)
+    print()
+except (FileNotFoundError, ConnectionRefusedError):
+    print(f"Record WhatsApp diagnostics are not available at {socket_path}", file=sys.stderr)
+    raise SystemExit(1)

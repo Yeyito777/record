@@ -2157,9 +2157,12 @@ function applyCachedNotifications(state: AppState): void {
   const cachedNotifications = loadCachedNotifications(accountId);
   if (!cachedNotifications) return;
 
+  const whatsAppNotifications = currentWhatsAppNotifications(state);
   replaceNotifications(
     state.notifications,
-    Object.entries(cachedNotifications.byChannelId)
+    [
+      ...whatsAppNotifications,
+      ...Object.entries(cachedNotifications.byChannelId)
       .filter(([channelId, count]) => count > 0
         && !isWhatsAppChannelId(channelId)
         && cachedNotifications.channelGuildIds[channelId] !== WHATSAPP_GUILD_ID
@@ -2170,7 +2173,15 @@ function applyCachedNotifications(state: AppState): void {
         guildId: cachedNotifications.channelGuildIds[channelId] ?? null,
         count,
       })),
+    ],
   );
+}
+
+function currentWhatsAppNotifications(state: AppState): Array<{ channelId: string; guildId: string; count: number }> {
+  return Object.entries(state.notifications.byChannelId)
+    .filter(([channelId]) => state.notifications.channelGuildIds[channelId] === WHATSAPP_GUILD_ID
+      || isWhatsAppChannelId(channelId))
+    .map(([channelId, count]) => ({ channelId, guildId: WHATSAPP_GUILD_ID, count }));
 }
 
 function clearNotificationsForChannel(state: AppState, channelId: string): void {
@@ -2512,10 +2523,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       if (removeSessionGuild(state, guildId)) effects.scheduleRender();
     },
     onInitialNotifications: (notifications) => {
-      const whatsAppNotifications = Object.entries(state.notifications.byChannelId)
-        .filter(([channelId]) => state.notifications.channelGuildIds[channelId] === WHATSAPP_GUILD_ID
-          || isWhatsAppChannelId(channelId))
-        .map(([channelId, count]) => ({ channelId, guildId: WHATSAPP_GUILD_ID, count }));
+      const whatsAppNotifications = currentWhatsAppNotifications(state);
       replaceNotifications(
         state.notifications,
         [
@@ -2660,9 +2668,7 @@ export function clearReadOnlyClient(state: AppState): void {
   const activeWhatsAppChannelId = state.channelList.guildId === WHATSAPP_GUILD_ID
     ? state.channelList.activeChannelId
     : null;
-  const whatsAppNotifications = Object.entries(state.notifications.byChannelId)
-    .filter(([channelId]) => state.notifications.channelGuildIds[channelId] === WHATSAPP_GUILD_ID)
-    .map(([channelId, count]) => ({ channelId, guildId: WHATSAPP_GUILD_ID, count }));
+  const whatsAppNotifications = currentWhatsAppNotifications(state);
   disconnectMemberListGateway();
   disconnectAppGateway();
   disconnectGuildOrderSync();
@@ -4426,11 +4432,6 @@ export function setLocalNoiseSuppression(state: AppState, effects: SessionEffect
 
 export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects): void {
   const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
-  if (entry.guildId === WHATSAPP_GUILD_ID) {
-    setNotice(state, "Muting WhatsApp chats is not supported yet.", "warning", { statusLine: false, chat: true });
-    effects.scheduleRender();
-    return;
-  }
   if (toggleSelectedVoiceMemberMute(state, effects, entry)) return;
 
   const token = state.auth.savedToken;

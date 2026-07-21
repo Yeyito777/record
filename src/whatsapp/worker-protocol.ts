@@ -11,6 +11,8 @@ export type WhatsAppWorkerMethod =
   | "cancel-login"
   | "send-text"
   | "send-images"
+  | "fetch-history"
+  | "set-chat-muted"
   | "mark-read"
   | "logout"
   | "shutdown";
@@ -63,6 +65,23 @@ export interface WhatsAppSendImagesParams {
 
 export interface WhatsAppMarkReadParams {
   keys: WhatsAppMessageKey[];
+}
+
+export interface WhatsAppFetchHistoryParams {
+  count: number;
+  oldestKey: WhatsAppMessageKey;
+  oldestTimestampMs: number;
+}
+
+export const WHATSAPP_CHAT_MUTE_DURATION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+export interface WhatsAppSetChatMutedParams {
+  chatId: string;
+  muted: boolean;
+}
+
+export interface WhatsAppSetChatMutedResult {
+  mutedUntilMs: number | null;
 }
 
 export type WhatsAppStartLoginResult = WhatsAppLoginResult;

@@ -35,6 +35,8 @@ export interface WhatsAppMediaContent {
 export interface WhatsAppUnsupportedContent {
   kind: "unsupported";
   sourceType?: string;
+  /** Field names only; retained for diagnostics without storing message text. */
+  sourceFields?: string[];
 }
 
 export type WhatsAppMessageContent =
@@ -54,6 +56,18 @@ export interface WhatsAppMessage {
   editedTimestampMs?: number;
   content: WhatsAppMessageContent;
   replyTo?: WhatsAppMessageKey;
+  reactions?: WhatsAppReaction[];
+}
+
+export interface WhatsAppReaction {
+  senderId: string;
+  fromMe: boolean;
+  emoji: string;
+}
+
+export interface WhatsAppReactionEvent {
+  target: WhatsAppMessageKey;
+  reaction: WhatsAppReaction;
 }
 
 export type WhatsAppChatKind = "direct" | "group" | "broadcast" | "newsletter" | "unknown";
@@ -156,10 +170,12 @@ export interface WhatsAppHistoryEvent {
   chats: WhatsAppChat[];
   contacts: WhatsAppContact[];
   messages: WhatsAppMessage[];
+  reactions?: WhatsAppReactionEvent[];
   skippedMessages: number;
   isLatest?: boolean;
   progress?: number | null;
   syncKind: WhatsAppHistorySyncKind;
+  requestId?: string;
 }
 
 export type WhatsAppMessagesEvent = {
@@ -200,6 +216,7 @@ export interface WhatsAppBackendEventMap {
   qr: WhatsAppQrEvent;
   history: WhatsAppHistoryEvent;
   messages: WhatsAppMessagesEvent;
+  reactions: WhatsAppReactionEvent[];
   chats: WhatsAppChatsEvent;
   contacts: WhatsAppContactsEvent;
   "lid-mapping": WhatsAppLidMappingEvent;
@@ -217,6 +234,7 @@ export interface WhatsAppBackendCallbacks {
   onQr?: WhatsAppBackendEventListener<"qr">;
   onHistory?: WhatsAppBackendEventListener<"history">;
   onMessages?: WhatsAppBackendEventListener<"messages">;
+  onReactions?: WhatsAppBackendEventListener<"reactions">;
   onChats?: WhatsAppBackendEventListener<"chats">;
   onContacts?: WhatsAppBackendEventListener<"contacts">;
   onLidMapping?: WhatsAppBackendEventListener<"lid-mapping">;

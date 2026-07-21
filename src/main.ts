@@ -983,7 +983,7 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
 function openSelectedServerActionModal(): boolean {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
   if (selected.kind !== "guild" && selected.kind !== "category" && selected.kind !== "channel" && selected.kind !== "voice-member") return false;
-  if (selected.guildId === WHATSAPP_GUILD_ID) return false;
+  if (selected.guildId === WHATSAPP_GUILD_ID && selected.kind !== "channel") return false;
   state.navigationPendingKeys = "";
   state.sidebar.visualAnchor = null;
   state.sidebar.pendingDeleteItem = null;
@@ -1027,6 +1027,18 @@ function openSelectedServerActionModal(): boolean {
   return true;
 }
 
+function toggleSelectedMute(): void {
+  const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+  if (selected.guildId === WHATSAPP_GUILD_ID) {
+    if (selected.kind !== "channel" || !whatsAppController.toggleChatMute(selected.id)) {
+      setNotice(state, "Select a WhatsApp chat to mute or unmute it.", "muted", { statusLine: true, chat: false });
+      scheduleRender();
+    }
+    return;
+  }
+  toggleSelectedGuildMute(state, { scheduleRender });
+}
+
 function serverActionErrorMessage(error: unknown, fallback: string): string {
   const detail = error instanceof Error ? error.message.trim() : "";
   return detail ? `${fallback}: ${detail}` : fallback;
@@ -1039,6 +1051,12 @@ function runServerModalAction(action: ServerAction): void {
   if (action === "toggle_mute" && modal.targetKind === "voice_member") {
     state.sidebar.serverActionModal = null;
     toggleVoiceMemberMute(state, { scheduleRender }, modal.targetId);
+    return;
+  }
+
+  if (action === "toggle_mute" && modal.guildId === WHATSAPP_GUILD_ID) {
+    state.sidebar.serverActionModal = null;
+    whatsAppController.toggleChatMute(modal.targetId);
     return;
   }
 
@@ -1327,7 +1345,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_toggle_guild_mute":
-      toggleSelectedGuildMute(state, { scheduleRender });
+      toggleSelectedMute();
       return true;
     case "nav_voice_volume_up":
       adjustSelectedVoiceMemberVolume(state, { scheduleRender }, REMOTE_USER_VOLUME_STEP_PERCENT);

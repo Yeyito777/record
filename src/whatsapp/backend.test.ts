@@ -439,6 +439,42 @@ describe("RecordWhatsAppBackend", () => {
     });
   });
 
+  test("forwards reactions as target-message patches", async () => {
+    const { backend, sockets } = setup(false);
+    const reactions: WhatsAppBackendEventMap["reactions"][] = [];
+    backend.on("reactions", (event) => { reactions.push(event); });
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+
+    sockets[0].emitter.emit("messages.reaction", [{
+      key: { id: "target", remoteJid: "group@g.us", fromMe: false },
+      reaction: {
+        key: {
+          id: "reaction-envelope",
+          remoteJid: "group@g.us",
+          participant: "person@s.whatsapp.net",
+          fromMe: false,
+        },
+        text: "❤️",
+      },
+    }]);
+
+    expect(reactions).toEqual([[{
+      target: {
+        id: "target",
+        chatId: "group@g.us",
+        fromMe: false,
+      },
+      reaction: {
+        senderId: "person@s.whatsapp.net",
+        fromMe: false,
+        emoji: "❤️",
+      },
+    }]]);
+  });
+
   test("does not report a linked session until credentials finish saving", async () => {
     let finishSave!: () => void;
     const saveGate = new Promise<void>((resolve) => { finishSave = resolve; });

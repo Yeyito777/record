@@ -4,13 +4,17 @@ import { createRecordWhatsAppBackend } from "./backend";
 import type { WhatsAppMessage } from "./types";
 import type {
   WhatsAppMarkReadParams,
+  WhatsAppFetchHistoryParams,
   WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
+  WhatsAppSetChatMutedParams,
   WhatsAppWorkerEvent,
   WhatsAppWorkerRequest,
   WhatsAppWorkerResponse,
 } from "./worker-protocol";
+import { WHATSAPP_CHAT_MUTE_DURATION_MS } from "./worker-protocol";
 import { toWhatsAppMessage } from "./converters";
+import { startWhatsAppDiagnosticsServer, WhatsAppDiagnostics } from "./diagnostics";
 import { buildWhatsAppSendOptions, resolveWhatsAppEphemeralExpiration, sendWhatsAppImages } from "./sending";
 
 // Baileys creates credential/key files itself. A private process umask ensures
@@ -30,6 +34,15 @@ const authDirectory = process.env.RECORD_WHATSAPP_AUTH_DIR;
 if (!authDirectory) process.exit(64);
 
 const backend = createRecordWhatsAppBackend({ authDirectory });
+const diagnostics = new WhatsAppDiagnostics();
+let diagnosticsServer: Awaited<ReturnType<typeof startWhatsAppDiagnosticsServer>> | null = null;
+const diagnosticsSocket = process.env.RECORD_WHATSAPP_DIAGNOSTICS_SOCKET;
+if (diagnosticsSocket) {
+  void startWhatsAppDiagnosticsServer(
+    diagnosticsSocket,
+    () => diagnostics.snapshot(backend.state),
+  ).then((server) => { diagnosticsServer = server; }).catch(() => {});
+}
 let inputBuffer = "";
 let shuttingDown = false;
 
@@ -46,8 +59,11 @@ function write(message: WhatsAppWorkerResponse | WhatsAppWorkerEvent): void {
   process.stdout.write(`${JSON.stringify(jsonSafe(message))}\n`);
 }
 
-for (const event of ["state", "qr", "history", "messages", "chats", "contacts", "lid-mapping", "error"] as const) {
-  backend.on(event, (data) => write({ type: "event", event, data } as WhatsAppWorkerEvent));
+for (const event of ["state", "qr", "history", "messages", "reactions", "chats", "contacts", "lid-mapping", "error"] as const) {
+  backend.on(event, (data) => {
+    diagnostics.record(event, data);
+    write({ type: "event", event, data } as WhatsAppWorkerEvent);
+  });
 }
 
 function quotedMessage(message: WhatsAppMessage): WAMessage {
@@ -144,12 +160,42 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
       })));
       return { read: true };
     }
+    case "fetch-history": {
+      const params = request.params as unknown as WhatsAppFetchHistoryParams;
+      if (!Number.isInteger(params?.count) || params.count < 1 || params.count > 50
+        || !params.oldestKey?.id || !params.oldestKey.chatId
+        || !Number.isFinite(params.oldestTimestampMs) || params.oldestTimestampMs <= 0) {
+        throw new Error("Invalid fetch-history request.");
+      }
+      return await backend.getSocket().fetchMessageHistory(
+        params.count,
+        {
+          remoteJid: params.oldestKey.chatId,
+          id: params.oldestKey.id,
+          fromMe: params.oldestKey.fromMe,
+          participant: params.oldestKey.participantId,
+        },
+        params.oldestTimestampMs,
+      );
+    }
+    case "set-chat-muted": {
+      const params = request.params as unknown as WhatsAppSetChatMutedParams;
+      if (!params?.chatId || typeof params.muted !== "boolean") {
+        throw new Error("Invalid set-chat-muted request.");
+      }
+      const muteDuration = params.muted ? WHATSAPP_CHAT_MUTE_DURATION_MS : null;
+      await backend.getSocket().chatModify({ mute: muteDuration }, params.chatId);
+      return {
+        mutedUntilMs: params.muted ? Date.now() + WHATSAPP_CHAT_MUTE_DURATION_MS : null,
+      };
+    }
     case "logout":
       await backend.getSocket().logout();
       return { loggedOut: true };
     case "shutdown":
       shuttingDown = true;
       await backend.shutdown();
+      await diagnosticsServer?.close().catch(() => {});
       return { stopped: true };
   }
 }
@@ -185,6 +231,7 @@ async function stop(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   await backend.shutdown().catch(() => {});
+  await diagnosticsServer?.close().catch(() => {});
   process.exit(0);
 }
 

@@ -66,6 +66,33 @@ describe("WhatsApp provider-neutral converters", () => {
     });
   });
 
+  test("retains reactions attached directly to history messages", () => {
+    const converted = toWhatsAppMessage(message({
+      key: {
+        id: "message-1",
+        remoteJid: "group@g.us",
+        participant: "author@s.whatsapp.net",
+        fromMe: false,
+      },
+      message: { conversation: "hello" },
+      reactions: [{
+        key: {
+          id: "reaction-1",
+          remoteJid: "group@g.us",
+          participant: "alice@s.whatsapp.net",
+          fromMe: false,
+        },
+        text: "❤️",
+      }],
+    }));
+
+    expect(converted?.reactions).toEqual([{
+      senderId: "alice@s.whatsapp.net",
+      fromMe: false,
+      emoji: "❤️",
+    }]);
+  });
+
   test("maps image, video, audio, document, and sticker metadata", () => {
     const cases: Array<[string, Record<string, unknown>, WhatsAppMediaKind]> = [
       ["imageMessage", {
@@ -106,11 +133,51 @@ describe("WhatsApp provider-neutral converters", () => {
     });
   });
 
-  test("retains unsupported messages and rejects unusable envelopes", () => {
+  test("renders common WhatsApp contact, location, interactive, PTV, and wrapped messages", () => {
+    const chatId = "15550001@s.whatsapp.net";
+    expect(toWhatsAppMessage(message({
+      key: { id: "contact", remoteJid: chatId },
+      message: { contactMessage: { displayName: "Ada" } },
+    }))?.content).toEqual({ kind: "text", text: "[Contact] Ada" });
+
+    expect(toWhatsAppMessage(message({
+      key: { id: "location", remoteJid: chatId },
+      message: { locationMessage: { name: "Cafe", degreesLatitude: 1.5, degreesLongitude: -2.5 } },
+    }))?.content).toEqual({
+      kind: "text",
+      text: "[Location]\nCafe\nhttps://maps.google.com/?q=1.5,-2.5",
+    });
+
+    expect(toWhatsAppMessage(message({
+      key: { id: "buttons", remoteJid: chatId },
+      message: { buttonsMessage: { contentText: "Choose one", footerText: "Footer" } },
+    }))?.content).toEqual({ kind: "text", text: "Choose one\nFooter" });
+
+    expect(toWhatsAppMessage(message({
+      key: { id: "ptv", remoteJid: chatId },
+      message: { ptvMessage: { mimetype: "video/mp4", seconds: 3 } },
+    }))?.content).toMatchObject({ kind: "media", mediaKind: "video", mimeType: "video/mp4", durationSeconds: 3 });
+
+    expect(toWhatsAppMessage(message({
+      key: { id: "wrapped", remoteJid: chatId },
+      message: { associatedChildMessage: { message: { conversation: "album child" } } },
+    }))?.content).toEqual({ kind: "text", text: "album child" });
+  });
+
+  test("renders polls, retains genuinely unsupported messages, and rejects unusable envelopes", () => {
     expect(toWhatsAppMessage(message({
       key: { id: "poll", remoteJid: "15550001@s.whatsapp.net" },
       message: { pollCreationMessage: { name: "Lunch?", options: [] } },
-    }))?.content).toEqual({ kind: "unsupported", sourceType: "pollCreationMessage" });
+    }))?.content).toEqual({ kind: "text", text: "[Poll] Lunch?" });
+
+    expect(toWhatsAppMessage(message({
+      key: { id: "unknown", remoteJid: "15550001@s.whatsapp.net" },
+      message: { requestPaymentMessage: {} },
+    }))?.content).toEqual({
+      kind: "unsupported",
+      sourceType: "requestPaymentMessage",
+      sourceFields: ["requestPaymentMessage"],
+    });
 
     expect(toWhatsAppMessage(message({ key: { id: "missing-chat" }, message: { conversation: "x" } })))
       .toBeNull();
@@ -227,6 +294,19 @@ describe("WhatsApp provider-neutral converters", () => {
       kind: "direct",
       archived: true,
     });
+  });
+
+  test("normalizes Baileys mute durations and synchronized mute timestamps", () => {
+    const before = Date.now();
+    const duration = 7 * 24 * 60 * 60 * 1_000;
+    const durationChat = toWhatsAppChat({ id: "person@s.whatsapp.net", muteEndTime: duration });
+    expect(durationChat?.mutedUntilMs).toBeGreaterThanOrEqual(before + duration);
+    expect(durationChat?.mutedUntilMs).toBeLessThanOrEqual(Date.now() + duration);
+
+    const epochSeconds = 1_800_000_000;
+    expect(toWhatsAppChat({ id: "group@g.us", muteEndTime: epochSeconds })?.mutedUntilMs)
+      .toBe(epochSeconds * 1_000);
+    expect(toWhatsAppChat({ id: "group@g.us", muteEndTime: 0 })?.mutedUntilMs).toBeNull();
   });
 
   test("maps contacts and history sync kinds", () => {

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import type { WhatsAppBackendHandle } from "./controller";
 import type {
@@ -13,9 +13,12 @@ import type {
 } from "./types";
 import type {
   WhatsAppMarkReadParams,
+  WhatsAppFetchHistoryParams,
   WhatsAppImageUpload,
   WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
+  WhatsAppSetChatMutedParams,
+  WhatsAppSetChatMutedResult,
   WhatsAppWorkerMessage,
   WhatsAppWorkerMethod,
   WhatsAppWorkerRequest,
@@ -114,6 +117,16 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
     await this.request("mark-read", params as unknown as Record<string, unknown>);
   }
 
+  async fetchHistory(count: number, oldestKey: WhatsAppMessageKey, oldestTimestampMs: number): Promise<string> {
+    const params: WhatsAppFetchHistoryParams = { count, oldestKey, oldestTimestampMs };
+    return await this.request("fetch-history", params as unknown as Record<string, unknown>) as string;
+  }
+
+  async setChatMuted(chatId: string, muted: boolean): Promise<WhatsAppSetChatMutedResult> {
+    const params: WhatsAppSetChatMutedParams = { chatId, muted };
+    return await this.request("set-chat-muted", params as unknown as Record<string, unknown>) as WhatsAppSetChatMutedResult;
+  }
+
   async logout(): Promise<void> {
     try {
       await this.request("logout");
@@ -156,6 +169,7 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
           ...process.env,
           ...this.options.env,
           RECORD_WHATSAPP_AUTH_DIR: this.options.authDirectory,
+          RECORD_WHATSAPP_DIAGNOSTICS_SOCKET: join(dirname(this.options.authDirectory), "diagnostics.sock"),
         },
         stdio: ["pipe", "pipe", "pipe"],
       },

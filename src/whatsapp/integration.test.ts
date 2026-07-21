@@ -3,9 +3,11 @@ import { describe, expect, test } from "bun:test";
 import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import {
   createWhatsAppUiState,
+  applyWhatsAppReactions,
   upsertWhatsAppChats,
   upsertWhatsAppContacts,
   upsertWhatsAppMessages,
+  updateWhatsAppChats,
   registerWhatsAppLidMapping,
   whatsAppChannels,
   whatsAppDisplayName,
@@ -40,6 +42,31 @@ describe("WhatsApp UI integration", () => {
       [WHATSAPP_GUILD_ID, "Mom", 1],
       [WHATSAPP_GUILD_ID, "Family", 3],
     ]);
+  });
+
+  test("applies Baileys unread deltas instead of overwriting absolute counts", () => {
+    const state = createWhatsAppUiState();
+    const chatId = "15551234567@s.whatsapp.net";
+    upsertWhatsAppChats(state, [{ id: chatId, kind: "direct", unreadCount: 5 }]);
+    updateWhatsAppChats(state, [{ id: chatId, kind: "direct", unreadCount: 2 }]);
+    expect(state.chatsById[chatId]?.unreadCount).toBe(7);
+    updateWhatsAppChats(state, [{ id: chatId, kind: "direct", unreadCount: 0 }]);
+    expect(state.chatsById[chatId]?.unreadCount).toBe(0);
+    updateWhatsAppChats(state, [{ id: chatId, kind: "direct", unreadCount: -1 }]);
+    expect(state.chatsById[chatId]?.unreadCount).toBe(1);
+  });
+
+  test("never regresses chat recency when stale metadata arrives", () => {
+    const state = createWhatsAppUiState();
+    const chatId = "15551234567@s.whatsapp.net";
+    upsertWhatsAppChats(state, [{ id: chatId, kind: "direct", lastMessageAtMs: 200 }]);
+    upsertWhatsAppChats(state, [{ id: chatId, kind: "direct", lastMessageAtMs: 50 }]);
+    updateWhatsAppChats(state, [{ id: chatId, kind: "direct", lastMessageAtMs: 100 }]);
+    expect(state.chatsById[chatId]?.lastMessageAtMs).toBe(200);
+
+    upsertWhatsAppMessages(state, [message("cached-newest", chatId, 300, "newest")]);
+    upsertWhatsAppChats(state, [{ id: chatId, kind: "direct", lastMessageAtMs: 75 }]);
+    expect(state.chatsById[chatId]?.lastMessageAtMs).toBe(300);
   });
 
   test("deduplicates and sorts messages and builds reply previews", () => {
@@ -90,6 +117,35 @@ describe("WhatsApp UI integration", () => {
       content: { kind: "unsupported", sourceType: "protocolMessage" },
     }]);
     expect(state.messagesByChatId[chatId]).toBeUndefined();
+  });
+
+  test("applies, replaces, and removes WhatsApp reactions on their target message", () => {
+    const state = createWhatsAppUiState();
+    const chatId = "group@g.us";
+    upsertWhatsAppMessages(state, [message("target", chatId, 10, "hello")]);
+    applyWhatsAppReactions(state, [
+      { target: { id: "target", chatId }, reaction: { senderId: "alice@s.whatsapp.net", fromMe: false, emoji: "❤️" } },
+      { target: { id: "target", chatId }, reaction: { senderId: "self@s.whatsapp.net", fromMe: true, emoji: "❤️" } },
+    ]);
+    expect(whatsAppTimelineMessages(state, whatsappChannelId(chatId))[0]?.reactions).toEqual([{
+      count: 2,
+      me: true,
+      emoji: { id: null, name: "❤️", animated: false },
+    }]);
+
+    applyWhatsAppReactions(state, [{
+      target: { id: "target", chatId },
+      reaction: { senderId: "alice@s.whatsapp.net", fromMe: false, emoji: "👍" },
+    }]);
+    applyWhatsAppReactions(state, [{
+      target: { id: "target", chatId },
+      reaction: { senderId: "self@s.whatsapp.net", fromMe: true, emoji: "" },
+    }]);
+    expect(whatsAppTimelineMessages(state, whatsappChannelId(chatId))[0]?.reactions).toEqual([{
+      count: 1,
+      me: false,
+      emoji: { id: null, name: "👍", animated: false },
+    }]);
   });
 
   test("maps media to ordinary timeline attachments", () => {

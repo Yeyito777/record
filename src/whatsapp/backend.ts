@@ -3,6 +3,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
+  normalizeMessageContent,
   type BaileysEventMap,
   type ConnectionState as BaileysConnectionState,
   type UserFacingSocketConfig,
@@ -23,6 +24,7 @@ import {
   toWhatsAppHistorySyncKind,
   toWhatsAppMessage,
   toWhatsAppMessageUpdate,
+  toWhatsAppReactionEvent,
 } from "./converters";
 import { getRecordWhatsAppPaths } from "./paths";
 import { sanitizeTerminalLabel } from "./sanitize";
@@ -336,6 +338,7 @@ export class RecordWhatsAppBackend {
     if (callbacks.onQr) this.on("qr", callbacks.onQr);
     if (callbacks.onHistory) this.on("history", callbacks.onHistory);
     if (callbacks.onMessages) this.on("messages", callbacks.onMessages);
+    if (callbacks.onReactions) this.on("reactions", callbacks.onReactions);
     if (callbacks.onChats) this.on("chats", callbacks.onChats);
     if (callbacks.onContacts) this.on("contacts", callbacks.onContacts);
     if (callbacks.onLidMapping) this.on("lid-mapping", callbacks.onLidMapping);
@@ -380,6 +383,10 @@ export class RecordWhatsAppBackend {
           creds: this.auth.state.creds,
           keys: makeCacheableSignalKeyStore(this.auth.state.keys, silentBaileysLogger),
         },
+        // Keep this stable across pairing and later resumes. Existing Record
+        // credentials were linked as Chrome; changing the browser identity for
+        // the same device causes WhatsApp to repeatedly close the stream (428).
+        // Explicit on-demand paging handles history backfill independently.
         browser: this.socketConfig?.browser ?? Browsers.macOS("Chrome"),
         ...(this.webVersion ? { version: this.webVersion } : {}),
         syncFullHistory: this.socketConfig?.syncFullHistory ?? true,
@@ -416,6 +423,15 @@ export class RecordWhatsAppBackend {
         const messages = event.messages.map((message) => toWhatsAppMessage(message, {
           selfId: active.socket.user?.id,
         }));
+        const reactions = event.messages.map((message) => {
+          const normalized = normalizeMessageContent(message.message);
+          return normalized?.reactionMessage
+            ? toWhatsAppReactionEvent(normalized.reactionMessage.key, {
+                ...normalized.reactionMessage,
+                key: message.key,
+              }, active.socket.user?.id)
+            : null;
+        }).filter((reaction) => reaction !== null);
         const chats = mergeMessageChatSettings(
           event.chats.map(toWhatsAppChat).filter((chat) => chat !== null),
           event.messages,
@@ -424,10 +440,12 @@ export class RecordWhatsAppBackend {
           chats,
           contacts: event.contacts.map(toWhatsAppContact).filter((contact) => contact !== null),
           messages: messages.filter((message) => message !== null),
+          reactions,
           skippedMessages: messages.filter((message) => message === null).length,
           isLatest: event.isLatest,
           progress: event.progress,
           syncKind: toWhatsAppHistorySyncKind(event.syncType),
+          requestId: event.peerDataRequestSessionId ?? undefined,
         });
       });
     });
@@ -465,6 +483,17 @@ export class RecordWhatsAppBackend {
           messages: converted,
           skippedMessages: messages.length - converted.length,
         });
+      });
+    });
+
+    this.bind(active, "messages.reaction", (event) => {
+      this.forwardSocketEvent(active, () => {
+        const reactions = event.map((entry) => toWhatsAppReactionEvent(
+          entry.key,
+          entry.reaction,
+          active.socket.user?.id,
+        )).filter((reaction) => reaction !== null);
+        if (reactions.length > 0) this.emit("reactions", reactions);
       });
     });
 

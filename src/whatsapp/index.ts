@@ -7,3 +7,4 @@ export * from "./nodeclient";
 export * from "./worker-protocol";
 export * from "./sanitize";
 export * from "./cache";
+export * from "./diagnostics";
