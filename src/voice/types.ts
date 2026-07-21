@@ -98,6 +98,7 @@ export interface VoiceGatewayConnection {
   disconnect(): void;
   setSelfVoiceState?(state: { selfMute: boolean; selfDeaf: boolean }): void;
   setRemoteUserMuted?(userId: string, muted: boolean): void;
+  setRemoteUserVolume?(userId: string, volumePercent: number): void;
   setLocalVolumes?(volumes: LocalAudioVolumes): void;
   setNoiseSuppression?(mode: NoiseSuppressionMode): void;
   readonly mediaSessionId: string | null;
@@ -188,6 +189,7 @@ export interface VoiceAudioContext {
 export interface VoiceAudioBackend {
   start(context: VoiceAudioContext): Promise<void> | void;
   stop(): void;
+  setRemoteSsrcVolume?(ssrc: number, volumePercent: number): void;
   setLocalVolumes?(volumes: LocalAudioVolumes): void;
   setNoiseSuppression?(mode: NoiseSuppressionMode): void;
 }

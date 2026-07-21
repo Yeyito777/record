@@ -6,10 +6,12 @@ import type { KeyEvent } from "./input";
 import { moveTo } from "./frame";
 import { theme } from "./theme";
 import { padRight, termWidth, truncate } from "./textwidth";
+import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, MAX_REMOTE_USER_VOLUME_PERCENT, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeRemoteUserVolumePercent } from "./volume";
 
 export type ServerAction =
   | "copy_invite"
   | "toggle_mute"
+  | "adjust_volume"
   | "leave_server"
   | "watch_stream"
   | "toggle_server_mute"
@@ -29,6 +31,7 @@ export interface ServerActionModalState {
   serverMuted: boolean;
   serverDeafened: boolean;
   watchingStream: boolean;
+  volumePercent: number | null;
   actions: ServerAction[];
   selection: ServerAction;
   confirmationAction: ServerAction | null;
@@ -46,6 +49,7 @@ export interface VoiceMemberActionModalOptions {
   serverMuted?: boolean;
   serverDeafened?: boolean;
   watching?: boolean;
+  volumePercent?: number | null;
   canServerMute?: boolean;
   canServerDeafen?: boolean;
   canKickFromVc?: boolean;
@@ -56,6 +60,7 @@ export interface VoiceMemberActionModalOptions {
 export type ServerActionModalKeyResult =
   | { type: "handled" }
   | { type: "close" }
+  | { type: "adjust_volume"; deltaPercent: number }
   | { type: "action"; action: ServerAction };
 
 const DESTRUCTIVE_ACTIONS = new Set<ServerAction>([
@@ -75,6 +80,7 @@ export function createServerActionModal(guildId: string, guildName: string, mute
     serverMuted: false,
     serverDeafened: false,
     watchingStream: false,
+    volumePercent: null,
     actions: ["copy_invite", "toggle_mute", "leave_server"],
     selection: "copy_invite",
     confirmationAction: null,
@@ -100,6 +106,7 @@ export function createChannelActionModal(
     serverMuted: false,
     serverDeafened: false,
     watchingStream: false,
+    volumePercent: null,
     actions: ["toggle_mute"],
     selection: "toggle_mute",
     confirmationAction: null,
@@ -110,6 +117,7 @@ export function createChannelActionModal(
 
 export function createVoiceMemberActionModal(options: VoiceMemberActionModalOptions): ServerActionModalState {
   const actions: ServerAction[] = ["toggle_mute"];
+  if (typeof options.volumePercent === "number") actions.push("adjust_volume");
   if (options.streaming) actions.push("watch_stream");
   if (options.canServerMute) actions.push("toggle_server_mute");
   if (options.canServerDeafen) actions.push("toggle_server_deafen");
@@ -127,6 +135,9 @@ export function createVoiceMemberActionModal(options: VoiceMemberActionModalOpti
     serverMuted: Boolean(options.serverMuted),
     serverDeafened: Boolean(options.serverDeafened),
     watchingStream: Boolean(options.watching),
+    volumePercent: typeof options.volumePercent === "number"
+      ? normalizeRemoteUserVolumePercent(options.volumePercent)
+      : null,
     actions,
     selection: actions[0] ?? "toggle_mute",
     confirmationAction: null,
@@ -138,6 +149,15 @@ export function createVoiceMemberActionModal(options: VoiceMemberActionModalOpti
 export function handleServerActionModalKey(modal: ServerActionModalState, key: KeyEvent): ServerActionModalKeyResult {
   if (key.type === "escape") return { type: "close" };
   if (modal.busy) return { type: "handled" };
+
+  if (modal.selection === "adjust_volume") {
+    if (key.type === "left" || (key.type === "char" && key.char === "h")) {
+      return { type: "adjust_volume", deltaPercent: -REMOTE_USER_VOLUME_STEP_PERCENT };
+    }
+    if (key.type === "right" || (key.type === "char" && key.char === "l")) {
+      return { type: "adjust_volume", deltaPercent: REMOTE_USER_VOLUME_STEP_PERCENT };
+    }
+  }
 
   const direction = key.type === "up" || (key.type === "char" && key.char === "k")
     ? -1
@@ -155,6 +175,7 @@ export function handleServerActionModalKey(modal: ServerActionModalState, key: K
 
   if (key.type !== "enter") return { type: "handled" };
   modal.error = null;
+  if (modal.selection === "adjust_volume") return { type: "handled" };
   if (!DESTRUCTIVE_ACTIONS.has(modal.selection)) {
     modal.confirmationAction = null;
     return { type: "action", action: modal.selection };
@@ -176,6 +197,12 @@ function actionLabel(modal: ServerActionModalState, action: ServerAction): strin
       if (modal.targetKind === "voice_member") return modal.muted ? "Unmute" : "Mute";
       const muteTarget = modal.targetKind === "guild" ? "Server" : modal.targetKind === "category" ? "Category" : "Channel";
       return `${modal.muted ? "Unmute" : "Mute"} ${muteTarget}`;
+    }
+    case "adjust_volume": {
+      const volumePercent = normalizeRemoteUserVolumePercent(modal.volumePercent ?? DEFAULT_REMOTE_USER_VOLUME_PERCENT);
+      const filled = Math.round(volumePercent / REMOTE_USER_VOLUME_STEP_PERCENT);
+      const slots = MAX_REMOTE_USER_VOLUME_PERCENT / REMOTE_USER_VOLUME_STEP_PERCENT;
+      return `Volume ${volumePercent}% [${"█".repeat(filled)}${"░".repeat(slots - filled)}]`;
     }
     case "leave_server":
       return "Leave Server";

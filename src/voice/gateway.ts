@@ -23,12 +23,13 @@ import { buildMediaSinkWantsPayload, buildVoiceIdentifyPayload, buildVoiceResume
 import { connectUdp, discoverUdpAddress, parsePlainRtpPacket, selectEncryptionMode } from "./rtp";
 import { isDaveVoiceGatewayBinaryMessage, isObject, messageDataToBinaryBuffer, messageDataToString, snowflakeToString } from "./util";
 import { NoopVoiceAudioBackend, VoiceGatewayCloseError, type VoiceAudioBackend, type VoiceAudioContext, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData } from "./types";
-import type { LocalAudioVolumes, NoiseSuppressionMode } from "../volume";
+import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, normalizeRemoteUserVolumePercent, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
 
 const VIDEO_PAYLOAD_TYPE_H264 = 101;
 const VIDEO_RTX_PAYLOAD_TYPE_H264 = 102;
 const SPEAKING_FLAG_VOICE = 1 << 0;
 const SPEAKING_FLAG_SOUNDSHARE = 1 << 1;
+const REMOTE_SSRC_VOLUME_RESET_DELAY_MS = 750;
 const WEBRTC_VIDEO_STATS_INTERVAL_MS = 5_000;
 const HEARTBEAT_ACK_GRACE_MULTIPLIER = 1.5;
 
@@ -70,8 +71,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private videoRtxSsrc: number | null = null;
   private videoCodec: string | null = null;
   private readonly ssrcToUserId = new Map<number, string>();
+  private readonly authoritativeAudioSsrcs = new Set<number>();
+  private readonly staleVolumeAudioSsrcs = new Set<number>();
+  private readonly remoteSsrcVolumeResetTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private readonly remoteUserIds = new Set<string>();
   private readonly remoteMutedUserIds = new Set<string>();
+  private readonly remoteUserVolumes = new Map<string, number>();
   private readonly dave: DaveVoiceEncryption;
   private webRtc: NodePeerConnection | null = null;
   private webRtcAudioTrack: Track | null = null;
@@ -148,6 +153,18 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     }
   }
 
+  setRemoteUserVolume(userId: string, volumePercent: number): void {
+    if (!userId || userId === this.data.userId) return;
+    const normalized = normalizeRemoteUserVolumePercent(volumePercent);
+    if (normalized === DEFAULT_REMOTE_USER_VOLUME_PERCENT) this.remoteUserVolumes.delete(userId);
+    else this.remoteUserVolumes.set(userId, normalized);
+    for (const [ssrc, mappedUserId] of this.ssrcToUserId) {
+      if (mappedUserId === userId && this.authoritativeAudioSsrcs.has(ssrc)) {
+        this.audio.setRemoteSsrcVolume?.(ssrc, normalized);
+      }
+    }
+  }
+
   setLocalVolumes(volumes: LocalAudioVolumes): void {
     this.audio.setLocalVolumes?.(volumes);
   }
@@ -162,6 +179,8 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.resumeCause = null;
     this.clearConnectTimer();
     this.clearHeartbeatTimer();
+    for (const timer of this.remoteSsrcVolumeResetTimers.values()) clearTimeout(timer);
+    this.remoteSsrcVolumeResetTimers.clear();
     this.audio.stop();
     this.audioStarted = false;
     this.speaking = false;
@@ -379,8 +398,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const ssrc = typeof data.ssrc === "number" ? data.ssrc : null;
     if (userId !== this.data.userId) this.remoteUserIds.add(userId);
     if (ssrc !== null) {
-      const previous = this.ssrcToUserId.get(ssrc);
-      this.ssrcToUserId.set(ssrc, userId);
+      const previous = this.rememberAuthoritativeAudioSsrc(ssrc, userId);
       if (previous !== userId) debugLog("voice.playback.ssrc_map", { ssrc, userId, source: "speaking" });
     }
     const speaking = typeof data.speaking === "number" ? data.speaking !== 0 : Boolean(data.speaking);
@@ -432,7 +450,11 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.remoteUserIds.delete(disconnectedUserId);
     this.dave.removeKnownUser(disconnectedUserId);
     for (const [ssrc, userId] of this.ssrcToUserId) {
-      if (userId === disconnectedUserId) this.ssrcToUserId.delete(ssrc);
+      if (userId === disconnectedUserId) {
+        if (this.authoritativeAudioSsrcs.has(ssrc)) this.scheduleRemoteSsrcVolumeReset(ssrc);
+        this.ssrcToUserId.delete(ssrc);
+        this.authoritativeAudioSsrcs.delete(ssrc);
+      }
     }
   }
 
@@ -454,7 +476,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     if (!isObject(data)) return;
     const userId = snowflakeToString(data.user_id);
     const audioSsrc = typeof data.audio_ssrc === "number" ? data.audio_ssrc : null;
-    if (userId && audioSsrc !== null) this.ssrcToUserId.set(audioSsrc, userId);
+    if (userId && audioSsrc !== null) this.rememberAuthoritativeAudioSsrc(audioSsrc, userId);
     if (userId && userId !== this.data.userId) this.remoteUserIds.add(userId);
 
     const videoSsrc = typeof data.video_ssrc === "number" ? data.video_ssrc : null;
@@ -638,7 +660,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     if (mappedUserId) return mappedUserId;
     const streamOwnerUserId = this.data.streamReceive?.ownerUserId;
     if (streamOwnerUserId) {
-      this.ssrcToUserId.set(ssrc, streamOwnerUserId);
+      this.rememberAuthoritativeAudioSsrc(ssrc, streamOwnerUserId);
       debugLog("voice.playback.ssrc_map", { ssrc, userId: streamOwnerUserId, source: "stream_owner_fallback" });
       return streamOwnerUserId;
     }
@@ -652,9 +674,39 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     return inferredUserId;
   }
 
+  private rememberAuthoritativeAudioSsrc(ssrc: number, userId: string): string | undefined {
+    const previous = this.ssrcToUserId.get(ssrc);
+    const resetTimer = this.remoteSsrcVolumeResetTimers.get(ssrc);
+    if (resetTimer) clearTimeout(resetTimer);
+    this.remoteSsrcVolumeResetTimers.delete(ssrc);
+    this.staleVolumeAudioSsrcs.delete(ssrc);
+    this.ssrcToUserId.set(ssrc, userId);
+    this.authoritativeAudioSsrcs.add(ssrc);
+    this.audio.setRemoteSsrcVolume?.(ssrc, this.remoteUserVolumes.get(userId) ?? DEFAULT_REMOTE_USER_VOLUME_PERCENT);
+    return previous;
+  }
+
+  private scheduleRemoteSsrcVolumeReset(ssrc: number): void {
+    const existing = this.remoteSsrcVolumeResetTimers.get(ssrc);
+    if (existing) clearTimeout(existing);
+    this.staleVolumeAudioSsrcs.add(ssrc);
+    const timer = setTimeout(() => {
+      this.remoteSsrcVolumeResetTimers.delete(ssrc);
+      if (this.authoritativeAudioSsrcs.has(ssrc) || !this.staleVolumeAudioSsrcs.delete(ssrc)) return;
+      this.audio.setRemoteSsrcVolume?.(ssrc, DEFAULT_REMOTE_USER_VOLUME_PERCENT);
+    }, REMOTE_SSRC_VOLUME_RESET_DELAY_MS);
+    timer.unref?.();
+    this.remoteSsrcVolumeResetTimers.set(ssrc, timer);
+  }
+
   private shouldDropIncomingAudio(ssrc: number): boolean {
+    if (!this.authoritativeAudioSsrcs.has(ssrc) && this.staleVolumeAudioSsrcs.has(ssrc)) return true;
     const userId = this.resolveIncomingSsrcUserId(ssrc);
-    return Boolean(userId && userId !== this.data.userId && this.remoteMutedUserIds.has(userId));
+    if (!userId) return this.remoteUserVolumes.size > 0;
+    if (userId === this.data.userId) return false;
+    if (this.remoteMutedUserIds.has(userId)) return true;
+    if (this.authoritativeAudioSsrcs.has(ssrc)) return false;
+    return (this.remoteUserVolumes.get(userId) ?? DEFAULT_REMOTE_USER_VOLUME_PERCENT) !== DEFAULT_REMOTE_USER_VOLUME_PERCENT;
   }
 
   private handleIncomingAudio(ssrc: number): void {

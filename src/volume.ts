@@ -5,12 +5,22 @@
 
 export const DEFAULT_LOCAL_GAIN_DB = 0;
 export const DEFAULT_NOISE_SUPPRESSION_MODE: NoiseSuppressionMode = "off";
+export const DEFAULT_REMOTE_USER_VOLUME_PERCENT = 100;
+export const MIN_REMOTE_USER_VOLUME_PERCENT = 0;
+export const MAX_REMOTE_USER_VOLUME_PERCENT = 200;
+export const REMOTE_USER_VOLUME_STEP_PERCENT = 10;
 
 export type NoiseSuppressionMode = "off" | "simple";
 
 export interface LocalAudioVolumes {
   micVolume: number;
   speakerVolume: number;
+}
+
+export function normalizeRemoteUserVolumePercent(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_REMOTE_USER_VOLUME_PERCENT;
+  const stepped = Math.round(value / REMOTE_USER_VOLUME_STEP_PERCENT) * REMOTE_USER_VOLUME_STEP_PERCENT;
+  return Math.max(MIN_REMOTE_USER_VOLUME_PERCENT, Math.min(MAX_REMOTE_USER_VOLUME_PERCENT, stepped));
 }
 
 export function parseNoiseSuppressionMode(value: string | undefined): NoiseSuppressionMode | null {

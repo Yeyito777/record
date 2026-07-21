@@ -31,6 +31,8 @@ Controls:
 - `Shift+Enter` or `o` on a voice/stage channel: open its text chat without joining
 - `;` on a server, category, channel, or voice member: open its actions (including permission-gated voice moderation)
 - `m` on a server, category, channel, or voice member: toggle mute directly
+- `h` / `l` on a voice member's Volume action: lower/raise that user's playback volume by 10%
+- `-` / `+` / `=` on a selected voice member: lower/raise that user's playback volume by 10% directly
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
 - `Enter` in the prompt: submit the current message or slash command

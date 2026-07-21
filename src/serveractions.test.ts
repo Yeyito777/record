@@ -117,6 +117,7 @@ describe("server actions modal", () => {
       userId: "user-1",
       displayName: "Alice",
       muted: true,
+      volumePercent: 100,
       streaming: true,
       serverMuted: true,
       serverDeafened: true,
@@ -129,6 +130,7 @@ describe("server actions modal", () => {
 
     expect(modal.actions).toEqual([
       "toggle_mute",
+      "adjust_volume",
       "watch_stream",
       "toggle_server_mute",
       "toggle_server_deafen",
@@ -138,6 +140,7 @@ describe("server actions modal", () => {
     ]);
     const rendered = stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80));
     expect(rendered).toContain("Unmute");
+    expect(rendered).toContain("Volume 100% [██████████░░░░░░░░░░]");
     expect(rendered).toContain("Watch Stream");
     expect(rendered).toContain("Server Unmute");
     expect(rendered).toContain("Server Undeafen");
@@ -169,6 +172,36 @@ describe("server actions modal", () => {
     });
 
     expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("Stop Watching");
+  });
+
+  test("adjusts the selected voice-member volume slider with h/l or arrow keys", () => {
+    const modal = createVoiceMemberActionModal({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "user-1",
+      displayName: "Alice",
+      volumePercent: 90,
+    });
+    modal.selection = "adjust_volume";
+
+    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("Volume 90% [█████████░░░░░░░░░░░]");
+    expect(handleServerActionModalKey(modal, { type: "char", char: "h" })).toEqual({
+      type: "adjust_volume",
+      deltaPercent: -10,
+    });
+    expect(handleServerActionModalKey(modal, { type: "char", char: "l" })).toEqual({
+      type: "adjust_volume",
+      deltaPercent: 10,
+    });
+    expect(handleServerActionModalKey(modal, { type: "left" })).toEqual({
+      type: "adjust_volume",
+      deltaPercent: -10,
+    });
+    expect(handleServerActionModalKey(modal, { type: "right" })).toEqual({
+      type: "adjust_volume",
+      deltaPercent: 10,
+    });
+    expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "handled" });
   });
 
   test("kick and ban are red and each requires its own confirmation", () => {

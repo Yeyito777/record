@@ -90,6 +90,15 @@ discord-voice-engine play-rtp \
 
 `play-rtp` is the native replacement for handing RTP to `ffplay`. It receives decrypted/DAVE-decoded local Opus RTP from the client, buffers it on a fixed playout cadence, and fills confirmed packet-loss gaps with silence instead of libopus PLC/FEC so loss sounds like a brief dropout rather than robotic synthesized audio. After loss/resync/decode-error events it resets the Opus decoder predictor state before accepting future real packets, preventing stale pre-gap state from producing post-gap metallic bursts. The live path also mutes decoded full-scale/high-frequency blast frames that look like corrupt encrypted/control data which happened to pass Opus framing. Once playout starts, it keeps the Pulse/PipeWire sink fed with local silence on idle ticks so desktop-audio underflow/resume does not turn Discord talk-spurt gaps into loud pops. The live playout backend is implemented in C inside this binary so it can parse RTP, maintain decoder state, mix streams, and feed Pulse/PipeWire directly without a `pw-cat` subprocess. Metrics such as received packets, missing packets, concealed packets, artifact mutes, decoder resets, silent output frames, late packets, decode errors, output underruns, and Opus packet duration histograms are available through `--stats-json`.
 
+`play-rtp` also keeps stdin open for newline-delimited runtime playback controls:
+
+```text
+user-volume <ssrc> <percent>
+gain-db <db>
+```
+
+`user-volume` applies a `0..200` percent multiplier to the specified RTP SSRC before streams are mixed; unconfigured SSRCs default to `100`. `gain-db` changes the global gain after mixing, and `--gain-db <db>` sets its initial value.
+
 ### Packet-loss recovery harness
 
 ```sh

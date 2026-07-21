@@ -32,6 +32,8 @@ export type Action =
   | "nav_prev_category"
   | "nav_next_category"
   | "nav_toggle_guild_mute"
+  | "nav_voice_volume_up"
+  | "nav_voice_volume_down"
   | "nav_move_guild_up"
   | "nav_move_guild_down"
   | "nav_top"
@@ -88,6 +90,9 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
   "char:[": "nav_prev_category",
   "char:]": "nav_next_category",
   "char:m": "nav_toggle_guild_mute",
+  "char:+": "nav_voice_volume_up",
+  "char:=": "nav_voice_volume_up",
+  "char:-": "nav_voice_volume_down",
   "char:e": "nav_move_guild_up",
   "char:E": "nav_move_guild_down",
   "char:H": "nav_visible_top",

@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "os";
 import { delimiter, join } from "path";
 
 import { debugLog } from "../debuglog";
-import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, formatGainDb, normalizeGainDb, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
+import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, DEFAULT_REMOTE_USER_VOLUME_PERCENT, formatGainDb, normalizeGainDb, normalizeRemoteUserVolumePercent, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
 import { OPUS_PAYLOAD_TYPE, OPUS_RTP_CLOCK_INCREMENT, OPUS_SILENCE_FRAME, RTP_HEADER_LENGTH } from "./constants";
 import { dbToLinear, linearToDb, speakingIdleMs, speakingStartThresholdDb, speakingStopThresholdDb } from "./env";
 import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parseDiscordRtpPacket, parsePlainRtpPacket, reserveUdpPort } from "./rtp";
@@ -41,12 +41,14 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private captureProcess: ChildProcessWithoutNullStreams | null = null;
   private playbackProcess: ChildProcessWithoutNullStreams | null = null;
   private playbackBackend: PlaybackBackend = "ffplay";
+  private resumeFfplayWhenUserVolumesReset = false;
   private captureStartupTimer: ReturnType<typeof setTimeout> | null = null;
   private tempDir: string | null = null;
   private localPlaybackPort: number | null = null;
   private playbackSdpPath: string | null = null;
   private localCapturePort: number | null = null;
   private localVolumes: LocalAudioVolumes;
+  private readonly remoteSsrcVolumes = new Map<number, number>();
   private noiseSuppression: NoiseSuppressionMode;
   private captureBackend: CaptureBackend | null = null;
   private sendSequence = 0;
@@ -162,7 +164,28 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     debugLog("voice.volume.set", { ...next, micChanged, speakerChanged });
     if (!this.context) return;
     if (micChanged && !this.sendCaptureControl(`gain-db ${formatGainDb(next.micVolume)}\n`)) this.restartCaptureProcess("volume_change");
-    if (speakerChanged) this.restartPlaybackProcess("volume_change");
+    if (speakerChanged && !this.sendPlaybackControl(`gain-db ${formatGainDb(next.speakerVolume)}\n`)) {
+      this.restartPlaybackProcess("volume_change");
+    }
+  }
+
+  setRemoteSsrcVolume(ssrc: number, volumePercent: number): void {
+    if (!Number.isInteger(ssrc) || ssrc < 0) return;
+    const normalized = normalizeRemoteUserVolumePercent(volumePercent);
+    if (normalized === DEFAULT_REMOTE_USER_VOLUME_PERCENT) this.remoteSsrcVolumes.delete(ssrc);
+    else this.remoteSsrcVolumes.set(ssrc, normalized);
+    const controlled = this.sendPlaybackControl(`user-volume ${ssrc} ${normalized}\n`);
+    if (this.remoteSsrcVolumes.size === 0 && this.resumeFfplayWhenUserVolumesReset && this.context && this.playbackProcess) {
+      this.resumeFfplayWhenUserVolumesReset = false;
+      this.playbackForceFfplay = true;
+      this.restartPlaybackProcess("remote_user_volume_reset");
+      return;
+    }
+    if (controlled) return;
+    if (this.remoteSsrcVolumes.size === 0 || !this.context || !this.playbackProcess || !resolveVoiceEngineCommand()) return;
+    this.resumeFfplayWhenUserVolumesReset = PLAYBACK_BACKEND === "ffplay" || this.playbackForceFfplay;
+    this.playbackForceFfplay = false;
+    this.restartPlaybackProcess("remote_user_volume_change");
   }
 
   setNoiseSuppression(mode: NoiseSuppressionMode): void {
@@ -184,6 +207,16 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     }
   }
 
+  private sendPlaybackControl(line: string): boolean {
+    if (this.playbackBackend !== "engine" || !this.playbackProcess || this.playbackProcess.stdin.destroyed) return false;
+    try {
+      this.playbackProcess.stdin.write(line);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async startPlayback(context: VoiceAudioContext): Promise<void> {
     const port = await reserveUdpPort();
     this.localPlaybackPort = port;
@@ -199,16 +232,25 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     if (this.localPlaybackPort === null || !this.playbackSdpPath || !this.tempDir) return;
     const voiceEngine = resolveVoiceEngineCommand();
     const speakerVolume = this.localVolumes.speakerVolume;
-    const useNativePlayback = !this.playbackForceFfplay && shouldUseNativePlayback(voiceEngine, speakerVolume);
+    const needsPerUserVolume = this.remoteSsrcVolumes.size > 0;
+    if (needsPerUserVolume && PLAYBACK_BACKEND === "ffplay") this.resumeFfplayWhenUserVolumesReset = true;
+    const useNativePlayback = !this.playbackForceFfplay && shouldUseNativePlayback(voiceEngine, needsPerUserVolume);
     const command = useNativePlayback && voiceEngine ? voiceEngine : "ffplay";
     const readyPath = useNativePlayback ? join(this.tempDir, `playback-${Date.now()}.ready`) : null;
-    const args = useNativePlayback ? buildVoiceEnginePlaybackArgs(this.localPlaybackPort, readyPath ?? undefined, process.pid) : buildFfplayPlaybackArgs(this.playbackSdpPath, speakerVolume);
+    const args = useNativePlayback ? buildVoiceEnginePlaybackArgs(this.localPlaybackPort, readyPath ?? undefined, process.pid, speakerVolume) : buildFfplayPlaybackArgs(this.playbackSdpPath, speakerVolume);
     this.playbackBackend = useNativePlayback ? "engine" : "ffplay";
 
     debugLog("voice.playback.start", { backend: this.playbackBackend, command, port: this.localPlaybackPort, sdpPath: useNativePlayback ? null : this.playbackSdpPath, args, codecChannels: 2, speakerVolume, reason });
     this.playbackProcess = spawnVoiceHelper(command, args);
     const playbackProcess = this.playbackProcess;
-    playbackProcess.stdin.end();
+    if (useNativePlayback) {
+      playbackProcess.stdin.on("error", () => {});
+      for (const [ssrc, volumePercent] of this.remoteSsrcVolumes) {
+        playbackProcess.stdin.write(`user-volume ${ssrc} ${volumePercent}\n`);
+      }
+    } else {
+      playbackProcess.stdin.end();
+    }
     const playbackErrorOutput = drainChildOutput(playbackProcess);
     playbackProcess.on("error", (error) => {
       if (this.playbackProcess !== playbackProcess) return;
@@ -222,14 +264,18 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       if (this.playbackProcess !== playbackProcess) return;
       if (this.context !== context || code === 0 || signal === "SIGTERM" || signal === "SIGKILL") return;
       if (this.playbackBackend === "engine" && isRecoverableNativePlaybackExit(details)) {
-        // The native helper currently exits on a single malformed/corrupt Opus
-        // packet. Discord can occasionally deliver such packets during DAVE
-        // transitions or RTP reordering bursts; tearing down the whole call is
-        // much worse than falling back to ffplay's packet pacer for the rest of
-        // the session.
+        // A malformed packet can still terminate older native helpers. Prefer
+        // ffplay after that only when it would preserve the current semantics;
+        // per-user gain requires the native mixer, so restart it instead.
         this.playbackProcess = null;
-        this.playbackForceFfplay = true;
-        debugLog("voice.playback.fallback", { from: "engine", to: "ffplay", reason: "recoverable_native_exit", details });
+        const preservePerUserVolume = this.remoteSsrcVolumes.size > 0;
+        this.playbackForceFfplay = !preservePerUserVolume;
+        debugLog(preservePerUserVolume ? "voice.playback.restart" : "voice.playback.fallback", {
+          from: "engine",
+          to: preservePerUserVolume ? "engine" : "ffplay",
+          reason: "recoverable_native_exit",
+          details,
+        });
         void this.startPlaybackProcess(context, "recoverable_native_exit").catch((error) => {
           context.onError(error instanceof Error ? error : new Error(String(error)));
           if (this.context === context) this.stop();
@@ -291,6 +337,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private restartPlaybackProcess(reason: string): void {
     const context = this.context;
     if (!context || this.localPlaybackPort === null) return;
+    for (const pacer of this.playbackPacersBySsrc.values()) pacer.dispose();
+    this.playbackPacersBySsrc.clear();
     this.stopPlaybackProcess(reason);
     void this.startPlaybackProcess(context, reason).catch((error) => {
       context.onError(error instanceof Error ? error : new Error(String(error)));
@@ -951,7 +999,7 @@ export function buildVoiceEngineCaptureArgs(port: number, noiseSuppression: Nois
   return args;
 }
 
-export function buildVoiceEnginePlaybackArgs(port: number, readyFile?: string, parentPid?: number): string[] {
+export function buildVoiceEnginePlaybackArgs(port: number, readyFile?: string, parentPid?: number, gainDb = DEFAULT_LOCAL_GAIN_DB): string[] {
   const args = [
     "play-rtp",
     "--rtp", `127.0.0.1:${port}`,
@@ -960,6 +1008,7 @@ export function buildVoiceEnginePlaybackArgs(port: number, readyFile?: string, p
     "--jitter-ms", String(PLAYBACK_PACE_DELAY_MS),
     "--idle-timeout-ms", "350",
     "--max-plc-packets", "10",
+    "--gain-db", formatGainDb(gainDb),
     "--output", "pipewire",
   ];
   if (readyFile) args.push("--ready-file", readyFile);
@@ -1178,11 +1227,15 @@ function parsePlaybackBackend(value: string | undefined): PlaybackBackendPrefere
   return "auto";
 }
 
-function shouldUseNativePlayback(voiceEngine: string | null, speakerVolume = DEFAULT_LOCAL_GAIN_DB): boolean {
-  if (PLAYBACK_BACKEND === "ffplay") return false;
+export function shouldUseNativePlayback(
+  voiceEngine: string | null,
+  needsPerUserVolume = false,
+  preference: PlaybackBackendPreference = PLAYBACK_BACKEND,
+): boolean {
   if (!voiceEngine) return false;
-  if (normalizeGainDb(speakerVolume) !== DEFAULT_LOCAL_GAIN_DB) return false;
-  return PLAYBACK_BACKEND === "engine" || PLAYBACK_BACKEND === "auto";
+  if (needsPerUserVolume) return true;
+  if (preference === "ffplay") return false;
+  return preference === "engine" || preference === "auto";
 }
 
 function isRecoverableNativePlaybackExit(details: string): boolean {

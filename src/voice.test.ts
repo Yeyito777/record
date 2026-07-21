@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildDiscordWebRtcAnswer, buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, DiscordVoiceGatewayConnection, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
+import { buildDiscordWebRtcAnswer, buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, DiscordVoiceGatewayConnection, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, shouldUseNativePlayback, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -33,6 +33,7 @@ class FakeGateway implements VoiceGatewayConnection {
   disconnected = false;
   selfVoiceStates: Array<{ selfMute: boolean; selfDeaf: boolean }> = [];
   remoteMutedStates: Array<{ userId: string; muted: boolean }> = [];
+  remoteVolumeStates: Array<{ userId: string; volumePercent: number }> = [];
 
   constructor(readonly callbacks: VoiceGatewayConnectionCallbacks = {}) {}
 
@@ -42,6 +43,10 @@ class FakeGateway implements VoiceGatewayConnection {
 
   setRemoteUserMuted(userId: string, muted: boolean): void {
     this.remoteMutedStates.push({ userId, muted });
+  }
+
+  setRemoteUserVolume(userId: string, volumePercent: number): void {
+    this.remoteVolumeStates.push({ userId, volumePercent });
   }
 
   async connect(): Promise<void> {
@@ -187,6 +192,76 @@ describe("voice backend", () => {
     });
   });
 
+  test("maps per-user playback volume onto that user's RTP SSRC", () => {
+    const volumeChanges: Array<{ ssrc: number; volumePercent: number }> = [];
+    const gateway = new DiscordVoiceGatewayConnection({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "me",
+      sessionId: "voice-session",
+      token: "voice-token",
+      endpoint: "voice.example",
+    }, {
+      start: () => {},
+      stop: () => {},
+      setRemoteSsrcVolume: (ssrc, volumePercent) => volumeChanges.push({ ssrc, volumePercent }),
+    });
+
+    gateway.setRemoteUserVolume("friend", 70);
+    (gateway as unknown as { handleSpeaking(data: unknown): void }).handleSpeaking({
+      user_id: "friend",
+      ssrc: 1234,
+      speaking: 1,
+    });
+    expect(volumeChanges).toEqual([{ ssrc: 1234, volumePercent: 70 }]);
+
+    gateway.setRemoteUserVolume("friend", 80);
+    expect(volumeChanges.at(-1)).toEqual({ ssrc: 1234, volumePercent: 80 });
+    (gateway as unknown as { handleClientDisconnect(data: unknown): void }).handleClientDisconnect({ user_id: "friend" });
+    expect(volumeChanges.at(-1)).toEqual({ ssrc: 1234, volumePercent: 80 });
+    expect((gateway as unknown as { shouldDropIncomingAudio(ssrc: number): boolean }).shouldDropIncomingAudio(1234)).toBe(true);
+
+    (gateway as unknown as { handleClientsConnect(data: unknown): void }).handleClientsConnect({ user_ids: ["new-friend"] });
+    expect((gateway as unknown as { resolveIncomingSsrcUserId(ssrc: number): string | null }).resolveIncomingSsrcUserId(1234)).toBe("new-friend");
+    expect((gateway as unknown as { shouldDropIncomingAudio(ssrc: number): boolean }).shouldDropIncomingAudio(1234)).toBe(true);
+
+    (gateway as unknown as { handleSpeaking(data: unknown): void }).handleSpeaking({
+      user_id: "new-friend",
+      ssrc: 1234,
+      speaking: 1,
+    });
+    expect(volumeChanges.at(-1)).toEqual({ ssrc: 1234, volumePercent: 100 });
+  });
+
+  test("does not apply per-user volume from the provisional single-remote SSRC fallback", () => {
+    const volumeChanges: Array<{ ssrc: number; volumePercent: number }> = [];
+    const gateway = new DiscordVoiceGatewayConnection({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "me",
+      sessionId: "voice-session",
+      token: "voice-token",
+      endpoint: "voice.example",
+    }, {
+      start: () => {},
+      stop: () => {},
+      setRemoteSsrcVolume: (ssrc, volumePercent) => volumeChanges.push({ ssrc, volumePercent }),
+    });
+
+    gateway.setRemoteUserVolume("friend", 20);
+    (gateway as unknown as { handleClientsConnect(data: unknown): void }).handleClientsConnect({ user_ids: ["friend"] });
+    expect((gateway as unknown as { resolveIncomingSsrcUserId(ssrc: number): string | null }).resolveIncomingSsrcUserId(4321)).toBe("friend");
+    expect(volumeChanges).toEqual([]);
+    expect((gateway as unknown as { shouldDropIncomingAudio(ssrc: number): boolean }).shouldDropIncomingAudio(4321)).toBe(true);
+
+    (gateway as unknown as { handleSpeaking(data: unknown): void }).handleSpeaking({
+      user_id: "friend",
+      ssrc: 4321,
+      speaking: 1,
+    });
+    expect(volumeChanges).toEqual([{ ssrc: 4321, volumePercent: 20 }]);
+  });
+
   test("builds Discord voice gateway resume payload with buffered seq ack", () => {
     expect(buildVoiceResumePayload({
       guildId: "guild-1",
@@ -252,11 +327,19 @@ describe("voice backend", () => {
       "--jitter-ms", "240",
       "--idle-timeout-ms", "350",
       "--max-plc-packets", "10",
+      "--gain-db", "0",
       "--output", "pipewire",
       "--ready-file", "/tmp/playback.ready",
     ]);
     expect(buildVoiceEnginePlaybackArgs(43125, undefined, 1234)).toContain("--parent-pid");
     expect(buildVoiceEnginePlaybackArgs(43125, undefined, 1234)).toContain("1234");
+    expect(buildVoiceEnginePlaybackArgs(43125, undefined, undefined, -6)).toContain("-6");
+  });
+
+  test("forces native playback for per-user volume even when ffplay was preferred", () => {
+    expect(shouldUseNativePlayback("discord-voice-engine", true, "ffplay")).toBe(true);
+    expect(shouldUseNativePlayback("discord-voice-engine", false, "ffplay")).toBe(false);
+    expect(shouldUseNativePlayback(null, true, "ffplay")).toBe(false);
   });
 
   test("resolves native voice engine from env or PATH", () => {
@@ -667,6 +750,7 @@ describe("voice backend", () => {
     });
 
     controller.setRemoteUserMuted("friend", true);
+    controller.setRemoteUserVolume("friend", 70);
     const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     controller.handleVoiceStateUpdate({
@@ -683,10 +767,14 @@ describe("voice backend", () => {
     await started;
 
     expect(gateways[0]?.remoteMutedStates).toEqual([{ userId: "friend", muted: true }]);
+    expect(gateways[0]?.remoteVolumeStates).toEqual([{ userId: "friend", volumePercent: 70 }]);
 
     controller.setRemoteUserMuted("friend", false);
     expect(gateways[0]?.remoteMutedStates.at(-1)).toEqual({ userId: "friend", muted: false });
     expect(controller.isRemoteUserMuted("friend")).toBe(false);
+    controller.setRemoteUserVolume("friend", 110);
+    expect(gateways[0]?.remoteVolumeStates.at(-1)).toEqual({ userId: "friend", volumePercent: 110 });
+    expect(controller.remoteUserVolume("friend")).toBe(110);
   });
 
   test("waits for the app gateway before requesting voice state", async () => {

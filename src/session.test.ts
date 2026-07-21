@@ -8,7 +8,7 @@ import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarFolder
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile, voiceMemberModerationContext } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -1234,6 +1234,24 @@ describe("session", () => {
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.streaming).toBe(false);
 
     clearReadOnlyClient(state);
+  });
+
+  test("adjusts a remote voice member in 10 percent steps and clamps to Discord's 0-200 range", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    let renders = 0;
+    const effects = { scheduleRender: () => { renders += 1; } };
+
+    expect(voiceMemberVolume("volume-friend")).toBe(100);
+    expect(adjustVoiceMemberVolume(state, effects, "volume-friend", -10)).toBe(90);
+    expect(voiceMemberVolume("volume-friend")).toBe(90);
+    expect(adjustVoiceMemberVolume(state, effects, "volume-friend", -1000)).toBe(0);
+    expect(adjustVoiceMemberVolume(state, effects, "volume-friend", 1000)).toBe(200);
+    expect(adjustVoiceMemberVolume(state, effects, "self", -10)).toBe(100);
+    expect(renders).toBe(3);
+
+    clearReadOnlyClient(state);
+    expect(voiceMemberVolume("volume-friend")).toBe(100);
   });
 
   test("voice actions use channel permissions while kick and ban also use role hierarchy", () => {

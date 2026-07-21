@@ -4,7 +4,7 @@ import { fetchPreferredVoiceRegions } from "./regions";
 import { createDefaultVoiceAudioBackend } from "./audio-ffmpeg";
 import { DiscordVoiceGatewayConnection } from "./gateway";
 import { VoiceGatewayCloseError, type PendingVoiceJoin, type VoiceCallControllerOptions, type VoiceCallSession, type VoiceCallStartOptions, type VoiceCallStartResult, type VoiceCallTarget, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceServerUpdate, type VoiceStateRequest, type VoiceStateUpdate } from "./types";
-import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
+import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, DEFAULT_REMOTE_USER_VOLUME_PERCENT, normalizeRemoteUserVolumePercent, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
 import { debugLog } from "../debuglog";
 
 const VOICE_GATEWAY_RECOVERY_REJOIN_ATTEMPTS = 12;
@@ -16,6 +16,7 @@ export class VoiceCallController {
   private localVolumes: LocalAudioVolumes;
   private noiseSuppression: NoiseSuppressionMode;
   private readonly remoteMutedUserIds = new Set<string>();
+  private readonly remoteUserVolumes = new Map<string, number>();
 
   constructor(private readonly options: VoiceCallControllerOptions) {
     this.localVolumes = {
@@ -151,6 +152,18 @@ export class VoiceCallController {
     return this.remoteMutedUserIds.has(userId);
   }
 
+  setRemoteUserVolume(userId: string, volumePercent: number): void {
+    if (!userId || userId === this.options.selfUserId) return;
+    const normalized = normalizeRemoteUserVolumePercent(volumePercent);
+    if (normalized === DEFAULT_REMOTE_USER_VOLUME_PERCENT) this.remoteUserVolumes.delete(userId);
+    else this.remoteUserVolumes.set(userId, normalized);
+    this.active?.gateway?.setRemoteUserVolume?.(userId, normalized);
+  }
+
+  remoteUserVolume(userId: string): number {
+    return this.remoteUserVolumes.get(userId) ?? DEFAULT_REMOTE_USER_VOLUME_PERCENT;
+  }
+
   setNoiseSuppression(mode: NoiseSuppressionMode): void {
     this.noiseSuppression = mode;
     this.active?.gateway?.setNoiseSuppression?.(mode);
@@ -260,6 +273,7 @@ export class VoiceCallController {
     session.gateway = gateway;
     gateway.setSelfVoiceState?.({ selfMute: session.selfMute, selfDeaf: session.selfDeaf });
     for (const userId of this.remoteMutedUserIds) gateway.setRemoteUserMuted?.(userId, true);
+    for (const [userId, volumePercent] of this.remoteUserVolumes) gateway.setRemoteUserVolume?.(userId, volumePercent);
     gateway.setLocalVolumes?.(this.localVolumes);
     gateway.setNoiseSuppression?.(this.noiseSuppression);
     await gateway.connect();

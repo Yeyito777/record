@@ -67,6 +67,12 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "char", char: "m" }, "navigation")).toBe("nav_toggle_guild_mute");
   });
 
+  test("navigation volume shortcuts use plus, equals, and minus", () => {
+    expect(resolveAction({ type: "char", char: "+" }, "navigation")).toBe("nav_voice_volume_up");
+    expect(resolveAction({ type: "char", char: "=" }, "navigation")).toBe("nav_voice_volume_up");
+    expect(resolveAction({ type: "char", char: "-" }, "navigation")).toBe("nav_voice_volume_down");
+  });
+
   test("navigation e and E move servers like Exocortex conversations", () => {
     expect(resolveAction({ type: "char", char: "e" }, "navigation")).toBe("nav_move_guild_up");
     expect(resolveAction({ type: "char", char: "E" }, "navigation")).toBe("nav_move_guild_down");

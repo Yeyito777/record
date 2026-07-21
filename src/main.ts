@@ -5,7 +5,7 @@
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { flushDataCacheSync } from "./datacache";
 import { configPath, loadConfig, loadSavedLogins } from "./config";
-import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, normalizeGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
+import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
 import {
@@ -49,6 +49,8 @@ import { invalidateFrame } from "./frame";
 import { render } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
+  adjustSelectedVoiceMemberVolume,
+  adjustVoiceMemberVolume,
   bootstrapReadOnlyClient,
   canWatchVoiceMemberStream,
   currentAppGatewaySessionId,
@@ -72,6 +74,7 @@ import {
   toggleVoiceMemberMute,
   toggleSelectedGuildMute,
   voiceMemberModerationContext,
+  voiceMemberVolume,
   watchCurrentStream,
 } from "./session";
 import { renderStatusLine } from "./statusline";
@@ -1003,6 +1006,7 @@ function openSelectedServerActionModal(): boolean {
       userId: selected.userId,
       displayName: selected.label,
       muted: selected.self ? Boolean(selected.selfMuted) : Boolean(selected.localMuted),
+      volumePercent: selected.self ? null : voiceMemberVolume(selected.userId),
       streaming: canWatchVoiceMemberStream(state, selected.channelId, selected.userId),
       watching: isWatchingVoiceMemberStream(selected.channelId, selected.userId),
       ...moderation,
@@ -1154,6 +1158,9 @@ function handleServerModalKey(key: KeyEvent): void {
   state.navigationPendingKeys = "";
   const result = handleServerActionModalKey(modal, key);
   if (result.type === "close") state.sidebar.serverActionModal = null;
+  if (result.type === "adjust_volume" && modal.targetKind === "voice_member") {
+    modal.volumePercent = adjustVoiceMemberVolume(state, { scheduleRender }, modal.targetId, result.deltaPercent);
+  }
   if (result.type === "action") runServerModalAction(result.action);
   scheduleRender();
 }
@@ -1321,6 +1328,12 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     case "nav_toggle_guild_mute":
       toggleSelectedGuildMute(state, { scheduleRender });
+      return true;
+    case "nav_voice_volume_up":
+      adjustSelectedVoiceMemberVolume(state, { scheduleRender }, REMOTE_USER_VOLUME_STEP_PERCENT);
+      return true;
+    case "nav_voice_volume_down":
+      adjustSelectedVoiceMemberVolume(state, { scheduleRender }, -REMOTE_USER_VOLUME_STEP_PERCENT);
       return true;
     case "nav_move_guild_up":
       moveSelectedGuildOrder(state, { scheduleRender }, "up");
