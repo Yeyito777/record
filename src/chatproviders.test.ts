@@ -6,6 +6,7 @@ import {
   isWhatsAppChannelId,
   whatsappChannelId,
   whatsappJidFromChannelId,
+  whatsappSidebarLayoutScope,
 } from "./chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
@@ -23,5 +24,11 @@ describe("chat provider identifiers", () => {
     expect(isFixedTopLevelGuildId(DIRECT_MESSAGES_GUILD_ID)).toBe(true);
     expect(isFixedTopLevelGuildId(WHATSAPP_GUILD_ID)).toBe(true);
     expect(isFixedTopLevelGuildId("guild-1")).toBe(false);
+  });
+
+  test("uses a stable phone identity for WhatsApp sidebar layout", () => {
+    expect(whatsappSidebarLayoutScope("15551234567:4@s.whatsapp.net")).toBe("whatsapp:15551234567@s.whatsapp.net");
+    expect(whatsappSidebarLayoutScope("opaque:9@lid", "15551234567:2@s.whatsapp.net"))
+      .toBe("whatsapp:15551234567@s.whatsapp.net");
   });
 });

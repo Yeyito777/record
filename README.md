@@ -31,6 +31,8 @@ Controls:
 - `Shift+Enter` or `o` on a voice/stage channel: open its text chat without joining
 - `;` on a server, category, channel, or voice member: open its actions (including permission-gated voice moderation)
 - `m` on a server, category, channel, or voice member: toggle mute directly
+- `e` / `Shift+E` on a Direct Message or WhatsApp conversation: move it up/down within its pinned or unpinned section
+- `p` on a Direct Message or WhatsApp conversation: pin/unpin it
 - `h` / `l` on a voice member's Volume action: lower/raise that user's playback volume by 10%
 - `-` / `+` / `=` on a selected voice member: lower/raise that user's playback volume by 10% directly
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt

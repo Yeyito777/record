@@ -360,6 +360,7 @@ export function whatsAppChannels(state: WhatsAppUiState): DiscordChannel[] {
       position,
       type: chat.kind === "group" ? 3 : 1,
       nsfw: false,
+      pinned: Boolean(chat.pinned),
       muted: Boolean(chat.mutedUntilMs && chat.mutedUntilMs > Date.now()),
       recipients: chatRecipient(state, chat),
     }));

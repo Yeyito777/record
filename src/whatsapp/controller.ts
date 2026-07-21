@@ -1,14 +1,15 @@
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { WHATSAPP_GUILD_ID, whatsappChannelId, whatsappGuild, whatsappJidFromChannelId } from "../chatproviders";
+import { WHATSAPP_GUILD_ID, whatsappChannelId, whatsappGuild, whatsappJidFromChannelId, whatsappSidebarLayoutScope } from "../chatproviders";
 import { clearChannelList, setActiveChannelEntry, setChannelList } from "../channels";
+import { loadCachedSidebarChannelLayout, saveCachedSidebarChannelLayout } from "../datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME } from "../discord";
 import {
   clearChannelNotifications,
   setChannelNotificationCount,
 } from "../notifications";
-import { setSidebarCachedChannels, setSidebarGuilds, sidebarCachedGuilds } from "../sidebar";
+import { applySidebarChannelLayoutForGuild, setSidebarCachedChannels, setSidebarGuilds, sidebarCachedGuilds, sidebarChannelLayoutForGuild } from "../sidebar";
 import type { AppState } from "../state";
 import { setNotice } from "../state";
 import { clearTimeline, appendTimelineMessage, setTimelineMessages } from "../timeline";
@@ -139,6 +140,7 @@ export class WhatsAppController {
   private readonly pendingHistoryByChatId = new Map<string, PendingHistoryRequest>();
   private muteRequestSequence = 0;
   private readonly muteRequestIdByChatId = new Map<string, number>();
+  private loadedSidebarLayoutScope: string | null = null;
 
   constructor(
     private readonly state: AppState,
@@ -573,6 +575,7 @@ export class WhatsAppController {
             ...(connection.account.name ? { name: sanitizeTerminalLabel(connection.account.name) } : {}),
           }
         : null;
+      this.applyCachedSidebarChannelLayout();
       this.queueCacheSave();
       this.state.sidebar.loadingGuildId = null;
     }
@@ -655,6 +658,7 @@ export class WhatsAppController {
 
   private syncProviderState(syncUnreadCounts = false): void {
     ensureWhatsAppRoot(this.state);
+    this.applyCachedSidebarChannelLayout();
     this.reconcileProviderChannelIds();
     const channels = whatsAppChannels(this.state.whatsapp);
     setSidebarCachedChannels(this.state.sidebar, WHATSAPP_GUILD_ID, channels);
@@ -699,6 +703,16 @@ export class WhatsAppController {
     const channelId = this.state.timeline.channelId ?? this.state.channelList.activeChannelId;
     const jid = channelId ? whatsappJidFromChannelId(channelId) : null;
     return jid ? canonicalWhatsAppJid(this.state.whatsapp, jid) : null;
+  }
+
+  private applyCachedSidebarChannelLayout(): void {
+    const accountId = this.state.whatsapp.account?.id;
+    if (!accountId) return;
+    const scope = whatsappSidebarLayoutScope(accountId, this.state.whatsapp.account?.phoneId);
+    if (scope === this.loadedSidebarLayoutScope) return;
+    this.loadedSidebarLayoutScope = scope;
+    const layout = loadCachedSidebarChannelLayout(scope);
+    applySidebarChannelLayoutForGuild(this.state.sidebar, WHATSAPP_GUILD_ID, layout?.[WHATSAPP_GUILD_ID]);
   }
 
   private requestOlderHistory(jid: string): void {
@@ -782,6 +796,29 @@ export class WhatsAppController {
   }
 
   private reconcileProviderChannelIds(): void {
+    let migratedSidebarPlacement = false;
+    const placements = this.state.sidebar.channelPlacementsByGuildId[WHATSAPP_GUILD_ID] ?? {};
+    for (const [oldChannelId, placement] of Object.entries(placements)) {
+      const oldJid = whatsappJidFromChannelId(oldChannelId);
+      if (!oldJid) continue;
+      const canonicalChannelId = whatsappChannelId(canonicalWhatsAppJid(this.state.whatsapp, oldJid));
+      if (canonicalChannelId === oldChannelId) continue;
+      placements[canonicalChannelId] ??= { ...placement };
+      delete placements[oldChannelId];
+      migratedSidebarPlacement = true;
+    }
+
+    const selectedSidebarItem = this.state.sidebar.selectedItem;
+    if (selectedSidebarItem?.type === "channel" && selectedSidebarItem.guildId === WHATSAPP_GUILD_ID) {
+      const selectedJid = whatsappJidFromChannelId(selectedSidebarItem.id);
+      if (selectedJid) {
+        const canonicalChannelId = whatsappChannelId(canonicalWhatsAppJid(this.state.whatsapp, selectedJid));
+        if (canonicalChannelId !== selectedSidebarItem.id) {
+          this.state.sidebar.selectedItem = { ...selectedSidebarItem, id: canonicalChannelId };
+        }
+      }
+    }
+
     for (const [oldChannelId, oldCount] of Object.entries(this.state.notifications.byChannelId)) {
       const oldJid = whatsappJidFromChannelId(oldChannelId);
       if (!oldJid) continue;
@@ -833,6 +870,21 @@ export class WhatsAppController {
       if (replyJid) {
         this.state.replyTarget.channelId = whatsappChannelId(canonicalWhatsAppJid(this.state.whatsapp, replyJid));
       }
+    }
+
+    if (migratedSidebarPlacement) this.persistSidebarChannelLayout();
+  }
+
+  private persistSidebarChannelLayout(): void {
+    const account = this.state.whatsapp.account;
+    if (!account?.id) return;
+    const scope = whatsappSidebarLayoutScope(account.id, account.phoneId);
+    try {
+      saveCachedSidebarChannelLayout(scope, {
+        [WHATSAPP_GUILD_ID]: sidebarChannelLayoutForGuild(this.state.sidebar, WHATSAPP_GUILD_ID),
+      });
+    } catch {
+      // Provider sync must continue even if this local preference cannot be saved.
     }
   }
 

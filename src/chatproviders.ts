@@ -5,6 +5,15 @@ export const WHATSAPP_GUILD_ID = "@me::whatsapp";
 export const WHATSAPP_GUILD_NAME = "WhatsApp";
 export const WHATSAPP_CHANNEL_ID_PREFIX = "wa:";
 
+export function whatsappSidebarLayoutScope(accountId: string, phoneId?: string | null): string {
+  const jid = phoneId || accountId;
+  const at = jid.lastIndexOf("@");
+  const stableJid = at > 0
+    ? `${jid.slice(0, at).split(":")[0]}${jid.slice(at)}`
+    : jid.split(":")[0] || jid;
+  return `whatsapp:${stableJid}`;
+}
+
 export function whatsappGuild(): DiscordGuild {
   return { id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null };
 }

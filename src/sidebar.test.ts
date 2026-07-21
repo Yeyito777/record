@@ -4,6 +4,7 @@ import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME } from "./discord"
 import { WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import {
   activateSelectedEntry,
+  applySidebarChannelLayoutForGuild,
   applySidebarFolderLayout,
   buildSidebarEntries,
   createSidebarState,
@@ -23,6 +24,7 @@ import {
   moveSidebarSelectionToPrevGuild,
   moveSidebarSelectionOut,
   moveSelectedSidebarGuild,
+  moveSelectedPrivateConversation,
   openSidebarCommandBar,
   openSidebarCreateFolderPrompt,
   openSidebarMoveItemsPrompt,
@@ -34,6 +36,8 @@ import {
   setSidebarCachedChannels,
   setSidebarGuilds,
   sidebarFolderLayout,
+  sidebarChannelLayoutForGuild,
+  toggleSelectedPrivateConversationPinned,
   toggleSidebarVisualSelection,
   unwrapSelectedSidebarFolder,
   SIDEBAR_WIDTH,
@@ -150,6 +154,181 @@ describe("sidebar state", () => {
 
     expect(rows[3]).toContain("🔕");
     expect(rows[3]).not.toContain(" 4 ");
+  });
+
+  test("reorders and pins DM conversations with Exocortex section semantics", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    const channels = [
+      { id: "dm-a", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "dm-b", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Friends", topic: null, position: 1, type: 3, nsfw: false },
+      { id: "dm-c", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Charlie", topic: null, position: 2, type: 1, nsfw: false },
+    ];
+    setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, channels);
+
+    sidebar.selectedIndex = buildSidebarEntries(sidebar, []).findIndex((entry) => entry.id === "dm-b");
+    sidebar.selectedItem = null;
+    expect(moveSelectedPrivateConversation(sidebar, [], "up")).toBe(DIRECT_MESSAGES_GUILD_ID);
+    expect(buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id))
+      .toEqual(["dm-b", "dm-a", "dm-c"]);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("dm-b");
+
+    expect(toggleSelectedPrivateConversationPinned(sidebar, [])).toBe(DIRECT_MESSAGES_GUILD_ID);
+    let entries = buildSidebarEntries(sidebar, []);
+    expect(entries.map((entry) => [entry.kind, entry.id])).toEqual([
+      ["guild", DIRECT_MESSAGES_GUILD_ID],
+      ["channel", "dm-b"],
+      ["delimiter", `${DIRECT_MESSAGES_GUILD_ID}::pinned-delimiter`],
+      ["channel", "dm-a"],
+      ["channel", "dm-c"],
+    ]);
+
+    sidebar.selectedIndex = entries.findIndex((entry) => entry.id === "dm-c");
+    sidebar.selectedItem = { type: "channel", id: "dm-c", guildId: DIRECT_MESSAGES_GUILD_ID };
+    expect(toggleSelectedPrivateConversationPinned(sidebar, [])).toBe(DIRECT_MESSAGES_GUILD_ID);
+    expect(buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id))
+      .toEqual(["dm-b", "dm-c", "dm-a"]);
+    expect(moveSelectedPrivateConversation(sidebar, [], "up")).toBe(DIRECT_MESSAGES_GUILD_ID);
+    expect(buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id))
+      .toEqual(["dm-c", "dm-b", "dm-a"]);
+
+    expect(toggleSelectedPrivateConversationPinned(sidebar, [])).toBe(DIRECT_MESSAGES_GUILD_ID);
+    entries = buildSidebarEntries(sidebar, []);
+    expect(entries.filter((entry) => entry.kind === "channel").map((entry) => entry.id))
+      .toEqual(["dm-b", "dm-c", "dm-a"]);
+    expect(entries[sidebar.selectedIndex]?.id).toBe("dm-c");
+  });
+
+  test("applies persisted conversation placement to WhatsApp chats", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = WHATSAPP_GUILD_ID;
+    const channels = [
+      { id: "wa:a", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "wa:group", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Family", topic: null, position: 1, type: 3, nsfw: false },
+    ];
+    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, channels);
+    applySidebarChannelLayoutForGuild(sidebar, WHATSAPP_GUILD_ID, {
+      "wa:a": { pinned: false, sortOrder: 1 },
+      "wa:group": { pinned: true, sortOrder: 0 },
+    });
+
+    const entries = buildSidebarEntries(sidebar, []);
+    expect(entries.filter((entry) => entry.kind === "channel").map((entry) => entry.id)).toEqual(["wa:group", "wa:a"]);
+    expect(sidebarChannelLayoutForGuild(sidebar, WHATSAPP_GUILD_ID)).toEqual({
+      "wa:a": { pinned: false, sortOrder: 1 },
+      "wa:group": { pinned: true, sortOrder: 0 },
+    });
+    const rendered = renderSidebar(sidebar, [], 8, true).map(stripAnsiForTest).join("\n");
+    expect(rendered).not.toContain("Pinned");
+    expect(rendered).toContain("─");
+    expect(rendered.indexOf("Family")).toBeLessThan(rendered.indexOf("Alice"));
+  });
+
+  test("keeps a selected conversation focused when provider updates insert sidebar rows", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, [
+      { id: "dm-a", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "dm-b", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Bob", topic: null, position: 1, type: 1, nsfw: false },
+    ]);
+    moveSidebarSelection(sidebar, [], 2);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("dm-b");
+
+    setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, [
+      { id: "dm-new", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "New", topic: null, position: 0, type: 1, nsfw: false, pinned: true },
+      { id: "dm-a", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 1, type: 1, nsfw: false },
+      { id: "dm-b", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Bob", topic: null, position: 2, type: 1, nsfw: false },
+    ]);
+
+    const entries = buildSidebarEntries(sidebar, []);
+    expect(entries[sidebar.selectedIndex]?.id).toBe("dm-b");
+    expect(sidebar.selectedItem).toEqual({ type: "channel", id: "dm-b", guildId: DIRECT_MESSAGES_GUILD_ID });
+  });
+
+  test("retains placements for temporarily absent or archived conversations", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = WHATSAPP_GUILD_ID;
+    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, [
+      { id: "wa:a", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "A", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "wa:b", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "B", topic: null, position: 1, type: 1, nsfw: false },
+    ]);
+    applySidebarChannelLayoutForGuild(sidebar, WHATSAPP_GUILD_ID, {
+      "wa:a": { pinned: false, sortOrder: 0 },
+      "wa:archived": { pinned: false, sortOrder: 1 },
+      "wa:b": { pinned: false, sortOrder: 2 },
+    });
+    moveSidebarSelection(sidebar, [], 1);
+    expect(toggleSelectedPrivateConversationPinned(sidebar, [])).toBe(WHATSAPP_GUILD_ID);
+
+    expect(sidebarChannelLayoutForGuild(sidebar, WHATSAPP_GUILD_ID)["wa:archived"])
+      .toEqual({ pinned: false, sortOrder: 1 });
+    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, [
+      { id: "wa:a", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "A", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "wa:b", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "B", topic: null, position: 1, type: 1, nsfw: false },
+      { id: "wa:archived", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Archived", topic: null, position: 2, type: 1, nsfw: false },
+    ]);
+    expect(buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id))
+      .toEqual(["wa:a", "wa:archived", "wa:b"]);
+  });
+
+  test("canceling sidebar search restores the selected conversation identity", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, [
+      { id: "dm-alpha", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alpha", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "dm-beta", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Beta", topic: null, position: 1, type: 1, nsfw: false },
+    ]);
+    moveSidebarSelection(sidebar, [], 2);
+    openSidebarSearchBar(sidebar, [], "forward");
+    for (const char of "Alpha") handleSidebarSearchBarKey(sidebar, [], { type: "char", char });
+    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("dm-alpha");
+
+    handleSidebarSearchBarKey(sidebar, [], { type: "escape" });
+    const entries = buildSidebarEntries(sidebar, []);
+    expect(entries[sidebar.selectedIndex]?.id).toBe("dm-beta");
+    expect(sidebar.selectedItem).toEqual({ type: "channel", id: "dm-beta", guildId: DIRECT_MESSAGES_GUILD_ID });
+  });
+
+  test("pinned conversation chrome never strands the viewport on its delimiter", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, [
+      { id: "dm-pinned", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Pinned chat", topic: null, position: 0, type: 1, nsfw: false },
+      ...[1, 2, 3].map((index) => ({
+        id: `dm-${index}`,
+        guildId: DIRECT_MESSAGES_GUILD_ID,
+        parentId: null,
+        name: `Chat ${index}`,
+        topic: null,
+        position: index,
+        type: 1,
+        nsfw: false,
+      })),
+    ]);
+    applySidebarChannelLayoutForGuild(sidebar, DIRECT_MESSAGES_GUILD_ID, {
+      "dm-pinned": { pinned: true, sortOrder: 0 },
+      "dm-1": { pinned: false, sortOrder: 1 },
+      "dm-2": { pinned: false, sortOrder: 2 },
+      "dm-3": { pinned: false, sortOrder: 3 },
+    });
+    sidebar.selectedItem = { type: "channel", id: "dm-3", guildId: DIRECT_MESSAGES_GUILD_ID };
+    sidebar.selectedIndex = 5;
+    sidebar.scrollOffset = 2;
+
+    renderSidebar(sidebar, [], 6, true);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.scrollOffset]?.kind).not.toBe("delimiter");
+    const before = sidebar.scrollOffset;
+    scrollSidebarSelectionLine(sidebar, [], 1, 6);
+    expect(sidebar.scrollOffset).toBeLessThan(before);
+    expect(buildSidebarEntries(sidebar, [])[sidebar.scrollOffset]?.kind).not.toBe("delimiter");
   });
 
   test("creating folders uses Exocortex placement semantics", () => {

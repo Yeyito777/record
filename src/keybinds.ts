@@ -36,6 +36,7 @@ export type Action =
   | "nav_voice_volume_down"
   | "nav_move_guild_up"
   | "nav_move_guild_down"
+  | "nav_toggle_conversation_pin"
   | "nav_top"
   | "nav_bottom"
   | "nav_visible_top"
@@ -95,6 +96,7 @@ const NAV_CHAR_BINDS: Record<string, Action> = {
   "char:-": "nav_voice_volume_down",
   "char:e": "nav_move_guild_up",
   "char:E": "nav_move_guild_down",
+  "char:p": "nav_toggle_conversation_pin",
   "char:H": "nav_visible_top",
   "char:M": "nav_visible_middle",
   "char:L": "nav_visible_bottom",

@@ -21,7 +21,7 @@ import {
 
 export const SIDEBAR_WIDTH = 28;
 
-export type SidebarEntryKind = "guild" | "folder" | "up" | "category" | "channel" | "voice-member" | "loading";
+export type SidebarEntryKind = "guild" | "folder" | "up" | "category" | "channel" | "voice-member" | "delimiter" | "loading";
 export type SidebarSearchDirection = "forward" | "backward";
 export type SidebarSearchBarMode = "search" | "command";
 export type SidebarFolderPromptPurpose = "create_folder" | "move_items" | "rename_folder";
@@ -40,13 +40,21 @@ export interface SidebarGuildPlacement {
   sortOrder: number;
 }
 
+export interface SidebarChannelPlacement {
+  pinned: boolean;
+  sortOrder: number;
+}
+
+/** Local ordering for conversation rows inside provider-owned sidebar roots. */
+export type SidebarChannelLayout = Record<string, Record<string, SidebarChannelPlacement>>;
+
 export interface SidebarFolderLayout {
   folders: SidebarFolder[];
   guildPlacements: Record<string, SidebarGuildPlacement>;
 }
 
 export type SidebarItemRef = { type: "guild" | "folder"; id: string };
-export type SidebarSelectableItem = SidebarItemRef | { type: "up" };
+export type SidebarSelectableItem = SidebarItemRef | { type: "channel"; id: string; guildId: string } | { type: "up" };
 
 export interface SidebarFolderPromptAutocompleteState {
   selection: number;
@@ -133,6 +141,7 @@ export interface SidebarState {
   folders: SidebarFolder[];
   currentFolderId: string | null;
   guildPlacements: Record<string, SidebarGuildPlacement>;
+  channelPlacementsByGuildId: SidebarChannelLayout;
   selectedItem: SidebarSelectableItem | null;
   visualAnchor: SidebarItemRef | null;
   pendingDeleteItem: SidebarItemRef | null;
@@ -160,6 +169,7 @@ export function createSidebarState(): SidebarState {
     folders: [],
     currentFolderId: null,
     guildPlacements: {},
+    channelPlacementsByGuildId: {},
     selectedItem: null,
     visualAnchor: null,
     pendingDeleteItem: null,
@@ -176,7 +186,7 @@ export function createSidebarState(): SidebarState {
 }
 
 function isSelectableEntry(entry: SidebarEntry): boolean {
-  return entry.kind !== "loading";
+  return entry.kind !== "loading" && entry.kind !== "delimiter";
 }
 
 function sameSidebarItem(a: SidebarSelectableItem | null | undefined, b: SidebarSelectableItem | null | undefined): boolean {
@@ -189,6 +199,7 @@ function sameSidebarItem(a: SidebarSelectableItem | null | undefined, b: Sidebar
 function sidebarItemKey(item: SidebarSelectableItem | null | undefined): string | null {
   if (!item) return null;
   if (item.type === "up") return "up";
+  if (item.type === "channel") return `channel:${item.guildId}:${item.id}`;
   return `${item.type}:${item.id}`;
 }
 
@@ -255,6 +266,26 @@ export function sidebarFolderLayout(sidebar: SidebarState): SidebarFolderLayout 
     folders: sidebar.folders.map((folder) => ({ ...folder })),
     guildPlacements: Object.fromEntries(Object.entries(sidebar.guildPlacements).map(([guildId, placement]) => [guildId, { ...placement }])),
   };
+}
+
+export function sidebarChannelLayoutForGuild(sidebar: SidebarState, guildId: string): Record<string, SidebarChannelPlacement> {
+  return Object.fromEntries(Object.entries(sidebar.channelPlacementsByGuildId[guildId] ?? {}).map(([channelId, placement]) => [
+    channelId,
+    { pinned: Boolean(placement.pinned), sortOrder: placement.sortOrder },
+  ]));
+}
+
+export function applySidebarChannelLayoutForGuild(
+  sidebar: SidebarState,
+  guildId: string,
+  layout: Record<string, SidebarChannelPlacement> | null | undefined,
+): void {
+  const placements: Record<string, SidebarChannelPlacement> = {};
+  for (const [channelId, placement] of Object.entries(layout ?? {})) {
+    if (!channelId || !placement || !Number.isFinite(placement.sortOrder)) continue;
+    placements[channelId] = { pinned: Boolean(placement.pinned), sortOrder: placement.sortOrder };
+  }
+  sidebar.channelPlacementsByGuildId[guildId] = placements;
 }
 
 export function applySidebarFolderLayout(sidebar: SidebarState, layout: SidebarFolderLayout | null | undefined): void {
@@ -344,6 +375,7 @@ export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.folders = [];
   sidebar.currentFolderId = null;
   sidebar.guildPlacements = {};
+  sidebar.channelPlacementsByGuildId = {};
   sidebar.selectedItem = null;
   sidebar.visualAnchor = null;
   sidebar.pendingDeleteItem = null;
@@ -563,7 +595,9 @@ function nextItemAfterRemovingItems(
 ): SidebarSelectableItem | null {
   const removedKeys = new Set(items.map((item) => sidebarItemKey(item)));
   const rowsBefore = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options)
-    .filter((entry): entry is SidebarEntry & { item: SidebarSelectableItem } => Boolean(entry.item));
+    .filter((entry): entry is SidebarEntry & { item: Exclude<SidebarSelectableItem, { type: "channel" }> } => (
+      Boolean(entry.item) && entry.item?.type !== "channel"
+    ));
   const removedIndices = rowsBefore
     .map((entry, index) => removedKeys.has(sidebarItemKey(entry.item)) ? index : -1)
     .filter((index) => index !== -1);
@@ -736,6 +770,119 @@ export function moveSelectedSidebarGuild(
   if (selectedIndex >= 0) sidebar.selectedIndex = selectedIndex;
 
   return { guild: nextGuilds[toIndex]!, previousGuilds, nextGuilds };
+}
+
+function selectedPrivateConversationEntry(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  options: SidebarVisibilityOptions,
+): SidebarEntry | null {
+  const entry = getSelectedSidebarEntry(sidebar, channels, options);
+  return entry.kind === "channel" && isFixedTopLevelGuildId(entry.guildId) ? entry : null;
+}
+
+function privateConversationChannels(sidebar: SidebarState, channels: DiscordChannel[], guildId: string): DiscordChannel[] {
+  return sortChannelsForSidebar(
+    sidebar,
+    guildId,
+    sidebarChannelsForGuild(sidebar, channels, guildId).filter((channel) => channel.type !== 4),
+  );
+}
+
+function materializePrivateConversationPlacements(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  guildId: string,
+): DiscordChannel[] {
+  const ordered = privateConversationChannels(sidebar, channels, guildId);
+  const sourceIndex = new Map(ordered.map((channel, index) => [channel.id, index]));
+  const placements: Record<string, SidebarChannelPlacement> = Object.fromEntries(
+    Object.entries(sidebar.channelPlacementsByGuildId[guildId] ?? {}).map(([channelId, placement]) => [channelId, { ...placement }]),
+  );
+  for (const [index, channel] of ordered.entries()) {
+    if (placements[channel.id]) continue;
+    const placement = effectiveChannelPlacement(sidebar, guildId, channel, sourceIndex.get(channel.id) ?? index, ordered);
+    placements[channel.id] = { ...placement };
+  }
+  sidebar.channelPlacementsByGuildId[guildId] = placements;
+  return ordered;
+}
+
+function focusPrivateConversationAfterMutation(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  guildId: string,
+  channelId: string,
+  options: SidebarVisibilityOptions,
+): void {
+  sidebar.selectedItem = { type: "channel", id: channelId, guildId };
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  const nextIndex = entries.findIndex((entry) => entry.kind === "channel" && entry.guildId === guildId && entry.id === channelId);
+  if (nextIndex >= 0) sidebar.selectedIndex = nextIndex;
+}
+
+/** Move a DM/WhatsApp conversation by one row inside its current pin section. */
+export function moveSelectedPrivateConversation(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  direction: "up" | "down",
+  options: SidebarVisibilityOptions = {},
+): string | null {
+  const selected = selectedPrivateConversationEntry(sidebar, channels, options);
+  if (!selected) return null;
+
+  const ordered = privateConversationChannels(sidebar, channels, selected.guildId);
+  const selectedChannel = ordered.find((channel) => channel.id === selected.id);
+  if (!selectedChannel) return null;
+  const selectedPinned = effectiveChannelPlacement(
+    sidebar,
+    selected.guildId,
+    selectedChannel,
+    ordered.indexOf(selectedChannel),
+    ordered,
+  ).pinned;
+  const siblings = ordered.filter((channel, index) => (
+    effectiveChannelPlacement(sidebar, selected.guildId, channel, index, ordered).pinned === selectedPinned
+  ));
+  const fromIndex = siblings.findIndex((channel) => channel.id === selected.id);
+  const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= siblings.length) return null;
+
+  materializePrivateConversationPlacements(sidebar, channels, selected.guildId);
+  const placements = sidebar.channelPlacementsByGuildId[selected.guildId] ?? {};
+  const selectedPlacement = placements[selected.id];
+  const target = siblings[toIndex]!;
+  if (!selectedPlacement || !placements[target.id]) return null;
+  const selectedOrder = selectedPlacement.sortOrder;
+  selectedPlacement.sortOrder = placements[target.id]!.sortOrder;
+  placements[target.id]!.sortOrder = selectedOrder;
+  focusPrivateConversationAfterMutation(sidebar, channels, selected.guildId, selected.id, options);
+  return selected.guildId;
+}
+
+/** Toggle a DM/WhatsApp conversation at the same section boundaries as Exocortex. */
+export function toggleSelectedPrivateConversationPinned(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  options: SidebarVisibilityOptions = {},
+): string | null {
+  const selected = selectedPrivateConversationEntry(sidebar, channels, options);
+  if (!selected) return null;
+
+  materializePrivateConversationPlacements(sidebar, channels, selected.guildId);
+  const placements = sidebar.channelPlacementsByGuildId[selected.guildId] ?? {};
+  const placement = placements[selected.id];
+  if (!placement) return null;
+  const nextPinned = !placement.pinned;
+  const destinationOrders = Object.entries(placements)
+    .filter(([channelId, candidate]) => channelId !== selected.id && candidate.pinned === nextPinned)
+    .map(([, candidate]) => candidate.sortOrder);
+  placement.pinned = nextPinned;
+  placement.sortOrder = nextPinned
+    ? (destinationOrders.length > 0 ? Math.max(...destinationOrders) + 1 : 0)
+    : (destinationOrders.length > 0 ? Math.min(...destinationOrders) - 1 : 0);
+  focusPrivateConversationAfterMutation(sidebar, channels, selected.guildId, selected.id, options);
+  return selected.guildId;
 }
 
 export function applySidebarGuildMuteSettings(sidebar: SidebarState, mutedByGuildId: Record<string, boolean>): void {
@@ -945,9 +1092,23 @@ function pushChannelEntry(
     selected: false,
     active: false,
     expanded: false,
+    item: { type: "channel", id: channel.id, guildId },
     searchMatched,
   });
   pushVoiceMemberEntries(entries, guildId, channel, depth + 1, voiceMembersByChannelId);
+}
+
+function pushChannelSectionDelimiter(entries: SidebarEntry[], guildId: string): void {
+  entries.push({
+    kind: "delimiter",
+    id: `${guildId}::pinned-delimiter`,
+    guildId,
+    label: "",
+    depth: 1,
+    selected: false,
+    active: false,
+    expanded: false,
+  });
 }
 
 function pushVoiceMemberEntries(
@@ -991,8 +1152,68 @@ function pushSidebarVoiceMemberEntry(
   });
 }
 
-function sortChannelsForSidebar(channels: DiscordChannel[]): DiscordChannel[] {
-  return channels.slice().sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+function effectiveChannelPlacement(
+  sidebar: SidebarState,
+  guildId: string,
+  channel: DiscordChannel,
+  sourceIndex: number,
+  channels: readonly DiscordChannel[],
+): SidebarChannelPlacement {
+  const stored = sidebar.channelPlacementsByGuildId[guildId]?.[channel.id];
+  if (stored) return stored;
+
+  const existing = Object.values(sidebar.channelPlacementsByGuildId[guildId] ?? {});
+  const pinned = Boolean(channel.pinned);
+  const sameSectionOrders = existing.filter((placement) => placement.pinned === pinned).map((placement) => placement.sortOrder);
+  if (sameSectionOrders.length === 0) return { pinned, sortOrder: channel.position };
+
+  // A newly discovered conversation belongs at the top of its section, while
+  // conversations that have never had a custom layout retain provider order.
+  return {
+    pinned,
+    sortOrder: Math.min(...sameSectionOrders) - channels.length + sourceIndex,
+  };
+}
+
+function sortChannelsForSidebar(sidebar: SidebarState, guildId: string, channels: DiscordChannel[]): DiscordChannel[] {
+  if (!isFixedTopLevelGuildId(guildId)) {
+    return channels.slice().sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  }
+
+  const sourceIndex = new Map(channels.map((channel, index) => [channel.id, index]));
+  return channels.slice().sort((a, b) => {
+    const aIndex = sourceIndex.get(a.id) ?? 0;
+    const bIndex = sourceIndex.get(b.id) ?? 0;
+    const aPlacement = effectiveChannelPlacement(sidebar, guildId, a, aIndex, channels);
+    const bPlacement = effectiveChannelPlacement(sidebar, guildId, b, bIndex, channels);
+    if (aPlacement.pinned !== bPlacement.pinned) return aPlacement.pinned ? -1 : 1;
+    return aPlacement.sortOrder - bPlacement.sortOrder || aIndex - bIndex || a.name.localeCompare(b.name);
+  });
+}
+
+function pushPrivateConversationChannels(
+  entries: SidebarEntry[],
+  sidebar: SidebarState,
+  guildId: string,
+  channels: DiscordChannel[],
+  typingChannelIds: ReadonlySet<string>,
+  typingFrame: string,
+  channelNotificationCounts: ReadonlyMap<string, number>,
+  searchMatched = false,
+): void {
+  const ordered = sortChannelsForSidebar(sidebar, guildId, channels);
+  const pinned = ordered.filter((channel, index) => effectiveChannelPlacement(sidebar, guildId, channel, index, ordered).pinned);
+  const unpinned = ordered.filter((channel, index) => !effectiveChannelPlacement(sidebar, guildId, channel, index, ordered).pinned);
+
+  if (pinned.length > 0) {
+    for (const channel of pinned) {
+      pushChannelEntry(entries, guildId, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, searchMatched);
+    }
+    if (unpinned.length > 0) pushChannelSectionDelimiter(entries, guildId);
+  }
+  for (const channel of unpinned) {
+    pushChannelEntry(entries, guildId, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, searchMatched);
+  }
 }
 
 function buildSidebarSearchEntries(
@@ -1035,9 +1256,7 @@ function buildSidebarSearchEntries(
     if (matchingChannelRows.length === 0) continue;
 
     if (isFixedTopLevelGuildId(guild.id)) {
-      for (const channel of sortChannelsForSidebar(matchingChannelRows)) {
-        pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, true);
-      }
+      pushPrivateConversationChannels(entries, sidebar, guild.id, matchingChannelRows, typingChannelIds, typingFrame, channelNotificationCounts, true);
       continue;
     }
 
@@ -1111,6 +1330,10 @@ function pushExpandedGuildChildren(
   }
 
   const visibleChannelRows = visibleGuildChannels.filter((channel) => channel.type !== 4 && (options.showHiddenChannels || !channel.hidden));
+  if (isFixedTopLevelGuildId(guild.id)) {
+    pushPrivateConversationChannels(entries, sidebar, guild.id, visibleChannelRows, typingChannelIds, typingFrame, channelNotificationCounts);
+    return;
+  }
   const guildCategories = visibleGuildChannels
     .filter((channel) => channel.type === 4)
     .filter((category) => options.showHiddenChannels || visibleChannelRows.some((channel) => channel.parentId === category.id))
@@ -1262,10 +1485,12 @@ function focusSidebarEntryBySnapshot(
     const index = entries.findIndex((entry) => entry.kind === snapshot.kind && entry.id === snapshot.id && entry.guildId === snapshot.guildId);
     if (index >= 0) {
       sidebar.selectedIndex = index;
+      sidebar.selectedItem = entries[index]?.item ?? null;
       return;
     }
   }
   sidebar.selectedIndex = Math.max(0, fallbackIndex);
+  sidebar.selectedItem = null;
 }
 
 function buildSidebarSearchState(
@@ -1625,7 +1850,36 @@ function clampSidebarViewportToSelection(sidebar: SidebarState, entries: Sidebar
   } else if (sidebar.selectedIndex >= scrollOffset + viewportRows) {
     scrollOffset = sidebar.selectedIndex - viewportRows + 1;
   }
-  sidebar.scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.length - viewportRows)));
+  sidebar.scrollOffset = snapSidebarViewportStart(entries, viewportRows, scrollOffset, 0, sidebar.selectedIndex);
+}
+
+function snapSidebarViewportStart(
+  entries: SidebarEntry[],
+  viewportRows: number,
+  requestedStart: number,
+  direction: -1 | 0 | 1,
+  selectedIndex: number,
+): number {
+  const start = Math.max(0, Math.min(requestedStart, Math.max(0, entries.length - 1)));
+  if (entries[start]?.kind !== "delimiter") return start;
+
+  const scan = (step: -1 | 1): number | null => {
+    for (let index = start + step; index >= 0 && index < entries.length; index += step) {
+      if (entries[index]?.kind !== "delimiter") return index;
+    }
+    return null;
+  };
+  const backward = scan(-1);
+  const forward = scan(1);
+  if (direction < 0) return backward ?? forward ?? start;
+  if (direction > 0) return forward ?? backward ?? start;
+
+  const keepsSelectionVisible = (candidate: number | null): candidate is number => (
+    candidate !== null && selectedIndex >= candidate && selectedIndex < candidate + viewportRows
+  );
+  if (keepsSelectionVisible(forward)) return forward;
+  if (keepsSelectionVisible(backward)) return backward;
+  return forward ?? backward ?? start;
 }
 
 export function scrollSidebarSelection(
@@ -1651,7 +1905,13 @@ export function scrollSidebarSelection(
     : scrollByAmountWithCursorInViewport({ totalLines: entries.length, viewportHeight: viewportRows, viewStart: sidebar.scrollOffset, cursorRow: sidebar.selectedIndex }, dir, amount);
   sidebar.selectedIndex = clampSelectedIndex({ ...sidebar, selectedIndex: next.cursorRow }, entries);
   sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
-  sidebar.scrollOffset = next.viewStart;
+  sidebar.scrollOffset = snapSidebarViewportStart(
+    entries,
+    viewportRows,
+    next.viewStart,
+    dir > 0 ? -1 : 1,
+    sidebar.selectedIndex,
+  );
 }
 
 export function scrollSidebarSelectionLine(sidebar: SidebarState, channels: DiscordChannel[], dir: number, totalRows: number, options: SidebarVisibilityOptions = {}): void {
@@ -1671,7 +1931,13 @@ export function scrollSidebarSelectionLine(sidebar: SidebarState, channels: Disc
   }, dir);
   sidebar.selectedIndex = clampSelectedIndex({ ...sidebar, selectedIndex: next.cursorRow }, entries);
   sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
-  sidebar.scrollOffset = next.viewStart;
+  sidebar.scrollOffset = snapSidebarViewportStart(
+    entries,
+    sidebarViewportRows(totalRows, sidebar),
+    next.viewStart,
+    dir > 0 ? -1 : 1,
+    sidebar.selectedIndex,
+  );
 }
 
 export function jumpSidebarSelectionToVisibleEdge(
@@ -2193,7 +2459,7 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent, cha
 
 export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): SidebarEntry | null {
   const entry = getSelectedSidebarEntry(sidebar, channels, options);
-  if (!entry.id || entry.kind === "loading") return null;
+  if (!entry.id || entry.kind === "loading" || entry.kind === "delimiter") return null;
 
   if (entry.kind === "up") {
     leaveSidebarFolder(sidebar);
@@ -2346,6 +2612,14 @@ function renderEntryRow(
   borderFg: string,
   activeChannelId: string | null,
 ): string {
+  if (entry.kind === "delimiter") {
+    const indent = "  ".repeat(entry.depth);
+    const ruleWidth = Math.max(0, innerWidth - termWidth(indent) - 1);
+    return theme.reset + theme.sidebarBg + theme.muted
+      + padRight(`${indent}${"─".repeat(ruleWidth)}`, innerWidth)
+      + theme.reset + borderBg + borderFg + "│" + theme.reset;
+  }
+
   if (entry.kind === "loading") {
     const prefix = "  ".repeat(entry.depth);
     const labelWidth = Math.max(0, innerWidth - termWidth(prefix));

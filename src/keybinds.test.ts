@@ -78,6 +78,10 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "char", char: "E" }, "navigation")).toBe("nav_move_guild_down");
   });
 
+  test("navigation p pins DM and WhatsApp conversations", () => {
+    expect(resolveAction({ type: "char", char: "p" }, "navigation")).toBe("nav_toggle_conversation_pin");
+  });
+
   test("navigation Shift+H/M/L jumps within the visible menu like Exocortex conversations", () => {
     expect(resolveAction({ type: "char", char: "H" }, "navigation")).toBe("nav_visible_top");
     expect(resolveAction({ type: "char", char: "M" }, "navigation")).toBe("nav_visible_middle");

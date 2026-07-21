@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { flushDataCacheSync, loadCachedChannelMessages, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, saveCachedChannelMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, watchCachedGuildOrder } from "./datacache";
+import { flushDataCacheSync, loadCachedChannelMessages, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, saveCachedChannelMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -55,6 +55,35 @@ describe("data cache", () => {
     expect(loadCachedGuildOrder("account-1")).toEqual(["guild-2", "guild-1"]);
     expect(loadCachedGuildOrder("account-2")).toEqual(["guild-3"]);
     expect(JSON.parse(readFileSync(join(xdg, "record", "accounts", "account-1", "guild-order.json"), "utf8")).guildIds).toEqual(["guild-2", "guild-1"]);
+  });
+
+  test("saves private conversation pinning and order per provider account", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    saveCachedSidebarChannelLayout("discord-user", {
+      "@me::dms": {
+        "dm-1": { pinned: true, sortOrder: 0 },
+        "dm-2": { pinned: false, sortOrder: 1 },
+      },
+    });
+    saveCachedSidebarChannelLayout("whatsapp:self", {
+      "@me::whatsapp": {
+        "wa:chat": { pinned: false, sortOrder: -1 },
+      },
+    });
+
+    expect(loadCachedSidebarChannelLayout("discord-user")).toEqual({
+      "@me::dms": {
+        "dm-1": { pinned: true, sortOrder: 0 },
+        "dm-2": { pinned: false, sortOrder: 1 },
+      },
+    });
+    expect(loadCachedSidebarChannelLayout("whatsapp:self")).toEqual({
+      "@me::whatsapp": {
+        "wa:chat": { pinned: false, sortOrder: -1 },
+      },
+    });
   });
 
   test("watches account-scoped guild order file changes", async () => {

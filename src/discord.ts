@@ -290,6 +290,8 @@ export interface DiscordChannel {
   type: number;
   nsfw: boolean;
   lastMessageId?: string | null;
+  /** Provider-supplied default pin state; local sidebar placement may override it. */
+  pinned?: boolean;
   muted?: boolean;
   recipients?: DiscordGuildMember[];
   permissionOverwrites?: DiscordPermissionOverwrite[];

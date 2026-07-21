@@ -73,6 +73,7 @@ import {
   isWatchingVoiceMemberStream,
   toggleVoiceMemberMute,
   toggleSelectedGuildMute,
+  toggleSelectedPrivateConversationPin,
   voiceMemberModerationContext,
   voiceMemberVolume,
   watchCurrentStream,
@@ -1358,6 +1359,9 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     case "nav_move_guild_down":
       moveSelectedGuildOrder(state, { scheduleRender }, "down");
+      return true;
+    case "nav_toggle_conversation_pin":
+      toggleSelectedPrivateConversationPin(state, { scheduleRender });
       return true;
     case "nav_visible_top":
       jumpSidebarSelectionToVisibleEdge(state.sidebar, state.channelList.channels, state.rows, "top", sidebarVisibilityOptions());

@@ -55,7 +55,7 @@ import {
   type DiscordMessagePatch,
   type DiscordPresenceStatus,
 } from "./discord";
-import { isFixedTopLevelGuildId, isWhatsAppChannel, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { isFixedTopLevelGuildId, isWhatsAppChannel, isWhatsAppChannelId, whatsappGuild, whatsappSidebarLayoutScope, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { whatsAppChannels, whatsAppTimelineMessages } from "./whatsapp/integration";
 import {
   loadCachedChannelMessages,
@@ -64,6 +64,7 @@ import {
   loadCachedGuilds,
   loadCachedGuildOrder,
   loadCachedGuildRoles,
+  loadCachedSidebarChannelLayout,
   loadCachedSidebarFolders,
   loadCachedMemberList,
   loadCachedMemberLists,
@@ -74,6 +75,7 @@ import {
   saveCachedGuildChannels,
   saveCachedGuildOrder,
   saveCachedGuildRoles,
+  saveCachedSidebarChannelLayout,
   saveCachedSidebarFolders,
   saveCachedGuilds,
   saveCachedMemberList,
@@ -121,6 +123,7 @@ import { playLoopingSoundEffect, playSoundEffect, setSoundEffectVolume, type Sou
 import { focusPrompt, setNotice } from "./state";
 import {
   applySidebarFolderLayout,
+  applySidebarChannelLayoutForGuild,
   applySidebarChannelMuteSettings,
   applySidebarGuildMuteSettings,
   clearSidebarData,
@@ -129,12 +132,15 @@ import {
   isSidebarGuildMuted,
   moveSelectedSidebarGuild,
   moveSelectedSidebarItem,
+  moveSelectedPrivateConversation,
   setSidebarCachedChannels,
   setSidebarChannelMuted,
   setSidebarGuildMuted,
   setSidebarGuilds,
   sidebarCachedGuilds,
+  sidebarChannelLayoutForGuild,
   sidebarFolderLayout,
+  toggleSelectedPrivateConversationPinned,
   type SidebarVoiceMember,
 } from "./sidebar";
 import {
@@ -1824,6 +1830,26 @@ export function persistSidebarFolders(state: AppState): void {
   saveCachedSidebarFolders(accountId, sidebarFolderLayout(state.sidebar));
 }
 
+function privateConversationLayoutScope(state: AppState, guildId: string): string | null {
+  if (guildId === DIRECT_MESSAGES_GUILD_ID) return currentAccountId(state);
+  if (guildId === WHATSAPP_GUILD_ID && state.whatsapp.account?.id) {
+    return whatsappSidebarLayoutScope(state.whatsapp.account.id, state.whatsapp.account.phoneId);
+  }
+  return null;
+}
+
+function persistPrivateConversationLayout(state: AppState, guildId: string): void {
+  const scope = privateConversationLayoutScope(state, guildId);
+  if (!scope) return;
+  try {
+    saveCachedSidebarChannelLayout(scope, {
+      [guildId]: sidebarChannelLayoutForGuild(state.sidebar, guildId),
+    });
+  } catch {
+    // Local layout persistence is opportunistic; never interrupt navigation.
+  }
+}
+
 const KICK_MEMBERS_PERMISSION = 1n << 1n;
 const BAN_MEMBERS_PERMISSION = 1n << 2n;
 const ADMINISTRATOR_PERMISSION = 1n << 3n;
@@ -2665,6 +2691,7 @@ export function currentAppGatewaySessionId(token: string | null | undefined): st
 export function clearReadOnlyClient(state: AppState): void {
   guildRoleFetchState.delete(state);
   const whatsAppChannelsBeforeClear = whatsAppChannels(state.whatsapp);
+  const whatsAppChannelLayoutBeforeClear = sidebarChannelLayoutForGuild(state.sidebar, WHATSAPP_GUILD_ID);
   const activeWhatsAppChannelId = state.channelList.guildId === WHATSAPP_GUILD_ID
     ? state.channelList.activeChannelId
     : null;
@@ -2691,6 +2718,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.voiceCall = null;
   state.memberRoleCacheVersion += 1;
   setSidebarGuilds(state.sidebar, withDirectMessagesGuild([]));
+  applySidebarChannelLayoutForGuild(state.sidebar, WHATSAPP_GUILD_ID, whatsAppChannelLayoutBeforeClear);
   setSidebarCachedChannels(state.sidebar, WHATSAPP_GUILD_ID, whatsAppChannelsBeforeClear);
   replaceNotifications(state.notifications, whatsAppNotifications);
   if (activeWhatsAppChannelId) {
@@ -2914,9 +2942,15 @@ export async function bootstrapReadOnlyClient(
       if (channel.muted !== undefined) state.channelMuteSettings[channel.id] = channel.muted;
     }
     const cachedGuildOrder = loadCachedGuildOrder(accountId);
+    const cachedChannelLayout = loadCachedSidebarChannelLayout(accountId);
     cachedSidebarFolders = loadCachedSidebarFolders(accountId);
     const cachedGuilds = sortGuildsByOrder(loadCachedGuilds(accountId) ?? [], cachedGuildOrder);
     setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, cachedDirectMessages);
+    applySidebarChannelLayoutForGuild(
+      state.sidebar,
+      DIRECT_MESSAGES_GUILD_ID,
+      cachedChannelLayout?.[DIRECT_MESSAGES_GUILD_ID],
+    );
     for (const guild of cachedGuilds) {
       const cachedChannels = loadCachedGuildChannels(accountId, guild.id) ?? [];
       if (cachedChannels.length > 0) setSidebarCachedChannels(state.sidebar, guild.id, cachedChannels);
@@ -4564,6 +4598,19 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
 }
 
 export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects, direction: "up" | "down"): void {
+  const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
+  if (selected.kind === "channel" && isFixedTopLevelGuildId(selected.guildId)) {
+    const movedGuildId = moveSelectedPrivateConversation(
+      state.sidebar,
+      state.channelList.channels,
+      direction,
+      { showHiddenChannels: state.showHiddenChannels },
+    );
+    if (movedGuildId) persistPrivateConversationLayout(state, movedGuildId);
+    effects.scheduleRender();
+    return;
+  }
+
   if (!currentAccountId(state)) {
     setNotice(state, "Login required to reorder servers.", "warning");
     effects.scheduleRender();
@@ -4579,6 +4626,16 @@ export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects,
 
   persistSidebarGuilds(state);
   setNotice(state, "", "muted");
+  effects.scheduleRender();
+}
+
+export function toggleSelectedPrivateConversationPin(state: AppState, effects: SessionEffects): void {
+  const guildId = toggleSelectedPrivateConversationPinned(
+    state.sidebar,
+    state.channelList.channels,
+    { showHiddenChannels: state.showHiddenChannels },
+  );
+  if (guildId) persistPrivateConversationLayout(state, guildId);
   effects.scheduleRender();
 }
 

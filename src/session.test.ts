@@ -4,11 +4,11 @@ import { join } from "path";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
+import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChannelLayout, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -1051,6 +1051,33 @@ describe("session", () => {
     expect(fetchCalls).toBe(0);
     expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual(["guild-2", "guild-1"]);
     expect(loadCachedGuildOrder("self")).toEqual(["guild-2", "guild-1"]);
+    expect(state.notice.text).toBe("");
+  });
+
+  test("moving and pinning a DM is local-only and persists its account-scoped layout", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }];
+    state.sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    state.channelList.guildId = DIRECT_MESSAGES_GUILD_ID;
+    state.channelList.channels = [
+      { id: "dm-a", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "dm-b", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Friends", topic: null, position: 1, type: 3, nsfw: false },
+    ];
+    state.sidebar.selectedIndex = 2;
+
+    moveSelectedGuildOrder(state, { scheduleRender: () => {} }, "up");
+    toggleSelectedPrivateConversationPin(state, { scheduleRender: () => {} });
+
+    expect(state.sidebar.channelPlacementsByGuildId[DIRECT_MESSAGES_GUILD_ID]).toEqual({
+      "dm-a": { pinned: false, sortOrder: 1 },
+      "dm-b": { pinned: true, sortOrder: 0 },
+    });
+    expect(loadCachedSidebarChannelLayout("self")?.[DIRECT_MESSAGES_GUILD_ID]).toEqual({
+      "dm-a": { pinned: false, sortOrder: 1 },
+      "dm-b": { pinned: true, sortOrder: 0 },
+    });
     expect(state.notice.text).toBe("");
   });
 

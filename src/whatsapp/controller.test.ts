@@ -681,6 +681,10 @@ describe("WhatsApp controller", () => {
       chats: [{ id: lid, kind: "direct", unreadCount: 1 }],
     });
     expect(state.notifications.byChannelId[whatsappChannelId(lid)]).toBe(1);
+    state.sidebar.channelPlacementsByGuildId[WHATSAPP_GUILD_ID] = {
+      [whatsappChannelId(lid)]: { pinned: true, sortOrder: 0 },
+    };
+    state.sidebar.selectedItem = { type: "channel", id: whatsappChannelId(lid), guildId: WHATSAPP_GUILD_ID };
 
     backend.emit("messages", {
       kind: "upsert",
@@ -705,6 +709,14 @@ describe("WhatsApp controller", () => {
     expect(state.timeline.messages.at(-1)?.id).toBe("incoming-lid");
     expect(state.notifications.byChannelId[whatsappChannelId(phoneId)]).toBeUndefined();
     expect(state.notifications.byChannelId[whatsappChannelId(lid)]).toBeUndefined();
+    expect(state.sidebar.channelPlacementsByGuildId[WHATSAPP_GUILD_ID]).toEqual({
+      [whatsappChannelId(phoneId)]: { pinned: true, sortOrder: 0 },
+    });
+    expect(state.sidebar.selectedItem).toEqual({
+      type: "channel",
+      id: whatsappChannelId(phoneId),
+      guildId: WHATSAPP_GUILD_ID,
+    });
   });
 
   test("adds a new LID unread delta to the existing phone-JID unread total", () => {
