@@ -27,6 +27,7 @@ import {
   scrollHistoryViewportSticky,
   scrollHistoryWithCursor,
 } from "./historycursor";
+import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { setChannelList } from "./channels";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
 import { copyToClipboard } from "./editor-clipboard";
@@ -1464,6 +1465,12 @@ function handleHistoryFocused(key: KeyEvent): boolean {
   }
 
   const clearedPendingDelete = clearPendingMessageDelete();
+
+  if (handleHistorySelectionQuoteKey(state, key)) {
+    syncPromptAutocomplete();
+    scheduleRender();
+    return true;
+  }
 
   if (state.editor.mode === "normal" && key.type === "char" && (key.char === "r" || key.char === "R")) {
     startReplyToSelectedHistoryMessage(key.char === "R");

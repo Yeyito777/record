@@ -5,6 +5,7 @@
  */
 
 import { copyToClipboard } from "./editor-clipboard";
+import { nextGraphemeEnd } from "./editor-buffer";
 import { isBufferSpace, isWORDChar, isWordChar } from "./editor-chars";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
 import type { KeyEvent } from "./input";
@@ -516,13 +517,19 @@ export function getHistoryVisualSelection(state: AppState): string {
     const last = logicalLineRange(end.row, state.historyWrapContinuation).last;
     const parts: string[] = [];
     for (let row = first; row <= last; row++) {
-      parts.push(stripAnsi(lines[row] ?? "").trimEnd());
+      const text = stripAnsi(lines[row] ?? "").trimEnd();
+      if (row === first || !state.historyWrapContinuation[row] || parts.length === 0) {
+        parts.push(text);
+      } else if (text) {
+        parts[parts.length - 1] += ` ${text.trimStart()}`;
+      }
     }
     return parts.join("\n");
   }
 
   if (start.row === end.row) {
-    return stripAnsi(lines[start.row] ?? "").slice(start.col, end.col + 1);
+    const plain = stripAnsi(lines[start.row] ?? "");
+    return plain.slice(start.col, nextGraphemeEnd(plain, end.col));
   }
 
   const parts: string[] = [];
@@ -530,7 +537,9 @@ export function getHistoryVisualSelection(state: AppState): string {
     const plain = stripAnsi(lines[row] ?? "");
     const bounds = contentBounds(plain);
     const sliceStart = row === start.row ? start.col : bounds.start;
-    const sliceEnd = row === end.row ? end.col + 1 : bounds.end + 1;
+    const sliceEnd = row === end.row
+      ? nextGraphemeEnd(plain, end.col)
+      : nextGraphemeEnd(plain, bounds.end);
     const text = plain.slice(sliceStart, sliceEnd);
     if (row === start.row || !state.historyWrapContinuation[row]) {
       parts.push(text);
