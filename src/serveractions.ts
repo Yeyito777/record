@@ -6,7 +6,7 @@ import type { KeyEvent } from "./input";
 import { moveTo } from "./frame";
 import { theme } from "./theme";
 import { padRight, termWidth, truncate } from "./textwidth";
-import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, MAX_REMOTE_USER_VOLUME_PERCENT, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeRemoteUserVolumePercent } from "./volume";
+import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeRemoteUserVolumePercent } from "./volume";
 
 export type ServerAction =
   | "copy_invite"
@@ -200,9 +200,7 @@ function actionLabel(modal: ServerActionModalState, action: ServerAction): strin
     }
     case "adjust_volume": {
       const volumePercent = normalizeRemoteUserVolumePercent(modal.volumePercent ?? DEFAULT_REMOTE_USER_VOLUME_PERCENT);
-      const filled = Math.round(volumePercent / REMOTE_USER_VOLUME_STEP_PERCENT);
-      const slots = MAX_REMOTE_USER_VOLUME_PERCENT / REMOTE_USER_VOLUME_STEP_PERCENT;
-      return `Volume ${volumePercent}% [${"█".repeat(filled)}${"░".repeat(slots - filled)}]`;
+      return `Volume ${volumePercent}%`;
     }
     case "leave_server":
       return "Leave Server";

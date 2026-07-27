@@ -140,7 +140,9 @@ describe("server actions modal", () => {
     ]);
     const rendered = stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80));
     expect(rendered).toContain("Unmute");
-    expect(rendered).toContain("Volume 100% [██████████░░░░░░░░░░]");
+    expect(rendered).toContain("Volume 100%");
+    expect(rendered).not.toContain("█");
+    expect(rendered).not.toContain("░");
     expect(rendered).toContain("Watch Stream");
     expect(rendered).toContain("Server Unmute");
     expect(rendered).toContain("Server Undeafen");
@@ -184,7 +186,7 @@ describe("server actions modal", () => {
     });
     modal.selection = "adjust_volume";
 
-    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("Volume 90% [█████████░░░░░░░░░░░]");
+    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("Volume 90%");
     expect(handleServerActionModalKey(modal, { type: "char", char: "h" })).toEqual({
       type: "adjust_volume",
       deltaPercent: -10,
