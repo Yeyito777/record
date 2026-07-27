@@ -1219,6 +1219,53 @@ describe("session", () => {
     expect(guildNotificationCounts(state.notifications, state.channelList.channels).get(DIRECT_MESSAGES_GUILD_ID)).toBe(1);
   });
 
+  test("ignores delayed voice-session disconnects after the same user rejoins", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Voice", topic: null, position: 0, type: 2, nsfw: false }];
+    const effects = { scheduleRender: () => {} };
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "self",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "current-session",
+      displayName: "Self",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.map((member) => member.userId)).toEqual(["self"]);
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "self",
+      channelId: null,
+      guildId: null,
+      sessionId: "older-session",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.map((member) => member.userId)).toEqual(["self"]);
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "self",
+      channelId: null,
+      guildId: "guild-1",
+      sessionId: "current-session",
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: false,
+    });
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]).toBeUndefined();
+
+    clearReadOnlyClient(state);
+  });
+
   test("muting a selected voice sidebar member is local and displays the local-muted bell state", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };

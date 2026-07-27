@@ -228,6 +228,7 @@ const departedCallParticipantsByChannelId = new Map<string, Set<string>>();
 interface TrackedCallVoiceState {
   displayName?: string;
   roleIds?: string[];
+  sessionId?: string | null;
   selfMute: boolean;
   selfDeaf: boolean;
   streaming: boolean;
@@ -1216,8 +1217,29 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
   const affectedChannelIds = new Set<string>();
   const channelId = update.channelId;
   if (!channelId) {
+    for (const [existingChannelId, states] of callVoiceStatesByChannelId.entries()) {
+      const existing = states.get(update.userId);
+      if (!existing) continue;
+      // Discord can send a delayed disconnect for an older client voice
+      // session after the same user has already joined with a new session.
+      // Do not let that stale event remove the current sidebar member.
+      if (update.sessionId && existing.sessionId && update.sessionId !== existing.sessionId) {
+        debugLog("voice.state_disconnect_stale", {
+          userId: update.userId,
+          channelId: existingChannelId,
+          disconnectedSessionId: update.sessionId,
+          activeSessionId: existing.sessionId,
+        });
+        continue;
+      }
+      states.delete(update.userId);
+      affectedChannelIds.add(existingChannelId);
+      if (states.size === 0) callVoiceStatesByChannelId.delete(existingChannelId);
+    }
+    if (affectedChannelIds.size === 0) return false;
     clearSpeakingCallUser(update.userId);
-    return removeCallVoiceStateUser(state, update.userId);
+    syncSidebarVoiceMembersForChannels(state, affectedChannelIds);
+    return true;
   }
   for (const [existingChannelId, states] of callVoiceStatesByChannelId.entries()) {
     if (existingChannelId === channelId) continue;
@@ -1225,9 +1247,12 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
     if (states.size === 0) callVoiceStatesByChannelId.delete(existingChannelId);
   }
   const states = callVoiceStatesByChannelId.get(channelId) ?? new Map<string, TrackedCallVoiceState>();
+  const existing = states.get(update.userId);
   states.set(update.userId, {
+    ...existing,
     ...(update.displayName ? { displayName: update.displayName } : {}),
     ...(update.roleIds ? { roleIds: update.roleIds } : {}),
+    ...(update.sessionId ? { sessionId: update.sessionId } : {}),
     selfMute: update.selfMute,
     selfDeaf: update.selfDeaf,
     streaming: update.selfStream ?? false,
@@ -1248,6 +1273,7 @@ function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: str
   const states = callVoiceStatesByChannelId.get(event.channelId) ?? new Map<string, TrackedCallVoiceState>();
   for (const voiceState of event.voiceStates) {
     states.set(voiceState.userId, {
+      ...states.get(voiceState.userId),
       selfMute: voiceState.selfMute,
       selfDeaf: voiceState.selfDeaf,
       streaming: voiceState.selfStream ?? false,
