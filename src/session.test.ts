@@ -8,7 +8,7 @@ import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChanne
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, handleGatewayMessageCreate, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -1498,6 +1498,18 @@ describe("session", () => {
       ["friend", "other", "newcomer"],
       [],
     )).toEqual(["friend", "other", "newcomer"]);
+  });
+
+  test("restores participants confirmed present by fresh voice-state data", () => {
+    const participants = new Set(["friend"]);
+    const departed = new Set(["friend", "newcomer", "still-gone"]);
+
+    rememberPresentCallParticipants("self", participants, departed, ["self", "friend", "newcomer"]);
+
+    expect(Array.from(participants)).toEqual(["friend", "newcomer"]);
+    expect(Array.from(departed)).toEqual(["still-gone"]);
+    expect(resolveRemoteCallParticipantIds("self", [], Array.from(participants), Array.from(departed)))
+      .toEqual(["friend", "newcomer"]);
   });
 
   test("hydrates generic voice sidebar members from requested guild member chunks", () => {

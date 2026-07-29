@@ -1368,19 +1368,36 @@ function handleActiveCallGatewayEvent(state: AppState, channelId: string, voiceS
   return changed;
 }
 
+export function rememberPresentCallParticipants(
+  selfUserId: string | null | undefined,
+  participants: Set<string>,
+  departed: Set<string>,
+  voiceStateUserIds: readonly string[],
+): void {
+  for (const userId of voiceStateUserIds) {
+    if (!userId || userId === selfUserId) continue;
+    participants.add(userId);
+    departed.delete(userId);
+  }
+}
+
 function rememberActiveCallParticipants(state: AppState, channelId: string, voiceStateUserIds: readonly string[]): void {
   const selfUserId = state.auth.user?.id;
   const existing = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const departed = departedCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
   const before = new Set(existing);
-  for (const userId of voiceStateUserIds) {
-    if (userId && userId !== selfUserId) existing.add(userId);
-  }
+  const departedBefore = new Set(departed);
+  rememberPresentCallParticipants(selfUserId, existing, departed, voiceStateUserIds);
   knownCallParticipantsByChannelId.set(channelId, existing);
+  if (departed.size > 0) departedCallParticipantsByChannelId.set(channelId, departed);
+  else departedCallParticipantsByChannelId.delete(channelId);
   debugLog("call.participants.remember_active", {
     channelId,
     before: Array.from(before),
     voiceStateUserIds,
     after: Array.from(existing),
+    departedBefore: Array.from(departedBefore),
+    departedAfter: Array.from(departed),
   });
 }
 
@@ -1424,7 +1441,12 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
     const wasKnown = participants.delete(update.userId);
     const wasFromCallMessage = activeCallMessageParticipantIds(state, channelId).includes(update.userId);
     const wasDeparted = departed.has(update.userId);
-    departed.add(update.userId);
+    // The application gateway reports voice-state changes for every subscribed
+    // guild. An update for an unrelated channel is only a departure from this
+    // call when the user was actually known here (or is retained by a stale
+    // active-call message). Otherwise this set grows with unrelated guild voice
+    // users and can hide them if they later join this call before we do.
+    if (wasKnown || wasFromCallMessage) departed.add(update.userId);
     callVoiceStatesByChannelId.get(channelId)?.delete(update.userId);
     clearSpeakingCallUser(update.userId);
     forgetCallJoinSound(channelId, update.userId);
