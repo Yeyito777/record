@@ -5,11 +5,12 @@
  */
 
 import { saveConfig } from "./config";
-import { DISCORD_PRESENCE_STATUSES, type DiscordPresenceStatus } from "./discord";
+import { DISCORD_CUSTOM_STATUS_MAX_LENGTH, DISCORD_PRESENCE_STATUSES, type DiscordPresenceStatus } from "./discord";
 import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
 import { THEME_NAMES, setTheme, theme, type ThemeName } from "./theme";
+import { pushTimelineSystemMessage } from "./timeline";
 import { DEFAULT_LOCAL_GAIN_DB, formatGainDbWithUnit, parseGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
 
 export interface CompletionItem {
@@ -37,6 +38,7 @@ export type CommandResult =
   | { type: "speaker_volume"; volume: number }
   | { type: "noise_suppression"; mode: NoiseSuppressionMode }
   | { type: "status"; status: DiscordPresenceStatus }
+  | { type: "status_quote"; text: string | null }
   | { type: "theme_changed" };
 
 export interface SlashCommand {
@@ -82,6 +84,7 @@ const STATUS_ARGS: CompletionItem[] = [
   { name: "idle", desc: "Show as idle" },
   { name: "dnd", desc: "Show as Do Not Disturb" },
   { name: "invisible", desc: "Show as offline" },
+  { name: "quote", desc: "Set/show your custom status quote" },
 ];
 
 const LOGIN_PROVIDER_ARGS: CompletionItem[] = [
@@ -353,18 +356,43 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/status",
-    description: "Set/show your Discord presence",
+    description: "Set/show your Discord status",
     args: STATUS_ARGS,
     handler: (text, state) => {
-      const parts = text.trim().split(/\s+/).filter(Boolean);
+      const trimmed = text.trim();
+      const parts = trimmed.split(/\s+/).filter(Boolean);
       if (parts.length === 1) {
-        setNotice(state, `Presence: ${state.auth.presenceStatus ?? "unknown"}`, "muted", { statusLine: true, chat: false });
+        setNotice(state, `Presence: ${state.auth.presenceStatus ?? "unknown"}`, "muted", { statusLine: false });
         clearPrompt(state);
         return { type: "handled" };
       }
-      if (parts.length !== 2) return usage(state, `Usage: /status [${DISCORD_PRESENCE_STATUSES.join("|")}]`);
+
+      const quoteMatch = trimmed.match(/^\/status\s+quote(?:\s+([\s\S]+))?$/i);
+      if (quoteMatch) {
+        const quote = quoteMatch[1]?.trim();
+        if (!quote) {
+          pushTimelineSystemMessage(state.timeline, `Status quote: ${state.auth.customStatus?.text || "none"}`);
+          clearPrompt(state);
+          return { type: "handled" };
+        }
+        const normalizedQuote = quote.toLowerCase();
+        if (normalizedQuote === "clear") {
+          clearPrompt(state);
+          return { type: "status_quote", text: null };
+        }
+        if (Array.from(quote).length > DISCORD_CUSTOM_STATUS_MAX_LENGTH) {
+          setNotice(state, `Status quotes can be at most ${DISCORD_CUSTOM_STATUS_MAX_LENGTH} characters.`, "warning", { statusLine: false });
+          clearPrompt(state);
+          return { type: "handled" };
+        }
+        clearPrompt(state);
+        return { type: "status_quote", text: quote };
+      }
+
+      const statusUsage = `Usage: /status [${DISCORD_PRESENCE_STATUSES.join("|")}] | /status quote <text|clear>`;
+      if (parts.length !== 2) return usage(state, statusUsage);
       const status = parsePresenceStatus(parts[1]?.toLowerCase());
-      if (!status) return usage(state, `Usage: /status [${DISCORD_PRESENCE_STATUSES.join("|")}]`);
+      if (!status) return usage(state, statusUsage);
       clearPrompt(state);
       return { type: "status", status };
     },

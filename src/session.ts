@@ -53,6 +53,7 @@ import {
   type DiscordRole,
   type DiscordMessage,
   type DiscordMessagePatch,
+  type DiscordCustomStatus,
   type DiscordPresenceStatus,
 } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannel, isWhatsAppChannelId, whatsappGuild, whatsappSidebarLayoutScope, WHATSAPP_GUILD_ID } from "./chatproviders";
@@ -2726,7 +2727,9 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       setNotice(state, error.message, "warning");
       effects.scheduleRender();
     },
-  }, state.auth.presenceStatus ?? "online");
+  // If both settings endpoints were unavailable during login, fail closed so
+  // a previously invisible user is never exposed as online by this client.
+  }, state.auth.presenceStatus ?? "invisible", state.auth.customStatus);
   appGateway.start();
   subscribeAppGatewayToActiveChannel(state);
 }
@@ -4750,7 +4753,7 @@ export function setCurrentUserPresenceStatus(
 ): void {
   const token = state.auth.savedToken;
   if (!token || !state.auth.user) {
-    setNotice(state, "Login first with /login <token|username>.", "warning");
+    setNotice(state, "Login first with /login <token|username>.", "warning", { statusLine: false });
     effects.scheduleRender();
     return;
   }
@@ -4762,6 +4765,48 @@ export function setCurrentUserPresenceStatus(
 
   void persistPresenceStatusWithRetries(token, status, persistStatus, {
     shouldContinue: () => state.auth.savedToken === token && state.auth.presenceStatus === status,
+  }).then((persisted) => {
+    if (persisted || state.auth.savedToken !== token || state.auth.presenceStatus !== status) return;
+    setNotice(state, "Failed to save your presence status with Discord.", "warning", { statusLine: false });
+    effects.scheduleRender();
+  });
+}
+
+export function setCurrentUserCustomStatus(
+  state: AppState,
+  effects: SessionEffects,
+  text: string | null,
+  persistStatus: (token: string, text: string | null) => Promise<void>,
+): void {
+  const token = state.auth.savedToken;
+  if (!token || !state.auth.user) {
+    setNotice(state, "Login first with /login <token|username>.", "warning", { statusLine: false });
+    effects.scheduleRender();
+    return;
+  }
+
+  const previous = state.auth.customStatus;
+  const customStatus: DiscordCustomStatus | null = text === null
+    ? null
+    : {
+        text,
+        emojiId: previous?.emojiId ?? null,
+        emojiName: previous?.emojiName ?? null,
+      };
+  state.auth.customStatus = customStatus;
+  if (!appGateway || appGatewayToken !== token) startAppGateway(state, token, effects);
+  appGateway?.updateCustomStatus(customStatus);
+  setNotice(state, text === null ? "Custom status cleared." : "Custom status set.", "success", { statusLine: false });
+  effects.scheduleRender();
+
+  void persistStatus(token, text).catch((error) => {
+    if (state.auth.savedToken !== token || state.auth.customStatus?.text !== customStatus?.text) return;
+    debugLog("custom_status.persist_error", {
+      textLength: text === null ? 0 : Array.from(text).length,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    setNotice(state, "Failed to save your custom status with Discord.", "warning", { statusLine: false });
+    effects.scheduleRender();
   });
 }
 

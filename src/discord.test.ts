@@ -26,7 +26,9 @@ import {
   setGuildChannelMuted,
   setGuildMuted,
   ringDirectMessageCall,
+  setCurrentUserSettingsProtoCustomStatus,
   setCurrentUserSettingsProtoStatus,
+  fetchCurrentUserStatusSettings,
   fetchCurrentUserPresenceStatus,
   discordInviteCodeFromUrl,
   disconnectGuildMemberFromVoice,
@@ -287,6 +289,119 @@ describe("discord helpers", () => {
 
     expect(await fetchCurrentUserPresenceStatus("token")).toBe("dnd");
     expect(requests).toHaveLength(1);
+  });
+
+  test("fetches and updates a multi-word custom status while preserving its emoji", async () => {
+    const requests: Array<{ method: string; body: string }> = [];
+    // idle presence + "old quote" + a Unicode moon emoji + an expiration.
+    let currentSettings = "WigKBgoEaWRsZRIaCglvbGQgcXVvdGUaBPCfjJkhFc1bBwAAAAAaAggB";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ method: init?.method ?? "GET", body: String(init?.body ?? "") });
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "GET") {
+        return new Response(JSON.stringify({ settings: currentSettings }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "PATCH") {
+        currentSettings = JSON.parse(String(init.body)).settings;
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    expect(await fetchCurrentUserStatusSettings("token")).toEqual({
+      presenceStatus: "idle",
+      customStatus: { text: "old quote", emojiId: null, emojiName: "🌙" },
+    });
+
+    await setCurrentUserSettingsProtoCustomStatus("token", "I am but a prince fighting the dark");
+
+    expect(requests.map((request) => request.method)).toEqual(["GET", "GET", "PATCH"]);
+    expect(await fetchCurrentUserStatusSettings("token")).toEqual({
+      presenceStatus: "idle",
+      customStatus: { text: "I am but a prince fighting the dark", emojiId: null, emojiName: "🌙" },
+    });
+  });
+
+  test("clears the custom status through Discord settings-proto", async () => {
+    // idle presence + "old quote" + a Unicode moon emoji + an expiration.
+    let currentSettings = "WigKBgoEaWRsZRIaCglvbGQgcXVvdGUaBPCfjJkhFc1bBwAAAAAaAggB";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "GET") {
+        return new Response(JSON.stringify({ settings: currentSettings }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "PATCH") {
+        currentSettings = JSON.parse(String(init.body)).settings;
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    await setCurrentUserSettingsProtoCustomStatus("token", null);
+
+    expect(await fetchCurrentUserStatusSettings("token")).toEqual({
+      presenceStatus: "idle",
+      customStatus: null,
+    });
+  });
+
+  test("preserves the show-current-game preference when setting a quote", async () => {
+    let currentSettings = "WgwKBgoEaWRsZRoCCAA="; // idle presence + showCurrentGame=false
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "GET") {
+        return new Response(JSON.stringify({ settings: currentSettings }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "PATCH") {
+        currentSettings = JSON.parse(String(init.body)).settings;
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    await setCurrentUserSettingsProtoCustomStatus("show-game-token", "new");
+
+    expect(currentSettings).toBe("WhMSBQoDbmV3CgYKBGlkbGUaAggA");
+  });
+
+  test("serializes presence and quote changes so they cannot clobber each other", async () => {
+    const methods: string[] = [];
+    let currentSettings = "WgsKAgoEaWRsZRoCCAE=";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      methods.push(init?.method ?? "GET");
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "GET") {
+        return new Response(JSON.stringify({ settings: currentSettings }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/users/@me/settings-proto/1") && init?.method === "PATCH") {
+        currentSettings = JSON.parse(String(init.body)).settings;
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    await Promise.all([
+      setCurrentUserSettingsProtoStatus("concurrent-token", "dnd"),
+      setCurrentUserSettingsProtoCustomStatus("concurrent-token", "new quote"),
+    ]);
+
+    expect(methods).toEqual(["GET", "PATCH", "GET", "PATCH"]);
+    expect(await fetchCurrentUserStatusSettings("concurrent-token")).toEqual({
+      presenceStatus: "dnd",
+      customStatus: { text: "new quote", emojiId: null, emojiName: null },
+    });
+  });
+
+  test("does not patch presence when current settings cannot be read", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      methods.push(init?.method ?? "GET");
+      return new Response(JSON.stringify({ message: "temporary failure" }), { status: 503, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    await expect(setCurrentUserSettingsProtoStatus("failed-read-token", "dnd")).rejects.toThrow();
+
+    expect(methods).toEqual(["GET"]);
   });
 
   test("maps guild channel permission overwrite string types", async () => {

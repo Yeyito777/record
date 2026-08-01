@@ -7,10 +7,10 @@
 
 import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
-import { fetchCurrentUserPresenceStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
+import { fetchCurrentUserStatusSettings, setCurrentUserSettingsProtoCustomStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
 import { expandMacros } from "./macros";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
-import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, toggleCurrentStream, uploadCurrentChannelFile, watchCurrentStream, type SessionEffects } from "./session";
+import { clearReadOnlyClient, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserCustomStatus, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, toggleCurrentStream, uploadCurrentChannelFile, watchCurrentStream, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
@@ -35,6 +35,8 @@ function setAuthError(state: AppState, message: string): void {
 function resetAuthState(state: AppState): void {
   state.auth.status = "idle";
   state.auth.user = null;
+  state.auth.presenceStatus = null;
+  state.auth.customStatus = null;
   state.auth.error = null;
   state.auth.savedToken = null;
   state.auth.lastValidatedAt = null;
@@ -64,14 +66,16 @@ export async function validateAndMaybeSave(
 
   state.auth.status = "loading";
   state.auth.user = null;
+  state.auth.presenceStatus = null;
+  state.auth.customStatus = null;
   state.auth.error = null;
   setLoadingNotice(state, loadingText);
   effects.scheduleRender();
 
   try {
-    const [user, presenceStatus] = await Promise.all([
+    const [user, statusSettings] = await Promise.all([
       validateToken(token),
-      fetchCurrentUserPresenceStatus(token).catch(() => null),
+      fetchCurrentUserStatusSettings(token).catch(() => null),
     ]);
     if (!isCurrentAuthRequest(state, requestId)) return;
 
@@ -98,7 +102,8 @@ export async function validateAndMaybeSave(
 
     state.auth.status = "authenticated";
     state.auth.user = user;
-    state.auth.presenceStatus = presenceStatus;
+    state.auth.presenceStatus = statusSettings?.presenceStatus ?? null;
+    state.auth.customStatus = statusSettings?.customStatus ?? null;
     state.auth.error = null;
     state.auth.lastValidatedAt = Date.now();
 
@@ -212,6 +217,9 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       return true;
     case "status":
       setCurrentUserPresenceStatus(state, effects, result.status, (token, status) => setCurrentUserSettingsProtoStatus(token, status));
+      return true;
+    case "status_quote":
+      setCurrentUserCustomStatus(state, effects, result.text, (token, text) => setCurrentUserSettingsProtoCustomStatus(token, text));
       return true;
   }
 }

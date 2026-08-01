@@ -163,6 +163,39 @@ describe("commands", () => {
     expect(tryCommand("/status 4", state)).toEqual({ type: "status", status: "invisible" });
   });
 
+  test("parses a multi-word /status quote and clears it explicitly", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand("/status quote I am but a prince fighting the dark", state)).toEqual({
+      type: "status_quote",
+      text: "I am but a prince fighting the dark",
+    });
+    expect(tryCommand("/status quote clear", state)).toEqual({ type: "status_quote", text: null });
+    expect(tryCommand("/status quote --clear", state)).toEqual({ type: "status_quote", text: "--clear" });
+  });
+
+  test("prints the current custom status quote into active chat history", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+    state.auth.customStatus = { text: "Still fighting", emojiId: null, emojiName: "⚔️" };
+    state.timeline.channelId = "channel-1";
+
+    expect(tryCommand("/status quote", state)).toEqual({ type: "handled" });
+    expect(state.timeline.systemMessages).toEqual([
+      expect.objectContaining({ text: "Status quote: Still fighting" }),
+    ]);
+    expect(state.notice.text).toBe("");
+  });
+
+  test("rejects custom status quotes longer than Discord's limit", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand(`/status quote ${"a".repeat(129)}`, state)).toEqual({ type: "handled" });
+    expect(state.notice).toMatchObject({
+      text: "Status quotes can be at most 128 characters.",
+      statusLine: false,
+    });
+  });
+
   test("shows current /status presence when no status is provided", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
     state.auth.presenceStatus = "idle";
@@ -170,8 +203,7 @@ describe("commands", () => {
     expect(tryCommand("/status", state)).toEqual({ type: "handled" });
     expect(state.notice).toMatchObject({
       text: "Presence: idle",
-      statusLine: true,
-      chat: false,
+      statusLine: false,
     });
   });
 
@@ -191,6 +223,7 @@ describe("commands", () => {
       { name: "idle", desc: "Show as idle" },
       { name: "dnd", desc: "Show as Do Not Disturb" },
       { name: "invisible", desc: "Show as offline" },
+      { name: "quote", desc: "Set/show your custom status quote" },
     ]);
   });
 

@@ -20,6 +20,7 @@ import {
   type DiscordMessagePatch,
   type DiscordMessageResponse,
   type DiscordGuildMember,
+  type DiscordCustomStatus,
   type DiscordPresenceStatus,
   type DiscordRole,
 } from "./discord";
@@ -147,14 +148,17 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private guildChannelSubscription: GuildChannelSubscription | null = null;
   private guildSubscriptions = new Set<string>();
   private currentPresenceStatus: DiscordPresenceStatus;
+  private currentCustomStatus: DiscordCustomStatus | null;
   private currentVoiceChannelId: string | null = null;
 
   constructor(
     private token: string,
     private readonly callbacks: AppGatewayCallbacks,
     initialPresenceStatus: DiscordPresenceStatus = "online",
+    initialCustomStatus: DiscordCustomStatus | null = null,
   ) {
     this.currentPresenceStatus = initialPresenceStatus;
+    this.currentCustomStatus = initialCustomStatus;
   }
 
   start(): void {
@@ -197,6 +201,13 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
   updatePresenceStatus(status: DiscordPresenceStatus): boolean {
     this.currentPresenceStatus = status;
+    if (!this.isReady()) return false;
+    this.sendPresenceUpdate();
+    return true;
+  }
+
+  updateCustomStatus(customStatus: DiscordCustomStatus | null): boolean {
+    this.currentCustomStatus = customStatus;
     if (!this.isReady()) return false;
     this.sendPresenceUpdate();
     return true;
@@ -437,7 +448,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
         capabilities: GATEWAY_CAPABILITIES,
         properties: createGatewayProperties(),
         presence: {
-          activities: [],
+          activities: this.presenceActivities(),
           status: this.currentPresenceStatus,
           since: null,
           afk: false,
@@ -780,9 +791,25 @@ export class AppGatewayClient implements VoiceSignalingClient {
         status: this.currentPresenceStatus,
         afk: false,
         since: 0,
-        activities: [],
+        activities: this.presenceActivities(),
       },
     });
+  }
+
+  private presenceActivities(): unknown[] {
+    if (!this.currentCustomStatus) return [];
+    const activity: Record<string, unknown> = {
+      name: "Custom Status",
+      type: 4,
+      state: this.currentCustomStatus.text,
+    };
+    if (this.currentCustomStatus.emojiName) {
+      activity.emoji = {
+        ...(this.currentCustomStatus.emojiId ? { id: this.currentCustomStatus.emojiId } : {}),
+        name: this.currentCustomStatus.emojiName,
+      };
+    }
+    return [activity];
   }
 
   private sendGuildChannelSubscription(): void {

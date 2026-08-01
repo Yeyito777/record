@@ -6,6 +6,7 @@ import {
   formatLocalMessageTime,
   markTimelineCallEnded,
   prependTimelineMessages,
+  pushTimelineSystemMessage,
   renderTimelineLines,
   setTimelineMessages,
   setTimelineRenderContext,
@@ -99,6 +100,26 @@ describe("timeline rendering", () => {
     );
 
     expect(rendered.lines.join("\n")).not.toContain("Downloading image.png");
+  });
+
+  test("renders command output as dim ephemeral chat history", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "before")]);
+
+    expect(pushTimelineSystemMessage(timeline, "Status quote: Still fighting")).toBe(true);
+    const rendered = renderTimelineLines(
+      timeline,
+      80,
+      10,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(stripAnsi(rendered.allLines.at(-1) ?? "")).toBe("Status quote: Still fighting");
+    expect(rendered.allLines.at(-1)).toContain(theme.dim);
+
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "before")]);
+    expect(timeline.systemMessages).toEqual([]);
   });
 
   test("formats message timestamps in local system time", () => {

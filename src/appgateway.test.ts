@@ -15,6 +15,27 @@ describe("app gateway helpers", () => {
     expect(sent).toEqual([{ op: 3, d: { status: "dnd", afk: false, since: 0, activities: [] } }]);
   });
 
+  test("sends and preserves a custom status in gateway presence updates", () => {
+    const sent: unknown[] = [];
+    const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }, "idle") as any;
+    client.ready = true;
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+
+    expect(client.updateCustomStatus({ text: "Still fighting", emojiId: null, emojiName: "⚔️" })).toBe(true);
+    expect(client.updatePresenceStatus("dnd")).toBe(true);
+
+    const activity = {
+      name: "Custom Status",
+      type: 4,
+      state: "Still fighting",
+      emoji: { name: "⚔️" },
+    };
+    expect(sent).toEqual([
+      { op: 3, d: { status: "idle", afk: false, since: 0, activities: [activity] } },
+      { op: 3, d: { status: "dnd", afk: false, since: 0, activities: [activity] } },
+    ]);
+  });
+
   test("sends Discord QoS heartbeats and marks active RTC sessions", () => {
     const sent: unknown[] = [];
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;

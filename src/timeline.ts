@@ -12,6 +12,8 @@ import { ansiTrueColor, dmAuthorColor, theme, toneColor } from "./theme";
 export interface TimelineState {
   channelId: string | null;
   messages: DiscordMessage[];
+  /** Local-only command output; discarded whenever canonical history reloads. */
+  systemMessages: TimelineSystemMessage[];
   scrollOffset: number;
   maxScroll: number;
   loading: boolean;
@@ -26,6 +28,12 @@ export interface TimelineState {
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
   memberRoleCacheVersion: number;
   activeGuildId: string | null;
+}
+
+export interface TimelineSystemMessage {
+  id: string;
+  text: string;
+  timestamp: number;
 }
 
 export interface TimelineMessageBound {
@@ -77,6 +85,10 @@ interface CachedTimelineContent {
   messageBounds: TimelineMessageBound[];
 }
 
+type TimelineRenderEntry =
+  | { kind: "message"; timestamp: number; message: DiscordMessage }
+  | { kind: "system"; timestamp: number; message: TimelineSystemMessage };
+
 interface TimelineCacheState {
   version: number;
   messageRenderCache: Map<string, CachedRenderedMessage>;
@@ -85,11 +97,13 @@ interface TimelineCacheState {
 
 const timelineCaches = new WeakMap<TimelineState, TimelineCacheState>();
 const MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
+let nextTimelineSystemMessageId = 0;
 
 export function createTimelineState(): TimelineState {
   return {
     channelId: null,
     messages: [],
+    systemMessages: [],
     scrollOffset: 0,
     maxScroll: 0,
     loading: false,
@@ -110,6 +124,7 @@ export function createTimelineState(): TimelineState {
 export function clearTimeline(timeline: TimelineState): void {
   timeline.channelId = null;
   timeline.messages = [];
+  timeline.systemMessages = [];
   timeline.scrollOffset = 0;
   timeline.maxScroll = 0;
   timeline.loading = false;
@@ -130,6 +145,7 @@ export function setTimelineMessages(
   const previousScrollOffset = timeline.scrollOffset;
   timeline.channelId = channelId;
   timeline.messages = messages;
+  timeline.systemMessages = [];
   timeline.scrollOffset = preserveScroll ? previousScrollOffset : Number.MAX_SAFE_INTEGER;
   timeline.maxScroll = 0;
   timeline.loading = false;
@@ -176,6 +192,20 @@ export function appendTimelineMessage(timeline: TimelineState, message: DiscordM
     timeline.messages.push(message);
   }
   invalidateTimelineContentCache(timeline);
+}
+
+/** Append Exocortex-style ephemeral command output to the active chat. */
+export function pushTimelineSystemMessage(timeline: TimelineState, text: string): boolean {
+  if (!text) return false;
+  const timestamp = Date.now();
+  timeline.systemMessages.push({
+    id: `local-system:${timestamp}:${++nextTimelineSystemMessageId}`,
+    text,
+    timestamp,
+  });
+  timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+  invalidateTimelineContentCache(timeline);
+  return true;
 }
 
 function findMatchingPendingLocalMessageIndex(timeline: TimelineState, message: DiscordMessage): number {
@@ -428,7 +458,7 @@ export function renderTimelineLines(
     lineBackgrounds.push("");
     wrapContinuation.push(false);
 
-    if (timeline.messages.length > 0) {
+    if (timeline.messages.length > 0 || timeline.systemMessages.length > 0) {
       const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
       appendRenderedTimelineContent(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, content);
     }
@@ -457,7 +487,7 @@ export function renderTimelineLines(
     }
   }
 
-  if (!(showNoticeInTimeline && notice.text) && timeline.loading && timeline.messages.length > 0) {
+  if (!(showNoticeInTimeline && notice.text) && timeline.loading && (timeline.messages.length > 0 || timeline.systemMessages.length > 0)) {
     prependBlankTimelineRows(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, Math.max(0, height - allLines.length));
   }
 
@@ -571,9 +601,10 @@ function getRenderedTimelineContent(
   const wrapContinuation: boolean[] = [];
   const messageBounds: TimelineMessageBound[] = [];
 
-  if (!timeline.channelId && timeline.messages.length === 0) {
+  const entries = timelineRenderEntries(timeline);
+  if (!timeline.channelId && entries.length === 0) {
     // No active channel yet.
-  } else if (timeline.messages.length === 0) {
+  } else if (entries.length === 0) {
     lines.push(`${theme.muted}No messages yet.${theme.reset}`);
     lineAnchors.push("timeline:empty");
     lineBackgrounds.push("");
@@ -581,7 +612,29 @@ function getRenderedTimelineContent(
   } else {
     let previousMessage: DiscordMessage | null = null;
     let currentMessageGroupId: string | null = null;
-    for (const message of timeline.messages) {
+    for (const entry of entries) {
+      if (entry.kind === "system") {
+        const wrapped = wrapPlainText(entry.message.text, width);
+        const start = lines.length;
+        for (const [index, line] of wrapped.entries()) {
+          lines.push(`${theme.dim}${line}${theme.reset}`);
+          lineAnchors.push(`system:${entry.message.id}:content:${index}`);
+          lineBackgrounds.push("");
+          wrapContinuation.push(index > 0);
+        }
+        messageBounds.push({
+          messageId: entry.message.id,
+          start,
+          end: lines.length,
+          contentStart: start,
+          contentEnd: lines.length,
+        });
+        previousMessage = null;
+        currentMessageGroupId = null;
+        continue;
+      }
+
+      const message = entry.message;
       const groupedWithPrevious = previousMessage ? shouldGroupMessages(previousMessage, message) : false;
       if (previousMessage && !groupedWithPrevious) {
         lines.push("");
@@ -621,6 +674,24 @@ function getRenderedTimelineContent(
   };
   cacheState.contentCache = content;
   return content;
+}
+
+function timelineRenderEntries(timeline: TimelineState): TimelineRenderEntry[] {
+  const entries: TimelineRenderEntry[] = [];
+  let messageIndex = 0;
+  let systemIndex = 0;
+  while (messageIndex < timeline.messages.length || systemIndex < timeline.systemMessages.length) {
+    const message = timeline.messages[messageIndex];
+    const systemMessage = timeline.systemMessages[systemIndex];
+    if (!systemMessage || (message && message.timestamp <= systemMessage.timestamp)) {
+      entries.push({ kind: "message", timestamp: message!.timestamp, message: message! });
+      messageIndex += 1;
+    } else {
+      entries.push({ kind: "system", timestamp: systemMessage.timestamp, message: systemMessage });
+      systemIndex += 1;
+    }
+  }
+  return entries;
 }
 
 function renderMessageCached(

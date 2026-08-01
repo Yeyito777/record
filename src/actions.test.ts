@@ -195,6 +195,20 @@ describe("submitCurrentBuffer", () => {
     expect(state.notice.statusLine).toBe(false);
   });
 
+  test("/status feedback stays out of the status line while logged out", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.buffer = "/status dnd";
+    state.editor.cursor = state.editor.buffer.length;
+
+    submitCurrentBuffer(state, effects);
+
+    expect(state.editor.buffer).toBe("");
+    expect(state.notice).toMatchObject({
+      text: "Login first with /login <token|username>.",
+      statusLine: false,
+    });
+  });
+
   test("/upload sends a local file as a multipart message attachment", async () => {
     let requestedBody: BodyInit | null | undefined = null;
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

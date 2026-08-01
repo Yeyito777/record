@@ -5,7 +5,7 @@
 import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
 import type { SavedLogins } from "./config";
-import type { DiscordGuildMember, DiscordIdentity, DiscordPresenceStatus, DiscordRole } from "./discord";
+import type { DiscordCustomStatus, DiscordGuildMember, DiscordIdentity, DiscordPresenceStatus, DiscordRole } from "./discord";
 import type { ChannelMessageCache } from "./messagecache";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
@@ -41,6 +41,7 @@ export interface AuthState {
   status: AuthStatus;
   user: DiscordIdentity | null;
   presenceStatus: PresenceStatus | null;
+  customStatus: DiscordCustomStatus | null;
   error: string | null;
   savedToken: string | null;
   savedLogins: SavedLogins;
@@ -187,6 +188,7 @@ export function createInitialState(
       status: "idle",
       user: null,
       presenceStatus: null,
+      customStatus: null,
       error: null,
       savedToken,
       savedLogins: { ...initialSavedLogins },

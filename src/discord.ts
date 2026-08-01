@@ -21,6 +21,18 @@ export const DIRECT_MESSAGES_GUILD_NAME = "Direct Messages";
 
 export const DISCORD_PRESENCE_STATUSES = ["online", "idle", "dnd", "invisible"] as const;
 export type DiscordPresenceStatus = typeof DISCORD_PRESENCE_STATUSES[number];
+export const DISCORD_CUSTOM_STATUS_MAX_LENGTH = 128;
+
+export interface DiscordCustomStatus {
+  text: string;
+  emojiId: string | null;
+  emojiName: string | null;
+}
+
+export interface DiscordCurrentUserStatusSettings {
+  presenceStatus: DiscordPresenceStatus | null;
+  customStatus: DiscordCustomStatus | null;
+}
 
 interface DiscordErrorResponse {
   message?: string;
@@ -93,6 +105,11 @@ export class DiscordCaptchaRequiredError extends Error {
 
 interface DiscordUserSettingsResponse {
   status?: string | null;
+  custom_status?: {
+    text?: string | null;
+    emoji_id?: string | null;
+    emoji_name?: string | null;
+  } | null;
 }
 
 interface DiscordSettingsProtoResponse {
@@ -101,8 +118,12 @@ interface DiscordSettingsProtoResponse {
 
 interface DecodedUserSettingsStatus {
   status: DiscordPresenceStatus | null;
+  statusSettingsBytes: Uint8Array | null;
   customStatusBytes: Uint8Array | null;
+  customStatus: DiscordCustomStatus | null;
 }
+
+const currentUserStatusMutationQueues = new Map<string, Promise<void>>();
 
 export interface DiscordDMRecipientResponse {
   id: string;
@@ -487,31 +508,77 @@ export async function validateToken(token: string): Promise<DiscordIdentity> {
   };
 }
 
-export async function fetchCurrentUserPresenceStatus(token: string): Promise<DiscordPresenceStatus | null> {
+export async function fetchCurrentUserStatusSettings(token: string): Promise<DiscordCurrentUserStatusSettings> {
   const protoStatus = await fetchCurrentUserSettingsProtoStatus(token).catch(() => null);
-  if (protoStatus) return protoStatus;
+  if (protoStatus) {
+    return {
+      presenceStatus: protoStatus.status,
+      customStatus: protoStatus.customStatus,
+    };
+  }
 
   const settings = await apiGetJson<DiscordUserSettingsResponse>(token, "/users/@me/settings");
-  return normalizePresenceStatus(settings.status);
+  const customStatus = settings.custom_status;
+  const text = customStatus?.text ?? "";
+  const emojiId = customStatus?.emoji_id ?? null;
+  const emojiName = customStatus?.emoji_name ?? null;
+  return {
+    presenceStatus: normalizePresenceStatus(settings.status),
+    customStatus: text || emojiId || emojiName ? { text, emojiId, emojiName } : null,
+  };
+}
+
+export async function fetchCurrentUserPresenceStatus(token: string): Promise<DiscordPresenceStatus | null> {
+  return (await fetchCurrentUserStatusSettings(token)).presenceStatus;
 }
 
 export async function setCurrentUserSettingsProtoStatus(token: string, status: DiscordPresenceStatus): Promise<void> {
-  const current = await fetchCurrentUserSettingsProto(token).catch(() => null);
-  const decoded = current ? decodeUserSettingsStatus(current) : null;
-  const settings = encodeUserSettingsStatus({
-    status,
-    customStatusBytes: decoded?.customStatusBytes ?? null,
-  });
-
-  await requestJson<unknown>(token, "/users/@me/settings-proto/1", {
-    method: "PATCH",
-    body: JSON.stringify({ settings: Buffer.from(settings).toString("base64") }),
+  return mutateCurrentUserStatusSettings(token, (decoded) => {
+    return replaceProtoField(
+      decoded.statusSettingsBytes ?? new Uint8Array(),
+      1,
+      encodeStringValue(status),
+      // /status sets a permanent presence rather than inheriting an old timer.
+      [4, 5],
+    );
   });
 }
 
-async function fetchCurrentUserSettingsProtoStatus(token: string): Promise<DiscordPresenceStatus | null> {
+export async function setCurrentUserSettingsProtoCustomStatus(token: string, text: string | null): Promise<void> {
+  return mutateCurrentUserStatusSettings(token, (decoded) => {
+    const customStatusBytes = text === null ? null : encodeCustomStatusText(decoded.customStatusBytes, text);
+    return replaceProtoField(decoded.statusSettingsBytes ?? new Uint8Array(), 2, customStatusBytes);
+  });
+}
+
+function mutateCurrentUserStatusSettings(
+  token: string,
+  mutate: (decoded: DecodedUserSettingsStatus) => Uint8Array,
+): Promise<void> {
+  const previous = currentUserStatusMutationQueues.get(token) ?? Promise.resolve();
+  const mutation = previous.catch(() => {}).then(async () => {
+    // StatusSettings is replaced as one protobuf message. Always read first so
+    // changing one setting cannot reset the others.
+    const decoded = decodeUserSettingsStatus(await fetchCurrentUserSettingsProto(token));
+    const statusSettings = mutate(decoded);
+    const settings = encodeField(11, 2, statusSettings);
+    await requestJson<unknown>(token, "/users/@me/settings-proto/1", {
+      method: "PATCH",
+      body: JSON.stringify({ settings: Buffer.from(settings).toString("base64") }),
+    });
+  });
+
+  let tracked: Promise<void>;
+  tracked = mutation.finally(() => {
+    if (currentUserStatusMutationQueues.get(token) === tracked) currentUserStatusMutationQueues.delete(token);
+  });
+  currentUserStatusMutationQueues.set(token, tracked);
+  return tracked;
+}
+
+async function fetchCurrentUserSettingsProtoStatus(token: string): Promise<DecodedUserSettingsStatus> {
   const settings = await fetchCurrentUserSettingsProto(token);
-  return decodeUserSettingsStatus(settings).status;
+  return decodeUserSettingsStatus(settings);
 }
 
 async function fetchCurrentUserSettingsProto(token: string): Promise<Uint8Array> {
@@ -541,19 +608,11 @@ export function compareSnowflakesDesc(left: string | null | undefined, right: st
   return leftValue > rightValue ? -1 : 1;
 }
 
-function encodeUserSettingsStatus(status: DecodedUserSettingsStatus): Uint8Array {
-  const statusFields = [
-    encodeField(1, 2, encodeStringValue(status.status ?? "online")),
-    ...(status.customStatusBytes ? [encodeField(2, 2, status.customStatusBytes)] : []),
-    encodeField(3, 2, encodeBoolValue(true)),
-  ];
-  return encodeField(11, 2, concatBytes(statusFields));
-}
-
 function decodeUserSettingsStatus(bytes: Uint8Array): DecodedUserSettingsStatus {
-  const out: DecodedUserSettingsStatus = { status: null, customStatusBytes: null };
+  const out: DecodedUserSettingsStatus = { status: null, statusSettingsBytes: null, customStatusBytes: null, customStatus: null };
   for (const field of readProtoFields(bytes)) {
     if (field.fieldNumber !== 11 || field.wireType !== 2 || !(field.value instanceof Uint8Array)) continue;
+    out.statusSettingsBytes = field.value;
     for (const statusField of readProtoFields(field.value)) {
       if (statusField.fieldNumber === 1 && statusField.wireType === 2 && statusField.value instanceof Uint8Array) {
         out.status = normalizePresenceStatus(decodeStringValue(statusField.value));
@@ -562,13 +621,67 @@ function decodeUserSettingsStatus(bytes: Uint8Array): DecodedUserSettingsStatus 
       }
     }
   }
+  out.customStatus = decodeCustomStatus(out.customStatusBytes);
   return out;
+}
+
+function decodeCustomStatus(bytes: Uint8Array | null): DiscordCustomStatus | null {
+  if (!bytes) return null;
+  let text = "";
+  let emojiId: string | null = null;
+  let emojiName: string | null = null;
+  for (const field of readProtoFields(bytes)) {
+    if (field.fieldNumber === 1 && field.wireType === 2 && field.value instanceof Uint8Array) {
+      text = new TextDecoder().decode(field.value);
+    } else if (field.fieldNumber === 2 && field.wireType === 1 && field.value instanceof Uint8Array) {
+      const id = decodeFixed64(field.value);
+      emojiId = id === 0n ? null : id.toString();
+    } else if (field.fieldNumber === 3 && field.wireType === 2 && field.value instanceof Uint8Array) {
+      emojiName = new TextDecoder().decode(field.value) || null;
+    }
+  }
+  return text || emojiId || emojiName ? { text, emojiId, emojiName } : null;
+}
+
+function encodeCustomStatusText(current: Uint8Array | null, text: string): Uint8Array {
+  const preservedFields = current
+    ? readProtoFields(current)
+        // A quote without an explicit duration is permanent. Keep its emoji
+        // and future fields, but clear the old text and expiration timestamps.
+        .filter((field) => ![1, 4, 5].includes(field.fieldNumber))
+        .map(encodeProtoField)
+    : [];
+  return concatBytes([
+    encodeField(1, 2, new TextEncoder().encode(text)),
+    ...preservedFields,
+  ]);
+}
+
+function replaceProtoField(
+  current: Uint8Array,
+  fieldNumber: number,
+  value: Uint8Array | null,
+  additionallyRemovedFieldNumbers: readonly number[] = [],
+): Uint8Array {
+  const removed = new Set([fieldNumber, ...additionallyRemovedFieldNumbers]);
+  const preserved = readProtoFields(current)
+    .filter((field) => !removed.has(field.fieldNumber))
+    .map(encodeProtoField);
+  return concatBytes([
+    ...(value === null ? [] : [encodeField(fieldNumber, 2, value)]),
+    ...preserved,
+  ]);
 }
 
 interface ProtoField {
   fieldNumber: number;
   wireType: number;
   value: bigint | Uint8Array;
+}
+
+function encodeProtoField(field: ProtoField): Uint8Array {
+  const value = typeof field.value === "bigint" ? encodeVarint(field.value) : field.value;
+  return encodeField(field.fieldNumber, field.wireType, value);
 }
 
 function readProtoFields(bytes: Uint8Array): ProtoField[] {
@@ -622,8 +735,12 @@ function encodeStringValue(value: string): Uint8Array {
   return encodeField(1, 2, new TextEncoder().encode(value));
 }
 
-function encodeBoolValue(value: boolean): Uint8Array {
-  return encodeField(1, 0, encodeVarint(value ? 1n : 0n));
+function decodeFixed64(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (let index = Math.min(bytes.length, 8) - 1; index >= 0; index -= 1) {
+    value = (value << 8n) | BigInt(bytes[index] ?? 0);
+  }
+  return value;
 }
 
 function encodeField(fieldNumber: number, wireType: number, value: Uint8Array): Uint8Array {
