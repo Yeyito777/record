@@ -169,6 +169,78 @@ describe("data cache", () => {
     expect(loadCachedChannelMessages("account-1")["channel-1"]?.latestFetchedAt).toBe(0);
   });
 
+  test("repairs cached thread starters that older builds rendered as empty replies", () => {
+    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    saveCachedChannelMessages("account-1", "thread-1", {
+      channelId: "thread-1",
+      messages: [{
+        id: "starter-1",
+        channelId: "thread-1",
+        guildId: "guild-1",
+        type: 21,
+        content: "",
+        mentionEveryone: false,
+        mentionRoleIds: [],
+        mentionUserIds: [],
+        timestamp: Date.UTC(2026, 7, 1, 1, 9),
+        editedTimestamp: null,
+        author: { id: "self", username: "yeyito", displayName: "Yeyito", bot: false },
+        reply: {
+          messageId: "message-1",
+          authorId: "other",
+          authorDisplayName: "Janthony",
+          timestamp: Date.UTC(2026, 7, 1, 1, 8),
+          summary: "Mira los mensajes del whatsapp",
+        },
+        call: null,
+        attachments: [],
+        stickerNames: [],
+        embedsCount: 0,
+      }, {
+        id: "thread-created-1",
+        channelId: "channel-1",
+        guildId: "guild-1",
+        type: 18,
+        content: "test-thread",
+        mentionEveryone: false,
+        mentionRoleIds: [],
+        mentionUserIds: [],
+        timestamp: Date.UTC(2026, 7, 1, 1, 10),
+        editedTimestamp: null,
+        author: { id: "self", username: "yeyito", displayName: "Yeyito", bot: false },
+        reply: {
+          messageId: null,
+          channelId: "thread-1",
+          authorId: null,
+          authorDisplayName: null,
+          timestamp: null,
+          summary: "Deleted message",
+        },
+        call: null,
+        attachments: [],
+        stickerNames: [],
+        embedsCount: 0,
+      }],
+      hasOlder: false,
+      updatedAt: 1234,
+      latestFetchedAt: 1234,
+    });
+
+    expect(loadCachedChannelMessages("account-1")["thread-1"]?.messages[0]).toMatchObject({
+      content: "🧵 Started this thread.",
+      reply: {
+        messageId: "message-1",
+        authorDisplayName: "Janthony",
+        summary: "Mira los mensajes del whatsapp",
+      },
+    });
+    expect(loadCachedChannelMessages("account-1")["thread-1"]?.messages[1]).toMatchObject({
+      content: "🧵 Started a thread: test-thread",
+      reply: null,
+      threadId: "thread-1",
+    });
+  });
+
   test("treats message caches without latest fetch metadata as unseeded", () => {
     const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
     process.env.XDG_CONFIG_HOME = xdg;
@@ -232,5 +304,41 @@ describe("data cache", () => {
     }));
 
     expect(loadCachedGuildChannels("account-1", "guild-1")).toBeNull();
+  });
+
+  test("accepts cached threads without permission overwrites because they inherit from parents", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    const thread = {
+      id: "thread-1",
+      guildId: "guild-1",
+      parentId: "channel-1",
+      name: "release talk",
+      topic: null,
+      position: 0,
+      type: 11,
+      nsfw: false,
+      thread: {
+        ownerId: "user-1",
+        archived: false,
+        locked: false,
+        invitable: true,
+        autoArchiveDuration: 1440,
+        archiveTimestamp: null,
+        createTimestamp: null,
+        joined: true,
+        messageCount: 1,
+        memberCount: 2,
+        totalMessageSent: 1,
+      },
+    };
+
+    saveCachedGuildChannels("account-1", "guild-1", [
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false, permissionOverwrites: [] },
+      thread,
+    ]);
+
+    expect(loadCachedGuildChannels("account-1", "guild-1")?.find((channel) => channel.id === "thread-1"))
+      .toEqual(thread);
   });
 });

@@ -58,6 +58,31 @@ describe("commands", () => {
     expect(state.editor.buffer).toBe("");
   });
 
+  test("parses a multi-word /thread name and enforces Discord's length limit", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand("/thread release discussion", state)).toEqual({
+      type: "create_thread",
+      name: "release discussion",
+    });
+    expect(tryCommand("/thread", state)).toEqual({ type: "handled" });
+    expect(state.notice).toMatchObject({
+      text: "Usage: /thread <name> (1-100 characters)",
+      statusLine: false,
+    });
+    expect(tryCommand(`/thread ${"a".repeat(101)}`, state)).toEqual({ type: "handled" });
+    expect(tryCommand(`/thread ${"🧵".repeat(100)}`, state)).toEqual({
+      type: "create_thread",
+      name: "🧵".repeat(100),
+    });
+  });
+
+  test("does not expose a thread anchor argument", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(getCommandArgs(state)["/thread"]).toBeUndefined();
+  });
+
   test("parses /upload <file-path>", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
     const result = tryCommand("/upload ./screenshots/cat picture.png", state);

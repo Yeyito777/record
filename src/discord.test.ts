@@ -4,7 +4,9 @@ import {
   DIRECT_MESSAGES_GUILD_ID,
   acceptDiscordInvite,
   banGuildMember,
+  createChannelThread,
   createGuildInvite,
+  createMessageThread,
   ackChannelMessage,
   fetchChannelMessagesAfter,
   fetchChannelMessages,
@@ -16,7 +18,10 @@ import {
   fetchGuildRoles,
   formatChannelName,
   isDirectMessageChannel,
+  isForumChannel,
   isGuildVoiceChannel,
+  isThreadChannel,
+  joinThread,
   mapDiscordMessagePatch,
   mapDiscordMessageReactionPatch,
   deleteChannelMessage,
@@ -418,6 +423,9 @@ describe("discord helpers", () => {
           permission_overwrites: [{ id: "guild-1", type: "0", allow: "0", deny: "1024" }],
         }]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
+      if (url.includes("/channels/channel-1/threads/search")) {
+        return new Response(JSON.stringify({ threads: [], members: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
       throw new Error(`unexpected fetch ${url}`);
     }) as unknown as typeof fetch;
 
@@ -481,6 +489,251 @@ describe("discord helpers", () => {
     expect(channels.map((channel) => channel.id)).toEqual(["voice-1", "stage-1"]);
     expect(channels.every(isGuildVoiceChannel)).toBe(true);
     expect(formatChannelName(channels[0] ?? null)).toBe("🔊 Lounge");
+  });
+
+  test("fetches active guild threads with membership and metadata", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/guilds/guild-1/channels")) {
+        return new Response(JSON.stringify([
+          { id: "text-1", guild_id: "guild-1", parent_id: null, name: "general", position: 0, type: 0, permission_overwrites: [] },
+          { id: "forum-1", guild_id: "guild-1", parent_id: null, name: "support", position: 1, type: 15, permission_overwrites: [] },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/channels/text-1/threads/search?")) {
+        return new Response(JSON.stringify({
+          threads: [{
+            id: "thread-1",
+            guild_id: "guild-1",
+            parent_id: "text-1",
+            owner_id: "user-1",
+            name: "release discussion",
+            type: 11,
+            last_message_id: "300",
+            message_count: 4,
+            member_count: 2,
+            total_message_sent: 6,
+            thread_metadata: {
+              archived: false,
+              auto_archive_duration: 1440,
+              archive_timestamp: "2026-07-31T12:00:00.000Z",
+              create_timestamp: "2026-07-30T12:00:00.000Z",
+              locked: false,
+              invitable: true,
+            },
+          }, {
+            id: "thread-without-member",
+            guild_id: "guild-1",
+            parent_id: "text-1",
+            owner_id: "user-2",
+            name: "discovered thread",
+            type: 11,
+            message_count: 1,
+            member_count: 2,
+            thread_metadata: {
+              archived: false,
+              auto_archive_duration: 1440,
+              archive_timestamp: "2026-07-31T13:00:00.000Z",
+              locked: false,
+            },
+          }],
+          members: [{ id: "thread-1", user_id: "viewer", muted: true }],
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/channels/forum-1/threads/search?")) {
+        return new Response(JSON.stringify({ threads: [], members: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const channels = await fetchGuildChannels("token", "guild-1");
+    const thread = channels.find((channel) => channel.id === "thread-1") ?? null;
+
+    expect(requests.sort()).toEqual([
+      "https://discord.com/api/v9/guilds/guild-1/channels",
+      "https://discord.com/api/v9/channels/text-1/threads/search?archived=false&sort_by=last_message_time&sort_order=desc&limit=25",
+      "https://discord.com/api/v9/channels/forum-1/threads/search?archived=false&sort_by=last_message_time&sort_order=desc&limit=25",
+    ].sort());
+    expect(isForumChannel(channels.find((channel) => channel.id === "forum-1") ?? null)).toBe(true);
+    expect(isThreadChannel(thread)).toBe(true);
+    expect(formatChannelName(thread)).toBe("🧵 release discussion");
+    expect(thread).toMatchObject({
+      parentId: "text-1",
+      lastMessageId: "300",
+      muted: true,
+      thread: {
+        ownerId: "user-1",
+        archived: false,
+        locked: false,
+        invitable: true,
+        autoArchiveDuration: 1440,
+        joined: true,
+        messageCount: 4,
+        memberCount: 2,
+        totalMessageSent: 6,
+      },
+    });
+    expect(channels.find((channel) => channel.id === "thread-without-member")?.thread?.joined).toBeNull();
+  });
+
+  test("retains known active threads only when their parent search fails", async () => {
+    let failThreadSearch = true;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/guilds/guild-1/channels")) {
+        return new Response(JSON.stringify([
+          { id: "text-1", guild_id: "guild-1", parent_id: null, name: "general", position: 0, type: 0, permission_overwrites: [] },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/channels/text-1/threads/search?")) {
+        if (failThreadSearch) {
+          return new Response(JSON.stringify({ message: "temporary failure" }), { status: 500, headers: { "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ threads: [], members: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    const knownThread = {
+      id: "thread-1",
+      guildId: "guild-1",
+      parentId: "text-1",
+      name: "known thread",
+      topic: null,
+      position: 0,
+      type: 11,
+      nsfw: false,
+      thread: {
+        ownerId: "viewer",
+        archived: false,
+        locked: false,
+        invitable: true,
+        autoArchiveDuration: 1440,
+        archiveTimestamp: Date.now(),
+        createTimestamp: Date.now(),
+        joined: true,
+        messageCount: 1,
+        memberCount: 1,
+        totalMessageSent: 1,
+      },
+    };
+
+    const retained = await fetchGuildChannels("token", "guild-1", { fallbackThreads: [knownThread] });
+    failThreadSearch = false;
+    const removed = await fetchGuildChannels("token", "guild-1", { fallbackThreads: [knownThread] });
+
+    expect(retained.map((channel) => channel.id)).toContain("thread-1");
+    expect(retained.find((channel) => channel.id === "thread-1")?.thread?.joined).toBe(true);
+    expect(removed.map((channel) => channel.id)).not.toContain("thread-1");
+  });
+
+  test("creates a public thread anchored to a channel message", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: JSON.parse(String(init?.body ?? "{}")),
+      });
+      return new Response(JSON.stringify({
+        id: "thread-1",
+        guild_id: "guild-1",
+        parent_id: "channel-1",
+        owner_id: "viewer",
+        name: "release discussion",
+        type: 11,
+        message_count: 0,
+        member_count: 1,
+        thread_metadata: {
+          archived: false,
+          auto_archive_duration: 1440,
+          archive_timestamp: "2026-08-01T00:00:00.000Z",
+          locked: false,
+        },
+      }), { status: 201, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const thread = await createMessageThread("token", "channel-1", "message-1", "release discussion");
+
+    expect(requests[0]).toEqual({
+      url: "https://discord.com/api/v9/channels/channel-1/messages/message-1/threads",
+      method: "POST",
+      body: {
+        name: "release discussion",
+        auto_archive_duration: 1440,
+        rate_limit_per_user: 0,
+      },
+    });
+    expect(thread).toMatchObject({
+      id: "thread-1",
+      guildId: "guild-1",
+      parentId: "channel-1",
+      type: 11,
+      thread: { joined: true },
+    });
+  });
+
+  test("creates a standalone public thread in a text channel", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: JSON.parse(String(init?.body ?? "{}")),
+      });
+      return new Response(JSON.stringify({
+        id: "thread-1",
+        guild_id: "guild-1",
+        parent_id: "channel-1",
+        owner_id: "viewer",
+        name: "release discussion",
+        type: 11,
+        message_count: 0,
+        member_count: 1,
+        thread_metadata: {
+          archived: false,
+          auto_archive_duration: 1440,
+          archive_timestamp: "2026-08-01T00:00:00.000Z",
+          locked: false,
+        },
+      }), { status: 201, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const thread = await createChannelThread("token", "channel-1", "release discussion");
+
+    expect(requests[0]).toEqual({
+      url: "https://discord.com/api/v9/channels/channel-1/threads",
+      method: "POST",
+      body: {
+        name: "release discussion",
+        auto_archive_duration: 1440,
+        rate_limit_per_user: 0,
+        type: 11,
+      },
+    });
+    expect(thread).toMatchObject({
+      id: "thread-1",
+      guildId: "guild-1",
+      parentId: "channel-1",
+      type: 11,
+      thread: { joined: true },
+    });
+  });
+
+  test("joins a thread through the user-account thread member route", async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), method: init?.method ?? "GET" });
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await joinThread("token", "thread-1");
+
+    expect(requests).toEqual([{
+      url: "https://discord.com/api/v9/channels/thread-1/thread-members/@me?location=Sidebar%20Overflow",
+      method: "POST",
+    }]);
   });
 
   test("fetches guilds without reading Discord sidebar settings", async () => {
@@ -1360,6 +1613,70 @@ describe("discord helpers", () => {
     expect(messages[0]?.type).toBe(6);
     expect(messages[0]?.content).toBe("📌 Pinned a message to this channel.");
     expect(messages[0]?.reply).toBeNull();
+  });
+
+  test("renders thread creation as an authored message linked to the thread channel", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([{
+        id: "thread-created-1",
+        channel_id: "channel-1",
+        guild_id: "guild-1",
+        type: 18,
+        content: "test-thread",
+        timestamp: "2026-08-01T01:32:00.000Z",
+        edited_timestamp: null,
+        author: { id: "self", username: "yeyito", global_name: "Yeyito" },
+        message_reference: { channel_id: "thread-1", guild_id: "guild-1" },
+        referenced_message: null,
+        attachments: [],
+        embeds: [],
+      }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "channel-1", 50);
+
+    expect(messages[0]?.type).toBe(18);
+    expect(messages[0]?.content).toBe("🧵 Started a thread: test-thread");
+    expect(messages[0]?.reply).toBeNull();
+    expect(messages[0]?.threadId).toBe("thread-1");
+  });
+
+  test("renders a message-anchored thread starter through the authored reply UI", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify([{
+        id: "starter-1",
+        channel_id: "thread-1",
+        guild_id: "guild-1",
+        type: 21,
+        content: "",
+        timestamp: "2026-08-01T01:09:00.000Z",
+        edited_timestamp: null,
+        author: { id: "self", username: "yeyito", global_name: "Yeyito" },
+        message_reference: { message_id: "message-1", channel_id: "channel-1", guild_id: "guild-1" },
+        referenced_message: {
+          id: "message-1",
+          content: "Mira los mensajes del whatsapp",
+          timestamp: "2026-08-01T01:08:00.000Z",
+          author: { id: "other", username: "janthony", global_name: "Janthony" },
+          attachments: [],
+          embeds: [],
+        },
+        attachments: [],
+        embeds: [],
+      }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelMessages("token", "thread-1", 50);
+
+    expect(messages[0]?.type).toBe(21);
+    expect(messages[0]?.content).toBe("🧵 Started this thread.");
+    expect(messages[0]?.reply).toEqual({
+      messageId: "message-1",
+      authorId: "other",
+      authorDisplayName: "Janthony",
+      timestamp: Date.parse("2026-08-01T01:08:00.000Z"),
+      summary: "Mira los mensajes del whatsapp",
+    });
   });
 
   test("hydrates missing reply previews from messages returned in the same page", async () => {

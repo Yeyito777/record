@@ -29,6 +29,7 @@ import {
   openSidebarCreateFolderPrompt,
   openSidebarMoveItemsPrompt,
   openSidebarSearchBar,
+  revealSidebarChannel,
   handleSidebarPromptKey,
   handleSidebarSearchBarKey,
   jumpToSidebarSearchMatch,
@@ -95,6 +96,92 @@ describe("sidebar state", () => {
 
     expect(entry?.kind).toBe("category");
     expect(sidebar.collapsedCategoryIds).toEqual(["cat"]);
+  });
+
+  test("nests active threads beneath text and forum parent channels", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+    const threadInfo = {
+      ownerId: "user-1",
+      archived: false,
+      locked: false,
+      invitable: true,
+      autoArchiveDuration: 1440,
+      archiveTimestamp: null,
+      createTimestamp: null,
+      joined: true,
+      messageCount: 1,
+      memberCount: 1,
+      totalMessageSent: 1,
+    };
+    const channels = [
+      { id: "cat", guildId: "guild-1", parentId: null, name: "Community", topic: null, position: 0, type: 4, nsfw: false },
+      { id: "text", guildId: "guild-1", parentId: "cat", name: "general", topic: null, position: 1, type: 0, nsfw: false },
+      { id: "thread", guildId: "guild-1", parentId: "text", name: "release talk", topic: null, position: 0, type: 11, nsfw: false, lastMessageId: "300", thread: threadInfo },
+      { id: "forum", guildId: "guild-1", parentId: "cat", name: "support", topic: null, position: 2, type: 15, nsfw: false },
+      { id: "post", guildId: "guild-1", parentId: "forum", name: "need help", topic: null, position: 0, type: 11, nsfw: false, lastMessageId: "200", thread: threadInfo },
+      { id: "archived", guildId: "guild-1", parentId: "text", name: "old", topic: null, position: 1, type: 11, nsfw: false, thread: { ...threadInfo, archived: true } },
+    ];
+
+    const entries = buildSidebarEntries(sidebar, channels);
+    expect(entries.map((entry) => [entry.id, entry.depth])).toEqual([
+      ["guild-1", 0],
+      ["cat", 1],
+      ["text", 2],
+      ["thread", 3],
+      ["forum", 2],
+      ["post", 3],
+    ]);
+    const rendered = renderSidebar(sidebar, channels, 10, true).map(stripAnsiForTest).join("\n");
+    expect(rendered).toContain("↳ release talk");
+    expect(rendered).toContain("▤ support");
+
+    openSidebarSearchBar(sidebar, channels, "forward");
+    for (const char of "release") handleSidebarSearchBarKey(sidebar, channels, { type: "char", char });
+    expect(buildSidebarEntries(sidebar, channels).map((entry) => entry.id)).toEqual(["guild-1", "cat", "text", "thread"]);
+  });
+
+  test("reveals and selects a newly opened thread inside a collapsed category", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.collapsedCategoryIds = ["cat"];
+    const channels = [
+      { id: "cat", guildId: "guild-1", parentId: null, name: "Community", topic: null, position: 0, type: 4, nsfw: false },
+      { id: "text", guildId: "guild-1", parentId: "cat", name: "general", topic: null, position: 1, type: 0, nsfw: false },
+      {
+        id: "thread",
+        guildId: "guild-1",
+        parentId: "text",
+        name: "release talk",
+        topic: null,
+        position: 0,
+        type: 11,
+        nsfw: false,
+        thread: {
+          ownerId: "user-1",
+          archived: false,
+          locked: false,
+          invitable: true,
+          autoArchiveDuration: 1440,
+          archiveTimestamp: null,
+          createTimestamp: null,
+          joined: true,
+          messageCount: 0,
+          memberCount: 1,
+          totalMessageSent: 0,
+        },
+      },
+    ];
+    setSidebarCachedChannels(sidebar, "guild-1", channels);
+
+    expect(revealSidebarChannel(sidebar, channels, "guild-1", "thread")).toBe(true);
+
+    expect(sidebar.expandedGuildId).toBe("guild-1");
+    expect(sidebar.collapsedCategoryIds).toEqual([]);
+    expect(sidebar.selectedItem).toEqual({ type: "channel", id: "thread", guildId: "guild-1" });
+    expect(buildSidebarEntries(sidebar, channels)[sidebar.selectedIndex]).toMatchObject({ id: "thread", depth: 3 });
   });
 
   test("renders muted guild icon and suppresses its guild badge", () => {

@@ -7,7 +7,7 @@ import { writeFile } from "fs/promises";
 import { dirname, join } from "path";
 
 import { configDir } from "./config";
-import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild, type DiscordGuildMember, type DiscordRole } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, isThreadChannel, normalizeDiscordMessageForDisplay, type DiscordChannel, type DiscordGuild, type DiscordGuildMember, type DiscordRole } from "./discord";
 import type { SidebarChannelLayout, SidebarChannelPlacement, SidebarFolderLayout } from "./sidebar";
 import type { ChannelMessageCache, CachedChannelMessages } from "./messagecache";
 import type { NotificationState } from "./notifications";
@@ -438,7 +438,11 @@ export function saveCachedDirectMessages(accountId: string, directMessages: Disc
 }
 
 function cachedChannelsHavePermissionOverwrites(channels: DiscordChannel[]): boolean {
-  return channels.every((channel) => channel.guildId === DIRECT_MESSAGES_GUILD_ID || Array.isArray(channel.permissionOverwrites));
+  // Discord thread objects inherit visibility overwrites from their parent and
+  // therefore do not carry permission_overwrites themselves.
+  return channels.every((channel) => channel.guildId === DIRECT_MESSAGES_GUILD_ID
+    || isThreadChannel(channel)
+    || Array.isArray(channel.permissionOverwrites));
 }
 
 export function loadCachedGuildChannels(accountId: string, guildId: string): DiscordChannel[] | null {
@@ -495,7 +499,7 @@ function cloneCachedChannelMessages(entry: CachedChannelMessages, maxMessages = 
   const stored = entry as CachedChannelMessages & { latestFetchedAt?: number | null };
   return {
     channelId: entry.channelId,
-    messages: entry.messages.slice(-maxMessages).map((message) => ({ ...message })),
+    messages: entry.messages.slice(-maxMessages).map((message) => normalizeDiscordMessageForDisplay({ ...message })),
     hasOlder: entry.hasOlder,
     updatedAt: entry.updatedAt,
     latestFetchedAt: stored.latestFetchedAt ?? null,

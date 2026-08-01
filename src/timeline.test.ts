@@ -21,6 +21,7 @@ function message(
   id: string,
   content: string,
   options: {
+    channelId?: string;
     authorId?: string;
     authorName?: string;
     bot?: boolean;
@@ -37,7 +38,7 @@ function message(
 ): DiscordMessage {
   return {
     id,
-    channelId: "channel-1",
+    channelId: options.channelId ?? "channel-1",
     guildId: options.guildId,
     type: options.type ?? 0,
     timestamp: options.timestamp ?? Date.UTC(2026, 0, 1, 12, 0, 0),
@@ -120,6 +121,55 @@ describe("timeline rendering", () => {
 
     setTimelineMessages(timeline, "channel-1", [message("message-1", "before")]);
     expect(timeline.systemMessages).toEqual([]);
+  });
+
+  test("renders contextual empty-channel text until the first message arrives", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "thread-1", [], { emptyText: "No messages in this thread yet." });
+
+    expect(renderTimelineLines(timeline, 80, 10, { text: "", tone: "muted" }).allLines.join("\n"))
+      .toContain("No messages in this thread yet.");
+
+    appendTimelineMessage(timeline, message("message-1", "first post", { channelId: "thread-1" }));
+    const rendered = renderTimelineLines(timeline, 80, 10, { text: "", tone: "muted" }).allLines.join("\n");
+    expect(rendered).toContain("first post");
+    expect(rendered).not.toContain("No messages in this thread yet.");
+  });
+
+  test("renders thread creation as an authored message without a bogus reply", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("thread-created-1", "🧵 Started a thread: test-thread", {
+      type: 18,
+      authorName: "Yeyito",
+    })]);
+
+    const rendered = renderTimelineLines(timeline, 80, 10, { text: "", tone: "muted" });
+    const plain = rendered.allLines.map(stripAnsi);
+    expect(plain).toEqual([
+      `Yeyito ${expectedLocalTime()}`,
+      "🧵 Started a thread: test-thread",
+    ]);
+    expect(plain.join("\n")).not.toContain("Deleted message");
+  });
+
+  test("renders a message-anchored thread start as an authored reply", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "thread-1", [message("thread-starter-1", "🧵 Started this thread.", {
+      type: 21,
+      authorName: "Yeyito",
+      reply: {
+        messageId: "source-1",
+        authorId: "other",
+        authorDisplayName: "Janthony",
+        timestamp: Date.UTC(2026, 0, 1, 11, 59),
+        summary: "Mira los mensajes del whatsapp",
+      },
+    })]);
+
+    const plain = renderTimelineLines(timeline, 80, 10, { text: "", tone: "muted" }).allLines.map(stripAnsi);
+    expect(plain[0]).toContain("Janthony · Mira los mensajes del whatsapp");
+    expect(plain[1]).toBe(`Yeyito ${expectedLocalTime()}`);
+    expect(plain[2]).toBe("🧵 Started this thread.");
   });
 
   test("formats message timestamps in local system time", () => {

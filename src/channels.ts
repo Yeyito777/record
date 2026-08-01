@@ -85,7 +85,15 @@ export function setActiveChannelEntry(channelList: ChannelListState, channel: Di
 export function upsertChannel(channelList: ChannelListState, channel: DiscordChannel): void {
   const index = channelList.channels.findIndex((existing) => existing.id === channel.id);
   if (index >= 0) {
-    channelList.channels[index] = { ...channelList.channels[index], ...channel };
+    const existing = channelList.channels[index]!;
+    channelList.channels[index] = {
+      ...existing,
+      ...channel,
+      muted: channel.muted ?? existing.muted,
+      ...(existing.thread && channel.thread
+        ? { thread: { ...existing.thread, ...channel.thread, joined: channel.thread.joined ?? existing.thread.joined } }
+        : {}),
+    };
   } else {
     channelList.channels.push(channel);
   }

@@ -235,6 +235,75 @@ describe("app gateway helpers", () => {
     }]);
   });
 
+  test("dispatches thread lifecycle, list sync, and membership events", () => {
+    const created: unknown[] = [];
+    const updated: unknown[] = [];
+    const deleted: unknown[] = [];
+    const syncs: unknown[] = [];
+    const memberships: unknown[] = [];
+    const client = new AppGatewayClient("token", {
+      onInitialNotifications: () => {},
+      onMessageCreate: () => {},
+      onMessageUpdate: () => {},
+      onMessageDelete: () => {},
+      onMessageDeleteBulk: () => {},
+      onMessageAck: () => {},
+      onChannelCreate: (channel) => created.push(channel),
+      onChannelUpdate: (channel) => updated.push(channel),
+      onChannelDelete: (channelId, guildId) => deleted.push({ channelId, guildId }),
+      onThreadListSync: (event) => syncs.push(event),
+      onThreadMembershipUpdate: (threadId, joined) => memberships.push({ threadId, joined }),
+      onTypingStart: () => {},
+    }) as any;
+    client.currentUserId = "viewer";
+    const thread = {
+      id: "thread-1",
+      guild_id: "guild-1",
+      parent_id: "channel-1",
+      owner_id: "user-1",
+      name: "release talk",
+      type: 11,
+      message_count: 2,
+      member_count: 3,
+      thread_metadata: { archived: false, locked: false, auto_archive_duration: 1440, archive_timestamp: "2026-08-01T00:00:00.000Z" },
+    };
+
+    client.handleMessage({ data: JSON.stringify({ op: 0, t: "THREAD_CREATE", d: thread }) });
+    client.handleMessage({ data: JSON.stringify({ op: 0, t: "THREAD_UPDATE", d: { ...thread, name: "renamed" } }) });
+    client.handleMessage({ data: JSON.stringify({
+      op: 0,
+      t: "GUILD_CREATE",
+      d: { id: "guild-1", name: "Guild", threads: [thread] },
+    }) });
+    client.handleMessage({ data: JSON.stringify({
+      op: 0,
+      t: "THREAD_LIST_SYNC",
+      d: { guild_id: "guild-1", channel_ids: ["channel-1"], threads: [thread], members: [{ id: "thread-1", user_id: "viewer" }] },
+    }) });
+    client.handleMessage({ data: JSON.stringify({ op: 0, t: "THREAD_MEMBERS_UPDATE", d: { id: "thread-1", removed_member_ids: ["viewer"] } }) });
+    client.handleMessage({ data: JSON.stringify({ op: 0, t: "THREAD_DELETE", d: { id: "thread-1", guild_id: "guild-1", parent_id: "channel-1", type: 11 } }) });
+
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ id: "thread-1", parentId: "channel-1", type: 11, thread: { joined: null, messageCount: 2 } });
+    expect(updated[0]).toMatchObject({ id: "thread-1", name: "renamed" });
+    expect(syncs).toEqual([
+      expect.objectContaining({
+        guildId: "guild-1",
+        parentChannelIds: null,
+        authoritative: false,
+        threads: [expect.objectContaining({ id: "thread-1", thread: expect.objectContaining({ joined: true }) })],
+      }),
+      expect.objectContaining({
+        guildId: "guild-1",
+        parentChannelIds: ["channel-1"],
+        authoritative: true,
+        threads: [expect.objectContaining({ id: "thread-1", thread: expect.objectContaining({ joined: true }) })],
+      }),
+    ]);
+    expect(memberships).toEqual([{ threadId: "thread-1", joined: false }]);
+    expect(deleted).toEqual([{ channelId: "thread-1", guildId: "guild-1" }]);
+  });
+
   test("extracts initial unread DM notifications from READY read state", () => {
     const notifications = extractInitialNotifications({
       private_channels: [

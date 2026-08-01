@@ -19,6 +19,7 @@ import {
   type DiscordMessage,
   type DiscordMessagePatch,
   type DiscordMessageResponse,
+  type DiscordThreadMemberResponse,
   type DiscordGuildMember,
   type DiscordCustomStatus,
   type DiscordPresenceStatus,
@@ -53,6 +54,15 @@ export interface InitialNotification {
   channelId: string;
   guildId: string | null;
   count: number;
+}
+
+export interface ThreadListSyncEvent {
+  guildId: string;
+  /** Null means the sync covers every thread parent in the guild. */
+  parentChannelIds: string[] | null;
+  threads: DiscordChannel[];
+  /** False for READY/GUILD_CREATE snapshots that should only add known threads. */
+  authoritative: boolean;
 }
 
 export interface CallGatewayVoiceState {
@@ -126,6 +136,8 @@ export interface AppGatewayCallbacks {
   onChannelCreate: (channel: DiscordChannel) => void;
   onChannelUpdate: (channel: DiscordChannel) => void;
   onChannelDelete: (channelId: string, guildId: string | null) => void;
+  onThreadListSync?: (event: ThreadListSyncEvent) => void;
+  onThreadMembershipUpdate?: (threadId: string, joined: boolean) => void;
   onTypingStart: (channelId: string, userId: string, displayName: string) => void;
   onReconnect?: (attempt: number, delayMs: number) => void;
   onError?: (error: Error) => void;
@@ -376,6 +388,9 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
       this.callbacks.onChannelMuteSettings?.(extractChannelMuteSettings(payload.d), { reset: true });
       this.callbacks.onInitialNotifications(extractInitialNotifications(payload.d));
+      for (const sync of extractReadyThreadListSyncs(payload.d)) {
+        this.callbacks.onThreadListSync?.(sync);
+      }
       for (const voiceState of extractReadyVoiceStates(payload.d)) {
         this.rememberSelfVoiceState(voiceState);
         this.callbacks.onVoiceStateUpdate?.(voiceState);
@@ -542,9 +557,35 @@ export class AppGatewayClient implements VoiceSignalingClient {
           this.callbacks.onChannelDelete(data.id, typeof data.guild_id === "string" ? data.guild_id : null);
           break;
         }
+        case "THREAD_CREATE":
+          this.handleChannelCreateOrUpdate(data, "create");
+          break;
+        case "THREAD_UPDATE":
+          this.handleChannelCreateOrUpdate(data, "update");
+          break;
+        case "THREAD_DELETE": {
+          if (!isObject(data) || typeof data.id !== "string") break;
+          this.callbacks.onChannelDelete(data.id, typeof data.guild_id === "string" ? data.guild_id : null);
+          break;
+        }
+        case "THREAD_LIST_SYNC": {
+          const sync = mapThreadListSyncEvent(data);
+          if (sync) this.callbacks.onThreadListSync?.(sync);
+          break;
+        }
+        case "THREAD_MEMBER_UPDATE": {
+          if (!isObject(data) || typeof data.id !== "string") break;
+          this.callbacks.onThreadMembershipUpdate?.(data.id, true);
+          break;
+        }
+        case "THREAD_MEMBERS_UPDATE":
+          this.handleThreadMembersUpdate(data);
+          break;
         case "GUILD_CREATE": {
           const guild = mapGatewayGuild(data);
           if (guild) this.callbacks.onGuildCreate?.(guild);
+          const sync = guild ? mapGuildThreadsAsListSync(data, guild.id) : null;
+          if (sync) this.callbacks.onThreadListSync?.(sync);
           for (const voiceState of extractGuildVoiceStates(data)) {
             this.callbacks.onVoiceStateUpdate?.(voiceState);
           }
@@ -710,6 +751,19 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.callbacks.onChannelCreate(channel);
     } else {
       this.callbacks.onChannelUpdate(channel);
+    }
+  }
+
+  private handleThreadMembersUpdate(data: unknown): void {
+    if (!isObject(data) || typeof data.id !== "string" || !this.currentUserId) return;
+    const removedMemberIds = Array.isArray(data.removed_member_ids) ? data.removed_member_ids : [];
+    if (removedMemberIds.includes(this.currentUserId)) {
+      this.callbacks.onThreadMembershipUpdate?.(data.id, false);
+      return;
+    }
+    const addedMembers = Array.isArray(data.added_members) ? data.added_members : [];
+    if (addedMembers.some((member) => isObject(member) && member.user_id === this.currentUserId)) {
+      this.callbacks.onThreadMembershipUpdate?.(data.id, true);
     }
   }
 
@@ -1117,6 +1171,62 @@ export function extractReadyGuilds(data: unknown): DiscordGuild[] {
   return data.guilds
     .map(mapGatewayGuild)
     .filter((guild): guild is DiscordGuild => guild !== null);
+}
+
+function mapGuildThreadsAsListSync(data: unknown, guildId: string): ThreadListSyncEvent | null {
+  if (!isObject(data) || !Array.isArray(data.threads)) return null;
+  const threads = data.threads
+    .map((thread) => {
+      if (!isObject(thread)) return null;
+      const response = thread as unknown as DiscordChannelResponse;
+      // Threads embedded in READY/GUILD_CREATE are the current user's joined
+      // threads. Some gateway payloads omit the nested member object, but their
+      // presence in this list is itself authoritative membership information.
+      return mapGuildChannel(response, guildId, {
+        threadMember: response.member ?? { id: response.id },
+        threadMembershipKnown: true,
+      });
+    })
+    .filter((thread): thread is DiscordChannel => thread !== null);
+  return { guildId, parentChannelIds: null, threads, authoritative: false };
+}
+
+function extractReadyThreadListSyncs(data: unknown): ThreadListSyncEvent[] {
+  if (!isObject(data) || !Array.isArray(data.guilds)) return [];
+  const syncs: ThreadListSyncEvent[] = [];
+  for (const rawGuild of data.guilds) {
+    const guild = mapGatewayGuild(rawGuild);
+    if (!guild) continue;
+    const sync = mapGuildThreadsAsListSync(rawGuild, guild.id);
+    if (sync) syncs.push(sync);
+  }
+  return syncs;
+}
+
+export function mapThreadListSyncEvent(data: unknown): ThreadListSyncEvent | null {
+  if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.threads)) return null;
+  const membersByThreadId = new Map<string, Record<string, unknown>>();
+  for (const member of Array.isArray(data.members) ? data.members : []) {
+    if (isObject(member) && typeof member.id === "string") membersByThreadId.set(member.id, member);
+  }
+  const threads = data.threads
+    .map((thread) => {
+      if (!isObject(thread)) return null;
+      const id = typeof thread.id === "string" ? thread.id : "";
+      return mapGuildChannel(thread as unknown as DiscordChannelResponse, data.guild_id, {
+        threadMember: membersByThreadId.get(id) as DiscordThreadMemberResponse | undefined,
+        threadMembershipKnown: true,
+      });
+    })
+    .filter((thread): thread is DiscordChannel => thread !== null);
+  return {
+    guildId: data.guild_id,
+    parentChannelIds: Array.isArray(data.channel_ids)
+      ? data.channel_ids.filter((id): id is string => typeof id === "string")
+      : null,
+    threads,
+    authoritative: true,
+  };
 }
 
 export function extractCurrentUserRoleIdsByGuildId(data: unknown): Record<string, string[]> {

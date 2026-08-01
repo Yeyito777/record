@@ -88,7 +88,7 @@ Goal: cover the features a terminal Discord client really needs.
 - [ ] attachment download/open helpers
 - [ ] reactions
 - [ ] typing indicators
-- [ ] thread browsing basics
+- [x] thread browsing basics
 - [ ] DMs and group DMs
 - [ ] pinned messages / channel topic display
 

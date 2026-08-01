@@ -83,4 +83,45 @@ describe("channel list state", () => {
     setActiveChannel(channels, "text");
     expect(getActiveChannel(channels)?.id).toBe("text");
   });
+
+  test("treats threads as browsable message timelines and preserves known membership on updates", () => {
+    const thread = {
+      id: "thread-1",
+      guildId: "guild-1",
+      parentId: "text-1",
+      name: "release talk",
+      topic: null,
+      position: 0,
+      type: 11,
+      nsfw: false,
+      thread: {
+        ownerId: "user-1",
+        archived: false,
+        locked: false,
+        invitable: true,
+        autoArchiveDuration: 1440,
+        archiveTimestamp: null,
+        createTimestamp: null,
+        joined: true,
+        messageCount: 1,
+        memberCount: 2,
+        totalMessageSent: 1,
+      },
+    };
+    const channels = createChannelListState();
+    setChannelList(channels, "guild-1", [thread]);
+    setActiveChannel(channels, thread.id);
+
+    expect(isBrowsableChannel(thread)).toBe(true);
+    expect(isTimelineChannel(thread)).toBe(true);
+
+    upsertChannel(channels, {
+      ...thread,
+      name: "renamed",
+      thread: { ...thread.thread, joined: null, messageCount: 2 },
+    });
+    expect(getActiveChannel(channels)?.name).toBe("renamed");
+    expect(getActiveChannel(channels)?.thread?.joined).toBe(true);
+    expect(getActiveChannel(channels)?.thread?.messageCount).toBe(2);
+  });
 });

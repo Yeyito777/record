@@ -27,6 +27,7 @@ export type CommandResult =
   | { type: "logout" }
   | { type: "logout_whatsapp" }
   | { type: "refresh" }
+  | { type: "create_thread"; name: string }
   | { type: "upload"; path: string }
   | { type: "call" }
   | { type: "stream" }
@@ -233,6 +234,22 @@ const commands: SlashCommand[] = [
       if (parts.length !== 1) return usage(state, "Usage: /refresh");
       clearPrompt(state);
       return { type: "refresh" };
+    },
+  },
+  {
+    name: "/thread",
+    description: "Create a thread, anchored to the active reply when present",
+    handler: (text, state) => {
+      const match = text.match(/^\/thread(?:\s+([\s\S]+))?$/);
+      const name = match?.[1]?.trim() ?? "";
+      const length = Array.from(name).length;
+      if (length < 1 || length > 100) {
+        setNotice(state, "Usage: /thread <name> (1-100 characters)", "warning", { statusLine: false });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      clearPrompt(state);
+      return { type: "create_thread", name };
     },
   },
   {

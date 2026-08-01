@@ -195,6 +195,165 @@ describe("submitCurrentBuffer", () => {
     expect(state.notice.statusLine).toBe(false);
   });
 
+  test("/thread creates a standalone thread without using the retained history cursor and opens it", async () => {
+    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-thread-action-test-"));
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      requests.push({
+        url,
+        method,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      if (url.endsWith("/channels/channel-1/threads") && method === "POST") {
+        return new Response(JSON.stringify({
+          id: "thread-1",
+          guild_id: "guild-1",
+          parent_id: "channel-1",
+          owner_id: "self",
+          name: "release discussion",
+          type: 11,
+          message_count: 0,
+          member_count: 1,
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 1440,
+            archive_timestamp: "2026-08-01T12:00:00.000Z",
+            locked: false,
+          },
+        }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/channels/thread-1/messages?limit=50") && method === "GET") {
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false, permissionOverwrites: [] }];
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.activeChannel = state.channelList.channels[0] ?? null;
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.activeGuildId = "guild-1";
+    state.timeline.channelId = "channel-1";
+    state.timeline.messages = [{
+      id: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      type: 0,
+      content: "starter",
+      mentionEveryone: false,
+      mentionRoleIds: [],
+      mentionUserIds: [],
+      timestamp: Date.now(),
+      editedTimestamp: null,
+      author: { id: "other", username: "other", displayName: "Other", bot: false },
+      reply: null,
+      call: null,
+      attachments: [],
+      stickerNames: [],
+      embedsCount: 0,
+    }];
+    state.historyCursor = { row: 0, col: 0 };
+    state.historyMessageBounds = [{ messageId: "message-1", start: 0, end: 2, contentStart: 1, contentEnd: 2 }];
+    state.guildRolesByGuildId["guild-1"] = [{ id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "1024" }];
+    state.editor.buffer = "/thread release discussion";
+    state.editor.cursor = state.editor.buffer.length;
+
+    submitCurrentBuffer(state, effects);
+    await waitForCondition(() => state.timeline.channelId === "thread-1"
+      && state.timeline.systemMessages.some((message) => message.text.includes("Created thread")));
+
+    expect(requests[0]).toEqual({
+      url: "https://discord.com/api/v9/channels/channel-1/threads",
+      method: "POST",
+      body: { name: "release discussion", auto_archive_duration: 1440, rate_limit_per_user: 0, type: 11 },
+    });
+    expect(requests.some((request) => request.url.includes("/messages/message-1/threads"))).toBe(false);
+    expect(state.channelList.activeChannel).toMatchObject({
+      id: "thread-1",
+      parentId: "channel-1",
+      thread: { joined: true },
+    });
+    expect(state.sidebar.cachedChannelsByGuildId["guild-1"]?.map((channel) => channel.id)).toContain("thread-1");
+    expect(state.sidebar.selectedItem).toEqual({ type: "channel", id: "thread-1", guildId: "guild-1" });
+    expect(state.timeline.systemMessages.at(-1)?.text).toBe("Created thread “release discussion”. Send the first message below.");
+    expect(state.editor.buffer).toBe("");
+    expect(state.notice.text).toBe("");
+  });
+
+  test("/thread anchors to the active reply target", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      requests.push({
+        url,
+        method,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      if (url.endsWith("/channels/channel-1/messages/message-1/threads") && method === "POST") {
+        return new Response(JSON.stringify({
+          id: "thread-1",
+          guild_id: "guild-1",
+          parent_id: "channel-1",
+          owner_id: "self",
+          name: "release discussion",
+          type: 11,
+          message_count: 1,
+          member_count: 1,
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 1440,
+            archive_timestamp: "2026-08-01T12:00:00.000Z",
+            locked: false,
+          },
+        }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/channels/thread-1/messages?limit=50") && method === "GET") {
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false, permissionOverwrites: [] }];
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.activeChannel = state.channelList.channels[0] ?? null;
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.activeGuildId = "guild-1";
+    state.timeline.channelId = "channel-1";
+    state.replyTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      authorId: "other",
+      authorDisplayName: "Other",
+      authorColor: "",
+      summary: "starter message",
+      timestamp: Date.now(),
+      mention: false,
+    };
+    state.editor.buffer = "/thread release discussion";
+    state.editor.cursor = state.editor.buffer.length;
+
+    submitCurrentBuffer(state, effects);
+    await waitForCondition(() => state.timeline.channelId === "thread-1");
+
+    expect(requests[0]).toEqual({
+      url: "https://discord.com/api/v9/channels/channel-1/messages/message-1/threads",
+      method: "POST",
+      body: { name: "release discussion", auto_archive_duration: 1440, rate_limit_per_user: 0 },
+    });
+    expect(requests.some((request) => request.url === "https://discord.com/api/v9/channels/channel-1/threads")).toBe(false);
+    expect(state.replyTarget).toBeNull();
+    expect(state.timeline.systemMessages.some((message) => message.text.includes("Send the first message"))).toBe(false);
+  });
+
   test("/status feedback stays out of the status line while logged out", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editor.buffer = "/status dnd";

@@ -6,7 +6,7 @@ import { randomUUID } from "crypto";
 
 import type { CompletionItem } from "./commands";
 import { isFixedTopLevelGuildId, WHATSAPP_GUILD_ID } from "./chatproviders";
-import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, compareSnowflakesDesc, isThreadChannel, type DiscordChannel, type DiscordGuild } from "./discord";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import type { KeyEvent } from "./input";
 import { loadingLabel } from "./loading";
@@ -458,6 +458,41 @@ export function sidebarChannelsForGuild(sidebar: SidebarState, activeChannels: D
     }
   }
   return Array.from(byId.values());
+}
+
+/** Make a newly opened channel visible and selected without moving focus to the sidebar. */
+export function revealSidebarChannel(
+  sidebar: SidebarState,
+  activeChannels: DiscordChannel[],
+  guildId: string,
+  channelId: string,
+  options: SidebarVisibilityOptions = {},
+): boolean {
+  const channels = sidebarChannelsForGuild(sidebar, activeChannels, guildId);
+  const channel = channels.find((candidate) => candidate.id === channelId);
+  if (!channel) return false;
+
+  const parent = isThreadChannel(channel) && channel.parentId
+    ? channels.find((candidate) => candidate.id === channel.parentId) ?? null
+    : channel;
+  const categoryId = parent?.parentId && channels.some((candidate) => candidate.id === parent.parentId && candidate.type === 4)
+    ? parent.parentId
+    : null;
+  if (categoryId) {
+    sidebar.collapsedCategoryIds = sidebar.collapsedCategoryIds.filter((id) => id !== categoryId);
+  }
+
+  const guildParent = itemParent(sidebar, { type: "guild", id: guildId });
+  sidebar.currentFolderId = guildParent === undefined ? null : guildParent;
+  sidebar.expandedGuildId = guildId;
+  sidebar.focusedGuildId = guildId;
+  sidebar.selectedItem = { type: "channel", id: channelId, guildId };
+
+  const entries = buildSidebarEntries(sidebar, activeChannels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  const index = entries.findIndex((entry) => entry.kind === "channel" && entry.guildId === guildId && entry.id === channelId);
+  if (index < 0) return false;
+  sidebar.selectedIndex = index;
+  return true;
 }
 
 function allSidebarChannels(sidebar: SidebarState, activeChannels: DiscordChannel[]): DiscordChannel[] {
@@ -1098,6 +1133,54 @@ function pushChannelEntry(
   pushVoiceMemberEntries(entries, guildId, channel, depth + 1, voiceMembersByChannelId);
 }
 
+function sortThreadRows(threads: readonly DiscordChannel[]): DiscordChannel[] {
+  return threads.slice().sort((left, right) => {
+    const recency = (!left.lastMessageId || /^\d+$/.test(left.lastMessageId))
+      && (!right.lastMessageId || /^\d+$/.test(right.lastMessageId))
+      ? compareSnowflakesDesc(left.lastMessageId, right.lastMessageId)
+      : 0;
+    return recency || left.position - right.position || left.name.localeCompare(right.name);
+  });
+}
+
+function pushChannelAndThreads(
+  entries: SidebarEntry[],
+  guildId: string,
+  channel: DiscordChannel,
+  threads: readonly DiscordChannel[],
+  depth: number,
+  typingChannelIds: ReadonlySet<string>,
+  typingFrame: string,
+  channelNotificationCounts: ReadonlyMap<string, number>,
+  voiceMembersByChannelId: Readonly<Record<string, readonly SidebarVoiceMember[]>>,
+  searchMatchedChannelIds?: ReadonlySet<string>,
+): void {
+  pushChannelEntry(
+    entries,
+    guildId,
+    channel,
+    depth,
+    typingChannelIds,
+    typingFrame,
+    channelNotificationCounts,
+    voiceMembersByChannelId,
+    searchMatchedChannelIds?.has(channel.id) ?? false,
+  );
+  for (const thread of sortThreadRows(threads.filter((candidate) => candidate.parentId === channel.id))) {
+    pushChannelEntry(
+      entries,
+      guildId,
+      thread,
+      depth + 1,
+      typingChannelIds,
+      typingFrame,
+      channelNotificationCounts,
+      voiceMembersByChannelId,
+      searchMatchedChannelIds?.has(thread.id) ?? false,
+    );
+  }
+}
+
 function pushChannelSectionDelimiter(entries: SidebarEntry[], guildId: string): void {
   entries.push({
     kind: "delimiter",
@@ -1241,7 +1324,9 @@ function buildSidebarSearchEntries(
     const guildMatched = guildMatchesQuery(guild, query);
     const guildChannels = allChannels.filter((channel) => channel.guildId === guild.id);
     const visibleGuildChannels = guildChannels
-      .filter((channel) => channel.type !== 4 && (options.showHiddenChannels || !channel.hidden));
+      .filter((channel) => channel.type !== 4
+        && (!isThreadChannel(channel) || !channel.thread?.archived)
+        && (options.showHiddenChannels || !channel.hidden));
     const matchingChannelRows = visibleGuildChannels.filter((channel) => channelMatchesQuery(channel, query));
     if (!guildMatched && matchingChannelRows.length === 0) continue;
 
@@ -1260,21 +1345,37 @@ function buildSidebarSearchEntries(
       continue;
     }
 
+    const matchedIds = new Set(matchingChannelRows.map((channel) => channel.id));
+    const visibleThreads = visibleGuildChannels.filter(isThreadChannel);
+    const visibleParentRows = visibleGuildChannels.filter((channel) => !isThreadChannel(channel));
+    const matchedParentIds = new Set(
+      matchingChannelRows
+        .filter(isThreadChannel)
+        .map((thread) => thread.parentId)
+        .filter((parentId): parentId is string => Boolean(parentId)),
+    );
+    const displayedParents = visibleParentRows.filter((channel) => matchedIds.has(channel.id) || matchedParentIds.has(channel.id));
+    const displayedThreads = visibleThreads.filter((thread) => matchedIds.has(thread.id));
     const guildCategories = guildChannels
       .filter((channel) => channel.type === 4)
       .filter((category) => options.showHiddenChannels || !category.hidden)
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
     const categoryIds = new Set(guildCategories.map((category) => category.id));
-    const uncategorized = matchingChannelRows
+    const uncategorized = displayedParents
       .filter((channel) => !channel.parentId || !categoryIds.has(channel.parentId))
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
     for (const channel of uncategorized) {
-      pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, true);
+      pushChannelAndThreads(entries, guild.id, channel, displayedThreads, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, matchedIds);
+    }
+
+    const displayedParentIds = new Set(displayedParents.map((channel) => channel.id));
+    for (const thread of sortThreadRows(displayedThreads.filter((candidate) => !candidate.parentId || !displayedParentIds.has(candidate.parentId)))) {
+      pushChannelEntry(entries, guild.id, thread, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, true);
     }
 
     for (const category of guildCategories) {
-      const categoryChannels = matchingChannelRows
+      const categoryChannels = displayedParents
         .filter((channel) => channel.parentId === category.id)
         .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
       if (categoryChannels.length === 0) continue;
@@ -1293,7 +1394,7 @@ function buildSidebarSearchEntries(
       });
 
       for (const channel of categoryChannels) {
-        pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, true);
+        pushChannelAndThreads(entries, guild.id, channel, displayedThreads, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, matchedIds);
       }
     }
   }
@@ -1329,22 +1430,37 @@ function pushExpandedGuildChildren(
     return;
   }
 
-  const visibleChannelRows = visibleGuildChannels.filter((channel) => channel.type !== 4 && (options.showHiddenChannels || !channel.hidden));
+  const visibleChannelRows = visibleGuildChannels.filter((channel) => channel.type !== 4
+    && (!isThreadChannel(channel) || !channel.thread?.archived)
+    && (options.showHiddenChannels || !channel.hidden));
   if (isFixedTopLevelGuildId(guild.id)) {
     pushPrivateConversationChannels(entries, sidebar, guild.id, visibleChannelRows, typingChannelIds, typingFrame, channelNotificationCounts);
     return;
   }
   const guildCategories = visibleGuildChannels
     .filter((channel) => channel.type === 4)
-    .filter((category) => options.showHiddenChannels || visibleChannelRows.some((channel) => channel.parentId === category.id))
+    .filter((category) => options.showHiddenChannels
+      || visibleChannelRows.some((channel) => channel.parentId === category.id)
+      || visibleChannelRows.some((thread) => {
+        if (!isThreadChannel(thread) || !thread.parentId) return false;
+        const parent = visibleChannelRows.find((channel) => channel.id === thread.parentId);
+        return parent?.parentId === category.id;
+      }))
     .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
   const categoryIds = new Set(guildCategories.map((category) => category.id));
-  const uncategorized = visibleChannelRows
+  const threadRows = visibleChannelRows.filter(isThreadChannel);
+  const parentRows = visibleChannelRows.filter((channel) => !isThreadChannel(channel));
+  const uncategorized = parentRows
     .filter((channel) => !channel.parentId || !categoryIds.has(channel.parentId))
     .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
   for (const channel of uncategorized) {
-    pushChannelEntry(entries, guild.id, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+    pushChannelAndThreads(entries, guild.id, channel, threadRows, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+  }
+
+  const parentIds = new Set(parentRows.map((channel) => channel.id));
+  for (const thread of sortThreadRows(threadRows.filter((candidate) => !candidate.parentId || !parentIds.has(candidate.parentId)))) {
+    pushChannelEntry(entries, guild.id, thread, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
   }
 
   for (const category of guildCategories) {
@@ -1364,12 +1480,12 @@ function pushExpandedGuildChildren(
 
     if (collapsed) continue;
 
-    const categoryChannels = visibleChannelRows
+    const categoryChannels = parentRows
       .filter((channel) => channel.parentId === category.id)
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
     for (const channel of categoryChannels) {
-      pushChannelEntry(entries, guild.id, channel, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+      pushChannelAndThreads(entries, guild.id, channel, threadRows, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
     }
   }
 }
@@ -1455,6 +1571,8 @@ function channelEntryLabel(channel: DiscordChannel, typingChannelIds: ReadonlySe
 function channelEntryMarker(channelType: number | undefined): string {
   if (channelType === 2) return "🔊 ";
   if (channelType === 13) return "🎙 ";
+  if (channelType === 10 || channelType === 11 || channelType === 12) return "↳ ";
+  if (channelType === 15 || channelType === 16) return "▤ ";
   return "# ";
 }
 

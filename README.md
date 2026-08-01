@@ -14,10 +14,12 @@ What it does right now:
 - keep the config directory/file locked down to `0700` / `0600` permissions when possible
 - load servers, categories, channels, and recent messages
 - render the server tree as a collapsible sidebar
+- show active announcement/public/private threads beneath their text or forum parent, with live updates and full read/send support
 - show server voice/stage channels in the sidebar and join them from the terminal
 - start DM voice calls with `/call`, leave with `/hangup`, and toggle `/mute` or `/deafen`
 - watch a call participant's stream with `/watch` in a GPU-accelerated player window; close the window (or run `/watch` again) to stop watching
 - run slash commands like `/login <token>`, `/logout`, `/refresh`, and `/theme <name>`
+- create a public thread with `/thread <name>`; when replying to a message, the new thread is anchored to that message
 - treat the prompt as message/command input only
 
 Controls:
@@ -28,6 +30,9 @@ Controls:
 - `Shift+J` / `Shift+K`: jump the sidebar selection up/down from non-typing contexts
 - `j` / `k` or arrow keys: move in the focused pane
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
+- `Enter` on a thread (shown with `↳`): open its timeline; posting automatically joins the thread when needed
+- `Enter` on an authored “Started a thread” message in history: open and focus that thread
+- `/thread <name>` in the prompt: create and open a public thread; if a reply is active, anchor it to that replied-to message, otherwise create a standalone thread
 - `Enter` on a server voice/stage channel: join that voice chat
 - `Shift+Enter` or `o` on a voice/stage channel: open its text chat without joining
 - `;` on a server, category, channel, or voice member: open its actions (including permission-gated voice moderation)

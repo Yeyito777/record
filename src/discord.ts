@@ -9,11 +9,16 @@ const DISCORD_CLIENT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/5
 const USER_AGENT = DISCORD_CLIENT_USER_AGENT;
 const REQUEST_TIMEOUT_MS = 15_000;
 const GUILD_PAGE_LIMIT = 200;
-const GUILD_TEXT_CHANNEL_TYPES = new Set([0, 5, 11, 12]);
+const GUILD_THREAD_CHANNEL_TYPES = new Set([10, 11, 12]);
+const MESSAGE_THREAD_PARENT_CHANNEL_TYPES = new Set([0, 5]);
+const GUILD_TEXT_CHANNEL_TYPES = new Set([...MESSAGE_THREAD_PARENT_CHANNEL_TYPES, ...GUILD_THREAD_CHANNEL_TYPES]);
 const GUILD_VOICE_CHANNEL_TYPES = new Set([2, 13]);
-const SIDEBAR_GUILD_CHANNEL_TYPES = new Set([...GUILD_TEXT_CHANNEL_TYPES, 4, ...GUILD_VOICE_CHANNEL_TYPES]);
+const GUILD_FORUM_CHANNEL_TYPES = new Set([15, 16]);
+const SIDEBAR_GUILD_CHANNEL_TYPES = new Set([...GUILD_TEXT_CHANNEL_TYPES, 4, ...GUILD_VOICE_CHANNEL_TYPES, ...GUILD_FORUM_CHANNEL_TYPES]);
 const DIRECT_MESSAGE_CHANNEL_TYPES = new Set([1, 3]);
 const MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE = 6;
+const MESSAGE_TYPE_THREAD_CREATED = 18;
+const MESSAGE_TYPE_THREAD_STARTER_MESSAGE = 21;
 const MESSAGE_REFERENCE_TYPE_FORWARD = 1;
 
 export const DIRECT_MESSAGES_GUILD_ID = "@me::dms";
@@ -139,6 +144,24 @@ export interface DiscordPermissionOverwriteResponse {
   deny?: string;
 }
 
+export interface DiscordThreadMetadataResponse {
+  archived?: boolean;
+  auto_archive_duration?: number;
+  archive_timestamp?: string;
+  locked?: boolean;
+  invitable?: boolean;
+  create_timestamp?: string | null;
+}
+
+export interface DiscordThreadMemberResponse {
+  /** Thread/channel id. */
+  id?: string;
+  user_id?: string;
+  join_timestamp?: string;
+  flags?: number;
+  muted?: boolean;
+}
+
 export interface DiscordChannelResponse {
   id: string;
   guild_id?: string;
@@ -152,6 +175,17 @@ export interface DiscordChannelResponse {
   muted?: boolean;
   recipients?: DiscordDMRecipientResponse[];
   permission_overwrites?: DiscordPermissionOverwriteResponse[];
+  owner_id?: string;
+  thread_metadata?: DiscordThreadMetadataResponse;
+  member?: DiscordThreadMemberResponse;
+  message_count?: number;
+  member_count?: number;
+  total_message_sent?: number;
+}
+
+interface DiscordThreadSearchResponse {
+  threads?: DiscordChannelResponse[];
+  members?: DiscordThreadMemberResponse[];
 }
 
 export interface DiscordMessageAuthorResponse {
@@ -301,6 +335,21 @@ export interface DiscordPermissionOverwrite {
   deny: string;
 }
 
+export interface DiscordThreadInfo {
+  ownerId: string | null;
+  archived: boolean;
+  locked: boolean;
+  invitable: boolean | null;
+  autoArchiveDuration: number | null;
+  archiveTimestamp: number | null;
+  createTimestamp: number | null;
+  /** Null when a gateway update did not include membership information. */
+  joined: boolean | null;
+  messageCount: number;
+  memberCount: number;
+  totalMessageSent: number;
+}
+
 export interface DiscordChannel {
   id: string;
   guildId: string;
@@ -316,6 +365,8 @@ export interface DiscordChannel {
   muted?: boolean;
   recipients?: DiscordGuildMember[];
   permissionOverwrites?: DiscordPermissionOverwrite[];
+  /** Present for announcement, public, and private thread channel types. */
+  thread?: DiscordThreadInfo;
   hidden?: boolean;
 }
 
@@ -433,6 +484,8 @@ export interface DiscordMessage {
   embedsCount: number;
   embeds?: DiscordMessageEmbed[];
   forwarded?: DiscordForwardedMessage | null;
+  /** Thread channel opened by this message (for Discord THREAD_CREATED events). */
+  threadId?: string | null;
   reactions?: DiscordMessageReaction[];
   localStatus?: DiscordMessageLocalStatus;
   localError?: string;
@@ -464,8 +517,33 @@ export interface DiscordMessagePatch {
   embedsCount?: number;
   embeds?: DiscordMessageEmbed[];
   forwarded?: DiscordForwardedMessage | null;
+  threadId?: string | null;
   reactions?: DiscordMessageReaction[];
   reactionUpdate?: DiscordMessageReactionUpdate;
+}
+
+/** Repair display-only message fields persisted by older Record builds. */
+export function normalizeDiscordMessageForDisplay(message: DiscordMessage): DiscordMessage {
+  if (message.type === MESSAGE_TYPE_THREAD_CREATED) {
+    const threadId = message.threadId ?? message.reply?.channelId ?? null;
+    if (message.content.startsWith("🧵 Started a thread") && message.reply === null && message.threadId === threadId) return message;
+    return {
+      ...message,
+      content: message.content.trim()
+        ? message.content.startsWith("🧵 Started a thread")
+          ? message.content
+          : `🧵 Started a thread: ${message.content.trim()}`
+        : "🧵 Started a thread.",
+      reply: null,
+      threadId,
+    };
+  }
+  if (message.type !== MESSAGE_TYPE_THREAD_STARTER_MESSAGE) return message;
+  if (message.content === "🧵 Started this thread." && message.reply) return message;
+  return {
+    ...message,
+    content: message.reply ? "🧵 Started this thread." : message.content.trim() || "🧵 Started this thread.",
+  };
 }
 
 export function formatDiscordDisplayName(user: DiscordIdentity): string {
@@ -484,6 +562,22 @@ export function isGuildVoiceChannel(channel: DiscordChannel | null): boolean {
   return channel ? GUILD_VOICE_CHANNEL_TYPES.has(channel.type) : false;
 }
 
+export function isThreadChannel(channel: DiscordChannel | null): boolean {
+  return channel ? GUILD_THREAD_CHANNEL_TYPES.has(channel.type) : false;
+}
+
+export function isForumChannel(channel: DiscordChannel | null): boolean {
+  return channel ? GUILD_FORUM_CHANNEL_TYPES.has(channel.type) : false;
+}
+
+export function isMessageThreadParentChannel(channel: DiscordChannel | null): boolean {
+  return channel ? MESSAGE_THREAD_PARENT_CHANNEL_TYPES.has(channel.type) : false;
+}
+
+export function isCompactSystemMessageType(type: number): boolean {
+  return type === MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE;
+}
+
 export function isMessageChannel(channel: DiscordChannel | null): boolean {
   return Boolean(channel && (isDirectMessageChannel(channel) || GUILD_TEXT_CHANNEL_TYPES.has(channel.type)));
 }
@@ -491,6 +585,7 @@ export function isMessageChannel(channel: DiscordChannel | null): boolean {
 export function formatChannelName(channel: DiscordChannel | null): string {
   if (!channel) return "#unknown";
   if (isGuildVoiceChannel(channel)) return `🔊 ${channel.name}`;
+  if (isThreadChannel(channel)) return `🧵 ${channel.name}`;
   return isDirectMessageChannel(channel) ? channel.name : `#${channel.name}`;
 }
 
@@ -811,10 +906,16 @@ function summarizeReplyPreview(
   return summarizeInlineMessageParts(content, attachments, embeds, stickerNames);
 }
 
-function mapSystemMessageContent(message: Pick<DiscordMessageResponse, "type">): string | null {
+function mapSystemMessageContent(message: Partial<DiscordMessageResponse>): string | null {
   switch (message.type) {
     case MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE:
       return "📌 Pinned a message to this channel.";
+    case MESSAGE_TYPE_THREAD_CREATED:
+      return message.content?.trim()
+        ? `🧵 Started a thread: ${message.content.trim()}`
+        : "🧵 Started a thread.";
+    case MESSAGE_TYPE_THREAD_STARTER_MESSAGE:
+      return "🧵 Started this thread.";
     default:
       return null;
   }
@@ -828,7 +929,8 @@ function mapDiscordMessageContent(message: Partial<DiscordMessageResponse>): str
 function messageReferenceIsReply(message: DiscordMessageResponse): boolean {
   if (message.message_reference?.type === MESSAGE_REFERENCE_TYPE_FORWARD) return false;
   if (firstMessageSnapshot(message)) return false;
-  return message.type !== MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE;
+  return message.type !== MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE
+    && message.type !== MESSAGE_TYPE_THREAD_CREATED;
 }
 
 function firstMessageSnapshot(message: Pick<DiscordMessageResponse, "message_snapshots"> | Pick<DiscordReferencedMessageResponse, "message_snapshots">): DiscordMessageSnapshotMessageResponse | null {
@@ -1150,8 +1252,42 @@ function mapPermissionOverwrites(overwrites: unknown): DiscordPermissionOverwrit
     .filter((overwrite): overwrite is DiscordPermissionOverwrite => overwrite !== null);
 }
 
-export function mapGuildChannel(channel: DiscordChannelResponse, fallbackGuildId: string): DiscordChannel | null {
+function optionalTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function mapThreadInfo(
+  channel: DiscordChannelResponse,
+  member: DiscordThreadMemberResponse | null | undefined,
+  membershipKnown: boolean,
+): DiscordThreadInfo | undefined {
+  if (!GUILD_THREAD_CHANNEL_TYPES.has(channel.type)) return undefined;
+  const metadata = channel.thread_metadata;
+  return {
+    ownerId: channel.owner_id ?? null,
+    archived: Boolean(metadata?.archived),
+    locked: Boolean(metadata?.locked),
+    invitable: typeof metadata?.invitable === "boolean" ? metadata.invitable : null,
+    autoArchiveDuration: typeof metadata?.auto_archive_duration === "number" ? metadata.auto_archive_duration : null,
+    archiveTimestamp: optionalTimestamp(metadata?.archive_timestamp),
+    createTimestamp: optionalTimestamp(metadata?.create_timestamp),
+    joined: member ? true : membershipKnown ? false : null,
+    messageCount: typeof channel.message_count === "number" ? channel.message_count : 0,
+    memberCount: typeof channel.member_count === "number" ? channel.member_count : 0,
+    totalMessageSent: typeof channel.total_message_sent === "number" ? channel.total_message_sent : 0,
+  };
+}
+
+export function mapGuildChannel(
+  channel: DiscordChannelResponse,
+  fallbackGuildId: string,
+  options: { threadMember?: DiscordThreadMemberResponse | null; threadMembershipKnown?: boolean } = {},
+): DiscordChannel | null {
   if (!SIDEBAR_GUILD_CHANNEL_TYPES.has(channel.type) || !channel.name) return null;
+  const threadMember = options.threadMember ?? channel.member;
+  const thread = mapThreadInfo(channel, threadMember, options.threadMembershipKnown ?? channel.member !== undefined);
   return {
     id: channel.id,
     guildId: channel.guild_id ?? fallbackGuildId,
@@ -1161,7 +1297,10 @@ export function mapGuildChannel(channel: DiscordChannelResponse, fallbackGuildId
     position: channel.position ?? 0,
     type: channel.type,
     nsfw: Boolean(channel.nsfw),
+    lastMessageId: channel.last_message_id ?? null,
+    muted: threadMember?.muted,
     permissionOverwrites: mapPermissionOverwrites(channel.permission_overwrites),
+    ...(thread ? { thread } : {}),
   };
 }
 
@@ -1207,6 +1346,15 @@ export async function fetchDirectMessages(token: string): Promise<DiscordChannel
     .map((channel, index) => mapDirectMessageChannel(channel, index));
 }
 
+export async function fetchChannel(token: string, channelId: string, fallbackGuildId?: string | null): Promise<DiscordChannel> {
+  const response = await apiGetJson<DiscordChannelResponse>(token, `/channels/${channelId}`);
+  const guildId = response.guild_id ?? fallbackGuildId;
+  if (!guildId) throw new Error("Discord returned a channel without a server id.");
+  const channel = mapGuildChannel(response, guildId);
+  if (!channel) throw new Error("Discord returned an unsupported channel.");
+  return channel;
+}
+
 export async function fetchGuilds(
   token: string,
   options: { guildOrder?: readonly string[] | null } = {},
@@ -1236,12 +1384,77 @@ export async function fetchGuilds(
   return sortGuildsByOrder(guilds, options.guildOrder ?? null);
 }
 
-export async function fetchGuildChannels(token: string, guildId: string): Promise<DiscordChannel[]> {
+export async function fetchGuildChannels(
+  token: string,
+  guildId: string,
+  options: { includeThreads?: boolean; fallbackThreads?: readonly DiscordChannel[] } = {},
+): Promise<DiscordChannel[]> {
+  const includeThreads = options.includeThreads ?? true;
   const channels = await apiGetJson<DiscordChannelResponse[]>(token, `/guilds/${guildId}/channels`);
+  const activeThreads: DiscordThreadSearchResponse = { threads: [], members: [] };
+  const failedThreadParentIds = new Set<string>();
+  if (includeThreads) {
+    // The guild-wide /threads/active route is bot-only. User sessions discover
+    // active threads through each compatible parent channel's search endpoint.
+    for (const parent of channels.filter((channel) => MESSAGE_THREAD_PARENT_CHANNEL_TYPES.has(channel.type) || GUILD_FORUM_CHANNEL_TYPES.has(channel.type))) {
+      try {
+        const query = new URLSearchParams({
+          archived: "false",
+          sort_by: "last_message_time",
+          sort_order: "desc",
+          limit: "25",
+        });
+        const result = await apiGetJson<DiscordThreadSearchResponse>(
+          token,
+          `/channels/${parent.id}/threads/search?${query.toString()}`,
+        );
+        activeThreads.threads!.push(...(result.threads ?? []));
+        activeThreads.members!.push(...(result.members ?? []));
+      } catch {
+        failedThreadParentIds.add(parent.id);
+        // A missing VIEW_CHANNEL or thread-history permission on one parent must
+        // not prevent the rest of the server's channel tree from loading.
+      }
+    }
+  }
+  const threadMembersById = new Map(
+    (activeThreads.members ?? [])
+      .filter((member): member is DiscordThreadMemberResponse & { id: string } => typeof member.id === "string")
+      .map((member) => [member.id, member]),
+  );
+  const mappedChannels = channels
+    .map((channel) => mapGuildChannel(channel, guildId))
+    .filter((channel): channel is DiscordChannel => channel !== null);
+  const mappedThreads = (activeThreads.threads ?? [])
+    .map((thread, position) => {
+      const threadMember = threadMembersById.get(thread.id) ?? thread.member;
+      const mapped = mapGuildChannel(thread, guildId, {
+        threadMember,
+        // Unlike THREAD_LIST_SYNC, the channel search route is primarily a
+        // discovery response and can omit membership data. Do not turn an
+        // omitted member into an explicit "not joined" state; READY/gateway
+        // membership is authoritative and must survive a REST refresh.
+        threadMembershipKnown: threadMember !== undefined,
+      });
+      return mapped ? { ...mapped, position } : null;
+    })
+    .filter((channel): channel is DiscordChannel => channel !== null);
+  const byId = new Map(mappedChannels.map((channel) => [channel.id, channel]));
+  for (const thread of mappedThreads) byId.set(thread.id, thread);
+  // A transient/per-parent search failure must not make already-known active
+  // threads blink out of the sidebar. Successful empty searches remain
+  // authoritative and therefore do remove old rows.
+  for (const thread of options.fallbackThreads ?? []) {
+    if (isThreadChannel(thread)
+      && !thread.thread?.archived
+      && thread.parentId
+      && failedThreadParentIds.has(thread.parentId)
+      && !byId.has(thread.id)) {
+      byId.set(thread.id, thread);
+    }
+  }
   return sortGuildChannels(
-    channels
-      .map((channel) => mapGuildChannel(channel, guildId))
-      .filter((channel): channel is DiscordChannel => channel !== null),
+    Array.from(byId.values()),
   );
 }
 
@@ -1255,7 +1468,7 @@ export async function createGuildInvite(
   // immediate in the common case.
   const channels = cachedChannels.length > 0
     ? [...cachedChannels]
-    : await fetchGuildChannels(token, guildId);
+    : await fetchGuildChannels(token, guildId, { includeThreads: false });
   const inviteChannels = channels
     .filter((channel) => channel.type !== 4)
     .sort((left, right) => inviteChannelPriority(left.type) - inviteChannelPriority(right.type) || left.position - right.position);
@@ -1437,6 +1650,9 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     embedsCount: message.embeds?.length,
     embeds: message.embeds?.map(mapDiscordEmbed),
     forwarded,
+    threadId: message.type === MESSAGE_TYPE_THREAD_CREATED
+      ? message.message_reference?.channel_id ?? null
+      : undefined,
     reactions: mapDiscordReactions(message.reactions),
   };
 }
@@ -1465,6 +1681,7 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
     embedsCount: patch.embedsCount ?? message.embedsCount,
     embeds: patch.embeds ?? message.embeds,
     forwarded: patch.forwarded !== undefined ? patch.forwarded : message.forwarded,
+    threadId: patch.threadId !== undefined ? patch.threadId : message.threadId,
     reactions: patch.reactions !== undefined
       ? patch.reactions
       : patch.reactionUpdate
@@ -1501,6 +1718,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     embedsCount: patch.embedsCount ?? 0,
     embeds: patch.embeds ?? [],
     forwarded: patch.forwarded ?? null,
+    threadId: patch.threadId ?? null,
     reactions: patch.reactions ?? [],
   };
 }
@@ -1609,6 +1827,77 @@ export async function editChannelMessage(
 
 export async function deleteChannelMessage(token: string, channelId: string, messageId: string): Promise<void> {
   await requestJson<unknown>(token, `/channels/${channelId}/messages/${messageId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function createMessageThread(
+  token: string,
+  channelId: string,
+  messageId: string,
+  name: string,
+  options: { autoArchiveDuration?: 60 | 1440 | 4320 | 10080; rateLimitPerUser?: number } = {},
+): Promise<DiscordChannel> {
+  const response = await requestJson<DiscordChannelResponse>(
+    token,
+    `/channels/${channelId}/messages/${messageId}/threads`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        auto_archive_duration: options.autoArchiveDuration ?? 1440,
+        rate_limit_per_user: options.rateLimitPerUser ?? 0,
+      }),
+    },
+  );
+  const guildId = response.guild_id;
+  if (!guildId) throw new Error("Discord created the thread without a server id.");
+  const thread = mapGuildChannel(response, guildId, {
+    // Creating a message thread automatically joins its creator even when the
+    // response omits the embedded current-user thread member.
+    threadMember: response.member ?? { id: response.id },
+    threadMembershipKnown: true,
+  });
+  if (!thread || !isThreadChannel(thread)) throw new Error("Discord returned an invalid thread channel.");
+  return thread;
+}
+
+export async function createChannelThread(
+  token: string,
+  channelId: string,
+  name: string,
+  options: { autoArchiveDuration?: 60 | 1440 | 4320 | 10080; rateLimitPerUser?: number } = {},
+): Promise<DiscordChannel> {
+  const response = await requestJson<DiscordChannelResponse>(token, `/channels/${channelId}/threads`, {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      auto_archive_duration: options.autoArchiveDuration ?? 1440,
+      rate_limit_per_user: options.rateLimitPerUser ?? 0,
+      type: 11,
+    }),
+  });
+  const guildId = response.guild_id;
+  if (!guildId) throw new Error("Discord created the thread without a server id.");
+  const thread = mapGuildChannel(response, guildId, {
+    // Creating a standalone thread automatically joins its creator even when
+    // the response omits the embedded current-user thread member.
+    threadMember: response.member ?? { id: response.id },
+    threadMembershipKnown: true,
+  });
+  if (!thread || !isThreadChannel(thread)) throw new Error("Discord returned an invalid thread channel.");
+  return thread;
+}
+
+/** Join a Discord thread before posting so user-account sessions match the official client. */
+export async function joinThread(token: string, threadId: string): Promise<void> {
+  await requestJson<unknown>(token, `/channels/${threadId}/thread-members/@me?location=Sidebar%20Overflow`, {
+    method: "POST",
+  });
+}
+
+export async function leaveThread(token: string, threadId: string): Promise<void> {
+  await requestJson<unknown>(token, `/channels/${threadId}/thread-members/@me?location=Sidebar%20Overflow`, {
     method: "DELETE",
   });
 }

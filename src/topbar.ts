@@ -2,7 +2,7 @@
  * Top bar renderer.
  */
 
-import { formatChannelName } from "./discord";
+import { formatChannelName, isThreadChannel } from "./discord";
 import type { AppState } from "./state";
 import { padRight } from "./textwidth";
 import { theme } from "./theme";
@@ -18,8 +18,13 @@ export function renderTopbar(state: AppState, width: number): string {
   const guild = state.sidebar.guilds.find((entry) => entry.id === state.sidebar.activeGuildId) ?? null;
   const channel = state.channelList.activeChannel;
 
+  const parentChannel = isThreadChannel(channel)
+    ? state.channelList.channels.find((entry) => entry.id === channel?.parentId) ?? null
+    : null;
   const descriptor = guild && channel
-    ? `${guild.name} / ${formatChannelName(channel)}`
+    ? parentChannel
+      ? `${guild.name} / ${formatChannelName(parentChannel)} / ${formatChannelName(channel)}`
+      : `${guild.name} / ${formatChannelName(channel)}`
     : guild
       ? guild.name
       : state.auth.status === "authenticated"

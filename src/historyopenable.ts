@@ -1,10 +1,15 @@
-import type { DiscordMessageAttachment } from "./discord";
+import { isThreadChannel, type DiscordMessageAttachment } from "./discord";
 import { contentBounds, logicalLineRange, stripAnsi } from "./historycursor";
 import { findOpenableTargetMatches } from "./openable";
 import type { AppState } from "./state";
 
 export interface ForwardedOriginTarget {
   messageId: string;
+  channelId: string;
+  guildId: string | null;
+}
+
+export interface ThreadChannelTarget {
   channelId: string;
   guildId: string | null;
 }
@@ -59,6 +64,32 @@ export function forwardedOriginAtHistoryCursor(state: AppState): ForwardedOrigin
     channelId: forwarded.originChannelId,
     guildId: forwarded.originGuildId,
   };
+}
+
+export function threadChannelAtHistoryCursor(state: AppState): ThreadChannelTarget | null {
+  const message = selectedHistoryMessage(state);
+  if (!message) return null;
+  if (message.threadId) return { channelId: message.threadId, guildId: message.guildId ?? null };
+  if (message.type !== 18) return null;
+
+  // Older Record caches discarded the type-18 message reference. Recover its
+  // thread from the parent channel and event content so existing rows remain
+  // keyboard-openable after upgrading.
+  const name = message.content
+    .replace(/^🧵\s*Started a thread:\s*/i, "")
+    .replace(/^Started a thread:\s*/i, "")
+    .trim();
+  if (!name) return null;
+  const channels = [
+    ...state.channelList.channels,
+    ...Object.values(state.sidebar.cachedChannelsByGuildId).flat(),
+  ];
+  const candidates = [...new Map(channels.map((channel) => [channel.id, channel])).values()]
+    .filter((channel) => isThreadChannel(channel) && channel.parentId === message.channelId && channel.name === name)
+    .sort((left, right) => Math.abs((left.thread?.createTimestamp ?? message.timestamp) - message.timestamp)
+      - Math.abs((right.thread?.createTimestamp ?? message.timestamp) - message.timestamp));
+  const thread = candidates[0];
+  return thread ? { channelId: thread.id, guildId: thread.guildId } : null;
 }
 
 export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttachment | null {

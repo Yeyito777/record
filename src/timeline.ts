@@ -2,7 +2,7 @@
  * Message timeline state and rendering helpers.
  */
 
-import { applyDiscordMessagePatch, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
+import { applyDiscordMessagePatch, isCompactSystemMessageType, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { summarizeDisplayMessageParts } from "./messageparts";
@@ -14,6 +14,8 @@ export interface TimelineState {
   messages: DiscordMessage[];
   /** Local-only command output; discarded whenever canonical history reloads. */
   systemMessages: TimelineSystemMessage[];
+  /** Contextual empty-state text supplied by the active channel loader. */
+  emptyText: string | null;
   scrollOffset: number;
   maxScroll: number;
   loading: boolean;
@@ -104,6 +106,7 @@ export function createTimelineState(): TimelineState {
     channelId: null,
     messages: [],
     systemMessages: [],
+    emptyText: null,
     scrollOffset: 0,
     maxScroll: 0,
     loading: false,
@@ -125,6 +128,7 @@ export function clearTimeline(timeline: TimelineState): void {
   timeline.channelId = null;
   timeline.messages = [];
   timeline.systemMessages = [];
+  timeline.emptyText = null;
   timeline.scrollOffset = 0;
   timeline.maxScroll = 0;
   timeline.loading = false;
@@ -139,13 +143,15 @@ export function setTimelineMessages(
   timeline: TimelineState,
   channelId: string,
   messages: DiscordMessage[],
-  options: { hasOlder?: boolean; hasNewer?: boolean; preserveScroll?: boolean } = {},
+  options: { hasOlder?: boolean; hasNewer?: boolean; preserveScroll?: boolean; emptyText?: string | null } = {},
 ): void {
   const preserveScroll = options.preserveScroll === true && timeline.channelId === channelId;
+  const previousEmptyText = timeline.channelId === channelId ? timeline.emptyText : null;
   const previousScrollOffset = timeline.scrollOffset;
   timeline.channelId = channelId;
   timeline.messages = messages;
   timeline.systemMessages = [];
+  timeline.emptyText = options.emptyText !== undefined ? options.emptyText : previousEmptyText;
   timeline.scrollOffset = preserveScroll ? previousScrollOffset : Number.MAX_SAFE_INTEGER;
   timeline.maxScroll = 0;
   timeline.loading = false;
@@ -487,6 +493,14 @@ export function renderTimelineLines(
     }
   }
 
+  if (!timeline.loading && timeline.messages.length === 0 && timeline.systemMessages.length === 0 && timeline.emptyText) {
+    allLines = [`${theme.muted}${truncate(timeline.emptyText, width)}${theme.reset}`];
+    lineAnchors = ["timeline:empty"];
+    lineBackgrounds = [""];
+    wrapContinuation = [false];
+    messageBounds = [];
+  }
+
   if (!(showNoticeInTimeline && notice.text) && timeline.loading && (timeline.messages.length > 0 || timeline.systemMessages.length > 0)) {
     prependBlankTimelineRows(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, Math.max(0, height - allLines.length));
   }
@@ -775,6 +789,17 @@ function renderMessage(
     nowMs,
     contentColor,
   );
+  if (isCompactSystemMessageType(message.type)) {
+    const systemText = content || "System event";
+    const wrappedSystem = wrapMarkdownText(systemText, width, theme.muted);
+    const lines = wrappedSystem.map((line) => `${theme.dim}${line.text}${theme.reset}`);
+    return {
+      lines,
+      lineAnchors: wrappedSystem.map((line) => `msg:${message.id}:system:${line.visualIndex}`),
+      lineBackgrounds: lines.map(() => ""),
+      wrapContinuation: wrappedSystem.map((line) => line.wrapContinuation),
+    };
+  }
   const reactionLines = wrapReactionSummary(message, width);
   if (content === "") {
     const lines = [
@@ -881,6 +906,7 @@ function shouldGroupMessages(previous: DiscordMessage, message: DiscordMessage):
   if (previous.channelId !== message.channelId) return false;
   if (previous.author.id !== message.author.id) return false;
   if (message.reply) return false;
+  if (isCompactSystemMessageType(previous.type) || isCompactSystemMessageType(message.type)) return false;
   if (previous.call || message.call || message.type === 3 || previous.type === 3) return false;
   if (previous.localStatus === "failed" || message.localStatus === "failed") return false;
 

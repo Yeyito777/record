@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { defaultOpenersConfig, saveConfig } from "./config";
 import type { DiscordMessage } from "./discord";
-import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { createInitialState } from "./state";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
@@ -106,5 +106,57 @@ describe("history openable target lookup", () => {
       channelId: "source-channel",
       guildId: "source-guild",
     });
+  });
+
+  test("finds a thread channel from anywhere on its creation message", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.historyLines = ["Yeyito 01:32", "🧵 Started a thread: test-thread"];
+    state.historyCursor = { row: 1, col: 5 };
+    state.historyMessageBounds = [{ messageId: "m1", start: 0, end: 2, contentStart: 1, contentEnd: 2 }];
+    state.timeline.messages = [baseMessage({
+      guildId: "guild-1",
+      type: 18,
+      content: "🧵 Started a thread: test-thread",
+      threadId: "thread-1",
+    })];
+
+    expect(threadChannelAtHistoryCursor(state)).toEqual({ channelId: "thread-1", guildId: "guild-1" });
+  });
+
+  test("recovers a thread target from channel metadata for older cached creation messages", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.historyLines = ["Yeyito 01:32", "🧵 Started a thread: test-thread"];
+    state.historyCursor = { row: 1, col: 5 };
+    state.historyMessageBounds = [{ messageId: "m1", start: 0, end: 2, contentStart: 1, contentEnd: 2 }];
+    state.timeline.messages = [baseMessage({
+      guildId: "guild-1",
+      type: 18,
+      content: "🧵 Started a thread: test-thread",
+    })];
+    state.sidebar.cachedChannelsByGuildId["guild-1"] = [{
+      id: "thread-1",
+      guildId: "guild-1",
+      parentId: "c1",
+      name: "test-thread",
+      topic: null,
+      position: 0,
+      type: 11,
+      nsfw: false,
+      thread: {
+        ownerId: "u1",
+        archived: false,
+        locked: false,
+        invitable: true,
+        autoArchiveDuration: 1440,
+        archiveTimestamp: null,
+        createTimestamp: null,
+        joined: true,
+        messageCount: 0,
+        memberCount: 1,
+        totalMessageSent: 0,
+      },
+    }];
+
+    expect(threadChannelAtHistoryCursor(state)).toEqual({ channelId: "thread-1", guildId: "guild-1" });
   });
 });

@@ -20,6 +20,9 @@ import {
   DIRECT_MESSAGES_GUILD_ID,
   DIRECT_MESSAGES_GUILD_NAME,
   ackChannelMessage,
+  createChannelThread,
+  createMessageThread,
+  fetchChannel,
   fetchChannelMessage,
   fetchChannelMessages,
   fetchChannelMessagesAfter,
@@ -39,6 +42,9 @@ import {
   ringDirectMessageCall,
   isDirectMessageChannel,
   isGuildVoiceChannel,
+  isMessageThreadParentChannel,
+  isThreadChannel,
+  joinThread,
   hydrateMissingReplyPreviewFromLookup,
   replyPreviewFromMessage,
   replyReferenceTarget,
@@ -47,6 +53,7 @@ import {
   type SendMessageReplyOptions,
   type SendMessageUpload,
   sortDirectMessageChannels,
+  sortGuildChannels,
   type DiscordChannel,
   type DiscordGuild,
   type DiscordGuildMember,
@@ -134,10 +141,12 @@ import {
   moveSelectedSidebarGuild,
   moveSelectedSidebarItem,
   moveSelectedPrivateConversation,
+  revealSidebarChannel,
   setSidebarCachedChannels,
   setSidebarChannelMuted,
   setSidebarGuildMuted,
   setSidebarGuilds,
+  sidebarChannelsForGuild,
   sidebarCachedGuilds,
   sidebarChannelLayoutForGuild,
   sidebarFolderLayout,
@@ -156,6 +165,7 @@ import {
   markTimelineCallEnded,
   prependTimelineMessages,
   patchTimelineMessage,
+  pushTimelineSystemMessage,
   removeTimelineMessage,
   removeTimelineMessages,
   replaceTimelineMessage,
@@ -592,10 +602,14 @@ function isChannelMuted(state: AppState, channelId: string | null | undefined): 
     || Boolean(state.channelList.activeChannel?.id === channelId && state.channelList.activeChannel.muted)
     || isSidebarChannelMuted(state.sidebar, channelId);
   if (directlyMuted) return true;
-  return Boolean(channel?.parentId && (
-    state.channelMuteSettings[channel.parentId]
-    || isSidebarChannelMuted(state.sidebar, channel.parentId)
-  ));
+  const seen = new Set<string>();
+  let parentId = channel?.parentId ?? null;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    if (state.channelMuteSettings[parentId] || isSidebarChannelMuted(state.sidebar, parentId)) return true;
+    parentId = channelById(state, parentId)?.parentId ?? null;
+  }
+  return false;
 }
 
 function setChannelListChannelMuted(state: AppState, channelId: string, muted: boolean): void {
@@ -1553,16 +1567,57 @@ function markActiveCallEnded(state: AppState, channelId: string, endedTimestamp 
   return changed;
 }
 
-function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEffects, channel: DiscordChannel): void {
+function upsertGuildChannelArray(channels: readonly DiscordChannel[], channel: DiscordChannel): DiscordChannel[] {
+  const index = channels.findIndex((existing) => existing.id === channel.id);
+  const next = channels.slice();
+  if (index >= 0) {
+    const existing = next[index]!;
+    next[index] = {
+      ...existing,
+      ...channel,
+      muted: channel.muted ?? existing.muted,
+      ...(existing.thread && channel.thread
+        ? { thread: { ...existing.thread, ...channel.thread, joined: channel.thread.joined ?? existing.thread.joined } }
+        : {}),
+    };
+  } else {
+    next.push(channel);
+  }
+  return channel.guildId === DIRECT_MESSAGES_GUILD_ID
+    ? sortDirectMessageChannels(next)
+    : sortGuildChannels(next);
+}
+
+function persistGatewayGuildChannels(state: AppState, guildId: string, channels: DiscordChannel[]): void {
+  const accountId = currentAccountId(state);
+  if (!accountId) return;
+  if (guildId === DIRECT_MESSAGES_GUILD_ID) saveCachedDirectMessages(accountId, channels);
+  else saveCachedGuildChannels(accountId, guildId, channels);
+}
+
+export function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEffects, channel: DiscordChannel): void {
   channel = withChannelMuteSettings(state, [channel])[0] ?? channel;
   if (channel.guildId === DIRECT_MESSAGES_GUILD_ID) {
     ensureDirectMessagesGuild(state);
   }
 
+  // The live channel list and the sidebar cache can briefly contain different
+  // snapshots during startup/refresh. Merge both before applying an event so a
+  // regular CHANNEL_UPDATE cannot accidentally erase cached thread rows.
+  const cachedChannels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, channel.guildId);
+  const nextCachedChannels = upsertGuildChannelArray(cachedChannels, channel);
+  setSidebarCachedChannels(state.sidebar, channel.guildId, nextCachedChannels);
+  persistGatewayGuildChannels(state, channel.guildId, nextCachedChannels);
+
   if (state.channelList.guildId === channel.guildId) {
     upsertChannel(state.channelList, channel);
     refreshHiddenChannelFlags(state, channel.guildId);
-    setSidebarCachedChannels(state.sidebar, channel.guildId, state.channelList.channels);
+    let mergedChannels = nextCachedChannels;
+    for (const activeChannel of state.channelList.channels) {
+      mergedChannels = upsertGuildChannelArray(mergedChannels, activeChannel);
+    }
+    setSidebarCachedChannels(state.sidebar, channel.guildId, mergedChannels);
+    persistGatewayGuildChannels(state, channel.guildId, mergedChannels);
     if (state.memberList.open && state.channelList.activeChannelId === channel.id) {
       syncMemberListForCurrentChannel(state, effects);
     }
@@ -1571,18 +1626,111 @@ function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEff
   effects.scheduleRender();
 }
 
-function handleGatewayChannelDelete(state: AppState, effects: SessionEffects, channelId: string): void {
+function handleGatewayChannelDelete(
+  state: AppState,
+  effects: SessionEffects,
+  channelId: string,
+  eventGuildId: string | null = null,
+): void {
   const wasActive = state.channelList.activeChannelId === channelId;
-  const removedGuildId = state.channelList.channels.find((channel) => channel.id === channelId)?.guildId ?? state.channelList.guildId;
+  const removedGuildId = eventGuildId
+    ?? state.channelList.channels.find((channel) => channel.id === channelId)?.guildId
+    ?? Object.entries(state.sidebar.cachedChannelsByGuildId).find(([, channels]) => channels.some((channel) => channel.id === channelId))?.[0]
+    ?? state.channelList.guildId;
   const removed = removeChannel(state.channelList, channelId);
-  if (removed && removedGuildId) setSidebarCachedChannels(state.sidebar, removedGuildId, state.channelList.channels);
+  let removedFromSidebar = false;
+  if (removedGuildId) {
+    const cached = state.sidebar.cachedChannelsByGuildId[removedGuildId] ?? [];
+    const nextCached = cached.filter((channel) => channel.id !== channelId);
+    removedFromSidebar = nextCached.length !== cached.length;
+    if (state.channelList.guildId === removedGuildId && removed) {
+      setSidebarCachedChannels(state.sidebar, removedGuildId, state.channelList.channels);
+      persistGatewayGuildChannels(state, removedGuildId, state.channelList.channels);
+    } else if (removedFromSidebar) {
+      setSidebarCachedChannels(state.sidebar, removedGuildId, nextCached);
+      persistGatewayGuildChannels(state, removedGuildId, nextCached);
+    }
+  }
   clearCachedChannelMessages(state.messageCacheByChannelId, channelId);
+  clearChannelNotifications(state.notifications, channelId);
+  persistNotifications(state);
   if (wasActive || state.timeline.channelId === channelId) {
     clearTimeline(state.timeline);
-    setNotice(state, "Channel was deleted.", "warning");
+    setNotice(state, "Channel or thread was deleted.", "warning");
     syncMemberListForCurrentChannel(state, effects);
   }
-  if (removed || wasActive) effects.scheduleRender();
+  if (removed || removedFromSidebar || wasActive) effects.scheduleRender();
+}
+
+export function handleGatewayThreadListSync(
+  state: AppState,
+  effects: SessionEffects,
+  event: import("./appgateway").ThreadListSyncEvent,
+): void {
+  // READY thread snapshots are deliberately non-authoritative and can be empty
+  // while the persisted/sidebar cache already knows about active threads.
+  // Always merge both snapshots before applying the gateway delta.
+  const existing = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, event.guildId);
+  const parentScope = event.parentChannelIds === null ? null : new Set(event.parentChannelIds);
+  const syncedThreadIds = new Set(event.threads.map((thread) => thread.id));
+  let next = event.authoritative
+    ? existing.filter((channel) => {
+        if (!isThreadChannel(channel)) return true;
+        if (parentScope && (!channel.parentId || !parentScope.has(channel.parentId))) return true;
+        return syncedThreadIds.has(channel.id);
+      })
+    : existing.slice();
+  for (const thread of withChannelMuteSettings(state, event.threads)) {
+    next = upsertGuildChannelArray(next, thread);
+  }
+  next = sortGuildChannels(next);
+
+  if (state.channelList.guildId === event.guildId) {
+    setChannelList(state.channelList, event.guildId, next);
+    refreshHiddenChannelFlags(state, event.guildId);
+    next = state.channelList.channels;
+  }
+  setSidebarCachedChannels(state.sidebar, event.guildId, next);
+  persistGatewayGuildChannels(state, event.guildId, next);
+  effects.scheduleRender();
+}
+
+function preserveKnownThreadMembership(
+  channels: readonly DiscordChannel[],
+  previousChannels: readonly DiscordChannel[],
+): DiscordChannel[] {
+  const previousById = new Map(previousChannels.map((channel) => [channel.id, channel]));
+  return channels.map((channel) => {
+    const previous = previousById.get(channel.id);
+    if (!channel.thread || !previous?.thread) return channel;
+    return {
+      ...channel,
+      muted: channel.muted ?? previous.muted,
+      thread: {
+        ...channel.thread,
+        joined: channel.thread.joined ?? previous.thread.joined,
+      },
+    };
+  });
+}
+
+function setThreadJoinedState(state: AppState, threadId: string, joined: boolean): boolean {
+  let changed = false;
+  const update = (channel: DiscordChannel): DiscordChannel => {
+    if (channel.id !== threadId || !channel.thread || channel.thread.joined === joined) return channel;
+    changed = true;
+    return { ...channel, thread: { ...channel.thread, joined } };
+  };
+  state.channelList.channels = state.channelList.channels.map(update);
+  if (state.channelList.activeChannel?.id === threadId) state.channelList.activeChannel = update(state.channelList.activeChannel);
+  for (const [guildId, channels] of Object.entries(state.sidebar.cachedChannelsByGuildId)) {
+    const next = channels.map(update);
+    if (next.some((channel, index) => channel !== channels[index])) {
+      setSidebarCachedChannels(state.sidebar, guildId, next);
+      persistGatewayGuildChannels(state, guildId, next);
+    }
+  }
+  return changed;
 }
 
 function cachedSidebarGuilds(_directMessages: DiscordChannel[], guilds: DiscordGuild[]): DiscordGuild[] {
@@ -1613,7 +1761,6 @@ function ensureGuildOrderSync(state: AppState, effects: SessionEffects): void {
     disconnectGuildOrderSync();
     return;
   }
-
   if (guildOrderSync?.accountId === accountId && guildOrderSync.state === state) return;
   disconnectGuildOrderSync();
   guildOrderSync = {
@@ -2110,7 +2257,12 @@ function refreshHiddenChannelFlags(state: AppState, guildId: string | null | und
 
   state.channelList.channels = state.channelList.channels.map((channel) => {
     if (channel.guildId !== guildId) return channel;
-    const canView = canViewGuildChannel(channel, guildId, roles, currentUserRoleIds, currentUserId);
+    // Threads inherit VIEW_CHANNEL overwrites from their parent channel and do
+    // not include permission_overwrites in Discord's thread objects.
+    const permissionChannel = isThreadChannel(channel) && channel.parentId
+      ? state.channelList.channels.find((candidate) => candidate.id === channel.parentId) ?? channel
+      : channel;
+    const canView = canViewGuildChannel(permissionChannel, guildId, roles, currentUserRoleIds, currentUserId);
     if (canView === null) return channel;
     evaluated += 1;
     const hidden = !canView;
@@ -2718,7 +2870,11 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onChannelCreate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
     onChannelUpdate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
-    onChannelDelete: (channelId) => handleGatewayChannelDelete(state, effects, channelId),
+    onChannelDelete: (channelId, guildId) => handleGatewayChannelDelete(state, effects, channelId, guildId),
+    onThreadListSync: (event) => handleGatewayThreadListSync(state, effects, event),
+    onThreadMembershipUpdate: (threadId, joined) => {
+      if (setThreadJoinedState(state, threadId, joined)) effects.scheduleRender();
+    },
     onTypingStart: (channelId, userId, displayName) => {
       recordTypingStart(state.typing, channelId, { id: userId, displayName: displayNameForUser(state, channelId, userId, displayName) });
       effects.scheduleRender();
@@ -3168,10 +3324,18 @@ export async function loadGuildChannels(
   effects.scheduleRender();
 
   try {
-    const channels = isDirectMessages
+    const previouslyKnownChannels = isDirectMessages
+      ? []
+      : sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
+    let channels = isDirectMessages
       ? withChannelMuteSettings(state, await fetchDirectMessages(token))
-      : await fetchGuildChannels(token, guildId);
+      : await fetchGuildChannels(token, guildId, { fallbackThreads: previouslyKnownChannels });
     if (requestId !== state.channelList.requestId) return;
+
+    if (!isDirectMessages) {
+      const latestKnownChannels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
+      channels = preserveKnownThreadMembership(channels, latestKnownChannels);
+    }
 
     state.channelList.loading = false;
     if (state.sidebar.loadingGuildId === guildId) {
@@ -3231,6 +3395,122 @@ export async function loadGuildChannels(
   }
 }
 
+function showThreadCommandError(state: AppState, effects: SessionEffects, message: string): void {
+  pushTimelineSystemMessage(state.timeline, message);
+  setNotice(state, "", "muted", { statusLine: false, chat: false });
+  effects.scheduleRender();
+}
+
+export function createCurrentChannelThread(
+  state: AppState,
+  token: string | null,
+  name: string,
+  effects: SessionEffects,
+): void {
+  if (!token) {
+    showThreadCommandError(state, effects, "Login first with /login <token|username> to create a thread.");
+    return;
+  }
+
+  const parentChannelId = state.timeline.channelId;
+  const parentChannel = channelById(state, parentChannelId);
+  const replyTarget = state.replyTarget?.channelId === parentChannelId
+    ? state.replyTarget
+    : null;
+  const parentSupportsThread = replyTarget
+    ? isMessageThreadParentChannel(parentChannel)
+    : parentChannel?.type === 0;
+  if (!parentChannel || parentChannel.guildId === DIRECT_MESSAGES_GUILD_ID || !parentSupportsThread) {
+    showThreadCommandError(
+      state,
+      effects,
+      replyTarget
+        ? "Open a server text or announcement channel before creating a thread from a message."
+        : "Open a server text channel before creating a thread.",
+    );
+    return;
+  }
+
+  if (replyTarget) {
+    const selectedMessage = state.timeline.messages.find((message) => message.id === replyTarget.messageId);
+    if (replyTarget.messageId.startsWith("local:") || selectedMessage?.localStatus) {
+      showThreadCommandError(state, effects, "Wait for that message to finish sending before creating a thread from it.");
+      return;
+    }
+  }
+
+  const parentId = parentChannel.id;
+  if (replyTarget && state.replyTarget === replyTarget) {
+    state.replyTarget = null;
+  }
+  setNotice(state, "", "muted", { statusLine: false, chat: false });
+  effects.scheduleRender();
+
+  const createThread = replyTarget
+    ? createMessageThread(token, parentId, replyTarget.messageId, name)
+    : createChannelThread(token, parentId, name);
+  void createThread.then(async (thread) => {
+    handleGatewayChannelCreateOrUpdate(state, effects, thread);
+    if (state.timeline.channelId !== parentId) return;
+    revealSidebarChannel(state.sidebar, state.channelList.channels, thread.guildId, thread.id, {
+      showHiddenChannels: state.showHiddenChannels,
+    });
+    await loadChannelMessages(state, token, thread.id, effects);
+    if (!replyTarget && state.timeline.channelId === thread.id && state.timeline.messages.length === 0) {
+      pushTimelineSystemMessage(state.timeline, `Created thread “${thread.name}”. Send the first message below.`);
+      effects.scheduleRender();
+    }
+  }).catch((error) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (state.timeline.channelId === parentId && state.editor.buffer.length === 0) {
+      state.editor.buffer = `/thread ${name}`;
+      state.editor.cursor = state.editor.buffer.length;
+    }
+    if (replyTarget && state.timeline.channelId === parentId && state.replyTarget === null) {
+      state.replyTarget = replyTarget;
+    }
+    showThreadCommandError(state, effects, `Could not create thread: ${detail}`);
+  });
+}
+
+export async function focusThreadChannel(
+  state: AppState,
+  token: string,
+  threadId: string,
+  effects: SessionEffects,
+  fallbackGuildId?: string | null,
+): Promise<boolean> {
+  let thread = channelById(state, threadId);
+  if (!isThreadChannel(thread)) {
+    try {
+      const fetched = await fetchChannel(token, threadId, fallbackGuildId);
+      if (!isThreadChannel(fetched)) throw new Error("That channel is not a thread.");
+      handleGatewayChannelCreateOrUpdate(state, effects, fetched);
+      thread = fetched;
+    } catch (error) {
+      showThreadCommandError(state, effects, `Could not open thread: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+  if (!thread || !isThreadChannel(thread)) return false;
+
+  if (state.channelList.guildId !== thread.guildId) {
+    setChannelList(
+      state.channelList,
+      thread.guildId,
+      state.sidebar.cachedChannelsByGuildId[thread.guildId] ?? [thread],
+    );
+  }
+  if (!state.channelList.channels.some((channel) => channel.id === thread.id)) {
+    upsertChannel(state.channelList, thread);
+  }
+  revealSidebarChannel(state.sidebar, state.channelList.channels, thread.guildId, thread.id, {
+    showHiddenChannels: state.showHiddenChannels,
+  });
+  await loadChannelMessages(state, token, thread.id, effects);
+  return state.timeline.channelId === thread.id;
+}
+
 export async function loadChannelMessages(
   state: AppState,
   token: string,
@@ -3243,6 +3523,7 @@ export async function loadChannelMessages(
     effects.scheduleRender();
     return;
   }
+  const emptyText = isThreadChannel(channel) ? "No messages in this thread yet. Send the first message below." : null;
 
   const requestId = ++state.timeline.requestId;
   clearNotificationsForChannel(state, channelId);
@@ -3273,7 +3554,7 @@ export async function loadChannelMessages(
       persistChannelMessageCache(state, channelId);
     }
     recordMessagesRoleIds(state, cached.messages, guildId);
-    setTimelineMessages(state.timeline, channelId, cached.messages, { hasOlder: cached.hasOlder });
+    setTimelineMessages(state.timeline, channelId, cached.messages, { hasOlder: cached.hasOlder, emptyText });
     const latestMessage = cached.messages.at(-1);
     const ackMessageId = channelAckMessageId(state, channelId, latestMessage?.id ?? null);
     if (ackMessageId) markChannelRead(state, token, channelId, ackMessageId);
@@ -3293,7 +3574,7 @@ export async function loadChannelMessages(
       return;
     }
   } else {
-    setTimelineMessages(state.timeline, channelId, [], { hasOlder: false });
+    setTimelineMessages(state.timeline, channelId, [], { hasOlder: false, emptyText });
   }
 
   state.timeline.loading = true;
@@ -3787,6 +4068,8 @@ export function sendCurrentChannelMessage(
     effects.scheduleRender();
     return;
   }
+  const targetChannel = channelById(state, channelId);
+  const shouldJoinThread = Boolean(targetChannel && isThreadChannel(targetChannel) && targetChannel.thread?.joined === false);
   if (content.length > 2_000) {
     setNotice(state, "Discord messages cannot exceed 2000 characters.", "warning");
     effects.scheduleRender();
@@ -3851,6 +4134,10 @@ export function sendCurrentChannelMessage(
 
   void (async () => {
     try {
+      if (shouldJoinThread) {
+        await joinThread(token, channelId);
+        setThreadJoinedState(state, channelId, true);
+      }
       const sentMessage = await sendChannelMessage(token, channelId, sendContent, { reply: replyOptions, uploads, flags: options.messageFlags });
       const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
@@ -4584,14 +4871,24 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
     setChannelListChannelMuted(state, entry.id, nextMuted);
     setSidebarChannelMuted(state.sidebar, entry.id, nextMuted);
     if (nextMuted) {
-      const mutedChannelIds = entry.kind === "category"
-        ? [entry.id, ...[
+      const mutedChannelIds = [entry.id];
+      if (entry.kind === "category") {
+        const allChannels = [
           ...state.channelList.channels,
           ...Object.values(state.sidebar.cachedChannelsByGuildId).flat(),
-        ]
-          .filter((candidate) => candidate.parentId === entry.id)
-          .map((candidate) => candidate.id)]
-        : [entry.id];
+        ];
+        const descendants = new Set<string>([entry.id]);
+        let added = true;
+        while (added) {
+          added = false;
+          for (const candidate of allChannels) {
+            if (!candidate.parentId || !descendants.has(candidate.parentId) || descendants.has(candidate.id)) continue;
+            descendants.add(candidate.id);
+            mutedChannelIds.push(candidate.id);
+            added = true;
+          }
+        }
+      }
       for (const channelId of mutedChannelIds) clearChannelNotifications(state.notifications, channelId);
       persistNotifications(state);
     }

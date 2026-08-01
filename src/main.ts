@@ -31,7 +31,7 @@ import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { setChannelList } from "./channels";
 import { imageExtension, readClipboardImage } from "./imageclipboard";
 import { copyToClipboard } from "./editor-clipboard";
-import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
 import { resolveAction, resolveNavigationAction } from "./keybinds";
 import {
@@ -58,6 +58,7 @@ import {
   disconnectAppGateway,
   disconnectMemberListGateway,
   deleteMessage,
+  focusThreadChannel,
   loadChannelMessageLocation,
   loadChannelMessages,
   loadChannelMessagesAround,
@@ -137,7 +138,7 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, banGuildMember, createGuildInvite, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isGuildVoiceChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, banGuildMember, createGuildInvite, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
@@ -666,6 +667,16 @@ function jumpToForwardedOriginAtHistoryCursor(): boolean {
     }
     scheduleRender();
   })();
+  return true;
+}
+
+function focusThreadAtHistoryCursor(): boolean {
+  const target = threadChannelAtHistoryCursor(state);
+  if (!target) return false;
+
+  const token = tokenOrWarn();
+  if (!token) return true;
+  void focusThreadChannel(state, token, target.channelId, effects, target.guildId);
   return true;
 }
 
@@ -1397,6 +1408,13 @@ function handleSidebarFocused(key: KeyEvent): boolean {
         return true;
       }
 
+      if (isForumChannel(channel)) {
+        // Forums are thread containers rather than message timelines. Their
+        // active posts are selectable directly beneath this row.
+        scheduleRender();
+        return true;
+      }
+
       const token = tokenOrWarn();
       if (!token) return true;
 
@@ -1444,6 +1462,10 @@ function handleSidebarFocused(key: KeyEvent): boolean {
           ?? null;
         if (channel && isGuildVoiceChannel(channel)) {
           startCurrentVoiceCall(state, { scheduleRender }, { voiceChannel: channel });
+          return true;
+        }
+        if (isForumChannel(channel)) {
+          scheduleRender();
           return true;
         }
         void loadChannelMessages(state, token, entry.id, { scheduleRender });
@@ -1520,6 +1542,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_select": {
+      if (focusThreadAtHistoryCursor()) return true;
       if (jumpToReplyTargetAtHistoryCursor()) return true;
       if (jumpToForwardedOriginAtHistoryCursor()) return true;
 
