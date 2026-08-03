@@ -103,6 +103,29 @@ export function channelNotificationCounts(notifications: NotificationState): Rea
   );
 }
 
+export interface ChannelNotificationTarget {
+  channelId: string;
+  guildId: string | null;
+}
+
+/** Return the next notified channel in notification insertion order, wrapping at the end. */
+export function nextChannelNotification(
+  notifications: NotificationState,
+  currentChannelId: string | null | undefined,
+): ChannelNotificationTarget | null {
+  const channelIds = Object.entries(notifications.byChannelId)
+    .filter(([, count]) => count > 0)
+    .map(([channelId]) => channelId);
+  if (channelIds.length === 0) return null;
+
+  const currentIndex = currentChannelId ? channelIds.indexOf(currentChannelId) : -1;
+  const channelId = channelIds[currentIndex < 0 ? 0 : (currentIndex + 1) % channelIds.length]!;
+  return {
+    channelId,
+    guildId: notifications.channelGuildIds[channelId] ?? null,
+  };
+}
+
 export function guildNotificationCounts(
   notifications: NotificationState,
   visibleChannels: DiscordChannel[],

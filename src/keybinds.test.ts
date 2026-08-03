@@ -108,6 +108,11 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "ctrl-right-bracket" })).toBe("notification_next");
   });
 
+  test("t targets the next notification from normal-mode contexts", () => {
+    expect(resolveAction({ type: "char", char: "t" })).toBe("notification_next");
+    expect(resolveAction({ type: "char", char: "t" }, "navigation")).toBe("notification_next");
+  });
+
   test("ctrl-r toggles reply mode globally", () => {
     expect(resolveAction({ type: "ctrl-r" })).toBe("reply_toggle");
   });

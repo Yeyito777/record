@@ -44,7 +44,7 @@ import {
   scrollMemberListSelectionLine,
 } from "./memberlist";
 import { formatByteSize } from "./messageparts";
-import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
+import { channelNotificationCounts, guildNotificationCounts, nextChannelNotification } from "./notifications";
 import { handlePromptPrefixBackspace } from "./promptbackspace";
 import { invalidateFrame } from "./frame";
 import { render } from "./render";
@@ -100,6 +100,7 @@ import {
   openSidebarMoveItemsPrompt,
   openSidebarRenameFolderPrompt,
   openSidebarSearchBar,
+  revealSidebarChannel,
   scrollSidebarSelection,
   scrollSidebarSelectionLine,
   setSidebarGuilds,
@@ -558,6 +559,67 @@ function jumpToNotification(direction: -1 | 1): void {
   scheduleRender();
 }
 
+function editorHasPendingInput(): boolean {
+  return Boolean(
+    state.editor.pendingOperator
+    || state.editor.pendingOperatorKey
+    || state.editor.pendingTextObjectModifier
+    || state.editor.pendingKeys
+    || state.editor.count !== null
+    || state.editor.pendingFind
+    || state.editor.pendingReplace,
+  );
+}
+
+function switchToNextNotification(): void {
+  const target = nextChannelNotification(state.notifications, state.channelList.activeChannelId);
+  if (!target) {
+    scheduleRender();
+    return;
+  }
+
+  const knownChannel = sidebarChannelsForGuild(
+    state.sidebar,
+    state.channelList.channels,
+    target.guildId ?? "",
+  ).find((channel) => channel.id === target.channelId)
+    ?? Object.values(state.sidebar.cachedChannelsByGuildId)
+      .flat()
+      .find((channel) => channel.id === target.channelId)
+    ?? null;
+  const guildId = target.guildId ?? knownChannel?.guildId ?? null;
+  if (!guildId) {
+    scheduleRender();
+    return;
+  }
+
+  if (guildId === WHATSAPP_GUILD_ID) {
+    revealSidebarChannel(state.sidebar, state.channelList.channels, guildId, target.channelId, sidebarVisibilityOptions());
+    whatsAppController.openChannel(target.channelId);
+    return;
+  }
+
+  const token = tokenOrWarn();
+  if (!token) return;
+
+  void (async () => {
+    let channels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
+    if (!channels.some((channel) => channel.id === target.channelId)) {
+      await loadGuildChannels(state, token, guildId, effects, { openFirstChannel: false });
+      channels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
+    }
+
+    if (!channels.some((channel) => channel.id === target.channelId)) {
+      scheduleRender();
+      return;
+    }
+
+    setChannelList(state.channelList, guildId, channels);
+    revealSidebarChannel(state.sidebar, state.channelList.channels, guildId, target.channelId, sidebarVisibilityOptions());
+    await loadChannelMessages(state, token, target.channelId, effects);
+  })();
+}
+
 function toggleSidebar(): void {
   state.sidebar.open = !state.sidebar.open;
 
@@ -913,6 +975,15 @@ function handleGlobalAction(key: KeyEvent): boolean {
     ? "navigation"
     : "prompt";
   const action = resolveAction(key, context);
+  const normalNotificationShortcut = action === "notification_next" && key.type === "char" && key.char === "t";
+  if (normalNotificationShortcut && (
+    state.editor.mode !== "normal"
+    || editorHasPendingInput()
+    || state.navigationPendingKeys.length > 0
+    || (state.panelFocus === "sidebar" && state.sidebar.visualAnchor !== null)
+  )) {
+    return false;
+  }
   if (action && action !== "cancel_action" && !action.startsWith("nav_") && action !== "focus_prompt") {
     state.navigationPendingKeys = "";
     clearPendingMessageDelete();
@@ -966,7 +1037,8 @@ function handleGlobalAction(key: KeyEvent): boolean {
       jumpToNotification(-1);
       return true;
     case "notification_next":
-      jumpToNotification(1);
+      if (normalNotificationShortcut) switchToNextNotification();
+      else jumpToNotification(1);
       return true;
     case "paste_image":
       pasteImageFromClipboard();

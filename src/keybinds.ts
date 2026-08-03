@@ -71,6 +71,7 @@ const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
 const GLOBAL_CHAR_BINDS: Record<string, Action> = {
   "char:J": "sidebar_next",
   "char:K": "sidebar_prev",
+  "char:t": "notification_next",
 };
 
 const NAV_BINDS: Partial<Record<KeyEvent["type"], Action>> = {

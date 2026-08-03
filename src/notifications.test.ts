@@ -5,6 +5,7 @@ import {
   clearChannelNotifications,
   createNotificationState,
   guildNotificationCounts,
+  nextChannelNotification,
   recordChannelNotification,
   setChannelNotificationCount,
   shouldNotifyForMessage,
@@ -62,6 +63,19 @@ describe("notifications", () => {
     recordChannelNotification(notifications, "channel-2", "guild-1");
 
     expect(guildNotificationCounts(notifications, []).get("guild-1")).toBe(3);
+  });
+
+  test("cycles notified channels in insertion order", () => {
+    const notifications = createNotificationState();
+    recordChannelNotification(notifications, "channel-1", "guild-1");
+    recordChannelNotification(notifications, "channel-2", "guild-2");
+
+    expect(nextChannelNotification(notifications, null)).toEqual({ channelId: "channel-1", guildId: "guild-1" });
+    expect(nextChannelNotification(notifications, "channel-1")).toEqual({ channelId: "channel-2", guildId: "guild-2" });
+    expect(nextChannelNotification(notifications, "channel-2")).toEqual({ channelId: "channel-1", guildId: "guild-1" });
+
+    clearChannelNotifications(notifications, "channel-1");
+    expect(nextChannelNotification(notifications, null)).toEqual({ channelId: "channel-2", guildId: "guild-2" });
   });
 
   test("notifies for DMs, direct mentions, replies, calls, and own role mentions", () => {
