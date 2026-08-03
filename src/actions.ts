@@ -143,15 +143,7 @@ export function logout(state: AppState, effects: AppEffects): void {
 
 function handleCommandSubmit(state: AppState, text: string, effects: AppEffects): boolean {
   const result = tryCommand(text, state);
-  if (result === null) {
-    if (text.startsWith("/")) {
-      const name = text.split(/\s+/)[0];
-      setNotice(state, `Unknown command: ${name}`, "error");
-      effects.scheduleRender();
-      return true;
-    }
-    return false;
-  }
+  if (result === null) return false;
 
   switch (result.type) {
     case "handled":
