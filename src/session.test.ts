@@ -1678,6 +1678,106 @@ describe("session", () => {
     expect(state.notice.statusLine).toBe(false);
   });
 
+  test("does not resurrect a deleted thread from late REST or gateway snapshots", async () => {
+    let markSearchStarted!: () => void;
+    const searchStarted = new Promise<void>((resolve) => { markSearchStarted = resolve; });
+    let resolveSearchResponse!: (response: Response) => void;
+    const searchResponse = new Promise<Response>((resolve) => { resolveSearchResponse = resolve; });
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/guilds/guild-1/channels")) {
+        return new Response(JSON.stringify([
+          { id: "channel-1", guild_id: "guild-1", parent_id: null, name: "general", position: 0, type: 0, permission_overwrites: [] },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/channels/channel-1/threads/search?")) {
+        markSearchStarted();
+        return searchResponse;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.roleIdsByGuildId["guild-1"] = [];
+    const parent = { id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false, permissionOverwrites: [] };
+    const thread = {
+      id: "thread-1",
+      guildId: "guild-1",
+      parentId: parent.id,
+      name: "discussion",
+      topic: null,
+      position: 0,
+      type: 11,
+      nsfw: false,
+      thread: { ownerId: "self", archived: false, locked: false, invitable: null, autoArchiveDuration: 1440, archiveTimestamp: null, createTimestamp: null, joined: true, messageCount: 0, memberCount: 1, totalMessageSent: 0 },
+    };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [parent, thread];
+    state.sidebar.cachedChannelsByGuildId["guild-1"] = [parent, thread];
+
+    const load = loadGuildChannels(state, "token-1", "guild-1", { scheduleRender: () => {} }, { openFirstChannel: false });
+    await searchStarted;
+    removeSessionChannel(state, { scheduleRender: () => {} }, thread.id, "guild-1");
+    resolveSearchResponse(new Response(JSON.stringify({
+      threads: [{
+        id: thread.id,
+        guild_id: "guild-1",
+        parent_id: parent.id,
+        name: thread.name,
+        position: 0,
+        type: 11,
+        owner_id: "self",
+        thread_metadata: { archived: false, locked: false, auto_archive_duration: 1440 },
+      }],
+      members: [{ id: thread.id, user_id: "self" }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await load;
+
+    expect(state.channelList.channels.map((channel) => channel.id)).toEqual([parent.id]);
+    expect(state.sidebar.cachedChannelsByGuildId["guild-1"]?.map((channel) => channel.id)).toEqual([parent.id]);
+
+    handleGatewayThreadListSync(state, { scheduleRender: () => {} }, {
+      guildId: "guild-1",
+      parentChannelIds: [parent.id],
+      threads: [thread],
+      authoritative: false,
+    });
+    handleGatewayChannelCreateOrUpdate(state, { scheduleRender: () => {} }, thread);
+
+    expect(state.channelList.channels.map((channel) => channel.id)).toEqual([parent.id]);
+    expect(state.sidebar.cachedChannelsByGuildId["guild-1"]?.map((channel) => channel.id)).toEqual([parent.id]);
+  });
+
+  test("removes a stale cached thread when opening it returns not found", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/channels/thread-1/messages?")) {
+        return new Response(JSON.stringify({ message: "Unknown Channel", code: 10003 }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    const thread = { id: "thread-1", guildId: "guild-1", parentId: "channel-1", name: "deleted", topic: null, position: 0, type: 11, nsfw: false };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [thread];
+    state.sidebar.cachedChannelsByGuildId["guild-1"] = [thread];
+
+    await loadChannelMessages(state, "token-1", thread.id, { scheduleRender: () => {} });
+
+    expect(state.channelList.channels).toEqual([]);
+    expect(state.sidebar.cachedChannelsByGuildId["guild-1"]).toEqual([]);
+    expect(state.timeline.channelId).toBeNull();
+    expect(state.notice.text).toBe("Channel or thread was deleted.");
+    expect(state.notice.statusLine).toBe(false);
+  });
+
   test("editing a message patches it optimistically and clears edit state", async () => {
     let requestedBody = "";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

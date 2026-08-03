@@ -108,6 +108,13 @@ export class DiscordCaptchaRequiredError extends Error {
   }
 }
 
+export class DiscordResourceNotFoundError extends Error {
+  constructor(message = "Discord resource not found.") {
+    super(message);
+    this.name = "DiscordResourceNotFoundError";
+  }
+}
+
 interface DiscordUserSettingsResponse {
   status?: string | null;
   custom_status?: {
@@ -1510,9 +1517,16 @@ export async function leaveGuild(token: string, guildId: string): Promise<void> 
 
 /** Delete a guild channel or thread. Discord chooses CHANNEL_DELETE vs THREAD_DELETE. */
 export async function deleteChannel(token: string, channelId: string): Promise<void> {
-  await requestJson<unknown>(token, `/channels/${channelId}`, {
-    method: "DELETE",
-  });
+  try {
+    await requestJson<unknown>(token, `/channels/${channelId}`, {
+      method: "DELETE",
+    });
+  } catch (error) {
+    // Deletion is idempotent from the client's perspective. A stale cache entry
+    // that Discord already removed should still be cleaned up locally.
+    if (error instanceof DiscordResourceNotFoundError) return;
+    throw error;
+  }
 }
 
 export async function setGuildMemberServerMute(
@@ -2217,7 +2231,7 @@ function buildDiscordError(status: number, body: DiscordErrorResponse | null): E
     return new Error("Discord denied access to that resource.");
   }
   if (status === 404) {
-    return new Error("Discord resource not found.");
+    return new DiscordResourceNotFoundError();
   }
   if (status === 429) {
     return new Error("Discord rate-limited the request. Try again in a moment.");

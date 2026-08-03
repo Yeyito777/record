@@ -19,6 +19,7 @@ import { basename } from "path";
 import {
   DIRECT_MESSAGES_GUILD_ID,
   DIRECT_MESSAGES_GUILD_NAME,
+  DiscordResourceNotFoundError,
   ackChannelMessage,
   createChannelThread,
   createMessageThread,
@@ -219,6 +220,28 @@ interface GuildRoleFetchState {
   revisions: Map<string, number>;
 }
 const guildRoleFetchState = new WeakMap<AppState, GuildRoleFetchState>();
+const deletedGuildChannelIds = new WeakMap<AppState, Set<string>>();
+
+function deletedGuildChannelIdsFor(state: AppState): Set<string> {
+  const existing = deletedGuildChannelIds.get(state);
+  if (existing) return existing;
+  const created = new Set<string>();
+  deletedGuildChannelIds.set(state, created);
+  return created;
+}
+
+function isDeletedGuildChannel(state: AppState, channel: DiscordChannel): boolean {
+  const deletedIds = deletedGuildChannelIds.get(state);
+  return Boolean(deletedIds
+    && (deletedIds.has(channel.id)
+      || (isThreadChannel(channel) && channel.parentId && deletedIds.has(channel.parentId))));
+}
+
+function withoutDeletedGuildChannels(state: AppState, channels: readonly DiscordChannel[]): DiscordChannel[] {
+  const deletedIds = deletedGuildChannelIds.get(state);
+  if (!deletedIds || deletedIds.size === 0) return channels.slice();
+  return channels.filter((channel) => !isDeletedGuildChannel(state, channel));
+}
 
 function roleFetchStateFor(state: AppState): GuildRoleFetchState {
   const existing = guildRoleFetchState.get(state);
@@ -1596,6 +1619,9 @@ function persistGatewayGuildChannels(state: AppState, guildId: string, channels:
 }
 
 export function handleGatewayChannelCreateOrUpdate(state: AppState, effects: SessionEffects, channel: DiscordChannel): void {
+  // REST loads and gateway snapshots can complete after a delete. Channel IDs
+  // are never reused, so ignore late create/update data for this session.
+  if (isDeletedGuildChannel(state, channel)) return;
   channel = withChannelMuteSettings(state, [channel])[0] ?? channel;
   if (channel.guildId === DIRECT_MESSAGES_GUILD_ID) {
     ensureDirectMessagesGuild(state);
@@ -1648,6 +1674,10 @@ export function removeSessionChannel(
   const removedGuildId = eventGuildId
     ?? deletedChannel?.guildId
     ?? state.channelList.guildId;
+  if (removedGuildId && removedGuildId !== DIRECT_MESSAGES_GUILD_ID && removedGuildId !== WHATSAPP_GUILD_ID) {
+    const deletedIds = deletedGuildChannelIdsFor(state);
+    for (const removedChannelId of removedChannelIds) deletedIds.add(removedChannelId);
+  }
   let removed = false;
   for (const removedChannelId of removedChannelIds) {
     removed = removeChannel(state.channelList, removedChannelId) || removed;
@@ -1668,6 +1698,7 @@ export function removeSessionChannel(
   for (const removedChannelId of removedChannelIds) {
     clearCachedChannelMessages(state.messageCacheByChannelId, removedChannelId);
     clearChannelNotifications(state.notifications, removedChannelId);
+    delete state.channelMuteSettings[removedChannelId];
   }
   persistNotifications(state);
   if (state.sidebar.serverActionModal && removedChannelIds.has(state.sidebar.serverActionModal.targetId)) {
@@ -1678,7 +1709,7 @@ export function removeSessionChannel(
     setNotice(state, "Channel or thread was deleted.", "warning", { statusLine: false, chat: true });
     syncMemberListForCurrentChannel(state, effects);
   }
-  if (removed || removedFromSidebar || wasActive) effects.scheduleRender();
+  if (removed || removedFromSidebar || wasActive || wasTimelineChannel) effects.scheduleRender();
 }
 
 export function handleGatewayThreadListSync(
@@ -1689,9 +1720,13 @@ export function handleGatewayThreadListSync(
   // READY thread snapshots are deliberately non-authoritative and can be empty
   // while the persisted/sidebar cache already knows about active threads.
   // Always merge both snapshots before applying the gateway delta.
-  const existing = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, event.guildId);
+  const existing = withoutDeletedGuildChannels(
+    state,
+    sidebarChannelsForGuild(state.sidebar, state.channelList.channels, event.guildId),
+  );
+  const incomingThreads = event.threads.filter((thread) => !isDeletedGuildChannel(state, thread));
   const parentScope = event.parentChannelIds === null ? null : new Set(event.parentChannelIds);
-  const syncedThreadIds = new Set(event.threads.map((thread) => thread.id));
+  const syncedThreadIds = new Set(incomingThreads.map((thread) => thread.id));
   let next = event.authoritative
     ? existing.filter((channel) => {
         if (!isThreadChannel(channel)) return true;
@@ -1699,7 +1734,7 @@ export function handleGatewayThreadListSync(
         return syncedThreadIds.has(channel.id);
       })
     : existing.slice();
-  for (const thread of withChannelMuteSettings(state, event.threads)) {
+  for (const thread of withChannelMuteSettings(state, incomingThreads)) {
     next = upsertGuildChannelArray(next, thread);
   }
   next = sortGuildChannels(next);
@@ -2953,6 +2988,7 @@ export function currentAppGatewaySessionId(token: string | null | undefined): st
 
 export function clearReadOnlyClient(state: AppState): void {
   guildRoleFetchState.delete(state);
+  deletedGuildChannelIds.delete(state);
   const whatsAppChannelsBeforeClear = whatsAppChannels(state.whatsapp);
   const whatsAppChannelLayoutBeforeClear = sidebarChannelLayoutForGuild(state.sidebar, WHATSAPP_GUILD_ID);
   const activeWhatsAppChannelId = state.channelList.guildId === WHATSAPP_GUILD_ID
@@ -3339,9 +3375,12 @@ export async function loadGuildChannels(
       }
     }
 
-    const cachedChannels = isDirectMessages
+    const loadedCachedChannels = isDirectMessages
       ? loadCachedDirectMessages(accountId)
       : loadCachedGuildChannels(accountId, guildId);
+    const cachedChannels = loadedCachedChannels
+      ? withoutDeletedGuildChannels(state, loadedCachedChannels)
+      : null;
     debugLog("channel_cache.load", {
       guildId,
       accountId,
@@ -3387,6 +3426,7 @@ export async function loadGuildChannels(
       ? withChannelMuteSettings(state, await fetchDirectMessages(token))
       : await fetchGuildChannels(token, guildId, { fallbackThreads: previouslyKnownChannels });
     if (requestId !== state.channelList.requestId) return;
+    channels = withoutDeletedGuildChannels(state, channels);
 
     if (!isDirectMessages) {
       const latestKnownChannels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
@@ -3669,6 +3709,15 @@ async function refreshLatestChannelMessages(
     effects.scheduleRender();
   } catch (error) {
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
+    if (error instanceof DiscordResourceNotFoundError
+      && guildId
+      && guildId !== DIRECT_MESSAGES_GUILD_ID
+      && guildId !== WHATSAPP_GUILD_ID) {
+      // A stale cached channel/thread should self-heal instead of remaining in
+      // the sidebar as an entry that can only produce repeated 404s.
+      removeSessionChannel(state, effects, channelId, guildId);
+      return;
+    }
     state.timeline.loading = false;
     if (!options.hadCachedMessages) {
       clearTimeline(state.timeline);

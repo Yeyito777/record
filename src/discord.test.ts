@@ -171,6 +171,15 @@ describe("discord helpers", () => {
     }]);
   });
 
+  test("treats an already missing channel as successfully deleted", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      message: "Unknown Channel",
+      code: 10003,
+    }), { status: 404, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+
+    await expect(deleteChannel("token", "stale-thread")).resolves.toBeUndefined();
+  });
+
   test("creates a seven-day server invite through the first text channel", async () => {
     const requests: Array<{ url: string; method: string; body: unknown }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
