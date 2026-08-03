@@ -1868,13 +1868,15 @@ async function main(): Promise<void> {
     scheduleRender();
   });
 
+  if (initialToken) {
+    // Enter the authenticating state before the first frame so startup never
+    // briefly renders the logged-out instructions for a saved login.
+    void validateAndMaybeSave(state, initialToken, false, "Validating saved token…", effects);
+  }
+
   render(state);
 
   whatsAppController.restoreSavedSession();
-
-  if (initialToken) {
-    void validateAndMaybeSave(state, initialToken, false, "Validating saved token…", effects);
-  }
 
   const pasteBuffer = new PasteBuffer(processInput);
 
