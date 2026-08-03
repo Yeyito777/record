@@ -53,6 +53,7 @@ import {
   adjustSelectedVoiceMemberVolume,
   adjustVoiceMemberVolume,
   bootstrapReadOnlyClient,
+  canDeleteGuildChannel,
   canWatchVoiceMemberStream,
   currentAppGatewaySessionId,
   disconnectAppGateway,
@@ -68,6 +69,7 @@ import {
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
   persistSidebarFolders,
+  removeSessionChannel,
   removeSessionGuild,
   sendCurrentChannelVoiceMessage,
   startCurrentVoiceCall,
@@ -138,7 +140,7 @@ import {
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
 import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, banGuildMember, createGuildInvite, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
@@ -1034,6 +1036,10 @@ function openSelectedServerActionModal(): boolean {
       selected.id,
       selected.label,
       Boolean(channel.muted),
+      {
+        canDelete: selected.kind === "channel" && canDeleteGuildChannel(state, selected.guildId, selected.id),
+        isThread: isThreadChannel(channel),
+      },
     );
   }
   scheduleRender();
@@ -1120,53 +1126,65 @@ function runServerModalAction(action: ServerAction): void {
     return;
   }
 
-  const failVoiceMemberAction = (error: unknown, fallback: string): void => {
+  const failModalAction = (error: unknown, fallback: string): void => {
     if (state.sidebar.serverActionModal !== modal) return;
     modal.busy = false;
     modal.error = serverActionErrorMessage(error, fallback);
     scheduleRender();
   };
 
-  const finishVoiceMemberAction = (): void => {
+  const finishModalAction = (): void => {
     if (state.sidebar.serverActionModal === modal) state.sidebar.serverActionModal = null;
     scheduleRender();
   };
+
+  if (action === "delete_channel" && (modal.targetKind === "channel" || modal.targetKind === "thread")) {
+    void deleteChannel(token, modal.targetId).then(() => {
+      if (state.sidebar.serverActionModal === modal) state.sidebar.serverActionModal = null;
+      removeSessionChannel(state, { scheduleRender }, modal.targetId, modal.guildId);
+      scheduleRender();
+    }).catch((error) => failModalAction(
+      error,
+      modal.targetKind === "thread" ? "Could Not Delete Thread" : "Could Not Delete Channel",
+    ));
+    return;
+  }
 
   if (modal.targetKind === "voice_member" && modal.channelId) {
     if (action === "toggle_server_mute") {
       const muted = !modal.serverMuted;
       void setGuildMemberServerMute(token, modal.guildId, modal.targetId, muted).then(() => {
-        finishVoiceMemberAction();
-      }).catch((error) => failVoiceMemberAction(error, `Could Not ${muted ? "Server Mute" : "Server Unmute"}`));
+        finishModalAction();
+      }).catch((error) => failModalAction(error, `Could Not ${muted ? "Server Mute" : "Server Unmute"}`));
       return;
     }
 
     if (action === "toggle_server_deafen") {
       const deafened = !modal.serverDeafened;
       void setGuildMemberServerDeafen(token, modal.guildId, modal.targetId, deafened).then(() => {
-        finishVoiceMemberAction();
-      }).catch((error) => failVoiceMemberAction(error, `Could Not Server ${deafened ? "Deafen" : "Undeafen"}`));
+        finishModalAction();
+      }).catch((error) => failModalAction(error, `Could Not Server ${deafened ? "Deafen" : "Undeafen"}`));
       return;
     }
 
     if (action === "kick_from_vc") {
       void disconnectGuildMemberFromVoice(token, modal.guildId, modal.targetId).then(() => {
-        finishVoiceMemberAction();
-      }).catch((error) => failVoiceMemberAction(error, "Could Not Kick From VC"));
+        finishModalAction();
+      }).catch((error) => failModalAction(error, "Could Not Kick From VC"));
       return;
     }
 
     if (action === "kick_from_server") {
       void kickGuildMember(token, modal.guildId, modal.targetId).then(() => {
-        finishVoiceMemberAction();
-      }).catch((error) => failVoiceMemberAction(error, "Could Not Kick From Server"));
+        finishModalAction();
+      }).catch((error) => failModalAction(error, "Could Not Kick From Server"));
       return;
     }
 
     if (action === "ban_from_server") {
       void banGuildMember(token, modal.guildId, modal.targetId).then(() => {
-        finishVoiceMemberAction();
-      }).catch((error) => failVoiceMemberAction(error, "Could Not Ban From Server"));
+        finishModalAction();
+      }).catch((error) => failModalAction(error, "Could Not Ban From Server"));
       return;
     }
   }

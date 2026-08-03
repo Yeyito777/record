@@ -8,7 +8,7 @@ import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChanne
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -1570,6 +1570,112 @@ describe("session", () => {
     });
 
     clearReadOnlyClient(state);
+  });
+
+  test("channel deletion requires the correct effective channel or thread permission", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.roleIdsByGuildId["guild-1"] = ["mod-role"];
+    const viewChannel = 1n << 10n;
+    const manageChannels = 1n << 4n;
+    const manageThreads = 1n << 34n;
+    state.guildRolesByGuildId["guild-1"] = [
+      { id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "0" },
+      { id: "mod-role", name: "Moderator", color: 0, position: 1, permissions: String(viewChannel | manageChannels | manageThreads) },
+    ];
+    state.channelList.channels = [
+      { id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false },
+      {
+        id: "thread-1",
+        guildId: "guild-1",
+        parentId: "channel-1",
+        name: "discussion",
+        topic: null,
+        position: 0,
+        type: 11,
+        nsfw: false,
+        thread: { ownerId: "other", archived: false, locked: false, invitable: null, autoArchiveDuration: 1440, archiveTimestamp: null, createTimestamp: null, joined: true, messageCount: 0, memberCount: 1, totalMessageSent: 0 },
+      },
+    ];
+
+    expect(canDeleteGuildChannel(state, "guild-1", "channel-1")).toBe(true);
+    expect(canDeleteGuildChannel(state, "guild-1", "thread-1")).toBe(true);
+
+    state.channelList.channels[0] = {
+      ...state.channelList.channels[0]!,
+      permissionOverwrites: [{ id: "self", type: 1, allow: "0", deny: String(manageThreads) }],
+    };
+    expect(canDeleteGuildChannel(state, "guild-1", "channel-1")).toBe(true);
+    expect(canDeleteGuildChannel(state, "guild-1", "thread-1")).toBe(false);
+
+    state.guildRolesByGuildId["guild-1"]![1] = {
+      ...state.guildRolesByGuildId["guild-1"]![1]!,
+      permissions: String(viewChannel | manageThreads),
+    };
+    state.channelList.channels[0] = {
+      ...state.channelList.channels[0]!,
+      permissionOverwrites: [],
+    };
+    expect(canDeleteGuildChannel(state, "guild-1", "channel-1")).toBe(false);
+    expect(canDeleteGuildChannel(state, "guild-1", "thread-1")).toBe(true);
+
+    state.guildRolesByGuildId["guild-1"]![1] = {
+      ...state.guildRolesByGuildId["guild-1"]![1]!,
+      permissions: String(manageChannels | manageThreads),
+    };
+    expect(canDeleteGuildChannel(state, "guild-1", "channel-1")).toBe(false);
+    expect(canDeleteGuildChannel(state, "guild-1", "thread-1")).toBe(false);
+  });
+
+  test("guild owners and administrators can delete channels without overwrite metadata", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null, ownerId: "self" }];
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+
+    expect(canDeleteGuildChannel(state, "guild-1", "channel-1")).toBe(true);
+
+    state.sidebar.guilds[0] = { id: "guild-1", name: "Guild", icon: null };
+    state.roleIdsByGuildId["guild-1"] = ["admin-role"];
+    state.guildRolesByGuildId["guild-1"] = [
+      { id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "0" },
+      { id: "admin-role", name: "Admin", color: 0, position: 1, permissions: String(1n << 3n) },
+    ];
+    expect(canDeleteGuildChannel(state, "guild-1", "channel-1")).toBe(true);
+    expect(canDeleteGuildChannel(state, DIRECT_MESSAGES_GUILD_ID, "channel-1")).toBe(false);
+  });
+
+  test("removes a successfully deleted channel and its threads from live and cached session state", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    const channel = { id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false };
+    const thread = { id: "thread-1", guildId: "guild-1", parentId: channel.id, name: "discussion", topic: null, position: 0, type: 11, nsfw: false };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [channel, thread];
+    state.channelList.activeChannelId = thread.id;
+    state.channelList.activeChannel = thread;
+    state.sidebar.cachedChannelsByGuildId["guild-1"] = [channel, thread];
+    state.timeline.channelId = thread.id;
+    state.messageCacheByChannelId[channel.id] = { channelId: channel.id, messages: [], hasOlder: false, updatedAt: 0, latestFetchedAt: null };
+    state.messageCacheByChannelId[thread.id] = { channelId: thread.id, messages: [], hasOlder: false, updatedAt: 0, latestFetchedAt: null };
+    state.notifications.byChannelId[channel.id] = 2;
+    state.notifications.channelGuildIds[channel.id] = "guild-1";
+    state.notifications.byChannelId[thread.id] = 1;
+    state.notifications.channelGuildIds[thread.id] = "guild-1";
+
+    removeSessionChannel(state, { scheduleRender: () => {} }, channel.id, "guild-1");
+
+    expect(state.channelList.channels).toEqual([]);
+    expect(state.channelList.activeChannelId).toBeNull();
+    expect(state.sidebar.cachedChannelsByGuildId["guild-1"]).toEqual([]);
+    expect(state.timeline.channelId).toBeNull();
+    expect(state.messageCacheByChannelId[channel.id]).toBeUndefined();
+    expect(state.messageCacheByChannelId[thread.id]).toBeUndefined();
+    expect(state.notifications.byChannelId[channel.id]).toBeUndefined();
+    expect(state.notifications.byChannelId[thread.id]).toBeUndefined();
+    expect(state.notice.text).toBe("Channel or thread was deleted.");
+    expect(state.notice.statusLine).toBe(false);
   });
 
   test("editing a message patches it optimistically and clears edit state", async () => {

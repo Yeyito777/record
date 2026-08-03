@@ -1626,22 +1626,36 @@ export function handleGatewayChannelCreateOrUpdate(state: AppState, effects: Ses
   effects.scheduleRender();
 }
 
-function handleGatewayChannelDelete(
+export function removeSessionChannel(
   state: AppState,
   effects: SessionEffects,
   channelId: string,
   eventGuildId: string | null = null,
 ): void {
-  const wasActive = state.channelList.activeChannelId === channelId;
+  const knownChannels = [
+    ...state.channelList.channels,
+    ...Object.values(state.sidebar.cachedChannelsByGuildId).flat(),
+  ];
+  const deletedChannel = knownChannels.find((channel) => channel.id === channelId);
+  const removedChannelIds = new Set([channelId]);
+  if (deletedChannel && !isThreadChannel(deletedChannel)) {
+    for (const channel of knownChannels) {
+      if (isThreadChannel(channel) && channel.parentId === channelId) removedChannelIds.add(channel.id);
+    }
+  }
+  const wasActive = Boolean(state.channelList.activeChannelId && removedChannelIds.has(state.channelList.activeChannelId));
+  const wasTimelineChannel = Boolean(state.timeline.channelId && removedChannelIds.has(state.timeline.channelId));
   const removedGuildId = eventGuildId
-    ?? state.channelList.channels.find((channel) => channel.id === channelId)?.guildId
-    ?? Object.entries(state.sidebar.cachedChannelsByGuildId).find(([, channels]) => channels.some((channel) => channel.id === channelId))?.[0]
+    ?? deletedChannel?.guildId
     ?? state.channelList.guildId;
-  const removed = removeChannel(state.channelList, channelId);
+  let removed = false;
+  for (const removedChannelId of removedChannelIds) {
+    removed = removeChannel(state.channelList, removedChannelId) || removed;
+  }
   let removedFromSidebar = false;
   if (removedGuildId) {
     const cached = state.sidebar.cachedChannelsByGuildId[removedGuildId] ?? [];
-    const nextCached = cached.filter((channel) => channel.id !== channelId);
+    const nextCached = cached.filter((channel) => !removedChannelIds.has(channel.id));
     removedFromSidebar = nextCached.length !== cached.length;
     if (state.channelList.guildId === removedGuildId && removed) {
       setSidebarCachedChannels(state.sidebar, removedGuildId, state.channelList.channels);
@@ -1651,12 +1665,17 @@ function handleGatewayChannelDelete(
       persistGatewayGuildChannels(state, removedGuildId, nextCached);
     }
   }
-  clearCachedChannelMessages(state.messageCacheByChannelId, channelId);
-  clearChannelNotifications(state.notifications, channelId);
+  for (const removedChannelId of removedChannelIds) {
+    clearCachedChannelMessages(state.messageCacheByChannelId, removedChannelId);
+    clearChannelNotifications(state.notifications, removedChannelId);
+  }
   persistNotifications(state);
-  if (wasActive || state.timeline.channelId === channelId) {
+  if (state.sidebar.serverActionModal && removedChannelIds.has(state.sidebar.serverActionModal.targetId)) {
+    state.sidebar.serverActionModal = null;
+  }
+  if (wasActive || wasTimelineChannel) {
     clearTimeline(state.timeline);
-    setNotice(state, "Channel or thread was deleted.", "warning");
+    setNotice(state, "Channel or thread was deleted.", "warning", { statusLine: false, chat: true });
     syncMemberListForCurrentChannel(state, effects);
   }
   if (removed || removedFromSidebar || wasActive) effects.scheduleRender();
@@ -2049,10 +2068,12 @@ function persistPrivateConversationLayout(state: AppState, guildId: string): voi
 const KICK_MEMBERS_PERMISSION = 1n << 1n;
 const BAN_MEMBERS_PERMISSION = 1n << 2n;
 const ADMINISTRATOR_PERMISSION = 1n << 3n;
+const MANAGE_CHANNELS_PERMISSION = 1n << 4n;
 const VIEW_CHANNEL_PERMISSION = 1n << 10n;
 const MUTE_MEMBERS_PERMISSION = 1n << 22n;
 const DEAFEN_MEMBERS_PERMISSION = 1n << 23n;
 const MOVE_MEMBERS_PERMISSION = 1n << 24n;
+const MANAGE_THREADS_PERMISSION = 1n << 34n;
 
 function permissionBits(value: string | number | null | undefined): bigint {
   try {
@@ -2121,7 +2142,42 @@ function currentUserChannelPermissionBits(
   const channel = channelById(state, channelId);
   const permissions = currentGuildPermissionBits(state, guildId, currentUserRoleIds);
   if (!channel || permissions === null) return null;
-  return applyGuildChannelOverwrites(permissions, channel, guildId, currentUserRoleIds, currentUserId);
+  // Discord threads inherit channel permissions from their parent and do not
+  // carry permission_overwrites in thread payloads.
+  const permissionChannel = isThreadChannel(channel) && channel.parentId
+    ? channelById(state, channel.parentId) ?? channel
+    : channel;
+  return applyGuildChannelOverwrites(permissions, permissionChannel, guildId, currentUserRoleIds, currentUserId);
+}
+
+/** Whether the authenticated user may delete this guild channel or thread. */
+export function canDeleteGuildChannel(state: AppState, guildId: string, channelId: string): boolean {
+  if (guildId === DIRECT_MESSAGES_GUILD_ID || guildId === WHATSAPP_GUILD_ID) return false;
+  const channel = channelById(state, channelId);
+  const currentUserId = state.auth.user?.id;
+  if (!channel || channel.guildId !== guildId || !currentUserId) return false;
+
+  const guild = state.sidebar.guilds.find((candidate) => candidate.id === guildId);
+  const currentUserIsOwner = guild?.owner === true || guild?.ownerId === currentUserId;
+  if (currentUserIsOwner) return true;
+  const currentUserRoleIds = state.roleIdsByGuildId[guildId]
+    ?? state.memberRoleIdsByGuildId[guildId]?.[currentUserId];
+  if (!currentUserRoleIds) return false;
+
+  const permissions = currentUserChannelPermissionBits(
+    state,
+    guildId,
+    channelId,
+    currentUserRoleIds,
+    currentUserId,
+  );
+  if (permissions === null) return false;
+  if ((permissions & ADMINISTRATOR_PERMISSION) !== 0n) return true;
+  if ((permissions & VIEW_CHANNEL_PERMISSION) === 0n) return false;
+  const requiredPermission = isThreadChannel(channel)
+    ? MANAGE_THREADS_PERMISSION
+    : MANAGE_CHANNELS_PERMISSION;
+  return (permissions & requiredPermission) !== 0n;
 }
 
 function highestGuildRolePosition(roles: readonly DiscordRole[], roleIds: readonly string[]): number {
@@ -2870,7 +2926,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onChannelCreate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
     onChannelUpdate: (channel) => handleGatewayChannelCreateOrUpdate(state, effects, channel),
-    onChannelDelete: (channelId, guildId) => handleGatewayChannelDelete(state, effects, channelId, guildId),
+    onChannelDelete: (channelId, guildId) => removeSessionChannel(state, effects, channelId, guildId),
     onThreadListSync: (event) => handleGatewayThreadListSync(state, effects, event),
     onThreadMembershipUpdate: (threadId, joined) => {
       if (setThreadJoinedState(state, threadId, joined)) effects.scheduleRender();

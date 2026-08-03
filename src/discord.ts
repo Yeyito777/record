@@ -1508,6 +1508,13 @@ export async function leaveGuild(token: string, guildId: string): Promise<void> 
   });
 }
 
+/** Delete a guild channel or thread. Discord chooses CHANNEL_DELETE vs THREAD_DELETE. */
+export async function deleteChannel(token: string, channelId: string): Promise<void> {
+  await requestJson<unknown>(token, `/channels/${channelId}`, {
+    method: "DELETE",
+  });
+}
+
 export async function setGuildMemberServerMute(
   token: string,
   guildId: string,

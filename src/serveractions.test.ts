@@ -73,7 +73,7 @@ describe("server actions modal", () => {
 
     expect(plain).toContain("Copy Invite");
     expect(plain).toContain("Mute Server");
-    expect(plain).toContain("You Sure?");
+    expect(plain).toContain("You sure?");
     expect(rendered).toContain(theme.error);
     expect(rendered).toContain("\x1b[3;29H");
   });
@@ -99,6 +99,57 @@ describe("server actions modal", () => {
       type: "action",
       action: "toggle_mute",
     });
+  });
+
+  test("puts permitted channel and thread deletion last in red and requires confirmation", () => {
+    const channel = createChannelActionModal(
+      "channel",
+      "guild-1",
+      "channel-1",
+      "general",
+      false,
+      { canDelete: true },
+    );
+    const thread = createChannelActionModal(
+      "channel",
+      "guild-1",
+      "thread-1",
+      "release discussion",
+      false,
+      { canDelete: true, isThread: true },
+    );
+
+    expect(channel.actions).toEqual(["toggle_mute", "delete_channel"]);
+    expect(thread.actions).toEqual(["toggle_mute", "delete_channel"]);
+    expect(thread.targetKind).toBe("thread");
+    expect(stripAnsi(renderServerActionModal(channel, 3, 29, 20, 80))).toContain("Delete Channel");
+    expect(stripAnsi(renderServerActionModal(thread, 3, 29, 20, 80))).toContain("Delete Thread");
+
+    thread.selection = "delete_channel";
+    expect(handleServerActionModalKey(thread, { type: "enter" })).toEqual({ type: "handled" });
+    expect(thread.confirmationAction).toBe("delete_channel");
+    const confirmation = renderServerActionModal(thread, 3, 29, 20, 80);
+    expect(stripAnsi(confirmation)).toContain("You sure?");
+    expect(confirmation).toContain(theme.error);
+    expect(handleServerActionModalKey(thread, { type: "enter" })).toEqual({
+      type: "action",
+      action: "delete_channel",
+    });
+  });
+
+  test("does not offer deletion without permission or on a category", () => {
+    const channel = createChannelActionModal("channel", "guild-1", "channel-1", "general");
+    const category = createChannelActionModal(
+      "category",
+      "guild-1",
+      "category-1",
+      "Chat",
+      false,
+      { canDelete: true },
+    );
+
+    expect(channel.actions).toEqual(["toggle_mute"]);
+    expect(category.actions).toEqual(["toggle_mute"]);
   });
 
   test("keeps the selected copy option in normal text color", () => {
@@ -219,7 +270,7 @@ describe("server actions modal", () => {
 
     expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "handled" });
     expect(modal.confirmationAction).toBe("kick_from_server");
-    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("You Sure?");
+    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("You sure?");
     expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "action", action: "kick_from_server" });
 
     handleServerActionModalKey(modal, { type: "char", char: "j" });

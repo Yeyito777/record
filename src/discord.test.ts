@@ -7,6 +7,7 @@ import {
   createChannelThread,
   createGuildInvite,
   createMessageThread,
+  deleteChannel,
   ackChannelMessage,
   fetchChannelMessagesAfter,
   fetchChannelMessages,
@@ -151,6 +152,21 @@ describe("discord helpers", () => {
 
     expect(requests).toEqual([{
       url: "https://discord.com/api/v9/channels/channel-1/messages/message-1",
+      method: "DELETE",
+    }]);
+  });
+
+  test("deletes a channel or thread through Discord REST", async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), method: init?.method ?? "GET" });
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await deleteChannel("token", "channel-1");
+
+    expect(requests).toEqual([{
+      url: "https://discord.com/api/v9/channels/channel-1",
       method: "DELETE",
     }]);
   });

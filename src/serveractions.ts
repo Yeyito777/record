@@ -11,6 +11,7 @@ import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, REMOTE_USER_VOLUME_STEP_PERCENT, no
 export type ServerAction =
   | "copy_invite"
   | "toggle_mute"
+  | "delete_channel"
   | "adjust_volume"
   | "leave_server"
   | "watch_stream"
@@ -19,7 +20,7 @@ export type ServerAction =
   | "kick_from_vc"
   | "kick_from_server"
   | "ban_from_server";
-export type ServerActionTargetKind = "guild" | "category" | "channel" | "voice_member";
+export type ServerActionTargetKind = "guild" | "category" | "channel" | "thread" | "voice_member";
 
 export interface ServerActionModalState {
   guildId: string;
@@ -64,6 +65,7 @@ export type ServerActionModalKeyResult =
   | { type: "action"; action: ServerAction };
 
 const DESTRUCTIVE_ACTIONS = new Set<ServerAction>([
+  "delete_channel",
   "leave_server",
   "kick_from_server",
   "ban_from_server",
@@ -95,19 +97,23 @@ export function createChannelActionModal(
   targetId: string,
   targetName: string,
   muted = false,
+  options: { canDelete?: boolean; isThread?: boolean } = {},
 ): ServerActionModalState {
+  const modalTargetKind = targetKind === "channel" && options.isThread ? "thread" : targetKind;
+  const actions: ServerAction[] = ["toggle_mute"];
+  if (targetKind === "channel" && options.canDelete) actions.push("delete_channel");
   return {
     guildId,
     guildName: targetName,
-    targetKind,
+    targetKind: modalTargetKind,
     targetId,
-    channelId: targetKind === "channel" ? targetId : null,
+    channelId: modalTargetKind === "channel" || modalTargetKind === "thread" ? targetId : null,
     muted,
     serverMuted: false,
     serverDeafened: false,
     watchingStream: false,
     volumePercent: null,
-    actions: ["toggle_mute"],
+    actions,
     selection: "toggle_mute",
     confirmationAction: null,
     busy: false,
@@ -188,16 +194,24 @@ export function handleServerActionModalKey(modal: ServerActionModalState, key: K
 }
 
 function actionLabel(modal: ServerActionModalState, action: ServerAction): string {
-  if (modal.confirmationAction === action && DESTRUCTIVE_ACTIONS.has(action)) return "You Sure?";
+  if (modal.confirmationAction === action && DESTRUCTIVE_ACTIONS.has(action)) return "You sure?";
 
   switch (action) {
     case "copy_invite":
       return "Copy Invite";
     case "toggle_mute": {
       if (modal.targetKind === "voice_member") return modal.muted ? "Unmute" : "Mute";
-      const muteTarget = modal.targetKind === "guild" ? "Server" : modal.targetKind === "category" ? "Category" : "Channel";
+      const muteTarget = modal.targetKind === "guild"
+        ? "Server"
+        : modal.targetKind === "category"
+          ? "Category"
+          : modal.targetKind === "thread"
+            ? "Thread"
+            : "Channel";
       return `${modal.muted ? "Unmute" : "Mute"} ${muteTarget}`;
     }
+    case "delete_channel":
+      return modal.targetKind === "thread" ? "Delete Thread" : "Delete Channel";
     case "adjust_volume": {
       const volumePercent = normalizeRemoteUserVolumePercent(modal.volumePercent ?? DEFAULT_REMOTE_USER_VOLUME_PERCENT);
       return `Volume ${volumePercent}%`;
