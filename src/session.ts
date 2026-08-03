@@ -776,6 +776,7 @@ function remoteCallParticipantIds(state: AppState, channelId: string): string[] 
     activeCallMessageParticipantIds(state, channelId),
     Array.from(knownCallParticipantsByChannelId.get(channelId) ?? []),
     Array.from(departedCallParticipantsByChannelId.get(channelId) ?? []),
+    Array.from(callVoiceStatesByChannelId.get(channelId)?.keys() ?? []),
   );
 }
 
@@ -784,6 +785,7 @@ export function resolveRemoteCallParticipantIds(
   messageParticipantIds: readonly string[],
   knownParticipantIds: readonly string[],
   departedParticipantIds: readonly string[] = [],
+  voiceStateParticipantIds: readonly string[] = [],
 ): string[] {
   const departed = new Set(departedParticipantIds.filter(Boolean));
   const participantIds = new Set<string>();
@@ -793,6 +795,7 @@ export function resolveRemoteCallParticipantIds(
   };
   for (const userId of messageParticipantIds) add(userId);
   for (const userId of knownParticipantIds) add(userId);
+  for (const userId of voiceStateParticipantIds) add(userId);
   return Array.from(participantIds);
 }
 
@@ -1439,6 +1442,14 @@ function rememberActiveCallParticipants(state: AppState, channelId: string, voic
   });
 }
 
+export function shouldRetainTrackedCallParticipant(
+  activeChannelId: string,
+  updateChannelId: string | null,
+  stillTrackedInActiveChannel: boolean,
+): boolean {
+  return updateChannelId !== activeChannelId && stillTrackedInActiveChannel;
+}
+
 function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): boolean {
   const activeSession = voiceCallController?.activeSession;
   const channelId = activeSession?.target.channelId;
@@ -1453,6 +1464,19 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
   }
   if (update.userId === state.auth.user?.id) {
     debugLog("call.participants.voice_state_ignored", { reason: "self", channelId, update });
+    return false;
+  }
+
+  // updateCallVoiceState() is the sole owner of the metadata map and protects
+  // a current session from delayed disconnects for an older session. If that
+  // map still contains this user after processing a departure, do not let this
+  // second roster projection undo the protection.
+  if (shouldRetainTrackedCallParticipant(
+    channelId,
+    update.channelId,
+    Boolean(callVoiceStatesByChannelId.get(channelId)?.has(update.userId)),
+  )) {
+    debugLog("call.participants.voice_state_ignored", { reason: "stale_disconnect", channelId, update });
     return false;
   }
 
@@ -1485,7 +1509,6 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
     // active-call message). Otherwise this set grows with unrelated guild voice
     // users and can hide them if they later join this call before we do.
     if (wasKnown || wasFromCallMessage) departed.add(update.userId);
-    callVoiceStatesByChannelId.get(channelId)?.delete(update.userId);
     clearSpeakingCallUser(update.userId);
     forgetCallJoinSound(channelId, update.userId);
     if (!wasDeparted && (wasKnown || wasFromCallMessage)) {
@@ -1511,6 +1534,84 @@ function handleCallVoiceStateUpdate(state: AppState, update: VoiceStateUpdate): 
   });
   if (changed) syncVoiceCallStatus(state, activeSession);
   return changed;
+}
+
+function handleVoiceGatewayParticipantsConnect(
+  state: AppState,
+  effects: SessionEffects,
+  session: VoiceCallSession,
+  userIds: readonly string[],
+): void {
+  const channelId = session.target.channelId;
+  const selfUserId = state.auth.user?.id;
+  const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const departed = departedCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const voiceStates = callVoiceStatesByChannelId.get(channelId) ?? new Map<string, TrackedCallVoiceState>();
+  const added: string[] = [];
+  let metadataAdded = false;
+  for (const userId of userIds) {
+    if (!userId || userId === selfUserId) continue;
+    const wasDeparted = departed.delete(userId);
+    if (!participants.has(userId) || wasDeparted) added.push(userId);
+    participants.add(userId);
+    if (!voiceStates.has(userId)) {
+      voiceStates.set(userId, {
+        selfMute: false,
+        selfDeaf: false,
+        streaming: false,
+        mute: false,
+        deaf: false,
+      });
+      metadataAdded = true;
+    }
+  }
+  knownCallParticipantsByChannelId.set(channelId, participants);
+  if (voiceStates.size > 0) callVoiceStatesByChannelId.set(channelId, voiceStates);
+  if (departed.size > 0) departedCallParticipantsByChannelId.set(channelId, departed);
+  else departedCallParticipantsByChannelId.delete(channelId);
+  if (added.length === 0 && !metadataAdded) return;
+
+  if (added.length > 0) {
+    stopOutboundCallRingtone(channelId, "participant_join_voice_gateway");
+    playCallJoinSoundForParticipants(channelId, added, "voice_gateway");
+  }
+  maybeRequestVoiceMemberHydration(state, session.target.guildId, channelId, added);
+  syncSidebarVoiceMembersForChannel(state, channelId);
+  debugLog("call.participants.voice_gateway_connect", { channelId, addedCount: added.length });
+  syncVoiceCallStatus(state, session);
+  effects.scheduleRender();
+}
+
+function handleVoiceGatewayParticipantDisconnect(
+  state: AppState,
+  effects: SessionEffects,
+  session: VoiceCallSession,
+  userId: string,
+): void {
+  if (!userId || userId === state.auth.user?.id) return;
+  const channelId = session.target.channelId;
+  const participants = knownCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const departed = departedCallParticipantsByChannelId.get(channelId) ?? new Set<string>();
+  const voiceStates = callVoiceStatesByChannelId.get(channelId);
+  const wasKnown = participants.delete(userId);
+  const wasFromCallMessage = activeCallMessageParticipantIds(state, channelId).includes(userId);
+  const hadVoiceState = Boolean(voiceStates?.has(userId));
+  const wasDeparted = departed.has(userId);
+  if (wasKnown || wasFromCallMessage || hadVoiceState) departed.add(userId);
+  knownCallParticipantsByChannelId.set(channelId, participants);
+  if (departed.size > 0) departedCallParticipantsByChannelId.set(channelId, departed);
+  else departedCallParticipantsByChannelId.delete(channelId);
+  voiceStates?.delete(userId);
+  if (voiceStates?.size === 0) callVoiceStatesByChannelId.delete(channelId);
+  syncSidebarVoiceMembersForChannel(state, channelId);
+  clearSpeakingCallUser(userId);
+  forgetCallJoinSound(channelId, userId);
+  if (wasDeparted || (!wasKnown && !wasFromCallMessage && !hadVoiceState)) return;
+
+  debugLog("call.participants.voice_gateway_disconnect", { channelId, userId });
+  playSoundEffect("callUserLeave");
+  syncVoiceCallStatus(state, session);
+  effects.scheduleRender();
 }
 
 export function handleVoiceStateUpdate(state: AppState, effects: SessionEffects, update: VoiceStateUpdate): void {
@@ -2676,6 +2777,11 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
     onSpeakingChange: (userId, speaking) => {
       const activeSession = voiceCallController?.activeSession;
       if (!activeSession || activeSession.state === "ended" || activeSession.state === "error") return;
+      if (speaking && userId !== state.auth.user?.id) {
+        // SPEAKING itself is active-session presence evidence and heals a roster
+        // if Discord omitted or reordered CLIENTS_CONNECT.
+        handleVoiceGatewayParticipantsConnect(state, effects, activeSession, [userId]);
+      }
       const changed = setCallUserSpeaking(state, effects, activeSession, userId, speaking);
       if (changed) {
         debugLog("call.widget.speaking", {
@@ -2685,6 +2791,16 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
         });
         effects.scheduleRender();
       }
+    },
+    onParticipantsConnect: (userIds) => {
+      const activeSession = voiceCallController?.activeSession;
+      if (!activeSession || activeSession.state === "ended" || activeSession.state === "error") return;
+      handleVoiceGatewayParticipantsConnect(state, effects, activeSession, userIds);
+    },
+    onParticipantDisconnect: (userId) => {
+      const activeSession = voiceCallController?.activeSession;
+      if (!activeSession || activeSession.state === "ended" || activeSession.state === "error") return;
+      handleVoiceGatewayParticipantDisconnect(state, effects, activeSession, userId);
     },
     onError: (error) => {
       setNotice(state, `Voice call: ${error.message}`, "warning", { chat: false });
@@ -2892,10 +3008,13 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       departedCallParticipantsByChannelId.delete(channelId);
       callVoiceStatesByChannelId.delete(channelId);
       delete state.sidebar.voiceMembersByChannelId[channelId];
-      clearAllSpeakingCallUsers();
       stopOutboundCallRingtone(channelId, "call_delete");
       markActiveCallEnded(state, channelId);
-      syncCallWidget(state, null);
+      const activeSession = voiceCallController?.activeSession;
+      if (activeSession?.target.channelId === channelId) {
+        clearAllSpeakingCallUsers();
+        voiceCallController?.leave("call_delete");
+      }
       effects.scheduleRender();
     },
     onStreamCreate: (event) => {

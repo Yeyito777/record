@@ -8,7 +8,7 @@ import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChanne
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -1869,6 +1869,21 @@ describe("session", () => {
       ["friend", "other", "newcomer"],
       [],
     )).toEqual(["friend", "other", "newcomer"]);
+
+    expect(resolveRemoteCallParticipantIds(
+      "self",
+      [],
+      [],
+      [],
+      ["self", "voice-state-user"],
+    )).toEqual(["voice-state-user"]);
+  });
+
+  test("retains a call participant when the canonical voice state rejects a stale departure", () => {
+    expect(shouldRetainTrackedCallParticipant("voice-1", null, true)).toBe(true);
+    expect(shouldRetainTrackedCallParticipant("voice-1", "other-voice", true)).toBe(true);
+    expect(shouldRetainTrackedCallParticipant("voice-1", null, false)).toBe(false);
+    expect(shouldRetainTrackedCallParticipant("voice-1", "voice-1", true)).toBe(false);
   });
 
   test("restores participants confirmed present by fresh voice-state data", () => {

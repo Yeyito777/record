@@ -67,6 +67,63 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("voice backend", () => {
+  test("surfaces active voice-gateway participant presence", () => {
+    const connected: string[][] = [];
+    const disconnected: string[] = [];
+    const speaking: Array<{ userId: string; speaking: boolean }> = [];
+    const gateway = new DiscordVoiceGatewayConnection({
+      guildId: "guild-1",
+      channelId: "voice-1",
+      userId: "me",
+      sessionId: "voice-session",
+      token: "voice-token",
+      endpoint: "voice.example",
+    }, new NoopVoiceAudioBackend(), {
+      onParticipantsConnect: (userIds) => connected.push(userIds),
+      onParticipantDisconnect: (userId) => disconnected.push(userId),
+      onSpeakingChange: (userId, isSpeaking) => speaking.push({ userId, speaking: isSpeaking }),
+    });
+
+    (gateway as unknown as { handleClientsConnect(data: unknown): void }).handleClientsConnect({
+      user_ids: ["me", "friend", "friend", "other"],
+    });
+    (gateway as unknown as { handleSpeaking(data: unknown): void }).handleSpeaking({
+      user_id: "late-friend",
+      ssrc: 1234,
+      speaking: 1,
+    });
+    (gateway as unknown as { handleSpeaking(data: unknown): void }).handleSpeaking({
+      user_id: "friend",
+      ssrc: 1235,
+      speaking: 1,
+    });
+    gateway.setRemoteUserMuted("muted-friend", true);
+    (gateway as unknown as { handleSpeaking(data: unknown): void }).handleSpeaking({
+      user_id: "muted-friend",
+      ssrc: 1236,
+      speaking: 1,
+    });
+    (gateway as unknown as { handleVideo(data: unknown): void }).handleVideo({
+      user_id: "video-friend",
+      audio_ssrc: 1237,
+    });
+    (gateway as unknown as { handleClientDisconnect(data: unknown): void }).handleClientDisconnect({ user_id: "friend" });
+
+    expect(connected).toEqual([
+      ["friend", "other"],
+      ["late-friend"],
+      ["friend"],
+      ["muted-friend"],
+      ["video-friend"],
+    ]);
+    expect(speaking).toEqual([
+      { userId: "late-friend", speaking: true },
+      { userId: "friend", speaking: true },
+      { userId: "muted-friend", speaking: false },
+    ]);
+    expect(disconnected).toEqual(["friend"]);
+  });
+
   test("builds Discord voice gateway identify payload with DAVE support", () => {
     const joinData = {
       guildId: "dm-1",
@@ -696,9 +753,11 @@ describe("voice backend", () => {
     expect(rings).toEqual([]);
   });
 
-  test("forwards speaking callbacks to voice gateway connections", async () => {
+  test("forwards participant and speaking callbacks from the active voice gateway", async () => {
     const signaling = new FakeSignaling();
     const speakingEvents: Array<{ userId: string; speaking: boolean }> = [];
+    const connectedEvents: string[][] = [];
+    const disconnectedEvents: string[] = [];
     const gateways: FakeGateway[] = [];
     const controller = new VoiceCallController({
       selfUserId: "me",
@@ -710,6 +769,8 @@ describe("voice backend", () => {
         return gateway;
       },
       onSpeakingChange: (userId, speaking) => speakingEvents.push({ userId, speaking }),
+      onParticipantsConnect: (userIds) => connectedEvents.push(userIds),
+      onParticipantDisconnect: (userId) => disconnectedEvents.push(userId),
     });
 
     const started = controller.startCall({ guildId: null, channelId: "dm-1", recipientIds: [], displayName: "Friend" });
@@ -729,10 +790,14 @@ describe("voice backend", () => {
 
     gateways[0]?.callbacks.onSpeakingChange?.("friend", true);
     gateways[0]?.callbacks.onSpeakingChange?.("friend", false);
+    gateways[0]?.callbacks.onParticipantsConnect?.(["friend", "other"]);
+    gateways[0]?.callbacks.onParticipantDisconnect?.("friend");
     expect(speakingEvents).toEqual([
       { userId: "friend", speaking: true },
       { userId: "friend", speaking: false },
     ]);
+    expect(connectedEvents).toEqual([["friend", "other"]]);
+    expect(disconnectedEvents).toEqual(["friend"]);
   });
 
   test("forwards local remote-user mute state to current and future voice gateways", async () => {

@@ -396,7 +396,15 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const userId = snowflakeToString(data.user_id);
     if (!userId) return;
     const ssrc = typeof data.ssrc === "number" ? data.ssrc : null;
-    if (userId !== this.data.userId) this.remoteUserIds.add(userId);
+    if (userId !== this.data.userId) {
+      this.remoteUserIds.add(userId);
+      // SPEAKING can precede or replace CLIENTS_CONNECT during reconnects. Emit
+      // presence even for a previously seen user so a delayed app-gateway
+      // disconnect cannot leave the visible roster regressed. This callback is
+      // also emitted for locally muted users; only the speaking callback below
+      // is suppressed by local mute.
+      this.callbacks.onParticipantsConnect?.([userId]);
+    }
     if (ssrc !== null) {
       const previous = this.rememberAuthoritativeAudioSsrc(ssrc, userId);
       if (previous !== userId) debugLog("voice.playback.ssrc_map", { ssrc, userId, source: "speaking" });
@@ -412,9 +420,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private handleClientsConnect(data: unknown): void {
     if (!isObject(data) || !Array.isArray(data.user_ids)) return;
     const userIds = data.user_ids.map(snowflakeToString).filter((userId): userId is string => Boolean(userId));
-    for (const userId of userIds) {
-      if (userId !== this.data.userId) this.remoteUserIds.add(userId);
-    }
+    const remoteUserIds = Array.from(new Set(userIds.filter((userId) => userId !== this.data.userId)));
+    for (const userId of remoteUserIds) this.remoteUserIds.add(userId);
+    // Emit the complete event rather than only newly seen users. The app-gateway
+    // roster can briefly regress on delayed VOICE_STATE_UPDATE disconnects, and
+    // this active-session snapshot is what repairs it.
+    if (remoteUserIds.length > 0) this.callbacks.onParticipantsConnect?.(remoteUserIds);
     this.dave.addKnownUsers(userIds);
   }
 
@@ -448,6 +459,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const disconnectedUserId = snowflakeToString(data.user_id);
     if (!disconnectedUserId) return;
     this.remoteUserIds.delete(disconnectedUserId);
+    if (disconnectedUserId !== this.data.userId) this.callbacks.onParticipantDisconnect?.(disconnectedUserId);
     this.dave.removeKnownUser(disconnectedUserId);
     for (const [ssrc, userId] of this.ssrcToUserId) {
       if (userId === disconnectedUserId) {
@@ -477,7 +489,10 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const userId = snowflakeToString(data.user_id);
     const audioSsrc = typeof data.audio_ssrc === "number" ? data.audio_ssrc : null;
     if (userId && audioSsrc !== null) this.rememberAuthoritativeAudioSsrc(audioSsrc, userId);
-    if (userId && userId !== this.data.userId) this.remoteUserIds.add(userId);
+    if (userId && userId !== this.data.userId) {
+      this.remoteUserIds.add(userId);
+      this.callbacks.onParticipantsConnect?.([userId]);
+    }
 
     const videoSsrc = typeof data.video_ssrc === "number" ? data.video_ssrc : null;
     const rtxSsrc = typeof data.rtx_ssrc === "number" ? data.rtx_ssrc : null;

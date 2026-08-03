@@ -5,7 +5,6 @@
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/Xrender.h>
 #include <cairo/cairo-xlib.h>
-#include <curl/curl.h>
 #include <errno.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <glib.h>
@@ -45,7 +44,6 @@ typedef struct {
 #define RGB_COLOR(r, g, b) { (r) / 255.0, (g) / 255.0, (b) / 255.0 }
 
 /* Whale theme colors from vimbrowser/docs/design.md. */
-static const ThemeColor COLOR_ACCENT = RGB_COLOR(0x1d, 0x9b, 0xf0);
 static const ThemeColor COLOR_USER_BG = RGB_COLOR(0x09, 0x0d, 0x35);
 static const ThemeColor COLOR_BORDER_FOCUSED = RGB_COLOR(0x1c, 0x94, 0xe5);
 static const ThemeColor COLOR_BORDER_UNFOCUSED = RGB_COLOR(0x55, 0x55, 0x55);
@@ -54,7 +52,7 @@ static const double USER_BG_IDLE_ALPHA = 0.5;
 typedef struct {
   char *id;
   char *name;
-  char *avatar_url;
+  char *avatar_path;
   char *text_color;
   bool speaking;
   bool muted;
@@ -90,7 +88,7 @@ static char *asset_dir = NULL;
 static void free_participant(Participant *p) {
   g_free(p->id);
   g_free(p->name);
-  g_free(p->avatar_url);
+  g_free(p->avatar_path);
   g_free(p->text_color);
   memset(p, 0, sizeof(*p));
 }
@@ -145,48 +143,6 @@ static char *hex_hash_path(const char *prefix, const char *value, const char *su
   char name[128];
   snprintf(name, sizeof(name), "%s-%016llx%s", prefix, (unsigned long long)fnv1a64(value ? value : ""), suffix);
   return path_join(cache_dir, name);
-}
-
-struct WriteFileCtx { FILE *file; };
-static size_t curl_write_file(void *ptr, size_t size, size_t nmemb, void *userdata) {
-  struct WriteFileCtx *ctx = (struct WriteFileCtx *)userdata;
-  return fwrite(ptr, size, nmemb, ctx->file);
-}
-
-static char *avatar_cache_path(const char *url) {
-  if (!url || !*url) return NULL;
-  char *path = hex_hash_path("avatar", url, ".img");
-  if (g_file_test(path, G_FILE_TEST_EXISTS)) return path;
-
-  char *tmp = g_strdup_printf("%s.tmp", path);
-  FILE *file = fopen(tmp, "wb");
-  if (!file) { g_free(tmp); g_free(path); return NULL; }
-
-  CURL *curl = curl_easy_init();
-  bool ok = false;
-  if (curl) {
-    struct WriteFileCtx ctx = { .file = file };
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "record-call-widget-c/0.1");
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_file);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
-    CURLcode res = curl_easy_perform(curl);
-    long status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-    ok = (res == CURLE_OK && (status == 0 || (status >= 200 && status < 300)));
-    curl_easy_cleanup(curl);
-  }
-  fclose(file);
-  if (ok && rename(tmp, path) == 0) {
-    g_free(tmp);
-    return path;
-  }
-  unlink(tmp);
-  g_free(tmp);
-  g_free(path);
-  return NULL;
 }
 
 static char *status_icon_path(const char *name) {
@@ -480,8 +436,29 @@ static cairo_surface_t *surface_from_pixbuf(GdkPixbuf *pixbuf) {
 }
 
 static void draw_placeholder(cairo_t *cr, const Participant *p, double x, double y, double size) {
-  (void)p;
-  fill_rect(cr, x, y, size, size, COLOR_ACCENT);
+  uint64_t hash = fnv1a64(p->id && *p->id ? p->id : (p->name ? p->name : "?"));
+  ThemeColor background = {
+    .r = 0.20 + ((hash >> 0) & 0xff) / 255.0 * 0.22,
+    .g = 0.22 + ((hash >> 8) & 0xff) / 255.0 * 0.22,
+    .b = 0.28 + ((hash >> 16) & 0xff) / 255.0 * 0.24,
+  };
+  fill_rect(cr, x, y, size, size, background);
+
+  const char *label = p->name && *p->name ? p->name : "?";
+  const char *next = g_utf8_next_char(label);
+  char *initial = g_utf8_strup(label, (gssize)(next - label));
+  PangoLayout *layout = pango_cairo_create_layout(cr);
+  PangoFontDescription *font = pango_font_description_from_string("Sans Bold 14");
+  pango_layout_set_font_description(layout, font);
+  pango_layout_set_text(layout, initial, -1);
+  int tw = 0, th = 0;
+  pango_layout_get_pixel_size(layout, &tw, &th);
+  cairo_move_to(cr, x + (size - tw) / 2.0, y + (size - th) / 2.0 - 1.0);
+  cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+  pango_cairo_show_layout(cr, layout);
+  pango_font_description_free(font);
+  g_object_unref(layout);
+  g_free(initial);
 }
 
 static void draw_avatar(cairo_t *cr, const Participant *p, double x, double y) {
@@ -489,11 +466,15 @@ static void draw_avatar(cairo_t *cr, const Participant *p, double x, double y) {
   double image_x = x + AVATAR_BORDER_WIDTH;
   double image_y = y + AVATAR_BORDER_WIDTH;
 
-  char *cached = avatar_cache_path(p->avatar_url);
   GError *error = NULL;
-  GdkPixbuf *pixbuf = cached ? gdk_pixbuf_new_from_file_at_scale(cached, AVATAR_SIZE, AVATAR_SIZE, TRUE, &error) : NULL;
-  if (error) g_error_free(error);
-  g_free(cached);
+  GdkPixbuf *pixbuf = p->avatar_path && *p->avatar_path
+    ? gdk_pixbuf_new_from_file_at_scale(p->avatar_path, AVATAR_SIZE, AVATAR_SIZE, TRUE, &error)
+    : NULL;
+  if (error) {
+    fprintf(stderr, "record-call-widget-c: avatar decode failed: %s\n", error->message);
+    if (p->avatar_path && *p->avatar_path) unlink(p->avatar_path);
+    g_error_free(error);
+  }
 
   cairo_save(cr);
   cairo_rectangle(cr, image_x, image_y, AVATAR_SIZE, AVATAR_SIZE);
@@ -684,12 +665,12 @@ static void handle_update(json_object *root) {
     Participant *p = &participants[participant_count++];
     const char *id = json_string_or_null(item, "id");
     const char *name = json_string_or_null(item, "name");
-    const char *avatar = json_string_or_null(item, "avatarUrl");
+    const char *avatar_path = json_string_or_null(item, "avatarPath");
     const char *text_color = json_string_or_null(item, "textColor");
     if (!text_color) text_color = json_string_or_null(item, "roleColor");
     p->id = g_strdup(id ? id : "");
     p->name = g_strdup((name && *name) ? name : (id && *id ? id : "?"));
-    p->avatar_url = g_strdup(avatar ? avatar : "");
+    p->avatar_path = g_strdup(avatar_path ? avatar_path : "");
     p->text_color = g_strdup(text_color ? text_color : THEME_TEXT_COLOR);
     p->speaking = json_get_bool(item, "speaking");
     p->muted = json_get_bool(item, "muted");
@@ -716,7 +697,6 @@ static bool handle_line(const char *line) {
 int main(int argc, char **argv) {
   init_asset_dir(argc > 0 ? argv[0] : NULL);
   ensure_cache_dir();
-  curl_global_init(CURL_GLOBAL_DEFAULT);
 
   char *line = NULL;
   size_t cap = 0;
@@ -732,6 +712,5 @@ int main(int argc, char **argv) {
   if (overlay.display) XCloseDisplay(overlay.display);
   g_free(cache_dir);
   g_free(asset_dir);
-  curl_global_cleanup();
   return 0;
 }

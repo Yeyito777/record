@@ -283,7 +283,15 @@ export class VoiceCallController {
     return {
       onError: this.options.onError,
       onClose: (error) => this.handleGatewayClose(session, error),
-      onSpeakingChange: this.options.onSpeakingChange,
+      onSpeakingChange: (userId, speaking) => {
+        if (this.active === session) this.options.onSpeakingChange?.(userId, speaking);
+      },
+      onParticipantsConnect: (userIds) => {
+        if (this.active === session) this.options.onParticipantsConnect?.(userIds);
+      },
+      onParticipantDisconnect: (userId) => {
+        if (this.active === session) this.options.onParticipantDisconnect?.(userId);
+      },
     };
   }
 

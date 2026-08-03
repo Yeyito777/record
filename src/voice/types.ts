@@ -115,6 +115,10 @@ export interface VoiceGatewayConnectionCallbacks {
   onError?: (error: Error) => void;
   onClose?: (error: VoiceGatewayCloseError) => void;
   onSpeakingChange?: (userId: string, speaking: boolean) => void;
+  /** Remote users confirmed present by the active voice-gateway session. */
+  onParticipantsConnect?: (userIds: string[]) => void;
+  /** A remote user confirmed departed by the active voice-gateway session. */
+  onParticipantDisconnect?: (userId: string) => void;
   onIncomingRtp?: (packet: IncomingVoiceRtpPacket) => void;
 }
 
@@ -151,6 +155,8 @@ export interface VoiceCallControllerOptions {
   recoveryAttempts?: number;
   onStateChange?: (session: VoiceCallSession | null) => void;
   onSpeakingChange?: (userId: string, speaking: boolean) => void;
+  onParticipantsConnect?: (userIds: string[]) => void;
+  onParticipantDisconnect?: (userId: string) => void;
   onError?: (error: Error) => void;
 }
 
