@@ -444,11 +444,13 @@ describe("submitCurrentBuffer", () => {
     });
     expect(requestedBody).toBeInstanceOf(FormData);
     const form = requestedBody as unknown as FormData;
-    expect(JSON.parse(String(form.get("payload_json")))).toEqual({
+    const payload = JSON.parse(String(form.get("payload_json")));
+    expect(payload).toMatchObject({
       content: "",
       tts: false,
       attachments: [{ id: "0", filename: "note.txt" }],
     });
+    expect(payload.nonce).toMatch(/^\d+$/);
     expect(form.get("files[0]")).toBeInstanceOf(Blob);
   });
 

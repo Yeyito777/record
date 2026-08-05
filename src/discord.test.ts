@@ -1355,6 +1355,7 @@ describe("discord helpers", () => {
       return new Response(JSON.stringify({
         id: "message-2",
         channel_id: "channel-1",
+        nonce: 123456789,
         type: 0,
         content: "caption",
         timestamp: "2026-01-01T12:00:00.000Z",
@@ -1366,6 +1367,7 @@ describe("discord helpers", () => {
     }) as unknown as typeof fetch;
 
     const message = await sendChannelMessage("token", "channel-1", "caption", {
+      nonce: "123456789",
       uploads: [{ filename: "image-1.png", mediaType: "image/png", base64: Buffer.from("test").toString("base64") }],
     });
 
@@ -1375,9 +1377,11 @@ describe("discord helpers", () => {
     expect(JSON.parse(String(form.get("payload_json")))).toEqual({
       content: "caption",
       tts: false,
+      nonce: "123456789",
       attachments: [{ id: "0", filename: "image-1.png" }],
     });
     expect(form.get("files[0]")).toBeInstanceOf(Blob);
+    expect(message.nonce).toBe("123456789");
     expect(message.attachments[0]?.filename).toBe("image-1.png");
   });
 

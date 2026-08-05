@@ -989,7 +989,11 @@ describe("session", () => {
   });
 
   test("sending images appends local attachments and clears pending images", () => {
-    globalThis.fetch = (async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    let requestedBody: BodyInit | null | undefined = null;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = init?.body;
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
     const state = createInitialState("token-1", "/tmp/record-config.json");
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
     state.channelList.guildId = "guild-1";
@@ -1006,6 +1010,11 @@ describe("session", () => {
       localStatus: "pending",
       attachments: [{ filename: "image-1.png", contentType: "image/png", size: 4 }],
     });
+    const pendingNonce = state.timeline.messages[0]?.nonce;
+    expect(pendingNonce).toMatch(/^\d+$/);
+    expect(requestedBody).toBeInstanceOf(FormData);
+    const payload = JSON.parse(String((requestedBody as unknown as FormData).get("payload_json")));
+    expect(payload.nonce).toBe(pendingNonce);
   });
 
   test("uploading a local file appends a pending attachment message", async () => {

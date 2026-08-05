@@ -2,7 +2,7 @@
  * Message timeline state and rendering helpers.
  */
 
-import { applyDiscordMessagePatch, isCompactSystemMessageType, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
+import { applyDiscordMessagePatch, isCompactSystemMessageType, isPendingLocalMessageEcho, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { summarizeDisplayMessageParts } from "./messageparts";
@@ -216,24 +216,7 @@ export function pushTimelineSystemMessage(timeline: TimelineState, text: string)
 
 function findMatchingPendingLocalMessageIndex(timeline: TimelineState, message: DiscordMessage): number {
   if (message.localStatus) return -1;
-  return timeline.messages.findIndex((existing) => existing.localStatus === "pending"
-    && existing.channelId === message.channelId
-    && existing.author.id === message.author.id
-    && (existing.content === message.content || existing.localSendContent === message.content)
-    && attachmentsMatchPendingLocalEcho(existing, message));
-}
-
-function attachmentsMatchPendingLocalEcho(pending: DiscordMessage, message: DiscordMessage): boolean {
-  if (pending.attachments.length !== message.attachments.length) return false;
-  if (pending.attachments.length === 0) return true;
-
-  return pending.attachments.every((attachment, index) => {
-    const echoed = message.attachments[index];
-    return Boolean(echoed)
-      && attachment.filename === echoed.filename
-      && attachment.size === echoed.size
-      && (attachment.contentType === null || echoed.contentType === null || attachment.contentType === echoed.contentType);
-  });
+  return timeline.messages.findIndex((existing) => isPendingLocalMessageEcho(existing, message));
 }
 
 export function replaceTimelineMessage(timeline: TimelineState, localMessageId: string, message: DiscordMessage): void {

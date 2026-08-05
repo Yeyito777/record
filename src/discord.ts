@@ -281,6 +281,7 @@ export interface DiscordMessageResponse {
   id: string;
   channel_id: string;
   guild_id?: string;
+  nonce?: string | number | null;
   content: string;
   timestamp: string;
   edited_timestamp: string | null;
@@ -468,6 +469,8 @@ export interface DiscordMessage {
   id: string;
   channelId: string;
   guildId?: string | null;
+  /** Client-generated nonce used to correlate an optimistic send with its gateway echo. */
+  nonce?: string | null;
   type: number;
   content: string;
   mentionEveryone: boolean;
@@ -508,6 +511,7 @@ export interface DiscordMessagePatch {
   /** Internal/local patch; false for gateway patches where undefined means absent. */
   local?: boolean;
   guildId?: string | null;
+  nonce?: string | null;
   type?: number;
   content?: string;
   mentionEveryone?: boolean;
@@ -527,6 +531,27 @@ export interface DiscordMessagePatch {
   threadId?: string | null;
   reactions?: DiscordMessageReaction[];
   reactionUpdate?: DiscordMessageReactionUpdate;
+}
+
+/** Match Discord's canonical create event to the optimistic message it acknowledges. */
+export function isPendingLocalMessageEcho(pending: DiscordMessage, message: DiscordMessage): boolean {
+  if (pending.localStatus !== "pending" || message.localStatus) return false;
+  if (pending.channelId !== message.channelId || pending.author.id !== message.author.id) return false;
+
+  // Discord echoes the nonce from Create Message in MESSAGE_CREATE. When both
+  // sides have one, it is authoritative: attachment names/sizes may be changed
+  // by Discord while it processes an upload.
+  if (pending.nonce && message.nonce) return pending.nonce === message.nonce;
+
+  if (pending.content !== message.content && pending.localSendContent !== message.content) return false;
+  if (pending.attachments.length !== message.attachments.length) return false;
+  return pending.attachments.every((attachment, index) => {
+    const echoed = message.attachments[index];
+    return Boolean(echoed)
+      && attachment.filename === echoed.filename
+      && attachment.size === echoed.size
+      && (attachment.contentType === null || echoed.contentType === null || attachment.contentType === echoed.contentType);
+  });
 }
 
 /** Repair display-only message fields persisted by older Record builds. */
@@ -1619,6 +1644,11 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     id: message.id,
     channelId: message.channel_id,
     guildId: message.guild_id,
+    nonce: message.nonce === undefined
+      ? undefined
+      : message.nonce === null
+        ? null
+        : String(message.nonce),
     type: message.type,
     content: mapDiscordMessageContent(message),
     mentionEveryone: message.mention_everyone,
@@ -1682,6 +1712,7 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
   return {
     ...message,
     guildId: patch.guildId !== undefined ? patch.guildId : message.guildId,
+    nonce: patch.nonce !== undefined ? patch.nonce : message.nonce,
     type: patch.type ?? message.type,
     content: patch.content ?? message.content,
     mentionEveryone: patch.mentionEveryone ?? message.mentionEveryone,
@@ -1717,6 +1748,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     id: patch.id,
     channelId: patch.channelId,
     guildId: patch.guildId ?? null,
+    nonce: patch.nonce ?? null,
     type: patch.type ?? 0,
     content: patch.content ?? "",
     mentionEveryone: patch.mentionEveryone ?? false,
@@ -1812,6 +1844,30 @@ export interface SendMessageOptions {
   reply?: SendMessageReplyOptions | null;
   uploads?: SendMessageUpload[];
   flags?: number;
+  nonce?: string;
+}
+
+const DISCORD_EPOCH_MS = 1_420_070_400_000;
+const MAX_NONCE_SEQUENCE = 0x3fffff;
+let lastMessageNonceTimestamp = -1;
+let messageNonceSequence = 0;
+
+/** Generate a unique Discord-snowflake-shaped nonce for a local message send. */
+export function generateMessageNonce(nowMs = Date.now()): string {
+  let timestamp = Math.max(DISCORD_EPOCH_MS, Math.floor(nowMs));
+  if (timestamp > lastMessageNonceTimestamp) {
+    lastMessageNonceTimestamp = timestamp;
+    messageNonceSequence = 0;
+  } else {
+    timestamp = lastMessageNonceTimestamp;
+    messageNonceSequence += 1;
+    if (messageNonceSequence > MAX_NONCE_SEQUENCE) {
+      lastMessageNonceTimestamp += 1;
+      timestamp = lastMessageNonceTimestamp;
+      messageNonceSequence = 0;
+    }
+  }
+  return ((BigInt(timestamp - DISCORD_EPOCH_MS) << 22n) | BigInt(messageNonceSequence)).toString();
 }
 
 export async function sendChannelMessage(
@@ -1925,6 +1981,7 @@ export async function leaveThread(token: string, threadId: string): Promise<void
 
 function buildSendMessagePayload(content: string, options: SendMessageOptions): Record<string, unknown> {
   const body: Record<string, unknown> = { content, tts: false };
+  if (options.nonce) body.nonce = options.nonce;
   if (options.flags !== undefined) body.flags = options.flags;
   const reply = options.reply;
   if (reply) {

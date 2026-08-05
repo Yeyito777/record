@@ -2,7 +2,7 @@
  * Per-channel message cache fed by REST and gateway events.
  */
 
-import { applyDiscordMessagePatch, type DiscordMessage, type DiscordMessagePatch } from "./discord";
+import { applyDiscordMessagePatch, isPendingLocalMessageEcho, type DiscordMessage, type DiscordMessagePatch } from "./discord";
 
 export interface CachedChannelMessages {
   channelId: string;
@@ -199,22 +199,5 @@ function snowflakeToBigInt(id: string): bigint | null {
 
 function findMatchingPendingLocalMessageIndex(messages: readonly DiscordMessage[], message: DiscordMessage): number {
   if (message.localStatus) return -1;
-  return messages.findIndex((existing) => existing.localStatus === "pending"
-    && existing.channelId === message.channelId
-    && existing.author.id === message.author.id
-    && (existing.content === message.content || existing.localSendContent === message.content)
-    && attachmentsMatchPendingLocalEcho(existing, message));
-}
-
-function attachmentsMatchPendingLocalEcho(pending: DiscordMessage, message: DiscordMessage): boolean {
-  if (pending.attachments.length !== message.attachments.length) return false;
-  if (pending.attachments.length === 0) return true;
-
-  return pending.attachments.every((attachment, index) => {
-    const echoed = message.attachments[index];
-    return Boolean(echoed)
-      && attachment.filename === echoed.filename
-      && attachment.size === echoed.size
-      && (attachment.contentType === null || echoed.contentType === null || attachment.contentType === echoed.contentType);
-  });
+  return messages.findIndex((existing) => isPendingLocalMessageEcho(existing, message));
 }

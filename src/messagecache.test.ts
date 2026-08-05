@@ -71,4 +71,20 @@ describe("message cache", () => {
     expect(cache["channel-1"]?.messages.map((entry) => entry.id)).toEqual(["2"]);
     expect(cache["channel-1"]?.messages[0]?.localStatus).toBeUndefined();
   });
+
+  test("canonical upload echoes replace pending messages by nonce despite changed attachment metadata", () => {
+    const cache: ChannelMessageCache = {};
+    upsertCachedChannelMessage(cache, message("local:1", "caption", {
+      localStatus: "pending",
+      nonce: "123456789",
+      attachments: [{ id: "local:0", filename: "image-1.png", contentType: "image/png", size: 1536, url: "" }],
+    }));
+    upsertCachedChannelMessage(cache, message("2", "caption", {
+      nonce: "123456789",
+      attachments: [{ id: "attachment-1", filename: "image.png", contentType: "image/png", size: 1492, url: "https://cdn.example/image.png" }],
+    }));
+
+    expect(cache["channel-1"]?.messages.map((entry) => entry.id)).toEqual(["2"]);
+    expect(cache["channel-1"]?.messages[0]?.attachments[0]?.filename).toBe("image.png");
+  });
 });

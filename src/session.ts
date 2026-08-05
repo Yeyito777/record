@@ -35,6 +35,7 @@ import {
   fetchCurrentUserGuildRoleIds,
   fetchGuildRoles,
   fetchGuilds,
+  generateMessageNonce,
   sendChannelMessage,
   setDirectMessageChannelMuted,
   setGuildChannelMuted,
@@ -4301,7 +4302,8 @@ export function sendCurrentChannelMessage(
   }
 
   const viewer = state.auth.user;
-  const localMessageId = `local:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const messageNonce = generateMessageNonce();
+  const localMessageId = `local:${messageNonce}`;
   const replyTarget = state.replyTarget?.channelId === channelId ? state.replyTarget : null;
   const replyOptions = activeReplyForChannel(state, channelId);
   const replyPreview = localReplyPreview(state, channelId);
@@ -4326,6 +4328,7 @@ export function sendCurrentChannelMessage(
     id: localMessageId,
     channelId,
     guildId: state.channelList.activeChannel?.guildId ?? null,
+    nonce: messageNonce,
     type: 0,
     content,
     mentionEveryone: false,
@@ -4362,7 +4365,12 @@ export function sendCurrentChannelMessage(
         await joinThread(token, channelId);
         setThreadJoinedState(state, channelId, true);
       }
-      const sentMessage = await sendChannelMessage(token, channelId, sendContent, { reply: replyOptions, uploads, flags: options.messageFlags });
+      const sentMessage = await sendChannelMessage(token, channelId, sendContent, {
+        reply: replyOptions,
+        uploads,
+        flags: options.messageFlags,
+        nonce: messageNonce,
+      });
       const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, localMessageId, message);
