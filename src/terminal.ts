@@ -10,6 +10,11 @@ export const hideCursor = `${ESC}?25l`;
 export const showCursor = `${ESC}?25h`;
 export const enableBracketedPaste = `${ESC}?2004h`;
 export const disableBracketedPaste = `${ESC}?2004l`;
+// Kitty OSC 5522 companion mode: terminal paste actions report available MIME
+// types so applications can request images and other non-text clipboard data.
+export const queryClipboardPasteEvents = `${ESC}?5522$p`;
+export const enableClipboardPasteEvents = `${ESC}?5522h`;
+export const disableClipboardPasteEvents = `${ESC}?5522l`;
 // Push kitty keyboard mode: disambiguate + report event types + all keys + associated text.
 // The event-type flag is what lets hold-to-talk see space releases.
 export const enableKittyKeyboard = `${ESC}>27u`;

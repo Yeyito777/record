@@ -29,10 +29,11 @@ import {
 } from "./historycursor";
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { setChannelList } from "./channels";
-import { imageExtension, readClipboardImage } from "./imageclipboard";
+import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent } from "./input";
+import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { resolveAction, resolveNavigationAction } from "./keybinds";
 import {
   jumpMemberListSelectionToEdge,
@@ -128,13 +129,16 @@ import {
 } from "./state";
 import {
   disableBracketedPaste,
+  disableClipboardPasteEvents,
   disableKittyKeyboard,
   enterAlt,
   enableBracketedPaste,
+  enableClipboardPasteEvents,
   enableKittyKeyboard,
   hideCursor,
   leaveAlt,
   resetCursorColor,
+  queryClipboardPasteEvents,
   setStGraphicsCells,
   setCursorColor,
   showCursor,
@@ -210,6 +214,8 @@ let terminalReady = false;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let loadingTimer: ReturnType<typeof setInterval> | null = null;
 let terminalGraphicsCells = false;
+let terminalClipboardClient: TerminalClipboardClient | null = null;
+let terminalControlBuffer: TerminalControlBuffer | null = null;
 
 function syncTerminalGraphicsCells(): void {
   const modal = state.whatsapp.loginModal;
@@ -776,16 +782,18 @@ function summarizeReplyMessage(message: DiscordMessage): string {
   return summarizeDiscordMessageReplyPreview(message).slice(0, 160);
 }
 
-function pasteImageFromClipboard(): void {
-  const image = readClipboardImage();
-  if (!image) return;
-
+function attachClipboardImage(image: ClipboardImageAttachment): void {
   const index = state.pendingImages.length + 1;
   const filename = `image-${index}.${imageExtension(image.mediaType)}`;
   state.pendingImages.push({ ...image, filename });
   setNotice(state, "", "muted");
   focusPrompt(state);
   scheduleRender();
+}
+
+function pasteImageFromClipboard(): void {
+  const image = readClipboardImage();
+  if (image) attachClipboardImage(image);
 }
 
 function handlePromptBackspacePrefixAction(): boolean {
@@ -1863,6 +1871,8 @@ function setupTerminal(): void {
     enterAlt
       + hideCursor
       + enableBracketedPaste
+      + queryClipboardPasteEvents
+      + enableClipboardPasteEvents
       + enableKittyKeyboard
       + (theme.cursorColor ? setCursorColor(theme.cursorColor) : ""),
   );
@@ -1877,6 +1887,7 @@ function restoreTerminal(): void {
   process.stdout.write(
     (terminalGraphicsCells ? setStGraphicsCells(false) : "")
       + disableKittyKeyboard
+      + disableClipboardPasteEvents
       + disableBracketedPaste
       + showCursor
       + resetCursorColor
@@ -1895,6 +1906,10 @@ function cleanup(): void {
   }
   stopLoadingAnimation();
   voiceMessageController?.cleanup();
+  terminalControlBuffer?.dispose();
+  terminalControlBuffer = null;
+  terminalClipboardClient?.dispose();
+  terminalClipboardClient = null;
   disconnectMemberListGateway();
   disconnectAppGateway();
   flushDataCacheSync();
@@ -1933,6 +1948,22 @@ const whatsAppController = new WhatsAppController(state, scheduleRender);
 async function main(): Promise<void> {
   setupTerminal();
 
+  const pasteBuffer = new PasteBuffer(processInput);
+  terminalClipboardClient = new TerminalClipboardClient({
+    write: (sequence) => process.stdout.write(sequence),
+    onImage: attachClipboardImage,
+    onText: (text) => handleKey({ type: "paste", text }),
+    onError: (message) => debugLog("terminal.clipboard.error", { message }),
+  });
+  terminalControlBuffer = new TerminalControlBuffer(
+    (data) => {
+      const ready = pasteBuffer.feed(Buffer.from(data));
+      if (ready !== null) processInput(ready);
+    },
+    (sequence) => terminalClipboardClient?.handleControlSequence(sequence),
+  );
+  process.stdin.on("data", (data: Buffer) => terminalControlBuffer?.feed(data));
+
   process.stdout.on("resize", () => {
     state.cols = process.stdout.columns || 80;
     state.rows = process.stdout.rows || 24;
@@ -1949,13 +1980,6 @@ async function main(): Promise<void> {
   render(state);
 
   whatsAppController.restoreSavedSession();
-
-  const pasteBuffer = new PasteBuffer(processInput);
-
-  process.stdin.on("data", (data: Buffer) => {
-    const ready = pasteBuffer.feed(data);
-    if (ready !== null) processInput(ready);
-  });
 }
 
 function processInput(input: string): void {
