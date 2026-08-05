@@ -906,6 +906,11 @@ function shouldGroupMessages(previous: DiscordMessage, message: DiscordMessage):
   if (previous.channelId !== message.channelId) return false;
   if (previous.author.id !== message.author.id) return false;
   if (message.reply) return false;
+  // Keep uploads self-contained. Optimistic uploads use the local clock while
+  // Discord timestamps the canonical response after the upload completes, so
+  // grouping them can cross the five-minute boundary and briefly render only
+  // the attachment row before the authored message replaces it.
+  if (message.attachments.length > 0) return false;
   if (isCompactSystemMessageType(previous.type) || isCompactSystemMessageType(message.type)) return false;
   if (previous.call || message.call || message.type === 3 || previous.type === 3) return false;
   if (previous.localStatus === "failed" || message.localStatus === "failed") return false;

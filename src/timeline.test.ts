@@ -677,6 +677,60 @@ describe("timeline rendering", () => {
     expect(timeline.messages[0]?.localStatus).toBeUndefined();
   });
 
+  test("keeps optimistic image uploads self-contained across the grouping time boundary", () => {
+    const timeline = createTimelineState();
+    const previousTimestamp = Date.UTC(2026, 0, 1, 12, 0, 30);
+    const pendingTimestamp = Date.UTC(2026, 0, 1, 12, 5, 29);
+    const echoedTimestamp = Date.UTC(2026, 0, 1, 12, 5, 31);
+    const previous = message("message-1", "previous", {
+      authorId: "viewer",
+      authorName: "Paramount",
+      timestamp: previousTimestamp,
+    });
+    const pending = message("local-1", "caption", {
+      authorId: "viewer",
+      authorName: "Paramount",
+      timestamp: pendingTimestamp,
+    });
+    pending.localStatus = "pending";
+    pending.attachments = [{ id: "local:0", filename: "image-1.png", contentType: "image/png", size: 1536, url: "" }];
+    setTimelineMessages(timeline, "channel-1", [previous, pending]);
+
+    const beforeEcho = renderTimelineLines(
+      timeline,
+      80,
+      20,
+      { text: "", tone: "muted", loading: false },
+      0,
+    ).allLines.map(stripAnsi);
+
+    const echoed = message("real-1", "caption", {
+      authorId: "viewer",
+      authorName: "Paramount",
+      timestamp: echoedTimestamp,
+    });
+    echoed.attachments = [{ id: "attachment-1", filename: "image-1.png", contentType: "image/png", size: 1536, url: "https://cdn.example/image-1.png" }];
+    appendTimelineMessage(timeline, echoed);
+
+    const afterEcho = renderTimelineLines(
+      timeline,
+      80,
+      20,
+      { text: "", tone: "muted", loading: false },
+      0,
+    ).allLines.map(stripAnsi);
+
+    expect(beforeEcho).toEqual(afterEcho);
+    expect(beforeEcho).toEqual([
+      `Paramount ${expectedLocalTime(previousTimestamp)}`,
+      "previous",
+      "",
+      `Paramount ${expectedLocalTime(pendingTimestamp)}`,
+      "caption",
+      "📎 image-1.png • 1.5 KB",
+    ]);
+  });
+
   test("groups pending local messages with previous sent messages to avoid flicker", () => {
     const timeline = createTimelineState();
     const pending = message("local-2", "second", {
