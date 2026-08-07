@@ -1179,11 +1179,10 @@ function mapGuildThreadsAsListSync(data: unknown, guildId: string): ThreadListSy
     .map((thread) => {
       if (!isObject(thread)) return null;
       const response = thread as unknown as DiscordChannelResponse;
-      // Threads embedded in READY/GUILD_CREATE are the current user's joined
-      // threads. Some gateway payloads omit the nested member object, but their
-      // presence in this list is itself authoritative membership information.
+      // GUILD_CREATE can include every active thread the current user may view.
+      // Only a nested member object means that the current user joined it; the
+      // Thread Member object's id/user_id are intentionally omitted here.
       return mapGuildChannel(response, guildId, {
-        threadMember: response.member ?? { id: response.id },
         threadMembershipKnown: true,
       });
     })

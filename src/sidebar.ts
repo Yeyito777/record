@@ -128,6 +128,8 @@ export interface SidebarVoiceMember {
 
 export interface SidebarVisibilityOptions {
   showHiddenChannels?: boolean;
+  /** Authenticated Discord user used to retain threads they created. */
+  currentUserId?: string | null;
 }
 
 export interface SidebarState {
@@ -1299,6 +1301,24 @@ function pushPrivateConversationChannels(
   }
 }
 
+/**
+ * Discord syncs every active thread the user can view, while its Thread Member
+ * payload identifies only threads the user has joined. Keep the sidebar scoped
+ * to those joined threads, plus threads created by the authenticated user.
+ */
+export function isSidebarThreadRelevant(channel: DiscordChannel, currentUserId?: string | null): boolean {
+  if (!isThreadChannel(channel)) return true;
+  return channel.thread?.joined === true
+    || Boolean(currentUserId && channel.thread?.ownerId === currentUserId);
+}
+
+function isVisibleSidebarChannelRow(channel: DiscordChannel, options: SidebarVisibilityOptions): boolean {
+  return channel.type !== 4
+    && isSidebarThreadRelevant(channel, options.currentUserId)
+    && (!isThreadChannel(channel) || !channel.thread?.archived)
+    && (options.showHiddenChannels || !channel.hidden);
+}
+
 function buildSidebarSearchEntries(
   sidebar: SidebarState,
   channels: DiscordChannel[],
@@ -1324,9 +1344,7 @@ function buildSidebarSearchEntries(
     const guildMatched = guildMatchesQuery(guild, query);
     const guildChannels = allChannels.filter((channel) => channel.guildId === guild.id);
     const visibleGuildChannels = guildChannels
-      .filter((channel) => channel.type !== 4
-        && (!isThreadChannel(channel) || !channel.thread?.archived)
-        && (options.showHiddenChannels || !channel.hidden));
+      .filter((channel) => isVisibleSidebarChannelRow(channel, options));
     const matchingChannelRows = visibleGuildChannels.filter((channel) => channelMatchesQuery(channel, query));
     if (!guildMatched && matchingChannelRows.length === 0) continue;
 
@@ -1430,9 +1448,7 @@ function pushExpandedGuildChildren(
     return;
   }
 
-  const visibleChannelRows = visibleGuildChannels.filter((channel) => channel.type !== 4
-    && (!isThreadChannel(channel) || !channel.thread?.archived)
-    && (options.showHiddenChannels || !channel.hidden));
+  const visibleChannelRows = visibleGuildChannels.filter((channel) => isVisibleSidebarChannelRow(channel, options));
   if (isFixedTopLevelGuildId(guild.id)) {
     pushPrivateConversationChannels(entries, sidebar, guild.id, visibleChannelRows, typingChannelIds, typingFrame, channelNotificationCounts);
     return;

@@ -495,8 +495,11 @@ function scrollTimeline(delta: number): void {
   scheduleRender();
 }
 
-function sidebarVisibilityOptions(): { showHiddenChannels: boolean } {
-  return { showHiddenChannels: state.showHiddenChannels };
+function sidebarVisibilityOptions(): { showHiddenChannels: boolean; currentUserId: string | null } {
+  return {
+    showHiddenChannels: state.showHiddenChannels,
+    currentUserId: state.auth.user?.id ?? null,
+  };
 }
 
 function scrollFocusedPanel(delta: number, visibleRows: number, mode: "cursor" | "page" = "cursor"): void {

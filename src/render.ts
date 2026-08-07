@@ -283,7 +283,10 @@ export function render(state: AppState): void {
       typingFrameText,
       channelNotifications,
       guildNotifications,
-      { showHiddenChannels: state.showHiddenChannels },
+      {
+        showHiddenChannels: state.showHiddenChannels,
+        currentUserId: state.auth.user?.id ?? null,
+      },
     )
     : [];
   const memberListRows = memberListOpen

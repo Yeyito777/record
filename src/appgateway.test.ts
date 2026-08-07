@@ -291,7 +291,7 @@ describe("app gateway helpers", () => {
         guildId: "guild-1",
         parentChannelIds: null,
         authoritative: false,
-        threads: [expect.objectContaining({ id: "thread-1", thread: expect.objectContaining({ joined: true }) })],
+        threads: [expect.objectContaining({ id: "thread-1", thread: expect.objectContaining({ joined: false }) })],
       }),
       expect.objectContaining({
         guildId: "guild-1",

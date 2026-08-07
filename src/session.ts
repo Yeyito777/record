@@ -138,6 +138,7 @@ import {
   applySidebarGuildMuteSettings,
   clearSidebarData,
   getSelectedSidebarEntry,
+  isSidebarThreadRelevant,
   isSidebarChannelMuted,
   isSidebarGuildMuted,
   moveSelectedSidebarGuild,
@@ -1050,7 +1051,10 @@ export function adjustVoiceMemberVolume(state: AppState, effects: SessionEffects
 }
 
 export function adjustSelectedVoiceMemberVolume(state: AppState, effects: SessionEffects, deltaPercent: number): boolean {
-  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
+  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, {
+    showHiddenChannels: state.showHiddenChannels,
+    currentUserId: state.auth.user?.id ?? null,
+  });
   if (entry.kind !== "voice-member" || !entry.userId || entry.userId === state.auth.user?.id) return false;
   adjustVoiceMemberVolume(state, effects, entry.userId, deltaPercent);
   return true;
@@ -3528,8 +3532,9 @@ export async function loadGuildChannels(
         state.sidebar.loadingGuildId = null;
       }
       if (options.openFirstChannel) {
-        const cachedChannel = findBrowsableChannel(cachedChannels, state.channelList.activeChannelId)
-          ?? findFirstBrowsableChannel(cachedChannels);
+        const visibleCachedChannels = cachedChannels.filter((channel) => isSidebarThreadRelevant(channel, accountId));
+        const cachedChannel = findBrowsableChannel(visibleCachedChannels, state.channelList.activeChannelId)
+          ?? findFirstBrowsableChannel(visibleCachedChannels);
         setActiveChannelEntry(state.channelList, cachedChannel);
         if (cachedChannel) state.sidebar.activeGuildId = cachedChannel.guildId;
         subscribeAppGatewayToActiveChannel(state);
@@ -3580,8 +3585,9 @@ export async function loadGuildChannels(
       return;
     }
 
-    const channel = findBrowsableChannel(channels, state.channelList.activeChannelId)
-      ?? findFirstBrowsableChannel(channels);
+    const visibleChannels = channels.filter((channel) => isSidebarThreadRelevant(channel, accountId));
+    const channel = findBrowsableChannel(visibleChannels, state.channelList.activeChannelId)
+      ?? findFirstBrowsableChannel(visibleChannels);
     if (!channel) {
       clearTimeline(state.timeline);
       setNotice(state, isDirectMessages ? "No direct messages available." : `No readable channels in ${guildName}.`, "warning");
@@ -3670,6 +3676,7 @@ export function createCurrentChannelThread(
     if (state.timeline.channelId !== parentId) return;
     revealSidebarChannel(state.sidebar, state.channelList.channels, thread.guildId, thread.id, {
       showHiddenChannels: state.showHiddenChannels,
+      currentUserId: state.auth.user?.id ?? null,
     });
     await loadChannelMessages(state, token, thread.id, effects);
     if (!replyTarget && state.timeline.channelId === thread.id && state.timeline.messages.length === 0) {
@@ -3722,6 +3729,7 @@ export async function focusThreadChannel(
   }
   revealSidebarChannel(state.sidebar, state.channelList.channels, thread.guildId, thread.id, {
     showHiddenChannels: state.showHiddenChannels,
+    currentUserId: state.auth.user?.id ?? null,
   });
   await loadChannelMessages(state, token, thread.id, effects);
   return state.timeline.channelId === thread.id;
@@ -4493,7 +4501,10 @@ export function sendCurrentChannelVoiceMessage(
 }
 
 function selectedGuildVoiceChannel(state: AppState): DiscordChannel | null {
-  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
+  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, {
+    showHiddenChannels: state.showHiddenChannels,
+    currentUserId: state.auth.user?.id ?? null,
+  });
   if (entry.kind !== "channel") return null;
   const channel = state.channelList.channels.find((candidate) => candidate.id === entry.id)
     ?? state.sidebar.cachedChannelsByGuildId[entry.guildId]?.find((candidate) => candidate.id === entry.id)
@@ -5035,7 +5046,10 @@ export function setLocalNoiseSuppression(state: AppState, effects: SessionEffect
 }
 
 export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects): void {
-  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
+  const entry = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, {
+    showHiddenChannels: state.showHiddenChannels,
+    currentUserId: state.auth.user?.id ?? null,
+  });
   if (toggleSelectedVoiceMemberMute(state, effects, entry)) return;
 
   const token = state.auth.savedToken;
@@ -5178,13 +5192,16 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
 }
 
 export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects, direction: "up" | "down"): void {
-  const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, { showHiddenChannels: state.showHiddenChannels });
+  const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, {
+    showHiddenChannels: state.showHiddenChannels,
+    currentUserId: state.auth.user?.id ?? null,
+  });
   if (selected.kind === "channel" && isFixedTopLevelGuildId(selected.guildId)) {
     const movedGuildId = moveSelectedPrivateConversation(
       state.sidebar,
       state.channelList.channels,
       direction,
-      { showHiddenChannels: state.showHiddenChannels },
+      { showHiddenChannels: state.showHiddenChannels, currentUserId: state.auth.user?.id ?? null },
     );
     if (movedGuildId) persistPrivateConversationLayout(state, movedGuildId);
     effects.scheduleRender();
@@ -5197,7 +5214,10 @@ export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects,
     return;
   }
 
-  const moved = moveSelectedSidebarItem(state.sidebar, state.channelList.channels, direction, { showHiddenChannels: state.showHiddenChannels });
+  const moved = moveSelectedSidebarItem(state.sidebar, state.channelList.channels, direction, {
+    showHiddenChannels: state.showHiddenChannels,
+    currentUserId: state.auth.user?.id ?? null,
+  });
   if (!moved) {
     setNotice(state, "Select a server or folder row that can move.", "muted");
     effects.scheduleRender();
@@ -5213,7 +5233,7 @@ export function toggleSelectedPrivateConversationPin(state: AppState, effects: S
   const guildId = toggleSelectedPrivateConversationPinned(
     state.sidebar,
     state.channelList.channels,
-    { showHiddenChannels: state.showHiddenChannels },
+    { showHiddenChannels: state.showHiddenChannels, currentUserId: state.auth.user?.id ?? null },
   );
   if (guildId) persistPrivateConversationLayout(state, guildId);
   effects.scheduleRender();

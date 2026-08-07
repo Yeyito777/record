@@ -965,6 +965,7 @@ describe("session", () => {
       throw new Error(`unexpected fetch ${url}`);
     }) as unknown as typeof fetch;
     const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
     state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
     state.sidebar.expandedGuildId = "guild-1";
     state.channelList.guildId = "guild-1";

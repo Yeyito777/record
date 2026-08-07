@@ -143,6 +143,45 @@ describe("sidebar state", () => {
     expect(buildSidebarEntries(sidebar, channels).map((entry) => entry.id)).toEqual(["guild-1", "cat", "text", "thread"]);
   });
 
+  test("shows only joined threads and threads created by the current user", () => {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+    const threadInfo = {
+      ownerId: "other",
+      archived: false,
+      locked: false,
+      invitable: true,
+      autoArchiveDuration: 1440,
+      archiveTimestamp: null,
+      createTimestamp: null,
+      joined: false as boolean | null,
+      messageCount: 1,
+      memberCount: 1,
+      totalMessageSent: 1,
+    };
+    const channels = [
+      { id: "text", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false },
+      { id: "joined", guildId: "guild-1", parentId: "text", name: "joined thread", topic: null, position: 0, type: 11, nsfw: false, thread: { ...threadInfo, joined: true } },
+      { id: "owned", guildId: "guild-1", parentId: "text", name: "owned thread", topic: null, position: 1, type: 11, nsfw: false, thread: { ...threadInfo, ownerId: "viewer" } },
+      { id: "unjoined", guildId: "guild-1", parentId: "text", name: "unjoined thread", topic: null, position: 2, type: 11, nsfw: false, thread: threadInfo },
+      { id: "unknown", guildId: "guild-1", parentId: "text", name: "unknown thread", topic: null, position: 3, type: 11, nsfw: false, thread: { ...threadInfo, joined: null } },
+    ];
+    const options = { currentUserId: "viewer" };
+
+    expect(buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options)
+      .filter((entry) => entry.kind === "channel")
+      .map((entry) => entry.id))
+      .toEqual(["text", "joined", "owned"]);
+
+    openSidebarSearchBar(sidebar, channels, "forward", options);
+    for (const char of "thread") handleSidebarSearchBarKey(sidebar, channels, { type: "char", char }, options);
+    expect(buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options)
+      .filter((entry) => entry.kind === "channel")
+      .map((entry) => entry.id))
+      .toEqual(["text", "joined", "owned"]);
+  });
+
   test("reveals and selects a newly opened thread inside a collapsed category", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
