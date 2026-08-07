@@ -1,19 +1,13 @@
-import type { StreamCreateEvent, StreamDeleteEvent, StreamServerUpdateEvent } from "./appgateway";
-import { debugLog } from "./debuglog";
-import { DiscordVoiceGatewayConnection, NoopVoiceAudioBackend, VoiceGatewayCloseError, isRecoverableVoiceGatewayClose, type IncomingVoiceRtpPacket, type VoiceCallSession, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData } from "./voice";
-import { NoopWatchStreamPlayback, type WatchStreamPlayback } from "./watchstreamplayback";
+import type { StreamCreateEvent, StreamDeleteEvent, StreamServerUpdateEvent } from "../appgateway";
+import { debugLog } from "../debuglog";
+import { DiscordVoiceGatewayConnection, NoopVoiceAudioBackend, VoiceGatewayCloseError, isRecoverableVoiceGatewayClose, type IncomingVoiceRtpPacket, type VoiceCallSession, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData } from "../voice";
+import { daveChannelIdForStreamServer, parseStreamKey } from "./keys";
+import { NoopWatchStreamPlayback, type WatchStreamPlayback } from "./playback";
 
 const WATCH_STREAM_START_TIMEOUT_MS = 15_000;
 const WATCH_STREAM_RECONNECT_ATTEMPTS = 20;
 const WATCH_STREAM_RECONNECT_DELAY_MS = 750;
 const WATCH_STREAM_FRESH_SERVER_RETRY_DELAY_MS = 1_000;
-
-export interface ParsedStreamKey {
-  type: "call" | "guild";
-  guildId: string | null;
-  channelId: string;
-  ownerUserId: string;
-}
 
 export interface WatchStreamStats {
   audioPackets: number;
@@ -157,6 +151,7 @@ export class WatchStreamController {
     }
     const connection = this.connection;
     this.connection = null;
+    const rejectStart = this.rejectStart;
     this.resolveStart = null;
     this.rejectStart = null;
     this.started = false;
@@ -165,6 +160,7 @@ export class WatchStreamController {
     this.needsFreshServerUpdate = false;
     connection?.disconnect();
     this.playback.stop();
+    rejectStart?.(new WatchStreamStartCancelledError(reason));
     debugLog("stream.watch.stop", { streamKey: this.streamKey, reason, stats: this.stats });
   }
 
@@ -360,36 +356,10 @@ export class WatchStreamController {
   }
 }
 
-export function parseStreamKey(streamKey: string): ParsedStreamKey | null {
-  const parts = streamKey.split(":");
-  if (parts[0] === "call" && parts.length === 3 && parts[1] && parts[2]) {
-    return { type: "call", guildId: null, channelId: parts[1], ownerUserId: parts[2] };
-  }
-  if (parts[0] === "guild" && parts.length === 4 && parts[1] && parts[2] && parts[3]) {
-    return { type: "guild", guildId: parts[1], channelId: parts[2], ownerUserId: parts[3] };
-  }
-  return null;
-}
-
-export function buildStreamKeyForVoiceSession(session: VoiceCallSession, ownerUserId: string): string {
-  return session.target.guildId
-    ? `guild:${session.target.guildId}:${session.target.channelId}:${ownerUserId}`
-    : `call:${session.target.channelId}:${ownerUserId}`;
-}
-
-export function streamKeyMatchesVoiceSession(streamKey: string, session: VoiceCallSession): boolean {
-  const parsed = parseStreamKey(streamKey);
-  if (!parsed) return false;
-  if (parsed.channelId !== session.target.channelId) return false;
-  if (session.target.guildId) return parsed.type === "guild" && parsed.guildId === session.target.guildId;
-  return parsed.type === "call" && parsed.guildId === null;
-}
-
-export function daveChannelIdForStreamServer(rtcServerId: string): string {
-  try {
-    return (BigInt(rtcServerId) - 1n).toString();
-  } catch {
-    return rtcServerId;
+export class WatchStreamStartCancelledError extends Error {
+  constructor(readonly reason: string) {
+    super(`Stream watch startup was cancelled (${reason}).`);
+    this.name = "WatchStreamStartCancelledError";
   }
 }
 

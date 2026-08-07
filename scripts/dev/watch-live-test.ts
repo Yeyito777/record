@@ -21,8 +21,7 @@ import { fetchDirectMessages, ringDirectMessageCall } from "../../src/discord";
 import { createInitialState } from "../../src/state";
 import { VoiceCallController, type IncomingVoiceRtpPacket, type VoiceCallSession, type VoiceStateUpdate, type VoiceServerUpdate } from "../../src/voice";
 import { reserveUdpPort } from "../../src/voice/rtp";
-import { WatchStreamController } from "../../src/watchstreamcontroller";
-import { buildWatchStreamPlaybackSdp, type WatchStreamPlayback } from "../../src/watchstreamplayback";
+import { WatchStreamController, buildWatchStreamPlaybackSdp, type WatchStreamPlayback } from "../../src/watchstream";
 
 const selfUserId = process.env.RECORD_TEST_SELF_USER_ID ?? "1031059414846808234"; // paramount
 const targetUserId = process.argv[2] ?? process.env.RECORD_TEST_TARGET_USER_ID ?? "310543961825738754"; // yeyito
