@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { flushDataCacheSync, loadCachedChannelMessages, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, saveCachedChannelMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
+import { flushDataCacheSync, loadCachedChannelMessages, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, saveCachedChannelMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -55,6 +55,36 @@ describe("data cache", () => {
     expect(loadCachedGuildOrder("account-1")).toEqual(["guild-2", "guild-1"]);
     expect(loadCachedGuildOrder("account-2")).toEqual(["guild-3"]);
     expect(JSON.parse(readFileSync(join(xdg, "record", "accounts", "account-1", "guild-order.json"), "utf8")).guildIds).toEqual(["guild-2", "guild-1"]);
+  });
+
+  test("tracks the most recently active cached Discord account", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    saveCachedGuilds("account-1", [{ id: "guild-1", name: "One", icon: null }]);
+    expect(loadLastCachedAccountId()).toBe("account-1");
+
+    markCachedAccountActive("account-2");
+    expect(loadLastCachedAccountId()).toBe("account-2");
+
+    flushDataCacheSync();
+    expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).lastAccountId).toBe("account-2");
+  });
+
+  test("finds the newest account in cache files that predate the active-account marker", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    const recordDir = join(xdg, "record");
+    mkdirSync(recordDir, { recursive: true });
+    writeFileSync(join(recordDir, "cache.json"), JSON.stringify({
+      version: 1,
+      accounts: {
+        "account-old": { savedAt: 100 },
+        "account-new": { savedAt: 200 },
+      },
+    }));
+
+    expect(loadLastCachedAccountId()).toBe("account-new");
   });
 
   test("saves private conversation pinning and order per provider account", () => {

@@ -47,6 +47,8 @@ export interface AuthState {
   savedLogins: SavedLogins;
   lastValidatedAt: number | null;
   activeRequestId: number;
+  /** Account owning a cached sidebar shown before saved-token validation. */
+  cachedSidebarPreviewAccountId: string | null;
 }
 
 export interface ReplyTarget {
@@ -194,6 +196,7 @@ export function createInitialState(
       savedLogins: { ...initialSavedLogins },
       lastValidatedAt: null,
       activeRequestId: 0,
+      cachedSidebarPreviewAccountId: null,
     },
     notice: { tone: "muted", text: "", loading: false, statusLine: true, chat: true },
     loadingFrameIndex: 0,

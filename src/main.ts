@@ -72,6 +72,7 @@ import {
   persistSidebarFolders,
   removeSessionChannel,
   removeSessionGuild,
+  restoreCachedSidebarPreview,
   sendCurrentChannelVoiceMessage,
   startCurrentVoiceCall,
   syncMemberListForCurrentChannel,
@@ -201,6 +202,7 @@ setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
   whatsappGuild(),
 ]);
+if (initialToken) restoreCachedSidebarPreview(state);
 if (startupWarnings.length > 0) {
   setNotice(state, startupWarnings.join("\n"), "warning");
 }

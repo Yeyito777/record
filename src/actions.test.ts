@@ -3,10 +3,11 @@ import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { resolveLoginCredential, submitCurrentBuffer, type AppEffects } from "./actions";
+import { resolveLoginCredential, submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { loadConfig } from "./config";
 import { createInitialState } from "./state";
-import { whatsappChannelId } from "./chatproviders";
+import { whatsappChannelId, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 const originalFetch = globalThis.fetch;
 const originalXdg = process.env.XDG_CONFIG_HOME;
@@ -45,6 +46,22 @@ describe("submitCurrentBuffer", () => {
 
     expect(resolveLoginCredential(state, "alice")).toBe("token-1");
     expect(resolveLoginCredential(state, "raw-token")).toBe("raw-token");
+  });
+
+  test("discards a pre-auth cached sidebar when saved-token validation fails", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ message: "401: Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    })) as unknown as typeof fetch;
+    const state = createInitialState("invalid-token", "/tmp/record-config.json");
+    state.sidebar.guilds = [{ id: "guild-stale", name: "Stale", icon: null }];
+    state.auth.cachedSidebarPreviewAccountId = "cached-account";
+
+    await validateAndMaybeSave(state, "invalid-token", false, "Validating saved token…", effects);
+
+    expect(state.auth.status).toBe("error");
+    expect(state.auth.cachedSidebarPreviewAccountId).toBeNull();
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID]);
   });
 
   test("non-command prompt text requires a login before sending", () => {

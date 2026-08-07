@@ -80,6 +80,8 @@ import {
   loadCachedMemberLists,
   loadCachedMemberRoles,
   loadCachedNotifications,
+  loadLastCachedAccountId,
+  markCachedAccountActive,
   saveCachedChannelMessages,
   saveCachedDirectMessages,
   saveCachedGuildChannels,
@@ -1898,6 +1900,44 @@ function cachedSidebarGuilds(_directMessages: DiscordChannel[], guilds: DiscordG
   return withDirectMessagesGuild(guilds);
 }
 
+/**
+ * Populate the Discord sidebar from the most recently active account before a
+ * saved token has finished validating. The account marker lets auth either
+ * confirm this preview or discard it if the token belongs to someone else.
+ */
+export function restoreCachedSidebarPreview(state: AppState): boolean {
+  const accountId = loadLastCachedAccountId();
+  if (!accountId) return false;
+
+  const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
+  const cachedGuildOrder = loadCachedGuildOrder(accountId);
+  const cachedGuilds = sortGuildsByOrder(loadCachedGuilds(accountId) ?? [], cachedGuildOrder);
+  if (cachedDirectMessages.length === 0 && cachedGuilds.length === 0) return false;
+
+  const cachedChannelLayout = loadCachedSidebarChannelLayout(accountId);
+  for (const channel of cachedDirectMessages) {
+    if (channel.muted !== undefined) state.channelMuteSettings[channel.id] = channel.muted;
+  }
+  setSidebarCachedChannels(state.sidebar, DIRECT_MESSAGES_GUILD_ID, cachedDirectMessages);
+  applySidebarChannelLayoutForGuild(
+    state.sidebar,
+    DIRECT_MESSAGES_GUILD_ID,
+    cachedChannelLayout?.[DIRECT_MESSAGES_GUILD_ID],
+  );
+  for (const guild of cachedGuilds) {
+    const cachedChannels = loadCachedGuildChannels(accountId, guild.id) ?? [];
+    for (const channel of cachedChannels) {
+      if (channel.muted !== undefined) state.channelMuteSettings[channel.id] = channel.muted;
+    }
+    if (cachedChannels.length > 0) setSidebarCachedChannels(state.sidebar, guild.id, cachedChannels);
+  }
+
+  setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
+  applySidebarFolderLayout(state.sidebar, loadCachedSidebarFolders(accountId));
+  state.auth.cachedSidebarPreviewAccountId = accountId;
+  return true;
+}
+
 function currentAccountId(state: AppState): string | null {
   return state.auth.user?.id ?? null;
 }
@@ -3140,6 +3180,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.editTarget = null;
   state.messageDeletePending = null;
   state.voiceCall = null;
+  state.auth.cachedSidebarPreviewAccountId = null;
   state.memberRoleCacheVersion += 1;
   setSidebarGuilds(state.sidebar, withDirectMessagesGuild([]));
   applySidebarChannelLayoutForGuild(state.sidebar, WHATSAPP_GUILD_ID, whatsAppChannelLayoutBeforeClear);
@@ -3340,8 +3381,15 @@ export async function bootstrapReadOnlyClient(
   token: string,
   effects: SessionEffects,
 ): Promise<void> {
-  const requestId = ++state.sidebar.requestId;
   const accountId = currentAccountId(state);
+  const previewAccountId = state.auth.cachedSidebarPreviewAccountId;
+  if (previewAccountId && accountId && previewAccountId !== accountId) {
+    clearReadOnlyClient(state);
+  }
+  state.auth.cachedSidebarPreviewAccountId = null;
+  if (accountId) markCachedAccountActive(accountId);
+
+  const requestId = ++state.sidebar.requestId;
   let cachedSidebarFolders: ReturnType<typeof loadCachedSidebarFolders> = null;
   let appliedCachedSidebarFolders = false;
   const previousExpandedGuildId = state.sidebar.expandedGuildId;

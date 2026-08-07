@@ -27,6 +27,8 @@ interface AccountDataCache {
 interface DataCacheFile {
   version: 1;
   accounts: Record<string, AccountDataCache>;
+  /** Most recently active Discord account, used for pre-auth startup previews. */
+  lastAccountId?: string;
 }
 
 interface GuildOrderCacheFile {
@@ -109,7 +111,11 @@ function loadCacheFile(): DataCacheFile {
       cacheMemoPath = path;
       return cacheMemo;
     }
-    cacheMemo = { version: CACHE_VERSION, accounts: parsed.accounts as Record<string, AccountDataCache> };
+    cacheMemo = {
+      version: CACHE_VERSION,
+      accounts: parsed.accounts as Record<string, AccountDataCache>,
+      ...(typeof parsed.lastAccountId === "string" ? { lastAccountId: parsed.lastAccountId } : {}),
+    };
     cacheMemoPath = path;
     return cacheMemo;
   } catch {
@@ -210,6 +216,7 @@ export function flushDataCacheSync(): void {
 function compactCacheForDisk(cache: DataCacheFile): DataCacheFile {
   return {
     version: CACHE_VERSION,
+    ...(cache.lastAccountId ? { lastAccountId: cache.lastAccountId } : {}),
     accounts: Object.fromEntries(Object.entries(cache.accounts).map(([accountId, account]) => [
       accountId,
       compactAccountCache(account),
@@ -232,6 +239,7 @@ function compactAccountCache(account: AccountDataCache): AccountDataCache {
 }
 
 function accountCache(cache: DataCacheFile, accountId: string): AccountDataCache {
+  cache.lastAccountId = accountId;
   cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {}, memberLists: {}, channelMessages: {}, guildRoles: {}, memberRoles: {} };
   cache.accounts[accountId].guildChannels ??= {};
   cache.accounts[accountId].memberLists ??= {};
@@ -239,6 +247,31 @@ function accountCache(cache: DataCacheFile, accountId: string): AccountDataCache
   cache.accounts[accountId].guildRoles ??= {};
   cache.accounts[accountId].memberRoles ??= {};
   return cache.accounts[accountId];
+}
+
+/**
+ * Resolve the account whose sidebar was used most recently. Older cache files
+ * predate lastAccountId, so fall back to their newest account entry.
+ */
+export function loadLastCachedAccountId(): string | null {
+  const cache = loadCacheFile();
+  if (cache.lastAccountId && cache.accounts[cache.lastAccountId]) return cache.lastAccountId;
+
+  let newest: { accountId: string; savedAt: number } | null = null;
+  for (const [accountId, account] of Object.entries(cache.accounts)) {
+    const savedAt = Number.isFinite(account.savedAt) ? account.savedAt : 0;
+    if (!newest || savedAt > newest.savedAt) newest = { accountId, savedAt };
+  }
+  return newest?.accountId ?? null;
+}
+
+/** Record a successfully authenticated account before its REST refresh finishes. */
+export function markCachedAccountActive(accountId: string): void {
+  if (!accountId) return;
+  const cache = loadCacheFile();
+  const account = accountCache(cache, accountId);
+  account.savedAt = Date.now();
+  saveCacheFile(cache);
 }
 
 export function loadCachedGuilds(accountId: string): DiscordGuild[] | null {

@@ -4,11 +4,11 @@ import { join } from "path";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChannelLayout, loadCachedSidebarFolders, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
+import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChannelLayout, loadCachedSidebarFolders, saveCachedDirectMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 
 const originalFetch = globalThis.fetch;
@@ -174,6 +174,80 @@ describe("session", () => {
     expect(state.memberList.requestId).toBe(14);
     expect(state.notifications.byChannelId[whatsAppChannel]).toBe(2);
     expect(state.notifications.channelGuildIds[whatsAppChannel]).toBe(WHATSAPP_GUILD_ID);
+  });
+
+  test("restores the last sidebar before auth and reconciles it with live availability", async () => {
+    saveCachedGuilds("self", [
+      { id: "guild-stale", name: "Stale", icon: null },
+      { id: "guild-keep", name: "Cached name", icon: null },
+    ]);
+    saveCachedGuildOrder("self", ["guild-keep", "guild-stale"]);
+    saveCachedDirectMessages("self", [{
+      id: "dm-cached",
+      guildId: DIRECT_MESSAGES_GUILD_ID,
+      parentId: null,
+      name: "Cached Friend",
+      topic: null,
+      position: 0,
+      type: 1,
+      nsfw: false,
+    }]);
+    saveCachedGuildChannels("self", "guild-keep", [{
+      id: "channel-cached",
+      guildId: "guild-keep",
+      parentId: null,
+      name: "cached-channel",
+      topic: null,
+      position: 0,
+      type: 0,
+      nsfw: false,
+      permissionOverwrites: [],
+    }]);
+    saveCachedSidebarFolders("self", {
+      folders: [{ id: "folder-1", name: "Favorites", parentId: null, pinned: false, sortOrder: 0 }],
+      guildPlacements: {
+        "guild-keep": { folderId: "folder-1", pinned: false, sortOrder: 0 },
+      },
+    });
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    expect(restoreCachedSidebarPreview(state)).toBe(true);
+    expect(state.auth.cachedSidebarPreviewAccountId).toBe("self");
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([
+      DIRECT_MESSAGES_GUILD_ID,
+      WHATSAPP_GUILD_ID,
+      "guild-keep",
+      "guild-stale",
+    ]);
+    expect(state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID]?.map((channel) => channel.id)).toEqual(["dm-cached"]);
+    expect(state.sidebar.cachedChannelsByGuildId["guild-keep"]?.map((channel) => channel.id)).toEqual(["channel-cached"]);
+    expect(state.sidebar.folders.map((folder) => folder.name)).toEqual(["Favorites"]);
+    expect(state.sidebar.guildPlacements["guild-keep"]?.folderId).toBe("folder-1");
+
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/users/@me/channels")) return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.includes("/users/@me/guilds")) {
+        return new Response(JSON.stringify([
+          { id: "guild-keep", name: "Fresh name", icon: "fresh-icon" },
+          { id: "guild-new", name: "New", icon: null },
+        ]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/gateway")) return new Response(JSON.stringify({ url: "wss://gateway.example" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+
+    await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
+
+    expect(state.auth.cachedSidebarPreviewAccountId).toBeNull();
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([
+      DIRECT_MESSAGES_GUILD_ID,
+      WHATSAPP_GUILD_ID,
+      "guild-keep",
+      "guild-new",
+    ]);
+    expect(state.sidebar.guilds.find((guild) => guild.id === "guild-keep")?.name).toBe("Fresh name");
   });
 
   test("bootstrap shows direct messages before DM channel data has loaded", async () => {

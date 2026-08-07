@@ -118,6 +118,7 @@ export async function validateAndMaybeSave(
   } catch (error) {
     if (!isCurrentAuthRequest(state, requestId)) return;
     const message = error instanceof Error ? error.message : String(error);
+    if (state.auth.cachedSidebarPreviewAccountId) clearReadOnlyClient(state);
     setAuthError(state, message);
     effects.scheduleRender();
   }
