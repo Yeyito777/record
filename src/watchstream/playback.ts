@@ -4,9 +4,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { debugLog } from "./debuglog";
-import type { IncomingVoiceRtpPacket } from "./voice";
-import { reserveUdpPort } from "./voice/rtp";
+import { debugLog } from "../debuglog";
+import type { IncomingVoiceRtpPacket } from "../voice";
+import { reserveUdpPort } from "../voice/rtp";
 
 const WATCH_STREAM_HELPER_SHUTDOWN_GRACE_MS = 1_500;
 const WATCH_STREAM_VIDEO_PAYLOAD_TYPE = 101;
