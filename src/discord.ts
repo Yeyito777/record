@@ -47,6 +47,18 @@ interface DiscordErrorResponse {
   errors?: unknown;
 }
 
+class DiscordHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: number | null,
+    readonly errors: unknown,
+  ) {
+    super(message);
+    this.name = "DiscordHttpError";
+  }
+}
+
 interface DiscordMeResponse {
   id: string;
   username: string;
@@ -1879,17 +1891,40 @@ export async function sendChannelMessage(
   content: string,
   options: SendMessageOptions = {},
 ): Promise<DiscordMessage> {
-  const body = buildSendMessagePayload(content, options);
-  const uploads = options.uploads ?? [];
-  const requestBody = uploads.length > 0
-    ? buildSendMessageMultipartBody(body, uploads)
-    : JSON.stringify(body);
+  const postMessage = (sendOptions: SendMessageOptions): Promise<DiscordMessageResponse> => {
+    const body = buildSendMessagePayload(content, sendOptions);
+    const uploads = sendOptions.uploads ?? [];
+    const requestBody = uploads.length > 0
+      ? buildSendMessageMultipartBody(body, uploads)
+      : JSON.stringify(body);
 
-  const message = await requestJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages`, {
-    method: "POST",
-    body: requestBody,
-  });
+    return requestJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages`, {
+      method: "POST",
+      body: requestBody,
+    });
+  };
+
+  let message: DiscordMessageResponse;
+  try {
+    message = await postMessage(options);
+  } catch (error) {
+    if (!options.reply || !isSystemMessageReplyError(error)) throw error;
+
+    // Discord does not permit native message references to CALL or any other
+    // system-message type. Treat the user's reply as a normal message instead
+    // of leaving their text in a failed state. Rebuild multipart bodies here as
+    // well: a request body must not be reused after fetch has consumed it.
+    message = await postMessage({ ...options, reply: null });
+  }
   return mapDiscordMessage(message);
+}
+
+function isSystemMessageReplyError(error: unknown): boolean {
+  if (!(error instanceof DiscordHttpError) || error.status !== 400 || error.code !== 50035) return false;
+  const details = [error.message, summarizeDiscordErrorObject(error.errors)]
+    .filter((detail): detail is string => Boolean(detail))
+    .join(" ");
+  return details.toLowerCase().includes("cannot reply to a system message");
 }
 
 export async function editChannelMessage(
@@ -2302,15 +2337,21 @@ function buildDiscordError(status: number, body: DiscordErrorResponse | null): E
   }
 
   const detail = discordErrorDetail(body);
-  return new Error(`Discord returned ${status}.${detail}`.trim());
+  return new DiscordHttpError(
+    `Discord returned ${status}.${detail}`.trim(),
+    status,
+    typeof body?.code === "number" ? body.code : null,
+    body?.errors,
+  );
 }
 
 function discordErrorDetail(body: DiscordErrorResponse | null): string {
   if (!body) return "";
-  if (body.message) return ` ${body.message}`;
   const errorSummary = summarizeDiscordErrorObject(body.errors);
-  if (errorSummary) return ` ${errorSummary}`;
-  return "";
+  const details = [body.message, errorSummary]
+    .filter((detail): detail is string => Boolean(detail))
+    .filter((detail, index, all) => all.indexOf(detail) === index);
+  return details.length > 0 ? ` ${details.join(" ")}` : "";
 }
 
 function summarizeDiscordErrorObject(value: unknown): string | null {

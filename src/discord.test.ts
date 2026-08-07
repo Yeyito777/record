@@ -1346,6 +1346,69 @@ describe("discord helpers", () => {
     });
   });
 
+  test("retries call and other system-message replies without a native reference", async () => {
+    const requestedBodies: unknown[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBodies.push(JSON.parse(String(init?.body ?? "{}")));
+      if (requestedBodies.length === 1) {
+        return new Response(JSON.stringify({
+          message: "Invalid Form Body",
+          code: 50035,
+          errors: {
+            message_reference: {
+              _errors: [{
+                code: "MESSAGE_REFERENCE_TYPE_INVALID",
+                message: "Cannot reply to a system message",
+              }],
+            },
+          },
+        }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        id: "message-2",
+        channel_id: "dm-1",
+        nonce: "123456789",
+        type: 0,
+        content: "oh man I didn't see call mb",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "user-1", username: "tester", global_name: "Tester" },
+        attachments: [],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const message = await sendChannelMessage("token", "dm-1", "oh man I didn't see call mb", {
+      nonce: "123456789",
+      reply: { messageId: "call-message-1", channelId: "dm-1", guildId: null, mention: false },
+    });
+
+    expect(requestedBodies).toEqual([{
+      content: "oh man I didn't see call mb",
+      tts: false,
+      nonce: "123456789",
+      message_reference: {
+        message_id: "call-message-1",
+        channel_id: "dm-1",
+      },
+      allowed_mentions: {
+        parse: ["users", "roles", "everyone"],
+        replied_user: false,
+      },
+    }, {
+      content: "oh man I didn't see call mb",
+      tts: false,
+      nonce: "123456789",
+    }]);
+    expect(message).toMatchObject({
+      id: "message-2",
+      channelId: "dm-1",
+      content: "oh man I didn't see call mb",
+      nonce: "123456789",
+    });
+  });
+
   test("uploads image attachments as multipart form data", async () => {
     let requestedBody: BodyInit | null | undefined = null;
     let requestedContentType: string | null = null;
