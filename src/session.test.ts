@@ -516,6 +516,91 @@ describe("session", () => {
     expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["still here"]);
   });
 
+  test("opening an uncached server does not search every channel for threads", async () => {
+    const requests: string[] = [];
+    const rawChannels = Array.from({ length: 80 }, (_, index) => ({
+      id: `channel-${index}`,
+      guild_id: "guild-1",
+      parent_id: null,
+      name: `channel-${index}`,
+      position: index,
+      type: 0,
+      permission_overwrites: [],
+    }));
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/guilds/guild-1/channels")) {
+        return new Response(JSON.stringify(rawChannels), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.roleIdsByGuildId["guild-1"] = [];
+
+    await loadGuildChannels(state, "token-1", "guild-1", { scheduleRender: () => {} }, { openFirstChannel: false });
+
+    expect(requests).toEqual(["https://discord.com/api/v9/guilds/guild-1/channels"]);
+    expect(state.channelList.channels).toHaveLength(80);
+    expect(state.sidebar.loadingGuildId).toBeNull();
+    expect(state.channelList.loading).toBe(false);
+  });
+
+  test("server refresh keeps relevant gateway threads without REST thread searches", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/guilds/guild-1/channels")) {
+        return new Response(JSON.stringify([{
+          id: "channel-1",
+          guild_id: "guild-1",
+          parent_id: null,
+          name: "general",
+          position: 0,
+          type: 0,
+          permission_overwrites: [],
+        }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.roleIdsByGuildId["guild-1"] = [];
+    const threadInfo = { archived: false, locked: false, invitable: true, autoArchiveDuration: 1440, archiveTimestamp: null, createTimestamp: null, messageCount: 1, memberCount: 1, totalMessageSent: 1 };
+    state.sidebar.cachedChannelsByGuildId["guild-1"] = [{
+      id: "joined-thread",
+      guildId: "guild-1",
+      parentId: "channel-1",
+      name: "joined",
+      topic: null,
+      position: 0,
+      type: 11,
+      nsfw: false,
+      thread: { ...threadInfo, ownerId: "other", joined: true },
+    }, {
+      id: "unrelated-thread",
+      guildId: "guild-1",
+      parentId: "channel-1",
+      name: "unrelated",
+      topic: null,
+      position: 1,
+      type: 11,
+      nsfw: false,
+      thread: { ...threadInfo, ownerId: "other", joined: false },
+    }];
+
+    await loadGuildChannels(state, "token-1", "guild-1", { scheduleRender: () => {} }, { openFirstChannel: false });
+
+    expect(requests).toEqual(["https://discord.com/api/v9/guilds/guild-1/channels"]);
+    expect(state.channelList.channels.map((channel) => channel.id)).toEqual(["channel-1", "joined-thread"]);
+  });
+
   test("refetches cached guild roles that lack names", async () => {
     let roleFetches = 0;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -1691,20 +1776,15 @@ describe("session", () => {
   });
 
   test("does not resurrect a deleted thread from late REST or gateway snapshots", async () => {
-    let markSearchStarted!: () => void;
-    const searchStarted = new Promise<void>((resolve) => { markSearchStarted = resolve; });
-    let resolveSearchResponse!: (response: Response) => void;
-    const searchResponse = new Promise<Response>((resolve) => { resolveSearchResponse = resolve; });
+    let markChannelsStarted!: () => void;
+    const channelsStarted = new Promise<void>((resolve) => { markChannelsStarted = resolve; });
+    let resolveChannelsResponse!: (response: Response) => void;
+    const channelsResponse = new Promise<Response>((resolve) => { resolveChannelsResponse = resolve; });
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/guilds/guild-1/channels")) {
-        return new Response(JSON.stringify([
-          { id: "channel-1", guild_id: "guild-1", parent_id: null, name: "general", position: 0, type: 0, permission_overwrites: [] },
-        ]), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
-      if (url.includes("/channels/channel-1/threads/search?")) {
-        markSearchStarted();
-        return searchResponse;
+        markChannelsStarted();
+        return channelsResponse;
       }
       throw new Error(`unexpected fetch ${url}`);
     }) as unknown as typeof fetch;
@@ -1730,21 +1810,26 @@ describe("session", () => {
     state.sidebar.cachedChannelsByGuildId["guild-1"] = [parent, thread];
 
     const load = loadGuildChannels(state, "token-1", "guild-1", { scheduleRender: () => {} }, { openFirstChannel: false });
-    await searchStarted;
+    await channelsStarted;
     removeSessionChannel(state, { scheduleRender: () => {} }, thread.id, "guild-1");
-    resolveSearchResponse(new Response(JSON.stringify({
-      threads: [{
-        id: thread.id,
-        guild_id: "guild-1",
-        parent_id: parent.id,
-        name: thread.name,
-        position: 0,
-        type: 11,
-        owner_id: "self",
-        thread_metadata: { archived: false, locked: false, auto_archive_duration: 1440 },
-      }],
-      members: [{ id: thread.id, user_id: "self" }],
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    resolveChannelsResponse(new Response(JSON.stringify([{
+      id: parent.id,
+      guild_id: "guild-1",
+      parent_id: null,
+      name: parent.name,
+      position: 0,
+      type: 0,
+      permission_overwrites: [],
+    }, {
+      id: thread.id,
+      guild_id: "guild-1",
+      parent_id: parent.id,
+      name: thread.name,
+      position: 0,
+      type: 11,
+      owner_id: "self",
+      thread_metadata: { archived: false, locked: false, auto_archive_duration: 1440 },
+    }]), { status: 200, headers: { "Content-Type": "application/json" } }));
     await load;
 
     expect(state.channelList.channels.map((channel) => channel.id)).toEqual([parent.id]);

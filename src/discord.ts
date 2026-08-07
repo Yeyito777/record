@@ -1421,7 +1421,10 @@ export async function fetchGuildChannels(
   guildId: string,
   options: { includeThreads?: boolean; fallbackThreads?: readonly DiscordChannel[] } = {},
 ): Promise<DiscordChannel[]> {
-  const includeThreads = options.includeThreads ?? true;
+  // Thread discovery is an expensive per-parent scan for user accounts, so it
+  // must be explicitly requested. Normal server loading gets relevant active
+  // threads from READY and guild thread subscriptions instead.
+  const includeThreads = options.includeThreads ?? false;
   const channels = await apiGetJson<DiscordChannelResponse[]>(token, `/guilds/${guildId}/channels`);
   const activeThreads: DiscordThreadSearchResponse = { threads: [], members: [] };
   const failedThreadParentIds = new Set<string>();

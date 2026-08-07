@@ -1860,23 +1860,19 @@ export function handleGatewayThreadListSync(
   effects.scheduleRender();
 }
 
-function preserveKnownThreadMembership(
+function mergeKnownRelevantThreads(
   channels: readonly DiscordChannel[],
-  previousChannels: readonly DiscordChannel[],
+  knownChannels: readonly DiscordChannel[],
+  currentUserId: string | null,
 ): DiscordChannel[] {
-  const previousById = new Map(previousChannels.map((channel) => [channel.id, channel]));
-  return channels.map((channel) => {
-    const previous = previousById.get(channel.id);
-    if (!channel.thread || !previous?.thread) return channel;
-    return {
-      ...channel,
-      muted: channel.muted ?? previous.muted,
-      thread: {
-        ...channel.thread,
-        joined: channel.thread.joined ?? previous.thread.joined,
-      },
-    };
-  });
+  const byId = new Map(channels.map((channel) => [channel.id, channel]));
+  for (const channel of knownChannels) {
+    if (!isThreadChannel(channel)
+      || channel.thread?.archived
+      || !isSidebarThreadRelevant(channel, currentUserId)) continue;
+    byId.set(channel.id, channel);
+  }
+  return sortGuildChannels(Array.from(byId.values()));
 }
 
 function setThreadJoinedState(state: AppState, threadId: string, joined: boolean): boolean {
@@ -3549,18 +3545,21 @@ export async function loadGuildChannels(
   effects.scheduleRender();
 
   try {
-    const previouslyKnownChannels = isDirectMessages
-      ? []
-      : sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
     let channels = isDirectMessages
       ? withChannelMuteSettings(state, await fetchDirectMessages(token))
-      : await fetchGuildChannels(token, guildId, { fallbackThreads: previouslyKnownChannels });
+      // READY and guild subscriptions already deliver the active threads that
+      // matter to this user. Searching every text/forum parent here made an
+      // uncached server open perform one serial REST request per channel.
+      : await fetchGuildChannels(token, guildId, { includeThreads: false });
     if (requestId !== state.channelList.requestId) return;
     channels = withoutDeletedGuildChannels(state, channels);
 
     if (!isDirectMessages) {
-      const latestKnownChannels = sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId);
-      channels = preserveKnownThreadMembership(channels, latestKnownChannels);
+      const latestKnownChannels = withoutDeletedGuildChannels(
+        state,
+        sidebarChannelsForGuild(state.sidebar, state.channelList.channels, guildId),
+      );
+      channels = mergeKnownRelevantThreads(channels, latestKnownChannels, accountId);
     }
 
     state.channelList.loading = false;

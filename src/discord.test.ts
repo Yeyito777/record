@@ -573,7 +573,7 @@ describe("discord helpers", () => {
       throw new Error(`unexpected fetch ${url}`);
     }) as unknown as typeof fetch;
 
-    const channels = await fetchGuildChannels("token", "guild-1");
+    const channels = await fetchGuildChannels("token", "guild-1", { includeThreads: true });
     const thread = channels.find((channel) => channel.id === "thread-1") ?? null;
 
     expect(requests.sort()).toEqual([
@@ -644,9 +644,9 @@ describe("discord helpers", () => {
       },
     };
 
-    const retained = await fetchGuildChannels("token", "guild-1", { fallbackThreads: [knownThread] });
+    const retained = await fetchGuildChannels("token", "guild-1", { includeThreads: true, fallbackThreads: [knownThread] });
     failThreadSearch = false;
-    const removed = await fetchGuildChannels("token", "guild-1", { fallbackThreads: [knownThread] });
+    const removed = await fetchGuildChannels("token", "guild-1", { includeThreads: true, fallbackThreads: [knownThread] });
 
     expect(retained.map((channel) => channel.id)).toContain("thread-1");
     expect(retained.find((channel) => channel.id === "thread-1")?.thread?.joined).toBe(true);
