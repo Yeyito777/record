@@ -13,6 +13,7 @@ export interface VoiceStateUpdate {
   selfMute: boolean;
   selfDeaf: boolean;
   selfStream?: boolean;
+  selfVideo?: boolean;
   mute: boolean;
   deaf: boolean;
 }

@@ -268,6 +268,7 @@ interface TrackedCallVoiceState {
   selfMute: boolean;
   selfDeaf: boolean;
   streaming: boolean;
+  cameraOn: boolean;
   mute: boolean;
   deaf: boolean;
 }
@@ -1012,6 +1013,7 @@ function sidebarVoiceMemberFromState(state: AppState, channelId: string, userId:
     deafened: voiceState.selfDeaf || voiceState.deaf,
     localMuted: locallyMutedCallUserIds.has(userId),
     streaming: voiceState.streaming || voiceMemberHasTrackedStream(channelId, userId),
+    cameraOn: voiceState.cameraOn,
     self: userId === state.auth.user?.id,
     color: sidebarVoiceMemberColor(state, channelId, userId, voiceState),
   };
@@ -1302,6 +1304,7 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
     selfMute: update.selfMute,
     selfDeaf: update.selfDeaf,
     streaming: update.selfStream ?? false,
+    cameraOn: update.selfVideo ?? false,
     mute: update.mute,
     deaf: update.deaf,
   });
@@ -1314,7 +1317,7 @@ function updateCallVoiceState(state: AppState, update: VoiceStateUpdate): boolea
   return affectedChannelIds.size > 0 || rolesChanged;
 }
 
-function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; selfStream?: boolean; mute: boolean; deaf: boolean }[] }): void {
+function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: string; voiceStates: readonly { userId: string; selfMute: boolean; selfDeaf: boolean; selfStream?: boolean; selfVideo?: boolean; mute: boolean; deaf: boolean }[] }): void {
   if (event.voiceStates.length === 0) return;
   const states = callVoiceStatesByChannelId.get(event.channelId) ?? new Map<string, TrackedCallVoiceState>();
   for (const voiceState of event.voiceStates) {
@@ -1323,6 +1326,7 @@ function rememberCallGatewayVoiceStates(state: AppState, event: { channelId: str
       selfMute: voiceState.selfMute,
       selfDeaf: voiceState.selfDeaf,
       streaming: voiceState.selfStream ?? false,
+      cameraOn: voiceState.selfVideo ?? false,
       mute: voiceState.mute,
       deaf: voiceState.deaf,
     });
@@ -1564,6 +1568,7 @@ function handleVoiceGatewayParticipantsConnect(
         selfMute: false,
         selfDeaf: false,
         streaming: false,
+        cameraOn: false,
         mute: false,
         deaf: false,
       });

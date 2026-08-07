@@ -70,6 +70,7 @@ export interface CallGatewayVoiceState {
   selfMute: boolean;
   selfDeaf: boolean;
   selfStream?: boolean;
+  selfVideo?: boolean;
   mute: boolean;
   deaf: boolean;
 }
@@ -984,6 +985,7 @@ export function mapVoiceStateUpdate(data: unknown, fallbackGuildId: string | nul
     selfMute: Boolean(data.self_mute),
     selfDeaf: Boolean(data.self_deaf),
     ...(typeof data.self_stream === "boolean" ? { selfStream: data.self_stream } : {}),
+    ...(typeof data.self_video === "boolean" ? { selfVideo: data.self_video } : {}),
     mute: Boolean(data.mute),
     deaf: Boolean(data.deaf),
   };
@@ -1097,6 +1099,7 @@ function mapCallGatewayVoiceState(data: unknown): CallGatewayVoiceState | null {
     selfMute: Boolean(data.self_mute),
     selfDeaf: Boolean(data.self_deaf),
     ...(typeof data.self_stream === "boolean" ? { selfStream: data.self_stream } : {}),
+    ...(typeof data.self_video === "boolean" ? { selfVideo: data.self_video } : {}),
     mute: Boolean(data.mute),
     deaf: Boolean(data.deaf),
   };

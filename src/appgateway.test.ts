@@ -402,6 +402,7 @@ describe("app gateway helpers", () => {
       self_mute: true,
       self_deaf: false,
       self_stream: true,
+      self_video: true,
       mute: false,
       deaf: false,
     })).toEqual({
@@ -414,6 +415,7 @@ describe("app gateway helpers", () => {
       selfMute: true,
       selfDeaf: false,
       selfStream: true,
+      selfVideo: true,
       mute: false,
       deaf: false,
     });
@@ -499,7 +501,7 @@ describe("app gateway helpers", () => {
       ringing: ["user-2"],
       region: "atl",
       voice_states: [
-        { user_id: "user-1", self_mute: true, self_deaf: false, mute: false, deaf: false },
+        { user_id: "user-1", self_mute: true, self_deaf: false, self_stream: true, self_video: true, mute: false, deaf: false },
         { user_id: "user-2", self_mute: false, self_deaf: true, mute: true, deaf: true },
       ],
     })).toEqual({
@@ -508,7 +510,7 @@ describe("app gateway helpers", () => {
       region: "atl",
       voiceStateUserIds: ["user-1", "user-2"],
       voiceStates: [
-        { userId: "user-1", selfMute: true, selfDeaf: false, mute: false, deaf: false },
+        { userId: "user-1", selfMute: true, selfDeaf: false, selfStream: true, selfVideo: true, mute: false, deaf: false },
         { userId: "user-2", selfMute: false, selfDeaf: true, mute: true, deaf: true },
       ],
       isActive: true,

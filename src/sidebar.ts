@@ -103,6 +103,7 @@ export interface SidebarEntry {
   deafened?: boolean;
   localMuted?: boolean;
   streaming?: boolean;
+  cameraOn?: boolean;
   self?: boolean;
   color?: string;
   hidden?: boolean;
@@ -122,6 +123,7 @@ export interface SidebarVoiceMember {
   deafened?: boolean;
   localMuted?: boolean;
   streaming?: boolean;
+  cameraOn?: boolean;
   self?: boolean;
   color?: string;
 }
@@ -1229,6 +1231,7 @@ function pushSidebarVoiceMemberEntry(
     deafened: member.deafened,
     localMuted: member.localMuted,
     streaming: member.streaming,
+    cameraOn: member.cameraOn,
     self: member.self,
     color: member.color,
     selected: false,
@@ -1597,7 +1600,7 @@ function voiceMemberNameLabel(entry: SidebarEntry): string {
 }
 
 function voiceMemberStatusSuffix(entry: SidebarEntry): string {
-  return `${entry.muted ? " 🔇" : ""}${entry.deafened || entry.localMuted ? " 🔕" : ""}`;
+  return `${entry.muted ? " 🔇" : ""}${entry.deafened || entry.localMuted ? " 🔕" : ""}${entry.cameraOn ? " 📷" : ""}`;
 }
 
 function selectedEntrySnapshot(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions): Pick<SidebarEntry, "kind" | "id" | "guildId"> | null {
@@ -2786,13 +2789,17 @@ function renderEntryRow(
   if (entry.kind === "voice-member") {
     const rawLabel = voiceMemberNameLabel(entry);
     const statusSuffix = voiceMemberStatusSuffix(entry);
+    const liveBadge = renderLiveBadge(Boolean(entry.streaming));
+    const badgeGap = liveBadge ? 1 : 0;
+    const badgeWidth = liveBadge?.width ?? 0;
     const contentWidth = Math.max(0, innerWidth - termWidth(prefix));
-    const labelWidth = Math.max(0, contentWidth - termWidth(statusSuffix));
-    const clippedLabel = statusSuffix ? truncate(rawLabel, labelWidth) : rawLabel;
-    const title = padRight(`${clippedLabel}${statusSuffix}`, contentWidth);
+    const textWidth = Math.max(0, contentWidth - badgeGap - badgeWidth);
+    const labelWidth = Math.max(0, textWidth - termWidth(statusSuffix));
+    const clippedLabel = truncate(rawLabel, labelWidth);
+    const title = padRight(`${clippedLabel}${statusSuffix}`, textWidth);
     const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
 
-    return theme.reset + bg + fg + prefix + text
+    return theme.reset + bg + fg + prefix + text + (liveBadge ? ` ${liveBadge.text}` : "")
       + theme.reset + borderBg + borderFg + "│" + theme.reset;
   }
 
@@ -2817,6 +2824,15 @@ function renderNotificationBadge(count: number): { text: string; width: number }
   if (count <= 0) return null;
   const label = count > 99 ? "99+" : String(count);
   const text = ` ${label} `;
+  return {
+    text: `${theme.notificationBg}${theme.notificationFg}${text}${theme.reset}`,
+    width: termWidth(text),
+  };
+}
+
+function renderLiveBadge(streaming: boolean): { text: string; width: number } | null {
+  if (!streaming) return null;
+  const text = "[LIVE]";
   return {
     text: `${theme.notificationBg}${theme.notificationFg}${text}${theme.reset}`,
     width: termWidth(text),

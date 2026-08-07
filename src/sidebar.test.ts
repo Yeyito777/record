@@ -44,6 +44,7 @@ import {
   SIDEBAR_WIDTH,
 } from "./sidebar";
 import { termWidth } from "./textwidth";
+import { theme } from "./theme";
 
 function stripAnsiForTest(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -702,22 +703,26 @@ describe("sidebar state", () => {
     sidebar.open = true;
     sidebar.voiceMembersByChannelId = {
       "voice-1": [
-        { userId: "user-1", displayName: "Alice", localMuted: true },
+        { userId: "user-1", displayName: "Alice", localMuted: true, streaming: true, cameraOn: true },
         { userId: "me", displayName: "Me", self: true, muted: true },
       ],
     };
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
     sidebar.expandedGuildId = "guild-1";
 
-    const rows = renderSidebar(
+    const renderedRows = renderSidebar(
       sidebar,
       [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }],
       7,
       false,
-    ).map(stripAnsiForTest);
+    );
+    const rows = renderedRows.map(stripAnsiForTest);
 
     expect(rows.join("\n")).toContain("🔊 Lounge");
     expect(rows.join("\n")).toContain("• Alice 🔕");
+    expect(rows.join("\n")).toContain("📷");
+    expect(rows.join("\n")).toContain("[LIVE]");
+    expect(renderedRows.find((row) => row.includes("Alice"))).toContain(`${theme.notificationBg}${theme.notificationFg}[LIVE]${theme.reset}`);
     expect(rows.join("\n")).toContain("• Me (you) 🔇");
     expect(moveSidebarSelection(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }], 1)).toBeUndefined();
     expect(buildSidebarEntries(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }])[sidebar.selectedIndex]?.kind).toBe("channel");
@@ -752,6 +757,32 @@ describe("sidebar state", () => {
     expect(memberRow).toContain("🔕");
     expect(memberRow!.indexOf("…")).toBeLessThan(memberRow!.indexOf("🔇"));
     expect(memberRow!.indexOf("🔇")).toBeLessThan(memberRow!.indexOf("🔕"));
+    expect(termWidth(memberRow!)).toBe(SIDEBAR_WIDTH);
+  });
+
+  test("keeps the styled live badge visible when a streaming member name truncates", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    sidebar.voiceMembersByChannelId = {
+      "voice-1": [
+        { userId: "user-1", displayName: "A very very very very long streaming member name", streaming: true },
+      ],
+    };
+    setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
+    sidebar.expandedGuildId = "guild-1";
+
+    const memberRow = renderSidebar(
+      sidebar,
+      [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }],
+      6,
+      false,
+    ).find((row) => stripAnsiForTest(row).includes("•"));
+    const plainMemberRow = stripAnsiForTest(memberRow ?? "");
+
+    expect(memberRow).toBeDefined();
+    expect(plainMemberRow).toContain("…");
+    expect(plainMemberRow).toContain("[LIVE]");
+    expect(memberRow).toContain(`${theme.notificationBg}${theme.notificationFg}[LIVE]${theme.reset}`);
     expect(termWidth(memberRow!)).toBe(SIDEBAR_WIDTH);
   });
 

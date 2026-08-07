@@ -1460,6 +1460,7 @@ describe("session", () => {
       selfMute: false,
       selfDeaf: false,
       selfStream: true,
+      selfVideo: true,
       mute: false,
       deaf: false,
     });
@@ -1468,7 +1469,7 @@ describe("session", () => {
 
     toggleSelectedGuildMute(state, effects);
 
-    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]).toMatchObject({ userId: "friend", localMuted: true, streaming: true });
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]).toMatchObject({ userId: "friend", localMuted: true, streaming: true, cameraOn: true });
     expect(state.notice.text).toBe("");
     expect(effects.renders).toBeGreaterThan(0);
 
@@ -1487,6 +1488,7 @@ describe("session", () => {
       deaf: false,
     });
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.streaming).toBe(false);
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.cameraOn).toBe(false);
 
     clearReadOnlyClient(state);
   });
