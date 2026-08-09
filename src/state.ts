@@ -7,6 +7,7 @@ import { createChannelListState, type ChannelListState } from "./channels";
 import type { SavedLogins } from "./config";
 import type { DiscordCustomStatus, DiscordGuildMember, DiscordIdentity, DiscordPresenceStatus, DiscordRole } from "./discord";
 import type { ChannelMessageCache } from "./messagecache";
+import type { ChannelPinCache } from "./pincache";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
 import { createMemberListState, type MemberListState } from "./memberlist";
@@ -113,6 +114,7 @@ export interface AppState {
   channelList: ChannelListState;
   timeline: TimelineState;
   messageCacheByChannelId: ChannelMessageCache;
+  channelPinCacheByChannelId: ChannelPinCache;
   typing: TypingState;
   lastTypingRowCount: number;
   notifications: NotificationState;
@@ -166,6 +168,7 @@ export function createInitialState(
     channelList: createChannelListState(),
     timeline: createTimelineState(),
     messageCacheByChannelId: {},
+    channelPinCacheByChannelId: {},
     typing: createTypingState(),
     lastTypingRowCount: 0,
     notifications: createNotificationState(),

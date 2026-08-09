@@ -58,6 +58,15 @@ describe("commands", () => {
     expect(state.editor.buffer).toBe("");
   });
 
+  test("parses /pinned without arguments", () => {
+    const state = createInitialState("token", "/tmp/record-config.json");
+
+    expect(tryCommand("/pinned", state)).toEqual({ type: "pinned" });
+    expect(state.editor.buffer).toBe("");
+    expect(tryCommand("/pinned extra", state)).toEqual({ type: "handled" });
+    expect(state.notice).toMatchObject({ text: "Usage: /pinned", statusLine: false });
+  });
+
   test("parses a multi-word /thread name and enforces Discord's length limit", () => {
     const state = createInitialState("token", "/tmp/record-config.json");
 

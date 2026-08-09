@@ -19,6 +19,7 @@ What it does right now:
 - start DM voice calls with `/call`, leave with `/hangup`, and toggle `/mute` or `/deafen`
 - watch a call participant's stream with `/watch` in a GPU-accelerated player window; close the window (or run `/watch` again) to stop watching
 - run slash commands like `/login <token>`, `/logout`, `/refresh`, and `/theme <name>`
+- browse every pinned message in the current Discord channel with `/pinned`
 - create a public thread with `/thread <name>`; when replying to a message, the new thread is anchored to that message
 - treat the prompt as message/command input only
 
@@ -32,6 +33,8 @@ Controls:
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
 - `Enter` on a thread (shown with `↳`): open its timeline; posting automatically joins the thread when needed
 - `Enter` on an authored “Started a thread” message in history: open and focus that thread
+- `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
+- `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history
 - `/thread <name>` in the prompt: create and open a public thread; if a reply is active, anchor it to that replied-to message, otherwise create a standalone thread
 - `Enter` on a server voice/stage channel: join that voice chat
 - `Shift+Enter` or `o` on a voice/stage channel: open its text chat without joining

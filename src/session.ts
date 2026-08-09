@@ -28,6 +28,7 @@ import {
   fetchChannelMessages,
   fetchChannelMessagesAfter,
   fetchChannelMessagesAround,
+  fetchChannelPinnedMessages,
   editChannelMessage,
   deleteChannelMessage,
   fetchDirectMessages,
@@ -44,6 +45,7 @@ import {
   ringDirectMessageCall,
   isDirectMessageChannel,
   isGuildVoiceChannel,
+  isMessageChannel,
   isMessageThreadParentChannel,
   isThreadChannel,
   joinThread,
@@ -69,6 +71,7 @@ import { isFixedTopLevelGuildId, isWhatsAppChannel, isWhatsAppChannelId, whatsap
 import { whatsAppChannels, whatsAppTimelineMessages } from "./whatsapp/integration";
 import {
   loadCachedChannelMessages,
+  loadCachedChannelPins,
   loadCachedDirectMessages,
   loadCachedGuildChannels,
   loadCachedGuilds,
@@ -83,6 +86,7 @@ import {
   loadLastCachedAccountId,
   markCachedAccountActive,
   saveCachedChannelMessages,
+  saveCachedChannelPins,
   saveCachedDirectMessages,
   saveCachedGuildChannels,
   saveCachedGuildOrder,
@@ -109,6 +113,14 @@ import {
   setCachedChannelMessages,
   upsertCachedChannelMessage,
 } from "./messagecache";
+import {
+  cachedChannelPins,
+  clearCachedChannelPins,
+  patchCachedChannelPin,
+  removeCachedChannelPin,
+  removeCachedChannelPins,
+  setCachedChannelPins,
+} from "./pincache";
 import { debugLog } from "./debuglog";
 import { DISCORD_UPLOAD_LIMIT_BYTES, normalizeUploadPath, readLocalFileUploadInWorker, type LocalFileUpload } from "./fileupload";
 import { MemberListGatewayClient } from "./membergateway";
@@ -132,7 +144,7 @@ import {
 import { clearPrompt } from "./promptstate";
 import type { ClipboardImageAttachment } from "./imageclipboard";
 import { playLoopingSoundEffect, playSoundEffect, setSoundEffectVolume, type SoundEffectPlaybackHandle } from "./soundeffects";
-import { focusPrompt, setNotice } from "./state";
+import { focusHistory, focusPrompt, setLoadingNotice, setNotice } from "./state";
 import {
   applySidebarFolderLayout,
   applySidebarChannelLayoutForGuild,
@@ -681,7 +693,9 @@ function applyChannelMuteSettings(state: AppState, mutedByChannelId: Record<stri
 }
 
 function shouldNotifyForIncomingMessage(state: AppState, message: DiscordMessage): boolean {
-  if (state.timeline.channelId === message.channelId && isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) {
+  if (state.timeline.view === "channel"
+    && state.timeline.channelId === message.channelId
+    && isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) {
     return false;
   }
   const guildId = guildIdForChannel(state, message);
@@ -1623,7 +1637,7 @@ export function handleGatewayMessageCreate(state: AppState, effects: SessionEffe
   maybeResortDirectMessages(state, cachedMessage.channelId, cachedMessage.id);
   handleCallMessageParticipants(state, cachedMessage.channelId, cachedMessage.call, "message_create");
   if (state.timeline.channelId === cachedMessage.channelId) {
-    const pinned = activeTimelineWasPinned(state);
+    const pinned = state.timeline.view === "channel" && activeTimelineWasPinned(state);
     appendTimelineMessage(state.timeline, cachedMessage);
     if (pinned) {
       state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
@@ -1647,6 +1661,9 @@ function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, pa
   maybeResortDirectMessages(state, patch.channelId, patch.id);
   if (patchCachedChannelMessage(state.messageCacheByChannelId, patch)) {
     persistChannelMessageCache(state, patch.channelId);
+  }
+  if (patchCachedChannelPin(state.channelPinCacheByChannelId, patch)) {
+    persistChannelPinCache(state, patch.channelId);
   }
   handleCallMessageParticipants(state, patch.channelId, patch.call ?? null, "message_update");
   if (state.timeline.channelId === patch.channelId) {
@@ -1780,6 +1797,7 @@ export function removeSessionChannel(
   }
   for (const removedChannelId of removedChannelIds) {
     clearCachedChannelMessages(state.messageCacheByChannelId, removedChannelId);
+    clearCachedChannelPins(state.channelPinCacheByChannelId, removedChannelId);
     clearChannelNotifications(state.notifications, removedChannelId);
     delete state.channelMuteSettings[removedChannelId];
   }
@@ -2002,6 +2020,8 @@ function hydrateMissingReplyPreviewsFromKnownMessages(state: AppState, messages:
 function findKnownMessage(state: AppState, channelId: string, messageId: string): DiscordMessage | null {
   const cached = state.messageCacheByChannelId[channelId]?.messages.find((message) => message.id === messageId);
   if (cached) return cached;
+  const cachedPin = state.channelPinCacheByChannelId[channelId]?.messages.find((message) => message.id === messageId);
+  if (cachedPin) return cachedPin;
   if (state.timeline.channelId === channelId) {
     return state.timeline.messages.find((message) => message.id === messageId) ?? null;
   }
@@ -2038,6 +2058,10 @@ function maybeHydrateMissingReplyPreviewFromRest(state: AppState, effects: Sessi
       let changed = false;
       if (patchCachedChannelMessage(state.messageCacheByChannelId, patch)) {
         persistChannelMessageCache(state, patch.channelId);
+        changed = true;
+      }
+      if (patchCachedChannelPin(state.channelPinCacheByChannelId, patch)) {
+        persistChannelPinCache(state, patch.channelId);
         changed = true;
       }
       if (state.timeline.channelId === patch.channelId) {
@@ -2669,6 +2693,12 @@ function persistChannelMessageCache(state: AppState, channelId: string): void {
   if (accountId && entry) saveCachedChannelMessages(accountId, channelId, entry);
 }
 
+function persistChannelPinCache(state: AppState, channelId: string): void {
+  const accountId = currentAccountId(state);
+  const entry = state.channelPinCacheByChannelId[channelId];
+  if (accountId && entry) saveCachedChannelPins(accountId, channelId, entry);
+}
+
 function latestTimelineMessageId(state: AppState, channelId: string): string | null {
   if (state.timeline.channelId !== channelId) return null;
   const latest = state.timeline.messages.at(-1);
@@ -3009,6 +3039,9 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       if (removeCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId)) {
         persistChannelMessageCache(state, channelId);
       }
+      if (removeCachedChannelPin(state.channelPinCacheByChannelId, channelId, messageId)) {
+        persistChannelPinCache(state, channelId);
+      }
       if (state.messageDeletePending?.channelId === channelId && state.messageDeletePending.messageId === messageId) {
         state.messageDeletePending = null;
       }
@@ -3019,6 +3052,9 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onMessageDeleteBulk: (channelId, messageIds) => {
       if (removeCachedChannelMessages(state.messageCacheByChannelId, channelId, messageIds)) {
         persistChannelMessageCache(state, channelId);
+      }
+      if (removeCachedChannelPins(state.channelPinCacheByChannelId, channelId, messageIds)) {
+        persistChannelPinCache(state, channelId);
       }
       if (state.messageDeletePending?.channelId === channelId && messageIds.includes(state.messageDeletePending.messageId)) {
         state.messageDeletePending = null;
@@ -3086,6 +3122,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.memberRoleIdsByGuildId = {};
   state.channelMuteSettings = {};
   state.messageCacheByChannelId = {};
+  state.channelPinCacheByChannelId = {};
   state.replyTarget = null;
   state.editTarget = null;
   state.messageDeletePending = null;
@@ -3340,6 +3377,7 @@ export async function bootstrapReadOnlyClient(
     state.guildRolesByGuildId = loadCachedGuildRoles(accountId);
     state.memberRoleIdsByGuildId = loadCachedMemberRoles(accountId);
     state.messageCacheByChannelId = loadCachedChannelMessages(accountId);
+    state.channelPinCacheByChannelId = loadCachedChannelPins(accountId);
     warmCachedMemberLists(state, accountId);
     state.memberRoleCacheVersion += 1;
     syncAllSidebarVoiceMembers(state);
@@ -3695,6 +3733,111 @@ export async function focusThreadChannel(
   });
   await loadChannelMessages(state, token, thread.id, effects);
   return state.timeline.channelId === thread.id;
+}
+
+function showPinnedCommandError(state: AppState, effects: SessionEffects, message: string): void {
+  pushTimelineSystemMessage(state.timeline, message);
+  setNotice(state, "", "muted", { statusLine: false, chat: false });
+  effects.scheduleRender();
+}
+
+const FETCHING_PINS_NOTICE = "Fetching pins...";
+
+function clearFetchingPinsNotice(state: AppState): void {
+  if (state.notice.loading && state.notice.text === FETCHING_PINS_NOTICE) {
+    setNotice(state, "", "muted", { statusLine: false, chat: false });
+  }
+}
+
+/** Replace the active channel history with its complete pinned-message list. */
+export async function loadCurrentChannelPinnedMessages(
+  state: AppState,
+  token: string | null,
+  effects: SessionEffects,
+): Promise<boolean> {
+  if (!token) {
+    showPinnedCommandError(state, effects, "Login first with /login <token|username> to view pinned messages.");
+    return false;
+  }
+
+  const channelId = state.timeline.channelId;
+  if (!channelId || isWhatsAppChannelId(channelId)) {
+    showPinnedCommandError(state, effects, "Open a Discord message channel before using /pinned.");
+    return false;
+  }
+  const channel = findTimelineChannel(state.channelList.channels, channelId);
+  if (!channel || !isMessageChannel(channel)) {
+    showPinnedCommandError(state, effects, "Open a Discord message channel before using /pinned.");
+    return false;
+  }
+
+  const requestId = ++state.timeline.requestId;
+  state.timeline.loading = false;
+  state.timeline.loadingOlder = false;
+  state.timeline.loadingNewer = false;
+  const guildId = channel.guildId;
+  const cached = cachedChannelPins(state.channelPinCacheByChannelId, channelId);
+  let showedCachedPins = false;
+  if (cached) {
+    const withGuildIds = cached.messages.map((message) => withMessageGuildId(message, guildId));
+    const hydrated = hydrateMissingReplyPreviewsFromKnownMessages(state, withGuildIds);
+    if (hydrated.changed || hydrated.messages.some((message, index) => message !== cached.messages[index])) {
+      cached.messages = hydrated.messages;
+      persistChannelPinCache(state, channelId);
+    }
+    recordMessagesRoleIds(state, hydrated.messages, guildId);
+    setTimelineMessages(state.timeline, channelId, hydrated.messages, {
+      view: "pinned",
+      hasOlder: false,
+      hasNewer: false,
+      emptyText: "No pinned messages in this channel.",
+    });
+    state.historyCursorPendingVisibleBottom = hydrated.messages.length > 0;
+    focusHistory(state);
+    hydrated.messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
+    showedCachedPins = true;
+  }
+  setLoadingNotice(state, FETCHING_PINS_NOTICE, { statusLine: true, chat: false });
+  effects.scheduleRender();
+
+  try {
+    const fetchedMessages = await fetchChannelPinnedMessages(token, channelId);
+    if (state.auth.savedToken !== token) return false;
+
+    const withGuildIds = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
+    const { messages } = hydrateMissingReplyPreviewsFromKnownMessages(state, withGuildIds);
+    const cacheEntry = setCachedChannelPins(state.channelPinCacheByChannelId, channelId, messages);
+    persistChannelPinCache(state, channelId);
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return false;
+
+    recordMessagesRoleIds(state, cacheEntry.messages, guildId);
+    setTimelineMessages(state.timeline, channelId, cacheEntry.messages, {
+      view: "pinned",
+      hasOlder: false,
+      hasNewer: false,
+      emptyText: "No pinned messages in this channel.",
+      preserveScroll: showedCachedPins,
+    });
+    if (!showedCachedPins) {
+      state.historyCursorPendingVisibleBottom = cacheEntry.messages.length > 0;
+      focusHistory(state);
+    }
+    cacheEntry.messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
+    clearFetchingPinsNotice(state);
+    return true;
+  } catch (error) {
+    if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return false;
+    showPinnedCommandError(
+      state,
+      effects,
+      `Could not load pinned messages: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return showedCachedPins;
+  } finally {
+    if (requestId === state.timeline.requestId && state.timeline.channelId === channelId) {
+      effects.scheduleRender();
+    }
+  }
 }
 
 export async function loadChannelMessages(
@@ -4134,6 +4277,9 @@ export function editCurrentMessage(
   };
   const patchedCache = patchCachedChannelMessage(state.messageCacheByChannelId, optimisticPatch);
   if (patchedCache) persistChannelMessageCache(state, channelId);
+  if (patchCachedChannelPin(state.channelPinCacheByChannelId, optimisticPatch)) {
+    persistChannelPinCache(state, channelId);
+  }
   if (state.timeline.channelId === channelId) {
     patchTimelineMessage(state.timeline, optimisticPatch);
   }
@@ -4146,6 +4292,14 @@ export function editCurrentMessage(
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId, message);
       persistChannelMessageCache(state, channelId);
+      if (patchCachedChannelPin(state.channelPinCacheByChannelId, {
+        id: message.id,
+        channelId: message.channelId,
+        content: message.content,
+        editedTimestamp: message.editedTimestamp,
+      })) {
+        persistChannelPinCache(state, channelId);
+      }
       if (state.timeline.channelId === channelId) {
         replaceTimelineMessage(state.timeline, messageId, message);
       }
@@ -4154,6 +4308,14 @@ export function editCurrentMessage(
       if (originalMessage) {
         replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId, originalMessage);
         persistChannelMessageCache(state, channelId);
+        if (patchCachedChannelPin(state.channelPinCacheByChannelId, {
+          id: originalMessage.id,
+          channelId: originalMessage.channelId,
+          content: originalMessage.content,
+          editedTimestamp: originalMessage.editedTimestamp,
+        })) {
+          persistChannelPinCache(state, channelId);
+        }
         if (state.timeline.channelId === channelId) {
           replaceTimelineMessage(state.timeline, messageId, originalMessage);
         }
@@ -4213,6 +4375,8 @@ export function deleteMessage(
   if (removeCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId)) {
     persistChannelMessageCache(state, channelId);
   }
+  const removedFromPinCache = removeCachedChannelPin(state.channelPinCacheByChannelId, channelId, messageId);
+  if (removedFromPinCache) persistChannelPinCache(state, channelId);
   removeTimelineMessage(state.timeline, messageId, channelId);
   clearMessageTargetsForDeletedMessage(state, channelId, messageId);
   effects.scheduleRender();
@@ -4223,6 +4387,11 @@ export function deleteMessage(
     } catch {
       upsertCachedChannelMessage(state.messageCacheByChannelId, message);
       persistChannelMessageCache(state, channelId);
+      if (removedFromPinCache) {
+        const currentPins = state.channelPinCacheByChannelId[channelId]?.messages ?? [];
+        setCachedChannelPins(state.channelPinCacheByChannelId, channelId, [...currentPins, message]);
+        persistChannelPinCache(state, channelId);
+      }
       if (timelineIndex >= 0) {
         insertTimelineMessageAt(state.timeline, message, timelineIndex, channelId);
       }
@@ -5094,7 +5263,10 @@ export function toggleSelectedPrivateConversationPin(state: AppState, effects: S
 
 export function ackCurrentChannelIfAtBottom(state: AppState): void {
   const channelId = state.timeline.channelId;
-  if (!channelId || isWhatsAppChannelId(channelId) || !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) return;
+  if (state.timeline.view !== "channel"
+    || !channelId
+    || isWhatsAppChannelId(channelId)
+    || !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) return;
   const latestMessageId = channelAckMessageId(state, channelId, latestTimelineMessageId(state, channelId));
   if (!latestMessageId) return;
   markChannelRead(state, state.auth.savedToken, channelId, latestMessageId);

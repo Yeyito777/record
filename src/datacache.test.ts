@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { flushDataCacheSync, loadCachedChannelMessages, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, saveCachedChannelMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
+import { flushDataCacheSync, loadCachedChannelMessages, loadCachedChannelPins, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, saveCachedChannelMessages, saveCachedChannelPins, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -197,6 +197,45 @@ describe("data cache", () => {
     });
 
     expect(loadCachedChannelMessages("account-1")["channel-1"]?.latestFetchedAt).toBe(0);
+  });
+
+  test("persists pinned-message snapshots per account and channel", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    saveCachedChannelPins("account-1", "channel-1", {
+      channelId: "channel-1",
+      messages: [{
+        id: "pin-1",
+        channelId: "channel-1",
+        guildId: "guild-1",
+        type: 0,
+        content: "remember this",
+        mentionEveryone: false,
+        mentionRoleIds: [],
+        mentionUserIds: [],
+        timestamp: Date.UTC(2026, 0, 1, 12),
+        editedTimestamp: null,
+        author: { id: "user-1", username: "alice", displayName: "Alice", bot: false },
+        reply: null,
+        call: null,
+        attachments: [],
+        stickerNames: [],
+        embedsCount: 0,
+      }],
+      updatedAt: 1234,
+    });
+
+    expect(loadCachedChannelPins("account-1")["channel-1"]).toMatchObject({
+      channelId: "channel-1",
+      updatedAt: 1234,
+      messages: [{ id: "pin-1", content: "remember this" }],
+    });
+    expect(loadCachedChannelPins("account-2")["channel-1"]).toBeUndefined();
+
+    flushDataCacheSync();
+    expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).accounts["account-1"].channelPins["channel-1"].messages[0].id)
+      .toBe("pin-1");
   });
 
   test("repairs cached thread starters that older builds rendered as empty replies", () => {

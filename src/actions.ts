@@ -10,7 +10,7 @@ import { tryCommand } from "./commands";
 import { fetchCurrentUserStatusSettings, setCurrentUserSettingsProtoCustomStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
 import { expandMacros } from "./macros";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
-import { clearReadOnlyClient, createCurrentChannelThread, editCurrentMessage, hangUpCurrentCall, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserCustomStatus, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, toggleCurrentStream, uploadCurrentChannelFile, watchCurrentStream, type SessionEffects } from "./session";
+import { clearReadOnlyClient, createCurrentChannelThread, editCurrentMessage, hangUpCurrentCall, loadCurrentChannelPinnedMessages, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserCustomStatus, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, toggleCurrentStream, uploadCurrentChannelFile, watchCurrentStream, type SessionEffects } from "./session";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
@@ -177,6 +177,9 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       return true;
     case "refresh":
       refreshReadOnlyClient(state, effects);
+      return true;
+    case "pinned":
+      void loadCurrentChannelPinnedMessages(state, state.auth.savedToken, effects);
       return true;
     case "create_thread":
       createCurrentChannelThread(state, state.auth.savedToken, result.name, effects);

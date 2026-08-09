@@ -9,8 +9,12 @@ import { summarizeDisplayMessageParts } from "./messageparts";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { ansiTrueColor, dmAuthorColor, theme, toneColor } from "./theme";
 
+export type TimelineView = "channel" | "pinned";
+
 export interface TimelineState {
   channelId: string | null;
+  /** Whether the timeline is showing canonical channel history or a pinned-message result set. */
+  view: TimelineView;
   messages: DiscordMessage[];
   /** Local-only command output; discarded whenever canonical history reloads. */
   systemMessages: TimelineSystemMessage[];
@@ -104,6 +108,7 @@ let nextTimelineSystemMessageId = 0;
 export function createTimelineState(): TimelineState {
   return {
     channelId: null,
+    view: "channel",
     messages: [],
     systemMessages: [],
     emptyText: null,
@@ -126,6 +131,7 @@ export function createTimelineState(): TimelineState {
 
 export function clearTimeline(timeline: TimelineState): void {
   timeline.channelId = null;
+  timeline.view = "channel";
   timeline.messages = [];
   timeline.systemMessages = [];
   timeline.emptyText = null;
@@ -143,12 +149,15 @@ export function setTimelineMessages(
   timeline: TimelineState,
   channelId: string,
   messages: DiscordMessage[],
-  options: { hasOlder?: boolean; hasNewer?: boolean; preserveScroll?: boolean; emptyText?: string | null } = {},
+  options: { hasOlder?: boolean; hasNewer?: boolean; preserveScroll?: boolean; emptyText?: string | null; view?: TimelineView } = {},
 ): void {
-  const preserveScroll = options.preserveScroll === true && timeline.channelId === channelId;
-  const previousEmptyText = timeline.channelId === channelId ? timeline.emptyText : null;
+  const view = options.view ?? "channel";
+  const sameTimeline = timeline.channelId === channelId && timeline.view === view;
+  const preserveScroll = options.preserveScroll === true && sameTimeline;
+  const previousEmptyText = sameTimeline ? timeline.emptyText : null;
   const previousScrollOffset = timeline.scrollOffset;
   timeline.channelId = channelId;
+  timeline.view = view;
   timeline.messages = messages;
   timeline.systemMessages = [];
   timeline.emptyText = options.emptyText !== undefined ? options.emptyText : previousEmptyText;
@@ -184,6 +193,9 @@ export function finishLoadingNewerMessages(timeline: TimelineState, hasNewer = t
 
 export function appendTimelineMessage(timeline: TimelineState, message: DiscordMessage): void {
   if (timeline.channelId !== message.channelId) return;
+  // Gateway creates and optimistic sends belong to canonical history. Pinned
+  // results are a fixed REST snapshot until the user selects one or reloads it.
+  if (timeline.view === "pinned") return;
   const existingIndex = timeline.messages.findIndex((existing) => existing.id === message.id);
   if (existingIndex >= 0) {
     timeline.messages[existingIndex] = message;

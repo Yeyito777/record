@@ -8,8 +8,9 @@ import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChanne
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
+import { renderStatusLine } from "./statusline";
 
 const originalFetch = globalThis.fetch;
 const originalXdg = process.env.XDG_CONFIG_HOME;
@@ -806,6 +807,137 @@ describe("session", () => {
     expect(state.timeline.loading).toBe(false);
     expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["from rest"]);
     expect(state.messageCacheByChannelId["channel-1"]?.messages.map((entry) => entry.content)).toEqual(["from rest"]);
+  });
+
+  test("pinned view shows only pins and an around load returns to canonical history", async () => {
+    const requestedUrls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("/channels/channel-1/messages/pins?")) {
+        return new Response(JSON.stringify({
+          items: [{
+            pinned_at: "2026-01-02T12:00:00.000Z",
+            message: {
+              id: "25",
+              channel_id: "channel-1",
+              guild_id: "guild-1",
+              type: 0,
+              content: "the pinned message",
+              timestamp: "2026-01-01T12:25:00.000Z",
+              edited_timestamp: null,
+              author: { id: "user-1", username: "tester", global_name: "Tester" },
+              attachments: [],
+              embeds: [],
+            },
+          }],
+          has_more: false,
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/channels/channel-1/messages?limit=50&around=25")) {
+        return new Response(JSON.stringify([{
+          id: "26",
+          channel_id: "channel-1",
+          guild_id: "guild-1",
+          type: 0,
+          content: "after target",
+          timestamp: "2026-01-01T12:26:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-2", username: "alice", global_name: "Alice" },
+          attachments: [],
+          embeds: [],
+        }, {
+          id: "25",
+          channel_id: "channel-1",
+          guild_id: "guild-1",
+          type: 0,
+          content: "the pinned message",
+          timestamp: "2026-01-01T12:25:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        }]), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.timeline.channelId = "channel-1";
+    state.timeline.messages = [message("99", "ordinary latest")];
+
+    expect(await loadCurrentChannelPinnedMessages(state, "token-1", { scheduleRender: () => {} })).toBe(true);
+    expect(state.timeline.view).toBe("pinned");
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["the pinned message"]);
+    expect(state.timeline.hasOlder).toBe(false);
+    expect(state.timeline.hasNewer).toBe(false);
+    expect(state.chatFocus).toBe("history");
+
+    expect(await loadChannelMessagesAround(state, "token-1", "channel-1", "25", { scheduleRender: () => {} })).toBe(true);
+    expect(state.timeline.view).toBe("channel");
+    expect(state.timeline.messages.map((entry) => entry.id)).toEqual(["25", "26"]);
+    expect(requestedUrls).toEqual([
+      "https://discord.com/api/v9/channels/channel-1/messages/pins?limit=50",
+      "https://discord.com/api/v9/channels/channel-1/messages?limit=50&around=25",
+    ]);
+  });
+
+  test("pinned view hydrates cached pins immediately while showing fetch progress in the status line", async () => {
+    let resolvePins!: (response: Response) => void;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.includes("/channels/channel-1/messages/pins?")) throw new Error(`unexpected fetch ${url}`);
+      return new Promise<Response>((resolve) => {
+        resolvePins = resolve;
+      });
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.timeline.channelId = "channel-1";
+    state.timeline.messages = [message("99", "ordinary latest")];
+    state.channelPinCacheByChannelId["channel-1"] = {
+      channelId: "channel-1",
+      messages: [message("25", "cached pin")],
+      updatedAt: 1,
+    };
+
+    const loading = loadCurrentChannelPinnedMessages(state, "token-1", { scheduleRender: () => {} });
+
+    expect(state.timeline.view).toBe("pinned");
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["cached pin"]);
+    expect(state.notice).toMatchObject({ text: "Fetching pins...", loading: true, statusLine: true, chat: false });
+    expect(renderStatusLine(state, 120).lines.join("\n")).toContain("⠋ Fetching pins...");
+
+    resolvePins(new Response(JSON.stringify({
+      items: [{
+        pinned_at: "2026-01-02T12:00:00.000Z",
+        message: {
+          id: "26",
+          channel_id: "channel-1",
+          guild_id: "guild-1",
+          type: 0,
+          content: "fresh pin",
+          timestamp: "2026-01-01T12:26:00.000Z",
+          edited_timestamp: null,
+          author: { id: "user-1", username: "tester", global_name: "Tester" },
+          attachments: [],
+          embeds: [],
+        },
+      }],
+      has_more: false,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    expect(await loading).toBe(true);
+    expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["fresh pin"]);
+    expect(state.channelPinCacheByChannelId["channel-1"]?.messages.map((entry) => entry.content)).toEqual(["fresh pin"]);
+    expect(state.notice.text).toBe("");
   });
 
   test("loading latest channel messages clears newer pagination after an around jump", async () => {

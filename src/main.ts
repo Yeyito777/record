@@ -663,6 +663,50 @@ function selectedHistoryMessage(): DiscordMessage | null {
   return state.timeline.messages.find((message) => message.id === bound.messageId) ?? null;
 }
 
+function exitPinnedMessages(): boolean {
+  if (state.timeline.view !== "pinned") return false;
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+  if (token && channelId) {
+    void loadChannelMessages(state, token, channelId, { scheduleRender });
+  } else {
+    scheduleRender();
+  }
+  return true;
+}
+
+function returnToPinnedMessageInChannelHistory(): boolean {
+  if (state.timeline.view !== "pinned") return false;
+
+  const message = selectedHistoryMessage();
+  if (!message) {
+    scheduleRender();
+    return true;
+  }
+
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+  if (!token || !channelId) {
+    scheduleRender();
+    return true;
+  }
+
+  if (state.notice.loading && state.notice.text === "Fetching pins...") {
+    setNotice(state, "", "muted", { statusLine: false, chat: false });
+  }
+
+  void (async () => {
+    const loaded = await loadChannelMessagesAround(state, token, channelId, message.id, effects);
+    if (!running) return;
+    if (loaded) {
+      refreshHistorySnapshot();
+      jumpHistoryCursorToMessage(state, message.id, timelinePageSize());
+    }
+    scheduleRender();
+  })();
+  return true;
+}
+
 function refreshHistorySnapshot(): void {
   setTimelineRenderContext(
     state.timeline,
@@ -1316,6 +1360,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
   }
 
   if (key.type === "escape") {
+    if (state.editor.mode === "normal") exitPinnedMessages();
     state.navigationPendingKeys = "";
     state.sidebar.visualAnchor = null;
     state.sidebar.pendingDeleteItem = null;
@@ -1584,6 +1629,12 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
+  if (key.type === "escape" && state.timeline.view === "pinned") {
+    focusHistory(state);
+    exitPinnedMessages();
+    return true;
+  }
+
   if (state.editor.mode === "normal" && key.type === "char" && key.char === "d") {
     deleteSelectedHistoryMessage();
     return true;
@@ -1645,6 +1696,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_select": {
+      if (returnToPinnedMessageInChannelHistory()) return true;
       if (focusThreadAtHistoryCursor()) return true;
       if (jumpToReplyTargetAtHistoryCursor()) return true;
       if (jumpToForwardedOriginAtHistoryCursor()) return true;

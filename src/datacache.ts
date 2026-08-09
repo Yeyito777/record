@@ -10,6 +10,7 @@ import { configDir } from "./config";
 import { DIRECT_MESSAGES_GUILD_ID, isThreadChannel, normalizeDiscordMessageForDisplay, type DiscordChannel, type DiscordGuild, type DiscordGuildMember, type DiscordRole } from "./discord";
 import type { SidebarChannelLayout, SidebarChannelPlacement, SidebarFolderLayout } from "./sidebar";
 import type { ChannelMessageCache, CachedChannelMessages } from "./messagecache";
+import type { CachedChannelPins, ChannelPinCache } from "./pincache";
 import type { NotificationState } from "./notifications";
 
 interface AccountDataCache {
@@ -19,6 +20,7 @@ interface AccountDataCache {
   guildChannels?: Record<string, DiscordChannel[]>;
   memberLists?: Record<string, DiscordGuildMember[]>;
   channelMessages?: ChannelMessageCache;
+  channelPins?: ChannelPinCache;
   guildRoles?: Record<string, DiscordRole[]>;
   memberRoles?: Record<string, Record<string, string[]>>;
   notifications?: NotificationState;
@@ -56,6 +58,7 @@ const CACHE_VERSION = 1;
 const CACHE_SAVE_DEBOUNCE_MS = 2_500;
 const MAX_PERSISTED_MESSAGE_CHANNELS = 30;
 const MAX_PERSISTED_MESSAGES_PER_CHANNEL = 75;
+const MAX_PERSISTED_PIN_CHANNELS = 30;
 
 let cacheMemo: DataCacheFile | null = null;
 let cacheMemoPath: string | null = null;
@@ -231,19 +234,27 @@ function compactAccountCache(account: AccountDataCache): AccountDataCache {
       .slice(0, MAX_PERSISTED_MESSAGE_CHANNELS)
       .map(([channelId, entry]) => [channelId, cloneCachedChannelMessages(entry, MAX_PERSISTED_MESSAGES_PER_CHANNEL)]),
   );
+  const channelPins = Object.fromEntries(
+    Object.entries(account.channelPins ?? {})
+      .sort(([, left], [, right]) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+      .slice(0, MAX_PERSISTED_PIN_CHANNELS)
+      .map(([channelId, entry]) => [channelId, cloneCachedChannelPins(entry)]),
+  );
 
   return {
     ...account,
     channelMessages,
+    channelPins,
   };
 }
 
 function accountCache(cache: DataCacheFile, accountId: string): AccountDataCache {
   cache.lastAccountId = accountId;
-  cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {}, memberLists: {}, channelMessages: {}, guildRoles: {}, memberRoles: {} };
+  cache.accounts[accountId] ??= { savedAt: Date.now(), guildChannels: {}, memberLists: {}, channelMessages: {}, channelPins: {}, guildRoles: {}, memberRoles: {} };
   cache.accounts[accountId].guildChannels ??= {};
   cache.accounts[accountId].memberLists ??= {};
   cache.accounts[accountId].channelMessages ??= {};
+  cache.accounts[accountId].channelPins ??= {};
   cache.accounts[accountId].guildRoles ??= {};
   cache.accounts[accountId].memberRoles ??= {};
   return cache.accounts[accountId];
@@ -528,6 +539,22 @@ export function saveCachedChannelMessages(accountId: string, channelId: string, 
   saveCacheFile(cache);
 }
 
+export function loadCachedChannelPins(accountId: string): ChannelPinCache {
+  const cached = loadCacheFile().accounts[accountId]?.channelPins ?? {};
+  return Object.fromEntries(
+    Object.entries(cached).map(([channelId, entry]) => [channelId, cloneCachedChannelPins(entry)]),
+  );
+}
+
+export function saveCachedChannelPins(accountId: string, channelId: string, entry: CachedChannelPins): void {
+  const cache = loadCacheFile();
+  const account = accountCache(cache, accountId);
+  account.channelPins ??= {};
+  account.channelPins[channelId] = cloneCachedChannelPins(entry);
+  account.savedAt = Date.now();
+  saveCacheFile(cache);
+}
+
 function cloneCachedChannelMessages(entry: CachedChannelMessages, maxMessages = Number.POSITIVE_INFINITY): CachedChannelMessages {
   const stored = entry as CachedChannelMessages & { latestFetchedAt?: number | null };
   return {
@@ -536,6 +563,14 @@ function cloneCachedChannelMessages(entry: CachedChannelMessages, maxMessages = 
     hasOlder: entry.hasOlder,
     updatedAt: entry.updatedAt,
     latestFetchedAt: stored.latestFetchedAt ?? null,
+  };
+}
+
+function cloneCachedChannelPins(entry: CachedChannelPins): CachedChannelPins {
+  return {
+    channelId: entry.channelId,
+    messages: entry.messages.map((message) => normalizeDiscordMessageForDisplay({ ...message })),
+    updatedAt: entry.updatedAt,
   };
 }
 

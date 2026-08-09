@@ -207,6 +207,16 @@ interface DiscordThreadSearchResponse {
   members?: DiscordThreadMemberResponse[];
 }
 
+interface DiscordMessagePinResponse {
+  pinned_at: string;
+  message: DiscordMessageResponse;
+}
+
+interface DiscordChannelPinsResponse {
+  items?: DiscordMessagePinResponse[];
+  has_more?: boolean;
+}
+
 export interface DiscordMessageAuthorResponse {
   id: string;
   username: string;
@@ -1796,6 +1806,16 @@ function resolveReplyPreviewsFromMessages(messages: DiscordMessage[]): DiscordMe
   return messages.map((message) => hydrateMissingReplyPreviewFromLookup(message, (target) => byId.get(target.messageId)));
 }
 
+function compareDiscordMessagesChronologically(left: DiscordMessage, right: DiscordMessage): number {
+  if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp;
+  if (/^\d+$/.test(left.id) && /^\d+$/.test(right.id)) {
+    const leftId = BigInt(left.id);
+    const rightId = BigInt(right.id);
+    if (leftId !== rightId) return leftId < rightId ? -1 : 1;
+  }
+  return left.id.localeCompare(right.id);
+}
+
 export async function fetchChannelMessage(
   token: string,
   channelId: string,
@@ -1838,6 +1858,33 @@ export async function fetchChannelMessagesAround(
   const query = new URLSearchParams({ limit: String(limit), around: messageId });
   const messages = await apiGetJson<DiscordMessageResponse[]>(token, `/channels/${channelId}/messages?${query.toString()}`);
   return resolveReplyPreviewsFromMessages(messages.map(mapDiscordMessage).reverse());
+}
+
+/** Fetch every pinned message in a channel through Discord's paginated pins API. */
+export async function fetchChannelPinnedMessages(token: string, channelId: string): Promise<DiscordMessage[]> {
+  const pinnedMessages: DiscordMessage[] = [];
+  const seenCursors = new Set<string>();
+  let before: string | null = null;
+
+  while (true) {
+    const query = new URLSearchParams({ limit: "50" });
+    if (before) query.set("before", before);
+    const page = await apiGetJson<DiscordChannelPinsResponse>(
+      token,
+      `/channels/${channelId}/messages/pins?${query.toString()}`,
+    );
+    const items = page.items ?? [];
+    pinnedMessages.push(...items.map((item) => mapDiscordMessage(item.message)));
+
+    if (!page.has_more || items.length === 0) break;
+    const nextBefore = items.at(-1)?.pinned_at;
+    if (!nextBefore || seenCursors.has(nextBefore)) break;
+    seenCursors.add(nextBefore);
+    before = nextBefore;
+  }
+
+  const byId = new Map(pinnedMessages.map((message) => [message.id, message]));
+  return resolveReplyPreviewsFromMessages([...byId.values()].sort(compareDiscordMessagesChronologically));
 }
 
 export interface SendMessageReplyOptions {

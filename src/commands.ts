@@ -27,6 +27,7 @@ export type CommandResult =
   | { type: "logout" }
   | { type: "logout_whatsapp" }
   | { type: "refresh" }
+  | { type: "pinned" }
   | { type: "create_thread"; name: string }
   | { type: "upload"; path: string }
   | { type: "call" }
@@ -234,6 +235,20 @@ const commands: SlashCommand[] = [
       if (parts.length !== 1) return usage(state, "Usage: /refresh");
       clearPrompt(state);
       return { type: "refresh" };
+    },
+  },
+  {
+    name: "/pinned",
+    description: "Show only pinned messages in the current channel",
+    handler: (text, state) => {
+      const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length !== 1) {
+        setNotice(state, "Usage: /pinned", "warning", { statusLine: false });
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      clearPrompt(state);
+      return { type: "pinned" };
     },
   },
   {

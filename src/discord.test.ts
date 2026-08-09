@@ -9,6 +9,7 @@ import {
   createMessageThread,
   deleteChannel,
   ackChannelMessage,
+  fetchChannelPinnedMessages,
   fetchChannelMessagesAfter,
   fetchChannelMessages,
   fetchChannelMessagesAround,
@@ -945,6 +946,54 @@ describe("discord helpers", () => {
 
     expect(requests).toEqual(["https://discord.com/api/v9/channels/channel-1/messages?limit=25&around=message-1"]);
     expect(messages.map((message) => message.id)).toEqual(["message-1", "message-2"]);
+  });
+
+  test("fetches every page of channel pins and returns them in message chronology", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      const secondPage = url.includes("before=");
+      const item = secondPage
+        ? {
+          pinned_at: "2026-01-01T10:00:00.000Z",
+          message: {
+            id: "1",
+            channel_id: "channel-1",
+            content: "older pin",
+            timestamp: "2025-12-01T12:00:00.000Z",
+            edited_timestamp: null,
+            author: { id: "user-1", username: "tester", global_name: "Tester" },
+            attachments: [],
+            embeds: [],
+          },
+        }
+        : {
+          pinned_at: "2026-02-01T10:00:00.000Z",
+          message: {
+            id: "3",
+            channel_id: "channel-1",
+            content: "newer pin",
+            timestamp: "2026-01-01T12:00:00.000Z",
+            edited_timestamp: null,
+            author: { id: "user-1", username: "tester", global_name: "Tester" },
+            attachments: [],
+            embeds: [],
+          },
+        };
+      return new Response(JSON.stringify({ items: [item], has_more: !secondPage }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const messages = await fetchChannelPinnedMessages("token", "channel-1");
+
+    expect(requests).toEqual([
+      "https://discord.com/api/v9/channels/channel-1/messages/pins?limit=50",
+      "https://discord.com/api/v9/channels/channel-1/messages/pins?limit=50&before=2026-02-01T10%3A00%3A00.000Z",
+    ]);
+    expect(messages.map((message) => message.id)).toEqual(["1", "3"]);
   });
 
   test("fetches messages after a known message id", async () => {

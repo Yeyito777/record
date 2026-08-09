@@ -136,6 +136,23 @@ describe("timeline rendering", () => {
     expect(rendered).not.toContain("No messages in this thread yet.");
   });
 
+  test("keeps pinned results isolated from new channel messages", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "pinned")], {
+      view: "pinned",
+      hasOlder: false,
+      hasNewer: false,
+    });
+
+    appendTimelineMessage(timeline, message("message-2", "new live message"));
+
+    expect(timeline.view).toBe("pinned");
+    expect(timeline.messages.map((entry) => entry.content)).toEqual(["pinned"]);
+
+    setTimelineMessages(timeline, "channel-1", [message("message-2", "new live message")]);
+    expect(timeline.view).toBe("channel");
+  });
+
   test("renders thread creation as an authored message without a bogus reply", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("thread-created-1", "🧵 Started a thread: test-thread", {
