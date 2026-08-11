@@ -25,13 +25,22 @@ export function buildVoiceIdentifyPayload(data: VoiceGatewayJoinData, maxDavePro
   };
 }
 
-export function buildMediaSinkWantsPayload(ssrc: number, options: { quality?: number } = {}): unknown {
+export function buildMediaSinkWantsPayload(ssrc: number, options: { quality?: number; pixelCount?: number } = {}): unknown {
   const quality = normalizeQuality(options.quality ?? 100);
+  const pixelCount = normalizePixelCount(options.pixelCount ?? 1920 * 1080);
   const key = String(ssrc >>> 0);
   return {
     op: 15,
-    d: { [key]: quality },
+    d: {
+      [key]: quality,
+      pixelCounts: { [key]: pixelCount },
+    },
   };
+}
+
+function normalizePixelCount(pixelCount: number): number {
+  if (!Number.isFinite(pixelCount)) return 1920 * 1080;
+  return Math.max(0, Math.round(pixelCount));
 }
 
 function normalizeQuality(quality: number): number {

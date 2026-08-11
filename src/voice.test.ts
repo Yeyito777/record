@@ -179,10 +179,11 @@ describe("voice backend", () => {
   });
 
   test("builds media sink wants for watched stream quality", () => {
-    expect(buildMediaSinkWantsPayload(8964, { quality: 150 })).toEqual({
+    expect(buildMediaSinkWantsPayload(8964, { quality: 150, pixelCount: 1280 * 720 })).toEqual({
       op: 15,
       d: {
         "8964": 100,
+        pixelCounts: { "8964": 921600 },
       },
     });
   });

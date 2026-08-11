@@ -781,6 +781,13 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     videoTrack.onOpen(() => debugLog("voice.gateway.webrtc_track_open", { mid: safeTrackString(videoTrack, "mid"), type: safeTrackString(videoTrack, "type") }));
     videoTrack.onClosed(() => debugLog("voice.gateway.webrtc_track_closed", { mid: "1", type: "video" }));
     videoTrack.onError((error) => debugLog("voice.gateway.webrtc_track_error", { mid: "1", type: "video", error }));
+    // RecvOnly media uses the tracks we added to the offer; libdatachannel does
+    // not emit onTrack again for an existing MID when the answer is installed.
+    // Attach RTP callbacks directly so watched media can reach playback.
+    if (this.receiveOnlyStream) {
+      this.registerIncomingWebRtcTrack(audioTrack);
+      this.registerIncomingWebRtcTrack(videoTrack);
+    }
     pc.onTrack((track) => this.registerIncomingWebRtcTrack(track));
     pc.onLocalDescription((sdp) => {
       if (this.webRtc !== pc || this.disconnected) return;
@@ -914,7 +921,7 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     const quality = receive.quality ?? 100;
     const pixelCount = receive.pixelCount ?? 1920 * 1080;
     debugLog("voice.gateway.media_sink_wants", { streamKey: receive.streamKey, videoSsrc, quality, pixelCount });
-    this.send(buildMediaSinkWantsPayload(videoSsrc, { quality }));
+    this.send(buildMediaSinkWantsPayload(videoSsrc, { quality, pixelCount }));
   }
 
   private sendWebRtcAudioFrame(payload: Buffer, frameDurationMs: number): void {
