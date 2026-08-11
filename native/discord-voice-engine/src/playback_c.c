@@ -44,6 +44,7 @@
 #define DEFAULT_IDLE_TIMEOUT_MS 350
 #define DEFAULT_MAX_PLC_PACKETS 10
 #define DEFAULT_MAX_RESYNC_GAP 120
+#define STREAM_RESTART_MIN_TIMESTAMP_REWIND SAMPLE_RATE
 #define MAX_STREAMS 16
 #define CONTROL_LINE_CAP 512
 #define CONTROL_READ_CAP 1024
@@ -269,7 +270,9 @@ typedef struct {
   RtpPacketNode *packets;
   size_t buffered_packets;
   FloatFifo pending;
+  uint64_t start_at_ms;
   uint64_t last_receive_ms;
+  uint32_t jitter_ms;
   uint64_t consecutive_plc;
 } PlaybackStream;
 
@@ -321,8 +324,15 @@ static void stream_destroy(PlaybackStream *stream) {
   memset(stream, 0, sizeof(*stream));
 }
 
-static bool stream_init(PlaybackStream *stream, uint32_t ssrc, uint16_t first_sequence, uint32_t first_timestamp, int channels) {
+static bool stream_init(
+    PlaybackStream *stream,
+    uint32_t ssrc,
+    uint16_t first_sequence,
+    uint32_t first_timestamp,
+    int channels,
+    uint32_t jitter_ms) {
   int err = OPUS_OK;
+  uint64_t now_ms = monotonic_ms();
   memset(stream, 0, sizeof(*stream));
   stream->decoder = opus_decoder_create(SAMPLE_RATE, channels, &err);
   if (!stream->decoder || err != OPUS_OK) return false;
@@ -332,7 +342,9 @@ static bool stream_init(PlaybackStream *stream, uint32_t ssrc, uint16_t first_se
   stream->expected_sequence_set = true;
   stream->expected_timestamp = first_timestamp;
   stream->expected_timestamp_set = true;
-  stream->last_receive_ms = monotonic_ms();
+  stream->start_at_ms = now_ms + jitter_ms;
+  stream->last_receive_ms = now_ms;
+  stream->jitter_ms = jitter_ms;
   return true;
 }
 
@@ -340,6 +352,28 @@ static void stream_reset_decoder_state(PlaybackStream *stream, PlaybackStats *st
   if (stream->decoder) opus_decoder_ctl(stream->decoder, OPUS_RESET_STATE);
   if (flush_pending) stream->pending.len = 0;
   if (stats) stats->decoder_resets++;
+}
+
+static void stream_rebase(
+    PlaybackStream *stream,
+    uint16_t sequence,
+    uint32_t timestamp,
+    PlaybackStats *stats,
+    bool discard_buffered_packets,
+    bool rebuffer) {
+  stream_reset_decoder_state(stream, stats, true);
+  if (discard_buffered_packets) {
+    free_packet_list(stream->packets);
+    stream->packets = NULL;
+    stream->buffered_packets = 0;
+  }
+  stream->expected_sequence = sequence;
+  stream->expected_sequence_set = true;
+  stream->expected_timestamp = timestamp;
+  stream->expected_timestamp_set = true;
+  stream->consecutive_plc = 0;
+  if (rebuffer) stream->start_at_ms = monotonic_ms() + stream->jitter_ms;
+  if (stats) stats->resync_events++;
 }
 
 static RtpPacketNode *stream_pop_expected(PlaybackStream *stream) {
@@ -353,6 +387,20 @@ static RtpPacketNode *stream_pop_expected(PlaybackStream *stream) {
       return node;
     }
     cursor = &node->next;
+  }
+  return NULL;
+}
+
+static RtpPacketNode *stream_remove_packet(PlaybackStream *stream, RtpPacketNode *target) {
+  RtpPacketNode **cursor = &stream->packets;
+  while (*cursor) {
+    if (*cursor == target) {
+      *cursor = target->next;
+      target->next = NULL;
+      stream->buffered_packets--;
+      return target;
+    }
+    cursor = &(*cursor)->next;
   }
   return NULL;
 }
@@ -377,17 +425,37 @@ static bool stream_insert_packet(PlaybackStream *stream, const ParsedRtp *parsed
     stream->expected_sequence = parsed->sequence;
     stream->expected_sequence_set = true;
   }
-  if (seq_is_older(parsed->sequence, stream->expected_sequence)) {
+  bool sequence_older = seq_is_older(parsed->sequence, stream->expected_sequence);
+  uint32_t timestamp_rewind = stream->expected_timestamp - parsed->timestamp;
+  bool timestamp_restarted = stream->expected_timestamp_set &&
+                             timestamp_is_older(parsed->timestamp, stream->expected_timestamp) &&
+                             timestamp_rewind >= STREAM_RESTART_MIN_TIMESTAMP_REWIND;
+  if (!sequence_older && timestamp_restarted) {
+    // A forward/exact sequence paired with a material backward RTP timestamp is
+    // a new logical sender generation. Make that boundary atomic while this is
+    // still the first packet: discard the old queue, reset, then let this packet
+    // and its successors populate a freshly warmed jitter buffer.
+    stream_rebase(stream, parsed->sequence, parsed->timestamp, stats, true, true);
+  } else if (sequence_older) {
+    // Do not promote one delayed packet into a same-SSRC sequence restart. A
+    // backward generation needs confirmation that RTP does not provide here;
+    // resetting on a single stale UDP datagram can resurrect retired audio.
     stats->late_packets++;
     return false;
+  }
+  if (stream->packets) {
+    // stream_rebase() above may have discarded the old jitter buffer. This
+    // duplicate check deliberately runs after it.
+    for (RtpPacketNode *node = stream->packets; node; node = node->next) {
+      if (node->sequence == parsed->sequence) {
+        stats->duplicate_packets++;
+        return false;
+      }
+    }
   }
   RtpPacketNode **cursor = &stream->packets;
   while (*cursor) {
     RtpPacketNode *node = *cursor;
-    if (node->sequence == parsed->sequence) {
-      stats->duplicate_packets++;
-      return false;
-    }
     uint16_t new_delta = seq_forward_distance(parsed->sequence, stream->expected_sequence);
     uint16_t old_delta = seq_forward_distance(node->sequence, stream->expected_sequence);
     if (new_delta < old_delta) break;
@@ -441,8 +509,8 @@ static void stream_advance_after_packet(PlaybackStream *stream, uint32_t packet_
   }
 }
 
-static void stream_advance_after_concealment(PlaybackStream *stream) {
-  if (stream->expected_timestamp_set) stream->expected_timestamp += FRAME_SAMPLES;
+static void stream_advance_after_concealment(PlaybackStream *stream, int samples_per_channel) {
+  if (stream->expected_timestamp_set) stream->expected_timestamp += (uint32_t)samples_per_channel;
 }
 
 static uint32_t stream_missing_audio_frames_before(const PlaybackStream *stream, const RtpPacketNode *packet) {
@@ -461,6 +529,41 @@ static bool append_silence_into_pending(PlaybackStream *stream, int channels, Pl
   return true;
 }
 
+static int decode_concealment_into_pending(
+    PlaybackStream *stream,
+    const RtpPacketNode *recovery_packet,
+    int channels,
+    bool use_fec,
+    PlaybackStats *stats) {
+  float decoded[FRAME_SAMPLES * 2];
+  int samples = OPUS_INVALID_PACKET;
+
+  if (use_fec && recovery_packet) {
+    stats->fec_attempts++;
+    samples = opus_decode_float(stream->decoder,
+                                recovery_packet->payload,
+                                (opus_int32)recovery_packet->payload_len,
+                                decoded, FRAME_SAMPLES, 1);
+    if (samples < 0) stats->decode_errors++;
+  }
+  if (!use_fec || !recovery_packet || samples < 0) {
+    samples = opus_decode_float(stream->decoder, NULL, 0, decoded, FRAME_SAMPLES, 0);
+  }
+  if (samples < 0) {
+    stats->decode_errors++;
+    // Decoder failure is a real state boundary. Fall back to a quiet dropout,
+    // but do not use signal-shape heuristics to classify successful decodes.
+    stream_reset_decoder_state(stream, stats, false);
+    return append_silence_into_pending(stream, channels, stats) ? FRAME_SAMPLES : -1;
+  }
+
+  size_t count = (size_t)samples * (size_t)channels;
+  if (!fifo_append(&stream->pending, decoded, count)) die("out of memory appending Opus concealment");
+  stats->concealed_packets++;
+  stats->decoded_packets++;
+  return samples;
+}
+
 typedef enum {
   STREAM_FRAME_NONE = 0,
   STREAM_FRAME_AUDIO = 1,
@@ -477,41 +580,67 @@ static StreamFrameResult stream_next_frame(
     bool use_fec,
     PlaybackStats *stats,
     float *out_frame) {
-  (void)use_fec;
   size_t frame_samples = (size_t)FRAME_SAMPLES * (size_t)channels;
+
+  // The process-level output clock intentionally remains warm between talk
+  // spurts. Give every newly created SSRC stream its own jitter-buffer warmup;
+  // otherwise only the first stream in the entire call receives --jitter-ms
+  // and later streams are decoded with effectively zero reordering cushion.
+  if (now_ms < stream->start_at_ms) return STREAM_FRAME_NONE;
 
   while (stream->pending.len < frame_samples) {
     RtpPacketNode *future = stream_nearest_future(stream);
     if (future) {
       uint16_t sequence_gap = seq_forward_distance(future->sequence, stream->expected_sequence);
+      if (stream->expected_timestamp_set &&
+          timestamp_is_older(future->timestamp, stream->expected_timestamp)) {
+        // Material timeline restarts are handled atomically at insertion. A
+        // remaining small backward timestamp is an anomalous/late packet, not a
+        // reason to flush valid PCM or reset the decoder heuristically.
+        RtpPacketNode *dropped = stream_remove_packet(stream, future);
+        if (dropped) free(dropped);
+        stats->late_packets++;
+        if (sequence_gap == 0) {
+          stream->expected_sequence = (uint16_t)(stream->expected_sequence + 1u);
+        }
+        continue;
+      }
       uint32_t missing_audio_frames = stream_missing_audio_frames_before(stream, future);
       if (missing_audio_frames > 0) {
-        if (sequence_gap == 0 ||
-            (max_plc_packets >= 0 && missing_audio_frames > (uint32_t)max_plc_packets) ||
-            (max_resync_gap > 0 && missing_audio_frames > (uint32_t)max_resync_gap)) {
-          stream_reset_decoder_state(stream, stats, true);
-          stream->expected_sequence = future->sequence;
+        if (sequence_gap == 0) {
+          // The sender advanced RTP time without omitting an RTP sequence number.
+          // This is intentional DTX/talk-spurt silence, not packet loss. The
+          // local output clock has already been writing silence while packets
+          // were absent, so adopt the new timestamp without touching the Opus
+          // predictor or manufacturing recovery audio.
           stream->expected_timestamp = future->timestamp;
-          stream->expected_timestamp_set = true;
           stream->consecutive_plc = 0;
           stats->resync_events++;
           continue;
         }
+        if ((max_plc_packets >= 0 && missing_audio_frames > (uint32_t)max_plc_packets) ||
+            (max_resync_gap > 0 && missing_audio_frames > (uint32_t)max_resync_gap)) {
+          stream_rebase(stream, future->sequence, future->timestamp, stats, false, false);
+          continue;
+        }
 
-        // We intentionally fill confirmed loss with silence instead of Opus PLC.
-        // Since the decoder has not seen the missing coded frames, reset its
-        // predictor state before later real packets. Otherwise stale pre-gap
-        // state can make the first 1-3 post-gap frames decode as loud metallic
-        // bursts even though the missing audio itself was silenced.
-        stream_reset_decoder_state(stream, stats, true);
+        // This is bounded, timestamp-confirmed loss. Let libopus perform the
+        // recovery it was designed for while preserving predictor continuity.
+        // Resetting the decoder and injecting hard silence here made the next
+        // real packet start from arbitrary state and caused robotic/metallic
+        // discontinuities. FEC is valid only for one immediately preceding
+        // 20 ms frame; otherwise decoder-state PLC is the conservative choice.
         stream->consecutive_plc++;
         stats->missing_packets++;
         stats->sequence_gap_events += stream->consecutive_plc == 1 ? 1u : 0u;
         if (stream->consecutive_plc > stats->max_consecutive_missing_packets) {
           stats->max_consecutive_missing_packets = stream->consecutive_plc;
         }
-        if (!append_silence_into_pending(stream, channels, stats)) return STREAM_FRAME_ENDED;
-        stream_advance_after_concealment(stream);
+        bool try_fec = use_fec && missing_audio_frames == 1u && sequence_gap == 1u;
+        int concealed_samples = decode_concealment_into_pending(
+            stream, try_fec ? future : NULL, channels, try_fec, stats);
+        if (concealed_samples < 0) return STREAM_FRAME_ENDED;
+        stream_advance_after_concealment(stream, concealed_samples);
         continue;
       }
 
@@ -539,7 +668,7 @@ static StreamFrameResult stream_next_frame(
         // artifacts; a tiny dropout is less objectionable and easier to reason
         // about in live Discord playback.
         if (!append_silence_into_pending(stream, channels, stats)) return STREAM_FRAME_ENDED;
-        stream_advance_after_concealment(stream);
+        stream_advance_after_concealment(stream, FRAME_SAMPLES);
       }
       continue;
     }
@@ -732,8 +861,8 @@ static void usage(FILE *f) {
     "  --payload-type N          RTP payload type (default 120)\n"
     "  --jitter-ms N             initial jitter buffer delay (default 240)\n"
     "  --idle-timeout-ms N       end idle stream after timeout (default 350)\n"
-    "  --max-plc-packets N       max PLC frames after stream dries up (default 10)\n"
-    "  --max-resync-gap N        resync instead of PLC for huge sequence jumps (default 120)\n"
+    "  --max-plc-packets N       max bounded PLC frames before a timeline rebase (default 10)\n"
+    "  --max-resync-gap N        resync instead of PLC for huge timestamp gaps (default 120)\n"
     "  --gain-db DB              initial global playback gain in dB (default 0)\n"
     "  --output pipewire|pulse|null|wav\n"
     "  --output-wav PATH         WAV output path when --output wav\n"
@@ -1056,10 +1185,16 @@ static PlaybackStream *find_stream(PlaybackStream streams[MAX_STREAMS], uint32_t
   return NULL;
 }
 
-static PlaybackStream *create_stream(PlaybackStream streams[MAX_STREAMS], uint32_t ssrc, uint16_t first_sequence, uint32_t first_timestamp, int channels) {
+static PlaybackStream *create_stream(
+    PlaybackStream streams[MAX_STREAMS],
+    uint32_t ssrc,
+    uint16_t first_sequence,
+    uint32_t first_timestamp,
+    int channels,
+    uint32_t jitter_ms) {
   for (size_t i = 0; i < MAX_STREAMS; i++) {
     if (!streams[i].active) {
-      if (!stream_init(&streams[i], ssrc, first_sequence, first_timestamp, channels)) return NULL;
+      if (!stream_init(&streams[i], ssrc, first_sequence, first_timestamp, channels, jitter_ms)) return NULL;
       return &streams[i];
     }
   }
@@ -1079,7 +1214,8 @@ static bool ingest_packet(const uint8_t *packet, size_t len, PlaybackOptions *op
   }
   PlaybackStream *stream = find_stream(streams, parsed.ssrc);
   if (!stream) {
-    stream = create_stream(streams, parsed.ssrc, parsed.sequence, parsed.timestamp, options->channels);
+    stream = create_stream(streams, parsed.ssrc, parsed.sequence, parsed.timestamp,
+                           options->channels, (uint32_t)options->jitter_ms);
     if (!stream) {
       stats->dropped_ssrc_packets++;
       return false;
@@ -1400,6 +1536,28 @@ static void encode_tone_packet(int channels, int frames_20ms, uint8_t *payload, 
   encode_test_tone_packet(channels, frames_20ms, 0.20f, 330.0f, false, payload, payload_len);
 }
 
+static void encode_fec_tone_packets(uint8_t payloads[3][MAX_PAYLOAD_SIZE], opus_int32 payload_lens[3]) {
+  int err = OPUS_OK;
+  OpusEncoder *encoder = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP, &err);
+  if (!encoder || err != OPUS_OK) die("self-test: failed to create FEC Opus encoder");
+  opus_encoder_ctl(encoder, OPUS_SET_BITRATE(24000));
+  opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+  opus_encoder_ctl(encoder, OPUS_SET_INBAND_FEC(1));
+  opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(20));
+  for (int packet = 0; packet < 3; packet++) {
+    float pcm[FRAME_SAMPLES];
+    for (int n = 0; n < FRAME_SAMPLES; n++) {
+      int sample_index = packet * FRAME_SAMPLES + n;
+      float t = (float)sample_index / (float)SAMPLE_RATE;
+      pcm[n] = sinf(t * 220.0f * 6.28318530718f) * 0.20f;
+    }
+    payload_lens[packet] = opus_encode_float(
+        encoder, pcm, FRAME_SAMPLES, payloads[packet], MAX_PAYLOAD_SIZE);
+    if (payload_lens[packet] <= 0) die("self-test: failed to encode FEC Opus packet");
+  }
+  opus_encoder_destroy(encoder);
+}
+
 static void run_self_tests(void) {
   uint8_t rtp[MAX_PACKET_SIZE];
   size_t rtp_len = 0;
@@ -1500,7 +1658,7 @@ static void run_self_tests(void) {
   build_rtp_packet(rtp, &rtp_len, DEFAULT_PAYLOAD_TYPE, 77, 0, 99, opus_payload, (size_t)opus_len);
   test_assert(parse_rtp_packet(rtp, rtp_len, &parsed), "parse encoded RTP");
   memset(&stats, 0, sizeof(stats));
-  test_assert(stream_init(&stream, 99, 77, 0, channels), "init stream");
+  test_assert(stream_init(&stream, 99, 77, 0, channels, 0), "init stream");
   test_assert(stream_insert_packet(&stream, &parsed, &stats), "insert 60ms packet");
   float frame[FRAME_SAMPLES * 2];
   for (int i = 0; i < 3; i++) {
@@ -1525,7 +1683,7 @@ static void run_self_tests(void) {
   build_rtp_packet(rtp, &rtp_len, DEFAULT_PAYLOAD_TYPE, 88, 0, 100, loud_opus, (size_t)loud_opus_len);
   test_assert(parse_rtp_packet(rtp, rtp_len, &parsed), "parse loud stereo RTP");
   memset(&stats, 0, sizeof(stats));
-  test_assert(stream_init(&stream, 100, 88, 0, channels), "init loud stereo stream");
+  test_assert(stream_init(&stream, 100, 88, 0, channels, 0), "init loud stereo stream");
   test_assert(stream_insert_packet(&stream, &parsed, &stats), "insert loud stereo packet");
   test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loud stereo packet yields audio");
   double loud_sum_sq = 0.0;
@@ -1535,8 +1693,17 @@ static void run_self_tests(void) {
   test_assert(stats.decoder_resets == 0, "valid loud stereo does not reset decoder");
   stream_destroy(&stream);
 
+  // The process output clock remains active for the whole call, so every new
+  // SSRC stream needs its own warmup rather than inheriting a zero-delay clock.
   memset(&stats, 0, sizeof(stats));
-  test_assert(stream_init(&stream, 42, 10, 0, channels), "init reorder stream");
+  test_assert(stream_init(&stream, 101, 88, 0, channels, 100), "init delayed stream");
+  test_assert(stream_insert_packet(&stream, &parsed, &stats), "insert delayed stream packet");
+  test_assert(stream_next_frame(&stream, stream.start_at_ms - 1u, channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_NONE, "per-stream jitter delays initial decode");
+  test_assert(stream_next_frame(&stream, stream.start_at_ms, channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "per-stream jitter releases buffered audio");
+  stream_destroy(&stream);
+
+  memset(&stats, 0, sizeof(stats));
+  test_assert(stream_init(&stream, 42, 10, 0, channels, 0), "init reorder stream");
   uint8_t opus20a[MAX_PAYLOAD_SIZE], opus20b[MAX_PAYLOAD_SIZE], opus20c[MAX_PAYLOAD_SIZE];
   opus_int32 len20a, len20b, len20c;
   encode_tone_packet(channels, 1, opus20a, &len20a);
@@ -1558,25 +1725,42 @@ static void run_self_tests(void) {
   stream_destroy(&stream);
 
   memset(&stats, 0, sizeof(stats));
-  test_assert(stream_init(&stream, 43, 1, 0, channels), "init loss stream");
+  test_assert(stream_init(&stream, 43, 1, 0, channels, 0), "init loss stream");
   build_rtp_packet(pkt10, &pkt10_len, DEFAULT_PAYLOAD_TYPE, 1, 0, 43, opus20a, (size_t)len20a);
   build_rtp_packet(pkt12, &pkt12_len, DEFAULT_PAYLOAD_TYPE, 3, 1920, 43, opus20c, (size_t)len20c);
   parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
   parse_rtp_packet(pkt12, pkt12_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
   test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loss first packet");
-  test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loss silence packet");
-  bool silent = true;
-  for (size_t s = 0; s < sizeof(frame) / sizeof(frame[0]); s++) if (fabsf(frame[s]) > 0.000001f) { silent = false; break; }
-  test_assert(silent, "loss concealment is silence");
+  test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loss PLC packet");
+  bool concealed_has_energy = false;
+  for (size_t s = 0; s < sizeof(frame) / sizeof(frame[0]); s++) if (fabsf(frame[s]) > 0.000001f) { concealed_has_energy = true; break; }
+  test_assert(concealed_has_energy, "loss concealment uses decoder-state PLC");
   test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loss future packet");
   test_assert(stats.normal_packets == 2, "loss normal decode count");
-  test_assert(stats.concealed_packets == 1, "loss silence concealment count");
+  test_assert(stats.concealed_packets == 1, "loss PLC concealment count");
   test_assert(stats.missing_packets == 1, "loss missing count");
-  test_assert(stats.decoder_resets == 1, "loss resets stale Opus predictor state");
+  test_assert(stats.decoder_resets == 0, "bounded loss preserves Opus predictor state");
   stream_destroy(&stream);
 
   memset(&stats, 0, sizeof(stats));
-  test_assert(stream_init(&stream, 44, 1, 0, channels), "init sequence-only gap stream");
+  uint8_t fec_opus[3][MAX_PAYLOAD_SIZE];
+  opus_int32 fec_lens[3];
+  encode_fec_tone_packets(fec_opus, fec_lens);
+  test_assert(stream_init(&stream, 46, 1, 0, 1, 0), "init FEC stream");
+  build_rtp_packet(pkt10, &pkt10_len, DEFAULT_PAYLOAD_TYPE, 1, 0, 46, fec_opus[0], (size_t)fec_lens[0]);
+  build_rtp_packet(pkt12, &pkt12_len, DEFAULT_PAYLOAD_TYPE, 3, 1920, 46, fec_opus[2], (size_t)fec_lens[2]);
+  parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  parse_rtp_packet(pkt12, pkt12_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  test_assert(stream_next_frame(&stream, monotonic_ms(), 1, 1000, 10, DEFAULT_MAX_RESYNC_GAP, true, &stats, frame) == STREAM_FRAME_AUDIO, "FEC first packet");
+  test_assert(stream_next_frame(&stream, monotonic_ms(), 1, 1000, 10, DEFAULT_MAX_RESYNC_GAP, true, &stats, frame) == STREAM_FRAME_AUDIO, "FEC recovers isolated loss");
+  test_assert(stream_next_frame(&stream, monotonic_ms(), 1, 1000, 10, DEFAULT_MAX_RESYNC_GAP, true, &stats, frame) == STREAM_FRAME_AUDIO, "FEC successor decodes normally");
+  test_assert(stats.fec_attempts == 1, "isolated loss attempts in-band FEC once");
+  test_assert(stats.concealed_packets == 1, "FEC recovery counts one concealment");
+  test_assert(stats.decoder_resets == 0, "FEC recovery preserves decoder state");
+  stream_destroy(&stream);
+
+  memset(&stats, 0, sizeof(stats));
+  test_assert(stream_init(&stream, 44, 1, 0, channels, 0), "init sequence-only gap stream");
   build_rtp_packet(pkt10, &pkt10_len, DEFAULT_PAYLOAD_TYPE, 1, 0, 44, opus20a, (size_t)len20a);
   build_rtp_packet(pkt12, &pkt12_len, DEFAULT_PAYLOAD_TYPE, 3, 960, 44, opus20c, (size_t)len20c);
   parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
@@ -1589,7 +1773,61 @@ static void run_self_tests(void) {
   stream_destroy(&stream);
 
   memset(&stats, 0, sizeof(stats));
-  test_assert(stream_init(&stream, 45, 1, 0, channels), "init dry stream");
+  test_assert(stream_init(&stream, 49, 1, 0, channels, 0), "init DTX timestamp-gap stream");
+  build_rtp_packet(pkt10, &pkt10_len, DEFAULT_PAYLOAD_TYPE, 1, 0, 49, opus20a, (size_t)len20a);
+  build_rtp_packet(pkt12, &pkt12_len, DEFAULT_PAYLOAD_TYPE, 2, 1920, 49, opus20c, (size_t)len20c);
+  parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  parse_rtp_packet(pkt12, pkt12_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "DTX timestamp-gap first packet");
+  test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "DTX timestamp-gap next talk-spurt packet");
+  test_assert(stats.missing_packets == 0, "DTX timestamp gap is not packet loss");
+  test_assert(stats.concealed_packets == 0, "DTX timestamp gap manufactures no audio");
+  test_assert(stats.decoder_resets == 0, "DTX timestamp gap preserves decoder state");
+  test_assert(stats.resync_events == 1, "DTX timestamp gap rebases only its clock");
+  stream_destroy(&stream);
+
+  memset(&stats, 0, sizeof(stats));
+  test_assert(stream_init(&stream, 50, 1, 960, channels, 0), "init minor timestamp anomaly stream");
+  build_rtp_packet(pkt10, &pkt10_len, DEFAULT_PAYLOAD_TYPE, 1, 960, 50, opus20a, (size_t)len20a);
+  build_rtp_packet(pkt12, &pkt12_len, DEFAULT_PAYLOAD_TYPE, 2, 1800, 50, opus20c, (size_t)len20c);
+  parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  parse_rtp_packet(pkt12, pkt12_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "minor timestamp anomaly first packet");
+  test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_NONE, "minor backward timestamp is dropped");
+  test_assert(stats.late_packets == 1, "minor backward timestamp counts as late");
+  test_assert(stats.decoder_resets == 0, "minor backward timestamp does not reset decoder");
+  test_assert(stats.resync_events == 0, "minor backward timestamp does not rebase timeline");
+  stream_destroy(&stream);
+
+  // A sender transition may preserve the SSRC while replacing its RTP clock.
+  // Rebase before decode rather than carrying stale Opus state into that packet.
+  memset(&stats, 0, sizeof(stats));
+  test_assert(stream_init(&stream, 47, 100, 48000, channels, 100), "init timestamp-rebase stream");
+  build_rtp_packet(pkt10, &pkt10_len, DEFAULT_PAYLOAD_TYPE, 100, 48000, 47, opus20a, (size_t)len20a);
+  build_rtp_packet(pkt12, &pkt12_len, DEFAULT_PAYLOAD_TYPE, 110, 0, 47, opus20c, (size_t)len20c);
+  parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  test_assert(stream_next_frame(&stream, stream.start_at_ms, channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "timestamp-rebase first packet");
+  parse_rtp_packet(pkt12, pkt12_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  build_rtp_packet(pkt11, &pkt11_len, DEFAULT_PAYLOAD_TYPE, 109, 56640, 47, opus20a, (size_t)len20a);
+  parse_rtp_packet(pkt11, pkt11_len, &parsed);
+  test_assert(!stream_insert_packet(&stream, &parsed, &stats), "timestamp rebase rejects delayed old-generation packet");
+  uint8_t pkt13[MAX_PACKET_SIZE];
+  size_t pkt13_len;
+  build_rtp_packet(pkt13, &pkt13_len, DEFAULT_PAYLOAD_TYPE, 111, 960, 47, opus20b, (size_t)len20b);
+  parse_rtp_packet(pkt13, pkt13_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
+  test_assert(stream.buffered_packets == 2, "timestamp rebase retains only new-generation packets");
+  test_assert(stream_next_frame(&stream, stream.start_at_ms - 1u, channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_NONE, "timestamp rebase warms new jitter buffer");
+  test_assert(stream_next_frame(&stream, stream.start_at_ms, channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "timestamp-rebase new timeline packet");
+  test_assert(stream_next_frame(&stream, stream.start_at_ms + FRAME_MS, channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "timestamp-rebase successor packet");
+  test_assert(stats.resync_events == 1, "timestamp rewind records one rebase");
+  test_assert(stats.decoder_resets == 1, "timestamp rewind resets stale decoder state once");
+  test_assert(stats.late_packets == 1, "timestamp rewind counts delayed old generation as late");
+  test_assert(stream.expected_sequence == 112, "timestamp rebase adopts new sequence timeline");
+  test_assert(stream.expected_timestamp == FRAME_SAMPLES * 2u, "timestamp rebase adopts new RTP clock");
+  stream_destroy(&stream);
+
+  memset(&stats, 0, sizeof(stats));
+  test_assert(stream_init(&stream, 45, 1, 0, channels, 0), "init dry stream");
   build_rtp_packet(pkt10, &pkt10_len, DEFAULT_PAYLOAD_TYPE, 1, 0, 45, opus20a, (size_t)len20a);
   parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
   test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "dry stream first packet");

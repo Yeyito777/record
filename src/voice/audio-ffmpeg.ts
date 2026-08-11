@@ -1107,7 +1107,7 @@ class PlaybackPacer {
       deltaSamples = 0;
     }
 
-    this.scheduleMissingSourcePackets(sourceSequenceDelta, now);
+    this.scheduleMissingSourcePackets(sourceSequenceDelta, timestamp, now);
     const targetMs = this.baseWallMs + (deltaSamples / 48);
     const lateMs = Math.max(0, now - targetMs);
     const delayMs = Math.max(0, Math.ceil(targetMs - now));
@@ -1132,16 +1132,20 @@ class PlaybackPacer {
     if (report) this.options.onReset(reason);
   }
 
-  private scheduleMissingSourcePackets(sourceSequenceDelta: number, now: number): void {
+  private scheduleMissingSourcePackets(sourceSequenceDelta: number, timestamp: number, now: number): void {
     if (PLAYBACK_LOSS_FILL_MODE === "off") return;
     if (this.lastSourceTimestamp === null || sourceSequenceDelta <= 1) return;
-    const missingPackets = sourceSequenceDelta - 1;
-    if (missingPackets > PLAYBACK_MAX_CONCEALMENT_PACKETS) {
+    const missingFrames = confirmedPlaybackLossFrames(
+      sourceSequenceDelta,
+      rtpTimestampDelta(timestamp, this.lastSourceTimestamp),
+    );
+    if (missingFrames <= 0) return;
+    if (missingFrames > PLAYBACK_MAX_CONCEALMENT_PACKETS) {
       this.options.onDrop("concealment_gap_too_large");
       return;
     }
     const fillerPayload = this.concealmentPayload();
-    for (let index = 1; index <= missingPackets; index += 1) {
+    for (let index = 1; index <= missingFrames; index += 1) {
       const missingTimestamp = (this.lastSourceTimestamp + (OPUS_RTP_CLOCK_INCREMENT * index)) >>> 0;
       const targetMs = this.targetMsForSourceTimestamp(missingTimestamp);
       const delayMs = Math.max(0, Math.ceil(targetMs - now));
@@ -1211,12 +1215,27 @@ function rtpTimestampDelta(timestamp: number, previous: number): number {
   return ((timestamp >>> 0) - (previous >>> 0)) >>> 0;
 }
 
+export function confirmedPlaybackLossFrames(sequenceDelta: number, timestampDelta: number): number {
+  if (sequenceDelta <= 1 || sequenceDelta >= 0x8000) return 0;
+  if (timestampDelta >= 0x80000000) return 0;
+  const sequenceMissingPackets = sequenceDelta - 1;
+  const timestampMissingFrames = Math.max(0, Math.floor(timestampDelta / OPUS_RTP_CLOCK_INCREMENT) - 1);
+  // Discord RTP sequence numbers also advance for media that Record correctly
+  // filters (notably DAVE transition packets). Only synthesize a fallback frame
+  // when both sequence and timestamp clocks prove that audio time is missing.
+  return Math.min(sequenceMissingPackets, timestampMissingFrames);
+}
+
 type PlaybackLossFillMode = "repeat" | "silence" | "off";
 
 function parsePlaybackLossFillMode(value: string | undefined): PlaybackLossFillMode {
   const normalized = value?.trim().toLowerCase();
   if (normalized === "silence" || normalized === "off" || normalized === "repeat") return normalized;
-  return "repeat";
+  // Replaying the previous compressed Opus payload is not packet-loss
+  // concealment: it advances the decoder with duplicate coded audio and can
+  // produce robotic/metallic output. Let ffplay's decoder handle loss unless a
+  // caller explicitly opts into a diagnostic fill mode.
+  return "off";
 }
 
 type PlaybackBackendPreference = "auto" | "engine" | "ffplay";
