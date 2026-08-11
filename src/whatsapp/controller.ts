@@ -179,6 +179,12 @@ export class WhatsAppController {
     });
   }
 
+  /** Open a persisted chat only after its disk cache has been hydrated. */
+  async restoreCachedChannel(channelId: string): Promise<boolean> {
+    await this.cacheReady;
+    return this.openChannel(channelId);
+  }
+
   login(): void {
     clearPrompt(this.state);
     const mustReset = this.backend.state.status === "logged-out"
