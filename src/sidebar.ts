@@ -414,7 +414,6 @@ export function setSidebarGuilds(sidebar: SidebarState, guilds: DiscordGuild[]):
     }
   }
   normalizeSidebarPlacement(sidebar);
-  sidebar.scrollOffset = 0;
   sidebar.selectedIndex = Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, guilds.length - 1)));
 
   if (sidebar.activeGuildId && !guilds.some((guild) => guild.id === sidebar.activeGuildId)) {

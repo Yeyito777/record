@@ -858,11 +858,14 @@ describe("WhatsApp controller", () => {
       authDirectory,
       cacheFile,
     });
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    const restoredChannelId = whatsappChannelId("15551234567@s.whatsapp.net");
 
+    expect(await restarted.restoreCachedChannel(restoredChannelId)).toBe(true);
     expect(restartedState.whatsapp.chatsById["15551234567@s.whatsapp.net"]?.name).toBe("Cached person");
     expect(restartedState.whatsapp.messagesByChatId["15551234567@s.whatsapp.net"]?.[0]?.content)
       .toEqual({ kind: "text", text: "cached hello" });
+    expect(restartedState.timeline.channelId).toBe(restoredChannelId);
+    expect(restartedState.timeline.messages[0]?.content).toBe("cached hello");
     await restarted.shutdown();
   });
 });

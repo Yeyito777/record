@@ -28,7 +28,7 @@ import {
   scrollHistoryWithCursor,
 } from "./historycursor";
 import { handleHistorySelectionQuoteKey } from "./historyselection";
-import { setChannelList } from "./channels";
+import { findTimelineChannel, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
@@ -162,6 +162,7 @@ import {
 import { createVoiceMessageController } from "./voice-message-controller";
 import { WhatsAppController } from "./whatsapp/controller";
 import { handleLoginModalKey } from "./whatsapp/loginmodal";
+import { applyTuiStartingState, availableStartingChannel, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("record needs an interactive TTY.");
@@ -197,7 +198,9 @@ try {
   }
 }
 
+const savedStartingState = loadTuiStartingState();
 const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb });
+let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
   whatsappGuild(),
@@ -402,7 +405,12 @@ function applyThemeCursor(): void {
 }
 
 function bootstrapSession(token: string): void {
-  void bootstrapReadOnlyClient(state, token, { scheduleRender });
+  void (async () => {
+    await bootstrapReadOnlyClient(state, token, { scheduleRender });
+    await restorePendingStartingState(token);
+  })().catch((error) => {
+    debugLog("starting_state.restore_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
 }
 
 function isPromptTyping(): boolean {
@@ -502,6 +510,39 @@ function sidebarVisibilityOptions(): { showHiddenChannels: boolean; currentUserI
     showHiddenChannels: state.showHiddenChannels,
     currentUserId: state.auth.user?.id ?? null,
   };
+}
+
+async function restorePendingStartingState(token: string | null): Promise<void> {
+  const startingState = pendingStartingState;
+  if (!startingState) return;
+
+  const savedChannel = startingState.focusedChannel;
+  if (savedChannel?.guildId === WHATSAPP_GUILD_ID) {
+    pendingStartingState = null;
+    await whatsAppController.restoreCachedChannel(savedChannel.channelId);
+    applyTuiStartingState(state, startingState);
+    scheduleRender();
+    return;
+  }
+
+  const accountId = state.auth.user?.id;
+  if (!token || !accountId) return;
+  pendingStartingState = null;
+  if (startingState.accountId && startingState.accountId !== accountId) return;
+
+  const channelLocation = availableStartingChannel(startingState, accountId, state.sidebar.guilds);
+  if (channelLocation) {
+    await loadGuildChannels(state, token, channelLocation.guildId, { scheduleRender }, { openFirstChannel: false });
+    const channel = findTimelineChannel(state.channelList.channels, channelLocation.channelId);
+    if (channel && !channel.hidden) {
+      await loadChannelMessages(state, token, channel.id, { scheduleRender });
+    }
+  }
+
+  // Loading the active channel necessarily focuses its guild. Restore the
+  // independently saved sidebar cursor only after that work has completed.
+  applyTuiStartingState(state, startingState);
+  scheduleRender();
 }
 
 function scrollFocusedPanel(delta: number, visibleRows: number, mode: "cursor" | "page" = "cursor"): void {
@@ -1957,6 +1998,7 @@ function restoreTerminal(): void {
 function cleanup(): void {
   if (!running) return;
   running = false;
+  persistStartingStateOnce();
   if (renderTimer) {
     clearTimeout(renderTimer);
     renderTimer = null;
@@ -2001,6 +2043,12 @@ voiceMessageController = createVoiceMessageController(state, scheduleRender, {
 });
 
 const whatsAppController = new WhatsAppController(state, scheduleRender);
+if (savedStartingState) applyTuiStartingState(state, savedStartingState);
+if (!initialToken && savedStartingState?.focusedChannel?.guildId === WHATSAPP_GUILD_ID) {
+  void restorePendingStartingState(null).catch((error) => {
+    debugLog("starting_state.restore_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
+}
 
 async function main(): Promise<void> {
   setupTerminal();
@@ -2049,7 +2097,22 @@ function processInput(input: string): void {
   }
 }
 
-process.on("exit", restoreTerminal);
+let startingStatePersisted = false;
+
+function persistStartingStateOnce(): void {
+  if (startingStatePersisted) return;
+  try {
+    saveTuiStartingState(captureTuiStartingState(state, pendingStartingState?.accountId ?? null));
+    startingStatePersisted = true;
+  } catch (error) {
+    debugLog("starting_state.save_failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+process.on("exit", () => {
+  persistStartingStateOnce();
+  restoreTerminal();
+});
 process.on("SIGINT", cleanup);
 process.on("SIGTERM", cleanup);
 process.on("SIGHUP", cleanup);
