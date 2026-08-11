@@ -18,8 +18,8 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 
 describe("watched stream playback", () => {
   test("builds H264 and Opus playback SDP and low-latency player args", () => {
-    expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("m=video 43123 RTP/AVP 101");
-    expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("a=rtpmap:101 H264/90000");
+    expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("m=video 43123 RTP/AVP 103");
+    expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("a=rtpmap:103 H264/90000");
     expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("m=audio 43124 RTP/AVP 120");
     expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("a=rtpmap:120 opus/48000/2");
     expect(buildWatchStreamFfplayArgs("/tmp/watch.sdp")).toEqual([

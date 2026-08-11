@@ -35,9 +35,9 @@ function readySession(overrides: Partial<VoiceCallSession> = {}): VoiceCallSessi
 function incomingPacket(mediaType: IncomingVoiceRtpPacket["mediaType"]): IncomingVoiceRtpPacket {
   return {
     mediaType,
-    packet: Buffer.from([0x80, mediaType === "audio" ? 120 : 101, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 1]),
+    packet: Buffer.from([0x80, mediaType === "audio" ? 120 : 103, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 1]),
     payload: Buffer.from([1]),
-    payloadType: mediaType === "audio" ? 120 : 101,
+    payloadType: mediaType === "audio" ? 120 : 103,
     sequence: 1,
     timestamp: 2,
     ssrc: 3,
@@ -124,6 +124,52 @@ describe("watched stream controller", () => {
     gateways[0]?.callbacks.onClose?.(new VoiceGatewayCloseError(1006, "Connection ended."));
     expect(watched).toContain(controller.streamKey);
     expect(watched).toContain(`ping:${controller.streamKey}`);
+    controller.stop("test");
+  });
+
+  test("stops when the broadcaster ends the stream", async () => {
+    const watched: string[] = [];
+    const errors: Error[] = [];
+    const gateways: FakeWatchGateway[] = [];
+    const controller = new WatchStreamController("call:dm-1:friend", readySession({ target: { guildId: null, channelId: "dm-1" } }), "self", {
+      scheduleRender: () => {},
+      watchStream: (streamKey) => {
+        watched.push(streamKey);
+        return true;
+      },
+    }, (error) => errors.push(error), (_data, callbacks) => {
+      const gateway = new FakeWatchGateway(callbacks);
+      gateways.push(gateway);
+      return gateway;
+    });
+
+    controller.handleCreate({ streamKey: controller.streamKey, rtcServerId: "8001", rtcChannelId: "8002", region: null, viewerIds: [], paused: false });
+    controller.handleServerUpdate({ streamKey: controller.streamKey, token: "stream-token", endpoint: "stream.example" });
+    await controller.start();
+    controller.handleDelete({ streamKey: controller.streamKey, reason: "stream_ended", unavailable: false });
+
+    expect(controller.active).toBe(false);
+    expect(gateways[0]?.disconnected).toBe(true);
+    expect(watched).toEqual([controller.streamKey]);
+    expect(errors[0]?.message).toContain("stream_ended");
+  });
+
+  test("does not synchronously re-request an unavailable stream from STREAM_DELETE", async () => {
+    const watched: string[] = [];
+    const controller = new WatchStreamController("call:dm-1:friend", readySession({ target: { guildId: null, channelId: "dm-1" } }), "self", {
+      scheduleRender: () => {},
+      watchStream: (streamKey) => {
+        watched.push(streamKey);
+        return true;
+      },
+    }, () => {}, (_data, callbacks) => new FakeWatchGateway(callbacks));
+
+    controller.handleCreate({ streamKey: controller.streamKey, rtcServerId: "8001", rtcChannelId: "8002", region: null, viewerIds: [], paused: false });
+    controller.handleServerUpdate({ streamKey: controller.streamKey, token: "stream-token", endpoint: "stream.example" });
+    await controller.start();
+    controller.handleDelete({ streamKey: controller.streamKey, reason: "server_reallocating", unavailable: true });
+
+    expect(watched).toEqual([controller.streamKey]);
     controller.stop("test");
   });
 });

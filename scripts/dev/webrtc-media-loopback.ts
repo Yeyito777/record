@@ -17,7 +17,7 @@ import {
   type Track,
 } from "@lng2004/node-datachannel";
 
-const VIDEO_PAYLOAD_TYPE = 101;
+const VIDEO_PAYLOAD_TYPE = 103;
 const VIDEO_SSRC = 424_242;
 const timeoutMs = 10_000;
 

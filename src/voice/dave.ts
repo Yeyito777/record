@@ -164,6 +164,49 @@ export class DaveVoiceEncryption {
     }
   }
 
+  decodeIncomingVideo(userId: string | null, payload: Buffer): Buffer | null {
+    if (payload.length === 0) return payload;
+    if (this.protocolVersion === 0) return payload;
+    if (!userId || !this.session?.ready) {
+      this.logMediaDebug("video_not_ready", {
+        userId,
+        sessionReady: this.session?.ready ?? false,
+        protocolVersion: this.protocolVersion,
+        payloadBytes: payload.length,
+        encrypted: isDaveEncryptedPayload(payload),
+      });
+      return null;
+    }
+    if (!isDaveEncryptedPayload(payload)) {
+      if (this.session.canPassthrough(userId)) return payload;
+      this.logMediaDebug("video_unexpected_plain", { userId, payloadBytes: payload.length });
+      return null;
+    }
+    try {
+      const decoded = this.session.decrypt(userId, MediaType.VIDEO, stripDavePadding(payload));
+      if (isDaveEncryptedPayload(decoded)) {
+        this.logMediaDebug("video_encrypted_after_decrypt", {
+          userId,
+          payloadBytes: payload.length,
+          decodedBytes: decoded.length,
+          users: this.safeUserIds(),
+          stats: this.safeDecryptionStats(userId, MediaType.VIDEO),
+        });
+        return null;
+      }
+      return decoded;
+    } catch (error) {
+      this.logMediaDebug("video_decrypt_error", {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+        payloadBytes: payload.length,
+        users: this.safeUserIds(),
+        stats: this.safeDecryptionStats(userId, MediaType.VIDEO),
+      });
+      return null;
+    }
+  }
+
   private logMediaDebug(reason: string, data: Record<string, unknown>): void {
     const now = Date.now();
     if (now - this.lastMediaDebugAt < 2_000) return;
@@ -179,9 +222,9 @@ export class DaveVoiceEncryption {
     }
   }
 
-  private safeDecryptionStats(userId: string): unknown {
+  private safeDecryptionStats(userId: string, mediaType = MediaType.AUDIO): unknown {
     try {
-      return this.session?.getDecryptionStats(userId, MediaType.AUDIO) ?? null;
+      return this.session?.getDecryptionStats(userId, mediaType) ?? null;
     } catch {
       return null;
     }

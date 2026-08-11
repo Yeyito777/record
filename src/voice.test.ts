@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { MediaType } from "@snazzah/davey";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -179,10 +180,12 @@ describe("voice backend", () => {
   });
 
   test("builds media sink wants for watched stream quality", () => {
-    expect(buildMediaSinkWantsPayload(8964, { quality: 150, pixelCount: 1280 * 720 })).toEqual({
+    expect(buildMediaSinkWantsPayload(8964, { audioSsrc: 8963, quality: 150, pixelCount: 1280 * 720 })).toEqual({
       op: 15,
       d: {
+        "8963": 100,
         "8964": 100,
+        any: 0,
         pixelCounts: { "8964": 921600 },
       },
     });
@@ -202,7 +205,7 @@ describe("voice backend", () => {
 
     const publishingAnswer = buildDiscordWebRtcAnswer(answerSource);
     expect(publishingAnswer).toContain("m=audio 50000 UDP/TLS/RTP/SAVPF 120");
-    expect(publishingAnswer).toContain("m=video 50000 UDP/TLS/RTP/SAVPF 101 102");
+    expect(publishingAnswer).toContain("m=video 50000 UDP/TLS/RTP/SAVPF 103 104");
     expect(publishingAnswer.match(/a=recvonly/g)).toHaveLength(2);
     expect(publishingAnswer).not.toContain("a=inactive");
 
@@ -523,6 +526,36 @@ describe("voice backend", () => {
 
     expect(dave.decodeIncomingOpus("friend", Buffer.from([0x22, 0xfa, 0xfa]))).toBeNull();
     expect(errors).toEqual([]);
+  });
+
+  test("decrypts a complete DAVE video frame with the video ratchet", () => {
+    const calls: Array<{ userId: string; mediaType: MediaType; payload: Buffer }> = [];
+    const decoded = Buffer.from([0, 0, 0, 1, 0x65, 0x12, 0x34]);
+    const dave = new DaveVoiceEncryption({
+      userId: "self",
+      channelId: "dm-1",
+      sendJson: () => {},
+      sendBinary: () => {},
+    });
+    (dave as any).protocolVersion = 1;
+    (dave as any).session = {
+      ready: true,
+      canPassthrough: () => false,
+      decrypt: (userId: string, mediaType: MediaType, payload: Buffer) => {
+        calls.push({ userId, mediaType, payload: Buffer.from(payload) });
+        return decoded;
+      },
+      getUserIds: () => ["self", "friend"],
+      getDecryptionStats: () => null,
+    };
+
+    const encryptedWithPadding = Buffer.from([0x11, 0x22, 0xfa, 0xfa, 0x37, 0x37]);
+    expect(dave.decodeIncomingVideo("friend", encryptedWithPadding)).toBe(decoded);
+    expect(calls).toEqual([{
+      userId: "friend",
+      mediaType: MediaType.VIDEO,
+      payload: Buffer.from([0x11, 0x22, 0xfa, 0xfa]),
+    }]);
   });
 
   test("treats abnormal voice gateway closes as recoverable connection endings", () => {

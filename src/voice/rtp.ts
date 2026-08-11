@@ -73,6 +73,8 @@ export function discoverUdpAddress(socket: UdpSocket, ssrc: number): Promise<{ a
 }
 
 export interface ParsedRtpPacket {
+  marker: boolean;
+  hasPadding: boolean;
   sequence: number;
   timestamp: number;
   ssrc: number;
@@ -111,6 +113,8 @@ function parseRtpHeader(packet: Buffer, options: { encryptedDiscordPacket: boole
   }
   if (packet.length < headerLength) return null;
   return {
+    marker: (packet[1] & 0x80) !== 0,
+    hasPadding: (packet[0] & 0x20) !== 0,
     sequence: packet.readUInt16BE(2),
     timestamp: packet.readUInt32BE(4),
     ssrc: packet.readUInt32BE(8),

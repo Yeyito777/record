@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { debugLog } from "./debuglog";
-import { OPUS_PAYLOAD_TYPE, RTP_HEADER_LENGTH } from "./voice/constants";
+import { OPUS_PAYLOAD_TYPE, RTP_HEADER_LENGTH, VIDEO_PAYLOAD_TYPE_H264 } from "./voice/constants";
 import { bindUdp, encryptAes256GcmRtp, parsePlainRtpPacket } from "./voice/rtp";
 import { rewriteH264SpsVuiForWebRtc } from "./voice/sps-vui";
 import type { VoiceAudioBackend, VoiceAudioContext } from "./voice/types";
@@ -13,14 +13,16 @@ const RUN_STREAM_HELPER_PATH = fileURLToPath(new URL("../scripts/run-stream-help
 const DEFAULT_STREAM_HELPER_COMMAND = [RUN_STREAM_HELPER_PATH];
 const STREAM_HELPER_SHUTDOWN_GRACE_MS = 1_500;
 const STREAM_SOUNDSHARE_FLAG = 1 << 1;
-const VIDEO_PAYLOAD_TYPE_H264 = 101;
 const VIDEO_RTP_CLOCK_RATE = 90_000;
 const RTP_EXTENSION_PROFILE_ONE_BYTE = 0xbede;
-const RTP_ONE_BYTE_EXTENSION_WORDS = 1;
-const PLAYOUT_DELAY_EXTENSION_ID = 5;
+const RTP_TRANSPORT_SEQUENCE_EXTENSION_ID = 5;
+const PLAYOUT_DELAY_EXTENSION_ID = 6;
+const VIDEO_CONTENT_TYPE_EXTENSION_ID = 7;
+const RTP_STREAM_ID_EXTENSION_ID = 11;
 const PLAYOUT_DELAY_MIN_10MS = 0;
 const PLAYOUT_DELAY_MAX_10MS = 10;
-const PLAYOUT_DELAY_EXTENSION = buildPlayoutDelayExtension(PLAYOUT_DELAY_MIN_10MS, PLAYOUT_DELAY_MAX_10MS);
+const VIDEO_CONTENT_TYPE_SCREEN = 1;
+const STREAM_RID = "100";
 const H264_START_CODE_3 = Buffer.from([0x00, 0x00, 0x01]);
 const H264_START_CODE_4 = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 const H264_NAL_TYPE_IDR = 5;
@@ -46,6 +48,7 @@ export class StreamMediaBackend implements VoiceAudioBackend {
   private proc: ChildProcess | null = null;
   private sendCounter = 0;
   private videoSequence = Math.floor(Math.random() * 0x10000);
+  private videoTransportSequence = Math.floor(Math.random() * 0x10000);
   private videoTimestamp = Math.floor(Math.random() * 0x100000000) >>> 0;
   private audioSpeaking = false;
   private videoPackets = 0;
@@ -62,6 +65,8 @@ export class StreamMediaBackend implements VoiceAudioBackend {
   private audioPayloadOctets = 0;
   private audioPackets = 0;
   private incomingUdpPackets = 0;
+  private capturedVideoBytes = 0;
+  private capturedVideoFrames = 0;
   private videoPacketQueue: Buffer[] = [];
   private videoPaceTimer: ReturnType<typeof setInterval> | null = null;
   private rtcpSenderReportTimer: ReturnType<typeof setInterval> | null = null;
@@ -77,6 +82,8 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     this.firstSentVideoLogged = false;
     this.sentInitialVideoKeyframe = false;
     this.incomingUdpPackets = 0;
+    this.capturedVideoBytes = 0;
+    this.capturedVideoFrames = 0;
     this.videoPayloadOctets = 0;
     this.videoKeyframes = 0;
     this.lastVideoStatsAt = 0;
@@ -155,7 +162,10 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     this.proc = proc;
     proc.stdout?.on("data", (chunk) => {
       if (this.proc !== proc) return;
-      this.videoAssembler.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      this.capturedVideoBytes += bytes.length;
+      if (this.capturedVideoBytes === bytes.length) debugLog("stream.media.first_capture_chunk", { bytes: bytes.length });
+      this.videoAssembler.push(bytes);
     });
     const stderr = drainStderr(proc);
     proc.on("error", (error) => {
@@ -177,6 +187,8 @@ export class StreamMediaBackend implements VoiceAudioBackend {
   private readonly handleVideoFrame = (nalus: Buffer[]): void => {
     const context = this.context;
     if (!context || !context.videoSsrc) return;
+    this.capturedVideoFrames += 1;
+    if (this.capturedVideoFrames === 1) debugLog("stream.media.first_captured_frame", { nalus: nalus.length, bytes: nalus.reduce((sum, nalu) => sum + nalu.length, 0) });
     const videoSsrc = context.videoSsrc;
     if (nalus.length === 0) return;
     const keyframe = isH264Keyframe(nalus);
@@ -213,18 +225,22 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     this.videoTimestamp = (this.videoTimestamp + Math.round(VIDEO_RTP_CLOCK_RATE / 30)) >>> 0;
 
     payloads.forEach((payload, index) => {
-      const header = Buffer.alloc(RTP_HEADER_LENGTH + 4 + PLAYOUT_DELAY_EXTENSION.length);
+      const extensionBody = buildDiscordVideoRtpExtensionBody(this.videoTransportSequence);
+      this.videoTransportSequence = (this.videoTransportSequence + 1) & 0xffff;
+      // In Discord's rtpsize AEAD modes, only the RTP header and extension
+      // prelude are clear/AAD. The extension body is transport-encrypted along
+      // with the H.264 payload.
+      const header = Buffer.alloc(RTP_HEADER_LENGTH + 4);
       header[0] = 0x90;
       header[1] = (index === payloads.length - 1 ? 0x80 : 0) | payloadType;
       header.writeUInt16BE(this.videoSequence & 0xffff, 2);
       header.writeUInt32BE(this.videoTimestamp >>> 0, 4);
       header.writeUInt32BE(videoSsrc >>> 0, 8);
       header.writeUInt16BE(RTP_EXTENSION_PROFILE_ONE_BYTE, 12);
-      header.writeUInt16BE(RTP_ONE_BYTE_EXTENSION_WORDS, 14);
-      PLAYOUT_DELAY_EXTENSION.copy(header, 16);
+      header.writeUInt16BE(extensionBody.length / 4, 14);
       this.videoSequence = (this.videoSequence + 1) & 0xffff;
 
-      const encrypted = encryptAes256GcmRtp(header, payload, context.secretKey, this.nextCounter());
+      const encrypted = encryptAes256GcmRtp(header, Buffer.concat([extensionBody, payload]), context.secretKey, this.nextCounter());
       this.videoPacketQueue.push(encrypted);
       this.videoPackets += 1;
       this.videoPayloadOctets += payload.length;
@@ -357,10 +373,10 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     if (!context) return;
     const now = Date.now();
     if (this.audioPackets > 0) {
-      context.udp.send(buildRtcpSenderReport(context.ssrc, this.lastAudioTimestamp, this.audioPackets, this.audioPayloadOctets, now));
+      context.udp.send(encryptRtcpSenderReport(buildRtcpSenderReport(context.ssrc, this.lastAudioTimestamp, this.audioPackets, this.audioPayloadOctets, now), context.secretKey, this.nextCounter()));
     }
     if (context.videoSsrc && this.videoPackets > 0) {
-      context.udp.send(buildRtcpSenderReport(context.videoSsrc, this.videoTimestamp, this.videoPackets, this.videoPayloadOctets, now));
+      context.udp.send(encryptRtcpSenderReport(buildRtcpSenderReport(context.videoSsrc, this.videoTimestamp, this.videoPackets, this.videoPayloadOctets, now), context.secretKey, this.nextCounter()));
     }
     debugLog("stream.media.rtcp_sr", { audioPackets: this.audioPackets, videoPackets: this.videoPackets, videoQueue: this.videoPacketQueue.length });
   }
@@ -383,6 +399,25 @@ export function buildPlayoutDelayExtension(minDelay10Ms: number, maxDelay10Ms: n
     (packed >> 8) & 0xff,
     packed & 0xff,
   ]);
+}
+
+export function buildDiscordVideoRtpExtensionBody(transportSequence: number, rid = STREAM_RID): Buffer {
+  const body: number[] = [];
+  pushOneByteRtpExtension(body, RTP_TRANSPORT_SEQUENCE_EXTENSION_ID, Buffer.from([(transportSequence >>> 8) & 0xff, transportSequence & 0xff]));
+  pushOneByteRtpExtension(body, PLAYOUT_DELAY_EXTENSION_ID, buildPlayoutDelayExtension(PLAYOUT_DELAY_MIN_10MS, PLAYOUT_DELAY_MAX_10MS).subarray(1));
+  pushOneByteRtpExtension(body, VIDEO_CONTENT_TYPE_EXTENSION_ID, Buffer.from([VIDEO_CONTENT_TYPE_SCREEN]));
+  pushOneByteRtpExtension(body, RTP_STREAM_ID_EXTENSION_ID, Buffer.from(rid, "ascii"));
+  while (body.length % 4 !== 0) body.push(0);
+  return Buffer.from(body);
+}
+
+function pushOneByteRtpExtension(output: number[], id: number, value: Buffer): void {
+  if (id < 1 || id > 14 || value.length < 1 || value.length > 16) throw new Error("Invalid one-byte RTP extension.");
+  output.push((id << 4) | (value.length - 1), ...value);
+}
+
+function encryptRtcpSenderReport(packet: Buffer, key: Buffer, counter: Buffer): Buffer {
+  return encryptAes256GcmRtp(packet.subarray(0, 8), packet.subarray(8), key, counter);
 }
 
 export function buildRtcpSenderReport(ssrc: number, rtpTimestamp: number, packetCount: number, octetCount: number, nowMs = Date.now()): Buffer {

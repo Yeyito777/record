@@ -1,12 +1,19 @@
 import { describe, expect, test } from "bun:test";
 
-import { H264AnnexBFrameAssembler, buildPlayoutDelayExtension, buildRtcpSenderReport, isH264Keyframe, packetizeGenericVideoPayload, packetizeH264AccessUnit, packetizeMaybeAnnexBVideoPayload, rewriteH264SpsNalusForWebRtc } from "./stream";
+import { H264AnnexBFrameAssembler, buildDiscordVideoRtpExtensionBody, buildPlayoutDelayExtension, buildRtcpSenderReport, isH264Keyframe, packetizeGenericVideoPayload, packetizeH264AccessUnit, packetizeMaybeAnnexBVideoPayload, rewriteH264SpsNalusForWebRtc } from "./stream";
 
 describe("screen streaming", () => {
   test("builds Discord/WebRTC one-byte playout-delay RTP extension", () => {
-    // One-byte RTP extension header: id=5, len=2 means three payload bytes.
+    // One-byte RTP extension header: id=6, len=2 means three payload bytes.
     // 100ms/200ms is encoded as 10/20 in 10ms units => 00 a0 14.
-    expect([...buildPlayoutDelayExtension(10, 20)]).toEqual([0x52, 0x00, 0xa0, 0x14]);
+    expect([...buildPlayoutDelayExtension(10, 20)]).toEqual([0x62, 0x00, 0xa0, 0x14]);
+    expect([...buildDiscordVideoRtpExtensionBody(0x1234)]).toEqual([
+      0x51, 0x12, 0x34,
+      0x62, 0x00, 0x00, 0x0a,
+      0x70, 0x01,
+      0xb2, 0x31, 0x30, 0x30,
+      0x00, 0x00, 0x00,
+    ]);
   });
 
   test("builds minimal RTCP sender reports", () => {

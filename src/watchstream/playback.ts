@@ -6,11 +6,12 @@ import { join } from "path";
 
 import { debugLog } from "../debuglog";
 import type { IncomingVoiceRtpPacket } from "../voice";
+import { OPUS_PAYLOAD_TYPE, VIDEO_PAYLOAD_TYPE_H264 } from "../voice/constants";
 import { reserveUdpPort } from "../voice/rtp";
 
 const WATCH_STREAM_HELPER_SHUTDOWN_GRACE_MS = 1_500;
-const WATCH_STREAM_VIDEO_PAYLOAD_TYPE = 101;
-const WATCH_STREAM_AUDIO_PAYLOAD_TYPE = 120;
+const WATCH_STREAM_VIDEO_PAYLOAD_TYPE = VIDEO_PAYLOAD_TYPE_H264;
+const WATCH_STREAM_AUDIO_PAYLOAD_TYPE = OPUS_PAYLOAD_TYPE;
 const WATCH_STREAM_SDP_PROTOCOL_WHITELIST = "file,udp,rtp";
 
 export type WatchStreamPlayer = "mpv" | "ffplay";
@@ -53,6 +54,10 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
     this.videoPort = await reserveUdpPort();
     this.audioPort = await reserveUdpPort();
     this.udp = createSocket("udp4");
+    // mpv opens the SDP's local UDP ports asynchronously. A packet sent during
+    // that small startup race can produce an ICMP port-unreachable response;
+    // without an error listener Node treats it as an uncaught process error.
+    this.udp.on("error", this.handleUdpError);
     this.tempDir = mkdtempSync(join(tmpdir(), "record-watch-stream-"));
     this.sdpPath = join(this.tempDir, "stream.sdp");
     writeFileSync(this.sdpPath, buildWatchStreamPlaybackSdp(this.videoPort, this.audioPort));
@@ -108,6 +113,7 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
     terminateChild(this.proc);
     this.proc = null;
     if (this.udp) {
+      this.udp.off("error", this.handleUdpError);
       try { this.udp.close(); } catch {}
       this.udp = null;
     }
@@ -121,6 +127,10 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
     this.firstPacketLogged = false;
     this.packetsForwarded = 0;
   }
+
+  private readonly handleUdpError = (error: Error): void => {
+    debugLog("stream.watch.playback.udp_error", { error: error.message, packetsForwarded: this.packetsForwarded });
+  };
 }
 
 export interface CreateWatchStreamPlaybackOptions {

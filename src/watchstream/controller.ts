@@ -130,7 +130,10 @@ export class WatchStreamController {
     this.serverUpdate = null;
     this.needsFreshServerUpdate = true;
     if (recoverable) {
-      this.requestFreshServerUpdate("stream_delete");
+      // STREAM_WATCH against an unavailable stream produces STREAM_DELETE
+      // (usually stream_not_found). Do not immediately issue another request
+      // from that callback or the gateway response becomes a tight request /
+      // delete loop. The reconnect timer performs the next bounded request.
       this.scheduleReconnect("stream_delete", WATCH_STREAM_FRESH_SERVER_RETRY_DELAY_MS);
       return;
     }
@@ -370,7 +373,7 @@ function isInvalidVoiceSessionClose(error: Error): error is VoiceGatewayCloseErr
 
 function shouldRecoverWatchDelete(event: StreamDeleteEvent): boolean {
   if (event.unavailable) return true;
-  return !/^(user_requested|unauthorized|invalid_channel|stream_full|safety_guild_rate_limited)$/i.test(event.reason);
+  return !/^(stream_ended|stream_not_found|user_requested|unauthorized|invalid_channel|stream_full|safety_guild_rate_limited)$/i.test(event.reason);
 }
 
 function shouldRefreshWatchServerAfterClose(error: VoiceGatewayCloseError): boolean {
