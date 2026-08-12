@@ -4,7 +4,7 @@ import { join } from "path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { flushDataCacheSync, loadCachedChannelMessages, loadCachedChannelPins, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, saveCachedChannelMessages, saveCachedChannelPins, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
+import { flushDataCacheSync, loadCachedChannelMessages, loadCachedChannelPins, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, markCachedChannelActive, saveCachedChannelMessages, saveCachedChannelPins, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -197,6 +197,31 @@ describe("data cache", () => {
     });
 
     expect(loadCachedChannelMessages("account-1")["channel-1"]?.latestFetchedAt).toBe(0);
+  });
+
+  test("retains the active channel when background traffic exceeds the disk cache limit", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+
+    for (let index = 0; index < 31; index += 1) {
+      const channelId = `channel-${index}`;
+      saveCachedChannelMessages("account-1", channelId, {
+        channelId,
+        messages: [],
+        hasOlder: false,
+        updatedAt: index,
+        latestFetchedAt: index,
+      });
+    }
+    markCachedChannelActive("account-1", "channel-0");
+    flushDataCacheSync();
+
+    const persisted = JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8"));
+    const channelIds = Object.keys(persisted.accounts["account-1"].channelMessages);
+    expect(channelIds).toHaveLength(30);
+    expect(channelIds).toContain("channel-0");
+    expect(channelIds).not.toContain("channel-1");
+    expect(persisted.accounts["account-1"].activeChannelId).toBe("channel-0");
   });
 
   test("persists pinned-message snapshots per account and channel", () => {

@@ -85,6 +85,7 @@ import {
   loadCachedNotifications,
   loadLastCachedAccountId,
   markCachedAccountActive,
+  markCachedChannelActive,
   saveCachedChannelMessages,
   saveCachedChannelPins,
   saveCachedDirectMessages,
@@ -133,6 +134,7 @@ import {
   setMemberListMessage,
 } from "./memberlist";
 import type { AppState } from "./state";
+import type { TuiStartingState } from "./startingstate";
 import { VOICE_MESSAGE_FLAG, type VoiceMessageClip } from "./voice-message";
 import {
   clearChannelNotifications,
@@ -210,6 +212,8 @@ export interface ChannelMessageLocationTarget {
 
 interface LoadGuildChannelsOptions {
   openFirstChannel?: boolean;
+  /** Revalidate a restored channel without moving the independently saved sidebar cursor. */
+  focusGuild?: boolean;
 }
 
 const MESSAGE_PAGE_LIMIT = 50;
@@ -1889,12 +1893,12 @@ function cachedSidebarGuilds(_directMessages: DiscordChannel[], guilds: DiscordG
 }
 
 /**
- * Populate the Discord sidebar from the most recently active account before a
- * saved token has finished validating. The account marker lets auth either
- * confirm this preview or discard it if the token belongs to someone else.
+ * Populate the Discord sidebar before a saved token has finished validating.
+ * The account marker lets auth either confirm this preview or discard it if
+ * the token belongs to someone else.
  */
-export function restoreCachedSidebarPreview(state: AppState): boolean {
-  const accountId = loadLastCachedAccountId();
+export function restoreCachedSidebarPreview(state: AppState, preferredAccountId?: string | null): boolean {
+  const accountId = preferredAccountId ?? loadLastCachedAccountId();
   if (!accountId) return false;
 
   const cachedDirectMessages = loadCachedDirectMessages(accountId) ?? [];
@@ -1923,6 +1927,54 @@ export function restoreCachedSidebarPreview(state: AppState): boolean {
   setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
   applySidebarFolderLayout(state.sidebar, loadCachedSidebarFolders(accountId));
   state.auth.cachedSidebarPreviewAccountId = accountId;
+  return true;
+}
+
+function restoreCachedAccountData(state: AppState, accountId: string): void {
+  state.guildRolesByGuildId = loadCachedGuildRoles(accountId);
+  state.memberRoleIdsByGuildId = loadCachedMemberRoles(accountId);
+  state.messageCacheByChannelId = loadCachedChannelMessages(accountId);
+  state.channelPinCacheByChannelId = loadCachedChannelPins(accountId);
+  warmCachedMemberLists(state, accountId);
+  state.memberRoleCacheVersion += 1;
+  syncAllSidebarVoiceMembers(state);
+  applyCachedNotifications(state, accountId);
+}
+
+/**
+ * Hydrate the complete first frame from disk: sidebar, active channel metadata,
+ * and its timeline. Network authentication and REST refreshes reconcile this
+ * optimistic preview afterward.
+ */
+export function restoreCachedSessionPreview(
+  state: AppState,
+  startingState: Pick<TuiStartingState, "accountId" | "focusedChannel"> | null,
+): boolean {
+  if (!restoreCachedSidebarPreview(state, startingState?.accountId)) return false;
+  const accountId = state.auth.cachedSidebarPreviewAccountId;
+  if (!accountId) return false;
+
+  restoreCachedAccountData(state, accountId);
+
+  const target = startingState?.focusedChannel;
+  if (!target || target.guildId === WHATSAPP_GUILD_ID) return true;
+  if (!state.sidebar.guilds.some((guild) => guild.id === target.guildId)) return true;
+
+  const channels = state.sidebar.cachedChannelsByGuildId[target.guildId] ?? [];
+  const channel = findTimelineChannel(channels, target.channelId);
+  if (!channel) return true;
+
+  setChannelList(state.channelList, target.guildId, channels);
+  setActiveChannelEntry(state.channelList, channel);
+  state.sidebar.activeGuildId = target.guildId;
+  const cached = cachedChannelMessages(state.messageCacheByChannelId, target.channelId);
+  const emptyText = isThreadChannel(channel) ? "No messages in this thread yet. Send the first message below." : null;
+  const messages = cached?.messages ?? [];
+  recordMessagesRoleIds(state, messages, target.guildId);
+  setTimelineMessages(state.timeline, target.channelId, messages, {
+    hasOlder: cached?.hasOlder ?? false,
+    emptyText,
+  });
   return true;
 }
 
@@ -2610,8 +2662,8 @@ function applyGuildMuteSettings(state: AppState, mutedByGuildId: Record<string, 
   persistNotifications(state);
 }
 
-function applyCachedNotifications(state: AppState): void {
-  const accountId = currentAccountId(state);
+function applyCachedNotifications(state: AppState, cachedAccountId?: string | null): void {
+  const accountId = cachedAccountId ?? currentAccountId(state);
   if (!accountId) return;
   const cachedNotifications = loadCachedNotifications(accountId);
   if (!cachedNotifications) return;
@@ -3351,7 +3403,6 @@ export async function bootstrapReadOnlyClient(
   ensureDirectMessagesGuild(state);
   disconnectMemberListGateway();
   clearMemberListData(state.memberList);
-  clearTimeline(state.timeline);
   setNotice(state, "", "muted");
 
   if (accountId) {
@@ -3374,18 +3425,11 @@ export async function bootstrapReadOnlyClient(
       const cachedChannels = loadCachedGuildChannels(accountId, guild.id) ?? [];
       if (cachedChannels.length > 0) setSidebarCachedChannels(state.sidebar, guild.id, cachedChannels);
     }
-    state.guildRolesByGuildId = loadCachedGuildRoles(accountId);
-    state.memberRoleIdsByGuildId = loadCachedMemberRoles(accountId);
-    state.messageCacheByChannelId = loadCachedChannelMessages(accountId);
-    state.channelPinCacheByChannelId = loadCachedChannelPins(accountId);
-    warmCachedMemberLists(state, accountId);
-    state.memberRoleCacheVersion += 1;
-    syncAllSidebarVoiceMembers(state);
+    restoreCachedAccountData(state, accountId);
     if (cachedDirectMessages.length > 0 || cachedGuilds.length > 0) {
       setSidebarGuilds(state.sidebar, cachedSidebarGuilds(cachedDirectMessages, cachedGuilds));
       applySidebarFolderLayout(state.sidebar, cachedSidebarFolders);
       appliedCachedSidebarFolders = true;
-      applyCachedNotifications(state);
       state.sidebar.expandedGuildId = previousExpandedGuildId;
       state.sidebar.focusedGuildId = previousFocusedGuildId;
       state.sidebar.activeGuildId = previousActiveGuildId;
@@ -3469,8 +3513,10 @@ export async function loadGuildChannels(
 ): Promise<void> {
   const requestId = ++state.channelList.requestId;
   const accountId = currentAccountId(state);
-  state.sidebar.focusedGuildId = guildId;
-  state.sidebar.expandedGuildId = guildId;
+  if (options.focusGuild !== false) {
+    state.sidebar.focusedGuildId = guildId;
+    state.sidebar.expandedGuildId = guildId;
+  }
   state.sidebar.loadingGuildId = guildId;
   state.channelList.loading = true;
   subscribeAppGatewayToGuild(guildId);
@@ -3857,6 +3903,8 @@ export async function loadChannelMessages(
   const requestId = ++state.timeline.requestId;
   clearNotificationsForChannel(state, channelId);
   setActiveChannelEntry(state.channelList, channel);
+  const accountId = currentAccountId(state);
+  if (accountId) markCachedChannelActive(accountId, channelId);
   if (state.replyTarget && state.replyTarget.channelId !== channelId) {
     state.replyTarget = null;
   }

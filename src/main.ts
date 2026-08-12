@@ -28,7 +28,7 @@ import {
   scrollHistoryWithCursor,
 } from "./historycursor";
 import { handleHistorySelectionQuoteKey } from "./historyselection";
-import { findTimelineChannel, setChannelList } from "./channels";
+import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
@@ -72,7 +72,7 @@ import {
   persistSidebarFolders,
   removeSessionChannel,
   removeSessionGuild,
-  restoreCachedSidebarPreview,
+  restoreCachedSessionPreview,
   sendCurrentChannelVoiceMessage,
   startCurrentVoiceCall,
   syncMemberListForCurrentChannel,
@@ -145,7 +145,7 @@ import {
   showCursor,
 } from "./terminal";
 import { dmAuthorColor, theme } from "./theme";
-import { hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
+import { clearTimeline, hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
@@ -205,7 +205,6 @@ setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
   whatsappGuild(),
 ]);
-if (initialToken) restoreCachedSidebarPreview(state);
 if (startupWarnings.length > 0) {
   setNotice(state, startupWarnings.join("\n"), "warning");
 }
@@ -406,7 +405,14 @@ function applyThemeCursor(): void {
 
 function bootstrapSession(token: string): void {
   void (async () => {
-    await bootstrapReadOnlyClient(state, token, { scheduleRender });
+    // bootstrapReadOnlyClient applies account caches synchronously before its
+    // first REST await. Restore and revalidate the visible channel in parallel
+    // with the slower top-level guild/DM hydration.
+    const bootstrap = bootstrapReadOnlyClient(state, token, { scheduleRender });
+    await restorePendingStartingState(token, { deferUnavailableGuild: true });
+    await bootstrap;
+    // A cold cache has no guild metadata to validate the target against. Retry
+    // once the authoritative guild list has arrived.
     await restorePendingStartingState(token);
   })().catch((error) => {
     debugLog("starting_state.restore_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -512,36 +518,73 @@ function sidebarVisibilityOptions(): { showHiddenChannels: boolean; currentUserI
   };
 }
 
-async function restorePendingStartingState(token: string | null): Promise<void> {
+async function restorePendingStartingState(
+  token: string | null,
+  options: { deferUnavailableGuild?: boolean } = {},
+): Promise<void> {
   const startingState = pendingStartingState;
   if (!startingState) return;
 
   const savedChannel = startingState.focusedChannel;
   if (savedChannel?.guildId === WHATSAPP_GUILD_ID) {
     pendingStartingState = null;
-    await whatsAppController.restoreCachedChannel(savedChannel.channelId);
-    applyTuiStartingState(state, startingState);
+    const restored = await whatsAppController.restoreCachedChannel(savedChannel.channelId);
+    applyTuiStartingState(state, restored ? startingState : { ...startingState, focusedChannel: null });
     scheduleRender();
     return;
   }
 
   const accountId = state.auth.user?.id;
   if (!token || !accountId) return;
-  pendingStartingState = null;
-  if (startingState.accountId && startingState.accountId !== accountId) return;
+  if (startingState.accountId && startingState.accountId !== accountId) {
+    pendingStartingState = null;
+    return;
+  }
 
   const channelLocation = availableStartingChannel(startingState, accountId, state.sidebar.guilds);
+  if (savedChannel && !channelLocation && options.deferUnavailableGuild) return;
+  pendingStartingState = null;
+  let restoredFocusedChannel = savedChannel === null;
   if (channelLocation) {
-    await loadGuildChannels(state, token, channelLocation.guildId, { scheduleRender }, { openFirstChannel: false });
+    const cachedChannel = state.channelList.guildId === channelLocation.guildId
+      ? findTimelineChannel(state.channelList.channels, channelLocation.channelId)
+      : null;
+    // The first frame already contains this channel and its messages. Start
+    // message hydration now instead of waiting for the channel-list REST call.
+    const messageHydration = cachedChannel && !cachedChannel.hidden
+      ? loadChannelMessages(state, token, cachedChannel.id, { scheduleRender })
+      : null;
+    await loadGuildChannels(
+      state,
+      token,
+      channelLocation.guildId,
+      { scheduleRender },
+      { openFirstChannel: false, focusGuild: false },
+    );
     const channel = findTimelineChannel(state.channelList.channels, channelLocation.channelId);
     if (channel && !channel.hidden) {
-      await loadChannelMessages(state, token, channel.id, { scheduleRender });
+      if (messageHydration) await messageHydration;
+      else await loadChannelMessages(state, token, channel.id, { scheduleRender });
+      setActiveChannelEntry(state.channelList, channel);
+      restoredFocusedChannel = true;
     }
+  }
+
+  if (savedChannel && !restoredFocusedChannel) {
+    // Authentication has now disproved the optimistic cache preview. Invalidate
+    // any in-flight message refresh before dropping inaccessible stale content.
+    state.timeline.requestId += 1;
+    clearTimeline(state.timeline);
+    setActiveChannelEntry(state.channelList, null);
+    if (state.sidebar.activeGuildId === savedChannel.guildId) state.sidebar.activeGuildId = null;
   }
 
   // Loading the active channel necessarily focuses its guild. Restore the
   // independently saved sidebar cursor only after that work has completed.
-  applyTuiStartingState(state, startingState);
+  applyTuiStartingState(
+    state,
+    restoredFocusedChannel ? startingState : { ...startingState, focusedChannel: null },
+  );
   scheduleRender();
 }
 
@@ -2044,7 +2087,8 @@ voiceMessageController = createVoiceMessageController(state, scheduleRender, {
 
 const whatsAppController = new WhatsAppController(state, scheduleRender);
 if (savedStartingState) applyTuiStartingState(state, savedStartingState);
-if (!initialToken && savedStartingState?.focusedChannel?.guildId === WHATSAPP_GUILD_ID) {
+if (initialToken) restoreCachedSessionPreview(state, savedStartingState);
+if (savedStartingState?.focusedChannel?.guildId === WHATSAPP_GUILD_ID) {
   void restorePendingStartingState(null).catch((error) => {
     debugLog("starting_state.restore_failed", { error: error instanceof Error ? error.message : String(error) });
   });

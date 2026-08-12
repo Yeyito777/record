@@ -15,6 +15,8 @@ import type { NotificationState } from "./notifications";
 
 interface AccountDataCache {
   savedAt: number;
+  /** Channel to retain even when background gateway traffic fills the disk LRU. */
+  activeChannelId?: string;
   guilds?: DiscordGuild[];
   directMessages?: DiscordChannel[];
   guildChannels?: Record<string, DiscordChannel[]>;
@@ -228,12 +230,21 @@ function compactCacheForDisk(cache: DataCacheFile): DataCacheFile {
 }
 
 function compactAccountCache(account: AccountDataCache): AccountDataCache {
-  const channelMessages = Object.fromEntries(
-    Object.entries(account.channelMessages ?? {})
-      .sort(([, left], [, right]) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
-      .slice(0, MAX_PERSISTED_MESSAGE_CHANNELS)
-      .map(([channelId, entry]) => [channelId, cloneCachedChannelMessages(entry, MAX_PERSISTED_MESSAGES_PER_CHANNEL)]),
-  );
+  const recentMessageChannels = Object.entries(account.channelMessages ?? {})
+    .sort(([, left], [, right]) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+    .slice(0, MAX_PERSISTED_MESSAGE_CHANNELS);
+  const activeChannelEntry = account.activeChannelId
+    ? Object.entries(account.channelMessages ?? {}).find(([channelId]) => channelId === account.activeChannelId)
+    : undefined;
+  if (activeChannelEntry && !recentMessageChannels.some(([channelId]) => channelId === activeChannelEntry[0])) {
+    // Gateway events update caches for channels that are not open. Keep those
+    // useful, but never let them evict the conversation a restart must render.
+    recentMessageChannels.splice(Math.max(0, recentMessageChannels.length - 1), 1, activeChannelEntry);
+  }
+  const channelMessages = Object.fromEntries(recentMessageChannels.map(([channelId, entry]) => [
+    channelId,
+    cloneCachedChannelMessages(entry, MAX_PERSISTED_MESSAGES_PER_CHANNEL),
+  ]));
   const channelPins = Object.fromEntries(
     Object.entries(account.channelPins ?? {})
       .sort(([, left], [, right]) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
@@ -281,6 +292,16 @@ export function markCachedAccountActive(accountId: string): void {
   if (!accountId) return;
   const cache = loadCacheFile();
   const account = accountCache(cache, accountId);
+  account.savedAt = Date.now();
+  saveCacheFile(cache);
+}
+
+/** Pin the visible conversation in the bounded on-disk message cache. */
+export function markCachedChannelActive(accountId: string, channelId: string): void {
+  if (!accountId || !channelId) return;
+  const cache = loadCacheFile();
+  const account = accountCache(cache, accountId);
+  account.activeChannelId = channelId;
   account.savedAt = Date.now();
   saveCacheFile(cache);
 }
