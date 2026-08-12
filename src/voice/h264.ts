@@ -3,6 +3,7 @@ const H264_NAL_TYPE_STAP_A = 24;
 const H264_NAL_TYPE_FU_A = 28;
 const DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_FRAME_PACKETS = 4_096;
+const DEFAULT_MAX_BUFFERED_FRAMES = 12;
 
 export interface H264RtpFragment {
   sequence: number;
@@ -127,6 +128,98 @@ export class H264RtpDepacketizer {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || this.frameBytes + bytes > this.maxFrameBytes) return false;
     this.frameBytes += bytes;
     return true;
+  }
+}
+
+interface BufferedH264Frame {
+  firstSequence: number;
+  markerSequence: number | null;
+  packets: Map<number, Buffer>;
+}
+
+export interface CompleteH264RtpFrame {
+  timestamp: number;
+  frame: Buffer;
+}
+
+/**
+ * Holds several RTP frames so late RTX repairs can fill sequence gaps before
+ * DAVE decrypts the access unit. Discord routinely NACKs/retransmits packets
+ * from large keyframes after packets from following frames have arrived.
+ */
+export class H264RtpJitterBuffer {
+  private readonly frames = new Map<number, BufferedH264Frame>();
+  private expectedFrameStart: number | null = null;
+
+  constructor(
+    private readonly maxBufferedFrames = DEFAULT_MAX_BUFFERED_FRAMES,
+    private readonly maxFramePackets = DEFAULT_MAX_FRAME_PACKETS,
+  ) {}
+
+  push(fragment: H264RtpFragment): CompleteH264RtpFrame[] {
+    let frame = this.frames.get(fragment.timestamp);
+    if (!frame) {
+      const expectedDistance = this.expectedFrameStart === null
+        ? this.maxFramePackets + 1
+        : (fragment.sequence - this.expectedFrameStart) & 0xffff;
+      frame = {
+        firstSequence: expectedDistance <= this.maxFramePackets ? this.expectedFrameStart! : fragment.sequence,
+        markerSequence: null,
+        packets: new Map(),
+      };
+      this.frames.set(fragment.timestamp, frame);
+    } else {
+      const earlierDistance = (frame.firstSequence - fragment.sequence) & 0xffff;
+      if (earlierDistance > 0 && earlierDistance <= this.maxFramePackets) frame.firstSequence = fragment.sequence;
+    }
+
+    frame.packets.set(fragment.sequence, Buffer.from(fragment.payload));
+    if (fragment.marker) {
+      frame.markerSequence = fragment.sequence;
+      this.expectedFrameStart = (fragment.sequence + 1) & 0xffff;
+    }
+
+    while (this.frames.size > this.maxBufferedFrames) {
+      const oldestTimestamp = this.frames.keys().next().value;
+      if (oldestTimestamp === undefined) break;
+      this.frames.delete(oldestTimestamp);
+    }
+    return this.drainCompleteFrames();
+  }
+
+  reset(): void {
+    this.frames.clear();
+    this.expectedFrameStart = null;
+  }
+
+  private drainCompleteFrames(): CompleteH264RtpFrame[] {
+    const complete: CompleteH264RtpFrame[] = [];
+    for (const [timestamp, frame] of this.frames) {
+      if (frame.markerSequence === null) continue;
+      const packetCount = ((frame.markerSequence - frame.firstSequence) & 0xffff) + 1;
+      if (packetCount < 1 || packetCount > this.maxFramePackets || frame.packets.size < packetCount) continue;
+      const depacketizer = new H264RtpDepacketizer(undefined, this.maxFramePackets);
+      let assembled: Buffer | null = null;
+      let sequence = frame.firstSequence;
+      for (let index = 0; index < packetCount; index += 1) {
+        const payload = frame.packets.get(sequence);
+        if (!payload) {
+          assembled = null;
+          break;
+        }
+        assembled = depacketizer.push({
+          sequence,
+          timestamp,
+          marker: sequence === frame.markerSequence,
+          payload,
+        });
+        sequence = (sequence + 1) & 0xffff;
+      }
+      if (!assembled) continue;
+      this.frames.delete(timestamp);
+      complete.push({ timestamp, frame: assembled });
+    }
+    return complete;
   }
 }
 

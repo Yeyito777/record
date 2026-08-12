@@ -4,8 +4,8 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { debugLog } from "./debuglog";
-import { OPUS_PAYLOAD_TYPE, RTP_HEADER_LENGTH, VIDEO_PAYLOAD_TYPE_H264 } from "./voice/constants";
-import { bindUdp, encryptAes256GcmRtp, parsePlainRtpPacket } from "./voice/rtp";
+import { OPUS_PAYLOAD_TYPE, RTP_HEADER_LENGTH, VIDEO_PAYLOAD_TYPE_H264, VIDEO_RTX_PAYLOAD_TYPE_H264 } from "./voice/constants";
+import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parsePlainRtpPacket } from "./voice/rtp";
 import { rewriteH264SpsVuiForWebRtc } from "./voice/sps-vui";
 import type { VoiceAudioBackend, VoiceAudioContext } from "./voice/types";
 
@@ -19,6 +19,7 @@ const RTP_TRANSPORT_SEQUENCE_EXTENSION_ID = 5;
 const PLAYOUT_DELAY_EXTENSION_ID = 6;
 const VIDEO_CONTENT_TYPE_EXTENSION_ID = 7;
 const RTP_STREAM_ID_EXTENSION_ID = 11;
+const RTP_REPAIRED_STREAM_ID_EXTENSION_ID = 12;
 const PLAYOUT_DELAY_MIN_10MS = 0;
 const PLAYOUT_DELAY_MAX_10MS = 10;
 const VIDEO_CONTENT_TYPE_SCREEN = 1;
@@ -36,6 +37,7 @@ const VIDEO_QUEUE_DROP_THRESHOLD = 600;
 const RTCP_SENDER_REPORT_INTERVAL_MS = 5_000;
 const NTP_UNIX_EPOCH_OFFSET_SECONDS = 2_208_988_800;
 const STREAM_VIDEO_STATS_INTERVAL_MS = 5_000;
+const VIDEO_RTP_HISTORY_PACKETS = 2_048;
 
 export interface StreamMediaBackendOptions {
   command?: string[];
@@ -49,6 +51,7 @@ export class StreamMediaBackend implements VoiceAudioBackend {
   private sendCounter = 0;
   private videoSequence = Math.floor(Math.random() * 0x10000);
   private videoTransportSequence = Math.floor(Math.random() * 0x10000);
+  private videoRtxSequence = Math.floor(Math.random() * 0x10000);
   private videoTimestamp = Math.floor(Math.random() * 0x100000000) >>> 0;
   private audioSpeaking = false;
   private videoPackets = 0;
@@ -67,6 +70,8 @@ export class StreamMediaBackend implements VoiceAudioBackend {
   private incomingUdpPackets = 0;
   private capturedVideoBytes = 0;
   private capturedVideoFrames = 0;
+  private videoRtxPackets = 0;
+  private readonly videoHistory = new Map<number, StoredVideoRtpPacket>();
   private videoPacketQueue: Buffer[] = [];
   private videoPaceTimer: ReturnType<typeof setInterval> | null = null;
   private rtcpSenderReportTimer: ReturnType<typeof setInterval> | null = null;
@@ -84,6 +89,8 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     this.incomingUdpPackets = 0;
     this.capturedVideoBytes = 0;
     this.capturedVideoFrames = 0;
+    this.videoRtxPackets = 0;
+    this.videoHistory.clear();
     this.videoPayloadOctets = 0;
     this.videoKeyframes = 0;
     this.lastVideoStatsAt = 0;
@@ -134,6 +141,7 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     this.audioSpeaking = false;
     this.videoAssembler.reset();
     this.videoPacketQueue = [];
+    this.videoHistory.clear();
     this.stopVideoPacer();
     this.stopRtcpSenderReports();
     if (this.audioSocket) {
@@ -225,6 +233,8 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     this.videoTimestamp = (this.videoTimestamp + Math.round(VIDEO_RTP_CLOCK_RATE / 30)) >>> 0;
 
     payloads.forEach((payload, index) => {
+      const sequence = this.videoSequence & 0xffff;
+      const marker = index === payloads.length - 1;
       const extensionBody = buildDiscordVideoRtpExtensionBody(this.videoTransportSequence);
       this.videoTransportSequence = (this.videoTransportSequence + 1) & 0xffff;
       // In Discord's rtpsize AEAD modes, only the RTP header and extension
@@ -232,8 +242,8 @@ export class StreamMediaBackend implements VoiceAudioBackend {
       // with the H.264 payload.
       const header = Buffer.alloc(RTP_HEADER_LENGTH + 4);
       header[0] = 0x90;
-      header[1] = (index === payloads.length - 1 ? 0x80 : 0) | payloadType;
-      header.writeUInt16BE(this.videoSequence & 0xffff, 2);
+      header[1] = (marker ? 0x80 : 0) | payloadType;
+      header.writeUInt16BE(sequence, 2);
       header.writeUInt32BE(this.videoTimestamp >>> 0, 4);
       header.writeUInt32BE(videoSsrc >>> 0, 8);
       header.writeUInt16BE(RTP_EXTENSION_PROFILE_ONE_BYTE, 12);
@@ -242,6 +252,7 @@ export class StreamMediaBackend implements VoiceAudioBackend {
 
       const encrypted = encryptAes256GcmRtp(header, Buffer.concat([extensionBody, payload]), context.secretKey, this.nextCounter());
       this.videoPacketQueue.push(encrypted);
+      this.rememberVideoPacket({ sequence, timestamp: this.videoTimestamp, marker, payload: Buffer.from(payload) });
       this.videoPackets += 1;
       this.videoPayloadOctets += payload.length;
     });
@@ -294,14 +305,57 @@ export class StreamMediaBackend implements VoiceAudioBackend {
 
   private readonly handleDiscordPacket = (packet: Buffer): void => {
     this.incomingUdpPackets += 1;
-    if (this.incomingUdpPackets > 5) return;
     const version = packet.length > 0 ? packet[0] >> 6 : 0;
     const payloadType = packet.length > 1 ? packet[1] : null;
     const rtcpType = version === 2 && payloadType !== null && payloadType >= 192 && payloadType <= 223 ? payloadType : null;
     const rtcpFormat = rtcpType !== null ? packet[0] & 0x1f : null;
     const ssrc = rtcpType !== null && packet.length >= 8 ? packet.readUInt32BE(4) : null;
-    debugLog("stream.media.incoming_udp", { bytes: packet.length, rtcpType, rtcpFormat, ssrc });
+    if (this.incomingUdpPackets <= 5) debugLog("stream.media.incoming_udp", { bytes: packet.length, rtcpType, rtcpFormat, ssrc });
+    if (rtcpType === null) return;
+    const context = this.context;
+    if (!context || !context.videoSsrc || !context.videoRtxSsrc) return;
+    const decryptedBody = decryptAes256GcmRtp(packet, 8, context.secretKey);
+    if (!decryptedBody) return;
+    const clearPacket = Buffer.concat([packet.subarray(0, 8), decryptedBody]);
+    const missing = parseRtcpNackSequences(clearPacket, context.videoSsrc);
+    if (missing.length === 0) return;
+    let retransmitted = 0;
+    for (const sequence of missing.slice(0, 256)) {
+      const original = this.videoHistory.get(sequence);
+      if (!original) continue;
+      const header = Buffer.alloc(RTP_HEADER_LENGTH + 4);
+      header[0] = 0x90;
+      header[1] = (original.marker ? 0x80 : 0) | VIDEO_RTX_PAYLOAD_TYPE_H264;
+      header.writeUInt16BE(this.videoRtxSequence, 2);
+      header.writeUInt32BE(original.timestamp >>> 0, 4);
+      header.writeUInt32BE(context.videoRtxSsrc >>> 0, 8);
+      const extensionBody = buildDiscordVideoRtpExtensionBody(this.videoTransportSequence, STREAM_RID, RTP_REPAIRED_STREAM_ID_EXTENSION_ID);
+      header.writeUInt16BE(RTP_EXTENSION_PROFILE_ONE_BYTE, 12);
+      header.writeUInt16BE(extensionBody.length / 4, 14);
+      const rtxPayload = Buffer.alloc(2 + original.payload.length);
+      rtxPayload.writeUInt16BE(original.sequence, 0);
+      original.payload.copy(rtxPayload, 2);
+      context.udp.send(encryptAes256GcmRtp(header, Buffer.concat([extensionBody, rtxPayload]), context.secretKey, this.nextCounter()));
+      this.videoRtxSequence = (this.videoRtxSequence + 1) & 0xffff;
+      this.videoTransportSequence = (this.videoTransportSequence + 1) & 0xffff;
+      retransmitted += 1;
+    }
+    const firstRetransmission = this.videoRtxPackets === 0 && retransmitted > 0;
+    this.videoRtxPackets += retransmitted;
+    if (firstRetransmission) {
+      debugLog("stream.media.rtx", { requested: missing.length, retransmitted, total: this.videoRtxPackets, history: this.videoHistory.size });
+    }
   };
+
+  private rememberVideoPacket(packet: StoredVideoRtpPacket): void {
+    this.videoHistory.delete(packet.sequence);
+    this.videoHistory.set(packet.sequence, packet);
+    while (this.videoHistory.size > VIDEO_RTP_HISTORY_PACKETS) {
+      const oldest = this.videoHistory.keys().next().value;
+      if (oldest === undefined) break;
+      this.videoHistory.delete(oldest);
+    }
+  }
 
   private maybeLogVideoStats(packetization: string, lastFrameBytes: number): void {
     const now = Date.now();
@@ -313,6 +367,7 @@ export class StreamMediaBackend implements VoiceAudioBackend {
     debugLog("stream.media.video_stats", {
       frames: this.videoFrames,
       packets: this.videoPackets,
+      rtxPackets: this.videoRtxPackets,
       keyframes: this.videoKeyframes,
       fps: elapsedSeconds > 0 ? frameDelta / elapsedSeconds : null,
       bitrateKbps: elapsedSeconds > 0 ? (byteDelta * 8) / elapsedSeconds / 1000 : null,
@@ -401,14 +456,44 @@ export function buildPlayoutDelayExtension(minDelay10Ms: number, maxDelay10Ms: n
   ]);
 }
 
-export function buildDiscordVideoRtpExtensionBody(transportSequence: number, rid = STREAM_RID): Buffer {
+export function buildDiscordVideoRtpExtensionBody(transportSequence: number, rid = STREAM_RID, ridExtensionId = RTP_STREAM_ID_EXTENSION_ID): Buffer {
   const body: number[] = [];
   pushOneByteRtpExtension(body, RTP_TRANSPORT_SEQUENCE_EXTENSION_ID, Buffer.from([(transportSequence >>> 8) & 0xff, transportSequence & 0xff]));
   pushOneByteRtpExtension(body, PLAYOUT_DELAY_EXTENSION_ID, buildPlayoutDelayExtension(PLAYOUT_DELAY_MIN_10MS, PLAYOUT_DELAY_MAX_10MS).subarray(1));
   pushOneByteRtpExtension(body, VIDEO_CONTENT_TYPE_EXTENSION_ID, Buffer.from([VIDEO_CONTENT_TYPE_SCREEN]));
-  pushOneByteRtpExtension(body, RTP_STREAM_ID_EXTENSION_ID, Buffer.from(rid, "ascii"));
+  pushOneByteRtpExtension(body, ridExtensionId, Buffer.from(rid, "ascii"));
   while (body.length % 4 !== 0) body.push(0);
   return Buffer.from(body);
+}
+
+interface StoredVideoRtpPacket {
+  sequence: number;
+  timestamp: number;
+  marker: boolean;
+  payload: Buffer;
+}
+
+export function parseRtcpNackSequences(packet: Buffer, mediaSsrc: number): number[] {
+  const missing: number[] = [];
+  let offset = 0;
+  while (offset + 4 <= packet.length) {
+    const packetBytes = (packet.readUInt16BE(offset + 2) + 1) * 4;
+    if (packetBytes < 4 || offset + packetBytes > packet.length) break;
+    const format = packet[offset]! & 0x1f;
+    const type = packet[offset + 1];
+    if (type === 205 && format === 1 && packetBytes >= 12 && packet.readUInt32BE(offset + 8) === (mediaSsrc >>> 0)) {
+      for (let cursor = offset + 12; cursor + 4 <= offset + packetBytes; cursor += 4) {
+        const packetId = packet.readUInt16BE(cursor);
+        const bitmask = packet.readUInt16BE(cursor + 2);
+        missing.push(packetId);
+        for (let bit = 0; bit < 16; bit += 1) {
+          if ((bitmask & (1 << bit)) !== 0) missing.push((packetId + bit + 1) & 0xffff);
+        }
+      }
+    }
+    offset += packetBytes;
+  }
+  return Array.from(new Set(missing));
 }
 
 function pushOneByteRtpExtension(output: number[], id: number, value: Buffer): void {

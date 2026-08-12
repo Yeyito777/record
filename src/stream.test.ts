@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { H264AnnexBFrameAssembler, buildDiscordVideoRtpExtensionBody, buildPlayoutDelayExtension, buildRtcpSenderReport, isH264Keyframe, packetizeGenericVideoPayload, packetizeH264AccessUnit, packetizeMaybeAnnexBVideoPayload, rewriteH264SpsNalusForWebRtc } from "./stream";
+import { H264AnnexBFrameAssembler, buildDiscordVideoRtpExtensionBody, buildPlayoutDelayExtension, buildRtcpSenderReport, isH264Keyframe, packetizeGenericVideoPayload, packetizeH264AccessUnit, packetizeMaybeAnnexBVideoPayload, parseRtcpNackSequences, rewriteH264SpsNalusForWebRtc } from "./stream";
 
 describe("screen streaming", () => {
   test("builds Discord/WebRTC one-byte playout-delay RTP extension", () => {
@@ -23,6 +23,21 @@ describe("screen streaming", () => {
     expect(sr.readUInt32BE(16)).toBe(0x55667788);
     expect(sr.readUInt32BE(20)).toBe(9);
     expect(sr.readUInt32BE(24)).toBe(10);
+  });
+
+  test("parses generic RTCP NACK packet ids and bitmasks", () => {
+    const nack = Buffer.alloc(20);
+    nack[0] = 0x81;
+    nack[1] = 205;
+    nack.writeUInt16BE(4, 2);
+    nack.writeUInt32BE(10, 4);
+    nack.writeUInt32BE(20, 8);
+    nack.writeUInt16BE(0xffff, 12);
+    nack.writeUInt16BE(0b101, 14);
+    nack.writeUInt16BE(8, 16);
+    nack.writeUInt16BE(0, 18);
+    expect(parseRtcpNackSequences(nack, 20)).toEqual([0xffff, 0, 2, 8]);
+    expect(parseRtcpNackSequences(nack, 21)).toEqual([]);
   });
 
   test("assembles Annex-B H264 access units on AUD boundaries", () => {

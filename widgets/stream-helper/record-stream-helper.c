@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 enum video_encoder {
@@ -36,6 +37,11 @@ static volatile sig_atomic_t running = 1;
 static pid_t ffmpeg_pid = -1;
 static enum video_encoder active_encoder = VIDEO_ENCODER_X264;
 static int allow_encoder_fallback = 0;
+static time_t ffmpeg_started_at = 0;
+static unsigned ffmpeg_restart_attempts = 0;
+
+#define FFMPEG_STABLE_RUN_SECONDS 10
+#define FFMPEG_MAX_RESTART_ATTEMPTS 5
 
 static void on_signal(int sig)
 {
@@ -286,6 +292,11 @@ static int start_ffmpeg(const struct options *opts, const struct geometry *geo, 
         args[n++] = "-loglevel";
         args[n++] = "warning";
         args[n++] = "-nostdin";
+        /* x11grab can otherwise remain alive after an unrecoverable XGetImage
+         * failure, leaving Discord connected and audio flowing while video is
+         * permanently frozen. Exit so the supervisor below can reconnect to
+         * the X server and resume capture. */
+        args[n++] = "-xerror";
         if (encoder == VIDEO_ENCODER_VAAPI) {
             args[n++] = "-vaapi_device";
             args[n++] = vaapi_device;
@@ -384,6 +395,7 @@ static int start_ffmpeg(const struct options *opts, const struct geometry *geo, 
     }
     ffmpeg_pid = pid;
     active_encoder = encoder;
+    ffmpeg_started_at = time(NULL);
     fprintf(stderr, "record-stream-helper: started ffmpeg encoder=%s audio_source=%s\n", encoder_name(encoder), audio_source);
     return 0;
 }
@@ -459,6 +471,7 @@ int main(int argc, char **argv)
             pid_t waited = waitpid(ffmpeg_pid, &status, WNOHANG);
             if (waited == ffmpeg_pid) {
                 int failed = 0;
+                time_t ran_for = time(NULL) - ffmpeg_started_at;
                 ffmpeg_pid = -1;
                 if (WIFEXITED(status)) {
                     exit_status = WEXITSTATUS(status);
@@ -467,13 +480,34 @@ int main(int argc, char **argv)
                     exit_status = 128 + WTERMSIG(status);
                     failed = 1;
                 }
-                if (failed && allow_encoder_fallback && active_encoder == VIDEO_ENCODER_VAAPI) {
+                if (failed && ran_for >= FFMPEG_STABLE_RUN_SECONDS) {
+                    /* A failure after a stable run is normally a transient X11
+                     * capture disruption (for example a nested display resize
+                     * or image-read failure), not an encoder initialization
+                     * problem. Reopen the display with the same encoder. */
+                    ffmpeg_restart_attempts = 0;
+                    fprintf(stderr, "record-stream-helper: ffmpeg stopped after %ld seconds with status %d; restarting capture\n", (long)ran_for, exit_status);
+                    exit_status = 0;
+                    if (start_ffmpeg(&opts, &geo, active_encoder) == 0)
+                        continue;
+                    fprintf(stderr, "record-stream-helper: failed to restart ffmpeg: %s\n", strerror(errno));
+                    exit_status = 1;
+                } else if (failed && allow_encoder_fallback && active_encoder == VIDEO_ENCODER_VAAPI) {
                     fprintf(stderr, "record-stream-helper: ffmpeg VAAPI encoder failed with status %d; falling back to x264\n", exit_status);
                     allow_encoder_fallback = 0;
                     exit_status = 0;
                     if (start_ffmpeg(&opts, &geo, VIDEO_ENCODER_X264) == 0)
                         continue;
                     fprintf(stderr, "record-stream-helper: failed to start x264 fallback: %s\n", strerror(errno));
+                    exit_status = 1;
+                } else if (failed && ffmpeg_restart_attempts < FFMPEG_MAX_RESTART_ATTEMPTS) {
+                    ffmpeg_restart_attempts++;
+                    fprintf(stderr, "record-stream-helper: ffmpeg failed with status %d; retrying capture (%u/%u)\n", exit_status, ffmpeg_restart_attempts, FFMPEG_MAX_RESTART_ATTEMPTS);
+                    usleep(200000);
+                    exit_status = 0;
+                    if (start_ffmpeg(&opts, &geo, active_encoder) == 0)
+                        continue;
+                    fprintf(stderr, "record-stream-helper: failed to retry ffmpeg: %s\n", strerror(errno));
                     exit_status = 1;
                 }
                 running = 0;

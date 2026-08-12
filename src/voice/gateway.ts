@@ -19,7 +19,7 @@ import { debugLog } from "../debuglog";
 import { VOICE_CONNECT_TIMEOUT_MS, VOICE_GATEWAY_VERSION, OPUS_PAYLOAD_TYPE, VIDEO_PAYLOAD_TYPE_H264, VIDEO_RTX_PAYLOAD_TYPE_H264 } from "./constants";
 import { DaveVoiceEncryption } from "./dave";
 import { asError, voiceGatewayCloseError } from "./errors";
-import { H264RtpDepacketizer, packetizeH264AnnexB } from "./h264";
+import { H264RtpJitterBuffer, packetizeH264AnnexB, splitAnnexBNalus } from "./h264";
 import { buildMediaSinkWantsPayload, buildVoiceIdentifyPayload, buildVoiceResumePayload } from "./payloads";
 import { connectUdp, decryptAes256GcmRtp, discoverUdpAddress, parseDiscordRtpPacket, parsePlainRtpPacket, selectEncryptionMode } from "./rtp";
 import { isDaveVoiceGatewayBinaryMessage, isObject, messageDataToBinaryBuffer, messageDataToString, snowflakeToString } from "./util";
@@ -91,11 +91,17 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
   private webRtcLastVideoStatsFrames = 0;
   private webRtcLastVideoStatsDropped = 0;
   private webRtcLastVideoStatsSendFalse = 0;
-  private readonly incomingH264 = new H264RtpDepacketizer();
+  private readonly incomingH264 = new H264RtpJitterBuffer();
   private incomingVideoSequence = Math.floor(Math.random() * 0x10000);
   private incomingVideoTransportPackets = 0;
   private incomingVideoAssembledFrames = 0;
   private incomingVideoFrames = 0;
+  private incomingVideoKeyframes = 0;
+  private incomingVideoOutputPackets = 0;
+  private incomingVideoPlaybackReady = false;
+  private incomingVideoSps: Buffer | null = null;
+  private incomingVideoPps: Buffer | null = null;
+  private incomingVideoLastStatsAt = 0;
   mediaSessionId: string | null = null;
 
   private get receiveOnlyStream(): boolean {
@@ -193,6 +199,12 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
     this.incomingVideoTransportPackets = 0;
     this.incomingVideoAssembledFrames = 0;
     this.incomingVideoFrames = 0;
+    this.incomingVideoKeyframes = 0;
+    this.incomingVideoOutputPackets = 0;
+    this.incomingVideoPlaybackReady = false;
+    this.incomingVideoSps = null;
+    this.incomingVideoPps = null;
+    this.incomingVideoLastStatsAt = 0;
     if (this.webRtc) {
       try { this.webRtc.close(); } catch {}
       this.webRtc = null;
@@ -1013,35 +1025,68 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         payloadBytes: payload.length,
       });
     }
-    const frame = this.incomingH264.push({ sequence, timestamp: parsed.timestamp, marker: parsed.marker, payload });
-    if (!frame) return;
+    const completeFrames = this.incomingH264.push({ sequence, timestamp: parsed.timestamp, marker: parsed.marker, payload });
+    for (const complete of completeFrames) this.handleIncomingCompleteVideoFrame(primarySsrc, complete.timestamp, complete.frame);
+  }
+
+  private handleIncomingCompleteVideoFrame(primarySsrc: number, timestamp: number, frame: Buffer): void {
     this.incomingVideoAssembledFrames += 1;
-    if (this.incomingVideoAssembledFrames === 1) {
-      debugLog("voice.gateway.first_encrypted_video_frame", {
-        streamKey: this.data.streamReceive?.streamKey ?? null,
-        ssrc: primarySsrc,
-        bytes: frame.length,
-      });
-    }
+    if (this.incomingVideoAssembledFrames === 1) debugLog("voice.gateway.first_encrypted_video_frame", {
+      streamKey: this.data.streamReceive?.streamKey ?? null,
+      ssrc: primarySsrc,
+      bytes: frame.length,
+    });
     const userId = this.ssrcToUserId.get(primarySsrc) ?? null;
     if (!userId || (this.data.streamReceive?.ownerUserId && userId !== this.data.streamReceive.ownerUserId)) return;
     const decoded = this.dave.decodeIncomingVideo(userId, frame);
     if (!decoded || decoded.length === 0) return;
-    const outputPayloads = packetizeH264AnnexB(decoded);
+    this.incomingVideoFrames += 1;
+    const nalus = splitAnnexBNalus(decoded);
+    const nalTypes = nalus.map((nalu) => nalu[0]! & 0x1f);
+    const sps = nalus.find((nalu) => (nalu[0]! & 0x1f) === 7);
+    const pps = nalus.find((nalu) => (nalu[0]! & 0x1f) === 8);
+    if (sps) this.incomingVideoSps = Buffer.from(sps);
+    if (pps) this.incomingVideoPps = Buffer.from(pps);
+    const keyframe = nalTypes.includes(5);
+    if (keyframe) this.incomingVideoKeyframes += 1;
+
+    // A player joining mid-stream cannot decode P-frames until it has SPS,
+    // PPS, and an IDR. Hold video until that clean random-access point and
+    // prepend cached parameter sets when Discord delivers them separately.
+    let playableFrame = decoded;
+    if (!this.incomingVideoPlaybackReady) {
+      if (!keyframe || (!sps && !this.incomingVideoSps) || (!pps && !this.incomingVideoPps)) {
+        this.maybeLogIncomingVideoStats(nalTypes, false);
+        return;
+      }
+      const prefix: Buffer[] = [];
+      if (!sps && this.incomingVideoSps) prefix.push(Buffer.from([0, 0, 0, 1]), this.incomingVideoSps);
+      if (!pps && this.incomingVideoPps) prefix.push(Buffer.from([0, 0, 0, 1]), this.incomingVideoPps);
+      if (prefix.length > 0) playableFrame = Buffer.concat([...prefix, decoded]);
+      this.incomingVideoPlaybackReady = true;
+      debugLog("voice.gateway.video_playback_ready", {
+        streamKey: this.data.streamReceive?.streamKey ?? null,
+        ssrc: primarySsrc,
+        frame: this.incomingVideoFrames,
+        bytes: playableFrame.length,
+        nalTypes,
+      });
+    }
+
+    const outputPayloads = packetizeH264AnnexB(playableFrame);
     if (outputPayloads.length === 0) return;
 
-    this.incomingVideoFrames += 1;
     outputPayloads.forEach((outputPayload, index) => {
       const marker = index === outputPayloads.length - 1;
       const outputSequence = this.incomingVideoSequence;
       this.incomingVideoSequence = (this.incomingVideoSequence + 1) & 0xffff;
       this.callbacks.onIncomingRtp?.({
         mediaType: "video",
-        packet: buildPlainRtpPacket(VIDEO_PAYLOAD_TYPE_H264, marker, outputSequence, parsed.timestamp, primarySsrc, outputPayload),
+        packet: buildPlainRtpPacket(VIDEO_PAYLOAD_TYPE_H264, marker, outputSequence, timestamp, primarySsrc, outputPayload),
         payload: outputPayload,
         payloadType: VIDEO_PAYLOAD_TYPE_H264,
         sequence: outputSequence,
-        timestamp: parsed.timestamp,
+        timestamp,
         ssrc: primarySsrc,
         userId,
         streamKey: this.data.streamReceive?.streamKey ?? null,
@@ -1049,6 +1094,8 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         trackType: "video",
       });
     });
+    this.incomingVideoOutputPackets += outputPayloads.length;
+    this.maybeLogIncomingVideoStats(nalTypes, true);
     if (this.incomingVideoFrames === 1) {
       debugLog("voice.gateway.first_decrypted_video", {
         streamKey: this.data.streamReceive?.streamKey ?? null,
@@ -1058,6 +1105,23 @@ export class DiscordVoiceGatewayConnection implements VoiceGatewayConnection {
         packets: outputPayloads.length,
       });
     }
+  }
+
+  private maybeLogIncomingVideoStats(nalTypes: number[], emitted: boolean): void {
+    const now = Date.now();
+    if (now - this.incomingVideoLastStatsAt < 5_000) return;
+    this.incomingVideoLastStatsAt = now;
+    debugLog("voice.gateway.incoming_video_stats", {
+      streamKey: this.data.streamReceive?.streamKey ?? null,
+      transportPackets: this.incomingVideoTransportPackets,
+      assembledFrames: this.incomingVideoAssembledFrames,
+      decodedFrames: this.incomingVideoFrames,
+      keyframes: this.incomingVideoKeyframes,
+      outputPackets: this.incomingVideoOutputPackets,
+      playbackReady: this.incomingVideoPlaybackReady,
+      emitted,
+      nalTypes,
+    });
   }
 
   private sendMediaSinkWants(audioSsrc: number | null, videoSsrc: number): void {
