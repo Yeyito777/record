@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildDiscordWebRtcAnswer, buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, DiscordVoiceGatewayConnection, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, shouldUseNativePlayback, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
+import { buildDiscordWebRtcAnswer, buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, confirmedPlaybackLossFrames, DiscordVoiceGatewayConnection, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, shouldUseNativePlayback, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -469,6 +469,17 @@ describe("voice backend", () => {
       duplicatePackets: 0,
       maxArrivalDeltaMs: 60,
     });
+  });
+
+  test("only fills fallback playback gaps confirmed by RTP audio time", () => {
+    // A filtered non-audio/DAVE packet advances sequence but not the next audio
+    // timestamp. Treating this as loss would replace the real packet scheduled
+    // at the same timestamp with a repeated compressed Opus frame.
+    expect(confirmedPlaybackLossFrames(2, 960)).toBe(0);
+    expect(confirmedPlaybackLossFrames(2, 1_920)).toBe(1);
+    expect(confirmedPlaybackLossFrames(3, 1_920)).toBe(1);
+    expect(confirmedPlaybackLossFrames(3, 2_880)).toBe(2);
+    expect(confirmedPlaybackLossFrames(2, 0xffff_ffff)).toBe(0);
   });
 
   test("strips repeated padding after DAVE media marker", () => {
