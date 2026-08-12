@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "child_process";
 import { createSocket, type Socket as UdpSocket } from "dgram";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { debugLog } from "../debuglog";
 import type { IncomingVoiceRtpPacket } from "../voice";
+import { buildVoiceEnginePlaybackArgs, resolveVoiceEngineCommand } from "../voice/audio-ffmpeg";
 import { OPUS_PAYLOAD_TYPE, VIDEO_PAYLOAD_TYPE_H264 } from "../voice/constants";
 import { reserveUdpPort } from "../voice/rtp";
 
@@ -13,6 +14,7 @@ const WATCH_STREAM_HELPER_SHUTDOWN_GRACE_MS = 1_500;
 const WATCH_STREAM_VIDEO_PAYLOAD_TYPE = VIDEO_PAYLOAD_TYPE_H264;
 const WATCH_STREAM_AUDIO_PAYLOAD_TYPE = OPUS_PAYLOAD_TYPE;
 const WATCH_STREAM_SDP_PROTOCOL_WHITELIST = "file,udp,rtp";
+const WATCH_STREAM_AUDIO_READY_TIMEOUT_MS = 1_000;
 
 export type WatchStreamPlayer = "mpv" | "ffplay";
 
@@ -33,6 +35,9 @@ export interface PlayerWatchStreamPlaybackOptions {
   command?: string;
   args?: string[];
   title?: string;
+  /** Override or disable the native stream-audio player. Intended for tests. */
+  audioCommand?: string | false;
+  audioArgs?: string[];
   /** Fired when the player exits on its own, e.g. the user closed the window. Not fired for stop(). */
   onEnded?: (error: Error | null) => void;
 }
@@ -42,6 +47,7 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
   private tempDir: string | null = null;
   private sdpPath: string | null = null;
   private proc: ChildProcess | null = null;
+  private audioProc: ChildProcess | null = null;
   private videoPort: number | null = null;
   private audioPort: number | null = null;
   private packetsForwarded = 0;
@@ -60,7 +66,33 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
     this.udp.on("error", this.handleUdpError);
     this.tempDir = mkdtempSync(join(tmpdir(), "record-watch-stream-"));
     this.sdpPath = join(this.tempDir, "stream.sdp");
-    writeFileSync(this.sdpPath, buildWatchStreamPlaybackSdp(this.videoPort, this.audioPort));
+    // Keep Opus out of the libavformat A/V session. With Discord's high-rate
+    // H264 screen RTP, that demuxer can starve its second UDP socket until the
+    // kernel audio queue fills. The native Rust voice engine consumes clear
+    // Opus RTP independently and provides its own jitter/loss handling.
+    writeFileSync(this.sdpPath, buildWatchStreamPlaybackSdp(this.videoPort, null));
+
+    const audioCommand = this.options.audioCommand === false ? null : this.options.audioCommand ?? resolveVoiceEngineCommand();
+    if (audioCommand && this.audioPort !== null) {
+      const readyPath = join(this.tempDir, `audio-${Date.now()}.ready`);
+      const audioArgs = this.options.audioArgs ?? buildVoiceEnginePlaybackArgs(this.audioPort, readyPath, process.pid);
+      debugLog("stream.watch.audio.start", { backend: "engine", command: audioCommand, args: audioArgs, audioPort: this.audioPort });
+      const audioProc = spawn(audioCommand, audioArgs, { stdio: ["pipe", "pipe", "pipe"] });
+      this.audioProc = audioProc;
+      const audioOutput = drainChildOutput(audioProc);
+      audioProc.on("error", (error) => this.handleAudioPlaybackEnd(audioProc, new Error(`Failed to start stream audio: ${error.message}`)));
+      audioProc.on("exit", (code, signal) => {
+        if (this.audioProc !== audioProc) return;
+        const details = audioOutput().trim();
+        const reason = typeof code === "number" ? `exited with status ${code}` : `was killed by ${signal ?? "a signal"}`;
+        this.handleAudioPlaybackEnd(audioProc, new Error(`Stream audio ${reason}${details ? `: ${details}` : ""}`));
+      });
+      if (!this.options.audioArgs) await waitForFile(readyPath, WATCH_STREAM_AUDIO_READY_TIMEOUT_MS);
+      if (this.audioProc !== audioProc) return;
+    } else if (this.options.audioCommand !== false) {
+      debugLog("stream.watch.audio.unavailable", { reason: "voice_engine_missing" });
+      this.audioPort = null;
+    }
 
     const player = this.options.player ?? "mpv";
     const command = this.options.command ?? player;
@@ -90,12 +122,13 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
 
   handleIncomingRtp(packet: IncomingVoiceRtpPacket): void {
     if (!this.udp) return;
-    const targetPort = packet.mediaType === "video" && packet.payloadType === WATCH_STREAM_VIDEO_PAYLOAD_TYPE
-      ? this.videoPort
+    const playbackMediaType = packet.mediaType === "video" && packet.payloadType === WATCH_STREAM_VIDEO_PAYLOAD_TYPE
+      ? "video"
       : packet.mediaType === "audio" && packet.payloadType === WATCH_STREAM_AUDIO_PAYLOAD_TYPE
-        ? this.audioPort
+        ? "audio"
         : null;
-    if (targetPort === null) return;
+    const targetPort = playbackMediaType === "video" ? this.videoPort : playbackMediaType === "audio" ? this.audioPort : null;
+    if (playbackMediaType === null || targetPort === null) return;
     this.udp.send(packet.packet, targetPort, "127.0.0.1");
     this.packetsForwarded += 1;
     if (!this.firstPacketLogged) {
@@ -112,6 +145,8 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
   stop(): void {
     terminateChild(this.proc);
     this.proc = null;
+    terminateChild(this.audioProc);
+    this.audioProc = null;
     if (this.udp) {
       this.udp.off("error", this.handleUdpError);
       try { this.udp.close(); } catch {}
@@ -131,6 +166,14 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
   private readonly handleUdpError = (error: Error): void => {
     debugLog("stream.watch.playback.udp_error", { error: error.message, packetsForwarded: this.packetsForwarded });
   };
+
+  private handleAudioPlaybackEnd(proc: ChildProcess, error: Error): void {
+    if (this.audioProc !== proc) return;
+    this.audioProc = null;
+    debugLog("stream.watch.audio.exit", { error: error.message });
+    this.stop();
+    this.options.onEnded?.(error);
+  }
 }
 
 export interface CreateWatchStreamPlaybackOptions {
@@ -225,4 +268,13 @@ function terminateChild(proc: ChildProcess | null): void {
     } catch {}
   }, WATCH_STREAM_HELPER_SHUTDOWN_GRACE_MS);
   timer.unref?.();
+}
+
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  debugLog("stream.watch.audio.ready_timeout", { path, timeoutMs });
 }

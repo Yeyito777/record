@@ -22,6 +22,7 @@ describe("watched stream playback", () => {
     expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("a=rtpmap:103 H264/90000");
     expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("m=audio 43124 RTP/AVP 120");
     expect(buildWatchStreamPlaybackSdp(43123, 43124)).toContain("a=rtpmap:120 opus/48000/2");
+    expect(buildWatchStreamPlaybackSdp(43123, null)).not.toContain("m=audio");
     expect(buildWatchStreamFfplayArgs("/tmp/watch.sdp")).toEqual([
       "-loglevel", "error",
       "-fflags", "nobuffer",
@@ -54,6 +55,7 @@ describe("watched stream playback", () => {
     const playback = new PlayerWatchStreamPlayback({
       command: "sh",
       args: ["-c", "exit 0"],
+      audioCommand: false,
       onEnded: (error) => ended.push(error),
     });
     await playback.start();
@@ -64,6 +66,7 @@ describe("watched stream playback", () => {
     const failing = new PlayerWatchStreamPlayback({
       command: "sh",
       args: ["-c", "exit 3"],
+      audioCommand: false,
       onEnded: (error) => failed.push(error),
     });
     await failing.start();
@@ -73,6 +76,7 @@ describe("watched stream playback", () => {
     const missing: Array<Error | null> = [];
     const unspawnable = new PlayerWatchStreamPlayback({
       command: "record-player-that-does-not-exist",
+      audioCommand: false,
       onEnded: (error) => missing.push(error),
     });
     await unspawnable.start();
@@ -80,11 +84,27 @@ describe("watched stream playback", () => {
     expect(missing[0]?.message).toContain("Failed to start");
   });
 
+  test("reports native stream audio failure and does not leave the video player running", async () => {
+    const ended: Array<Error | null> = [];
+    const playback = new PlayerWatchStreamPlayback({
+      command: "sh",
+      args: ["-c", "sleep 5"],
+      audioCommand: "sh",
+      audioArgs: ["-c", "exit 4"],
+      onEnded: (error) => ended.push(error),
+    });
+    await playback.start();
+    await waitFor(() => ended.length === 1);
+    expect(ended[0]?.message).toContain("Stream audio exited with status 4");
+    playback.stop();
+  });
+
   test("does not report playback end for an intentional stop", async () => {
     const ended: Array<Error | null> = [];
     const playback = new PlayerWatchStreamPlayback({
       command: "sh",
       args: ["-c", "sleep 5"],
+      audioCommand: false,
       onEnded: (error) => ended.push(error),
     });
     await playback.start();
