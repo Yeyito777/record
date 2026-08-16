@@ -227,7 +227,7 @@ describe("server actions modal", () => {
     expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("Stop Watching");
   });
 
-  test("adjusts the selected voice-member volume slider with h/l or arrow keys", () => {
+  test("adjusts voice-member volume by 5% with h/l and 10% with H/L or arrow keys", () => {
     const modal = createVoiceMemberActionModal({
       guildId: "guild-1",
       channelId: "voice-1",
@@ -240,9 +240,17 @@ describe("server actions modal", () => {
     expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80))).toContain("Volume 90%");
     expect(handleServerActionModalKey(modal, { type: "char", char: "h" })).toEqual({
       type: "adjust_volume",
-      deltaPercent: -10,
+      deltaPercent: -5,
     });
     expect(handleServerActionModalKey(modal, { type: "char", char: "l" })).toEqual({
+      type: "adjust_volume",
+      deltaPercent: 5,
+    });
+    expect(handleServerActionModalKey(modal, { type: "char", char: "H" })).toEqual({
+      type: "adjust_volume",
+      deltaPercent: -10,
+    });
+    expect(handleServerActionModalKey(modal, { type: "char", char: "L" })).toEqual({
       type: "adjust_volume",
       deltaPercent: 10,
     });

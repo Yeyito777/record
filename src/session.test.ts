@@ -1924,8 +1924,8 @@ describe("session", () => {
     const effects = { scheduleRender: () => { renders += 1; } };
 
     expect(voiceMemberVolume(state, "volume-friend")).toBe(100);
-    expect(adjustVoiceMemberVolume(state, effects, "volume-friend", -10)).toBe(90);
-    expect(voiceMemberVolume(state, "volume-friend")).toBe(90);
+    expect(adjustVoiceMemberVolume(state, effects, "volume-friend", -5)).toBe(95);
+    expect(voiceMemberVolume(state, "volume-friend")).toBe(95);
     expect(adjustVoiceMemberVolume(state, effects, "volume-friend", -1000)).toBe(0);
     expect(adjustVoiceMemberVolume(state, effects, "volume-friend", 1000)).toBe(200);
     expect(adjustVoiceMemberVolume(state, effects, "self", -10)).toBe(100);

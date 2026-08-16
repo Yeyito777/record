@@ -6,7 +6,7 @@ import type { KeyEvent } from "./input";
 import { moveTo } from "./frame";
 import { theme } from "./theme";
 import { padRight, termWidth, truncate } from "./textwidth";
-import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeRemoteUserVolumePercent } from "./volume";
+import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, REMOTE_USER_VOLUME_FINE_STEP_PERCENT, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeRemoteUserVolumePercent } from "./volume";
 
 export type ServerAction =
   | "copy_invite"
@@ -157,10 +157,16 @@ export function handleServerActionModalKey(modal: ServerActionModalState, key: K
   if (modal.busy) return { type: "handled" };
 
   if (modal.selection === "adjust_volume") {
-    if (key.type === "left" || (key.type === "char" && key.char === "h")) {
+    if (key.type === "char" && key.char === "h") {
+      return { type: "adjust_volume", deltaPercent: -REMOTE_USER_VOLUME_FINE_STEP_PERCENT };
+    }
+    if (key.type === "char" && key.char === "l") {
+      return { type: "adjust_volume", deltaPercent: REMOTE_USER_VOLUME_FINE_STEP_PERCENT };
+    }
+    if (key.type === "left" || (key.type === "char" && key.char === "H")) {
       return { type: "adjust_volume", deltaPercent: -REMOTE_USER_VOLUME_STEP_PERCENT };
     }
-    if (key.type === "right" || (key.type === "char" && key.char === "l")) {
+    if (key.type === "right" || (key.type === "char" && key.char === "L")) {
       return { type: "adjust_volume", deltaPercent: REMOTE_USER_VOLUME_STEP_PERCENT };
     }
   }

@@ -12,7 +12,7 @@ describe("participant volumes", () => {
       invalid: "80",
       infinite: Number.POSITIVE_INFINITY,
     })).toEqual({
-      quiet: 70,
+      quiet: 75,
       boosted: 200,
       muted: 0,
     });
