@@ -704,7 +704,7 @@ describe("sidebar state", () => {
     sidebar.voiceMembersByChannelId = {
       "voice-1": [
         { userId: "user-1", displayName: "Alice", localMuted: true, streaming: true, cameraOn: true },
-        { userId: "me", displayName: "Me", self: true, muted: true },
+        { userId: "me", displayName: "Me", self: true, muted: true, cameraOn: true },
       ],
     };
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
@@ -721,9 +721,14 @@ describe("sidebar state", () => {
     expect(rows.join("\n")).toContain("🔊 Lounge");
     expect(rows.join("\n")).toContain("• Alice 🔕");
     expect(rows.join("\n")).toContain("📷");
-    expect(rows.join("\n")).toContain("[LIVE]");
-    expect(renderedRows.find((row) => row.includes("Alice"))).toContain(`${theme.notificationBg}${theme.notificationFg}[LIVE]${theme.reset}`);
-    expect(rows.join("\n")).toContain("• Me (you) 🔇");
+    expect(rows.join("\n")).toContain("LIVE");
+    expect(rows.join("\n")).not.toContain("[LIVE]");
+    const aliceRow = rows.find((row) => row.includes("Alice"));
+    const meRow = rows.find((row) => row.includes("Me (you)"));
+    expect(aliceRow).toMatch(/📷\s+LIVE│$/);
+    expect(renderedRows.find((row) => row.includes("Alice"))).toContain(`${theme.notificationBg}${theme.notificationFg}${theme.bold}LIVE${theme.boldOff}${theme.reset}`);
+    expect(meRow).toContain("• Me (you) 🔇");
+    expect(meRow).toMatch(/📷│$/);
     expect(moveSidebarSelection(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }], 1)).toBeUndefined();
     expect(buildSidebarEntries(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }])[sidebar.selectedIndex]?.kind).toBe("channel");
     moveSidebarSelection(sidebar, [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Lounge", topic: null, position: 0, type: 2, nsfw: false }], 1);
@@ -781,8 +786,9 @@ describe("sidebar state", () => {
 
     expect(memberRow).toBeDefined();
     expect(plainMemberRow).toContain("…");
-    expect(plainMemberRow).toContain("[LIVE]");
-    expect(memberRow).toContain(`${theme.notificationBg}${theme.notificationFg}[LIVE]${theme.reset}`);
+    expect(plainMemberRow).toContain("LIVE");
+    expect(plainMemberRow).not.toContain("[LIVE]");
+    expect(memberRow).toContain(`${theme.notificationBg}${theme.notificationFg}${theme.bold}LIVE${theme.boldOff}${theme.reset}`);
     expect(termWidth(memberRow!)).toBe(SIDEBAR_WIDTH);
   });
 

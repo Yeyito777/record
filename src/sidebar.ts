@@ -1599,7 +1599,7 @@ function voiceMemberNameLabel(entry: SidebarEntry): string {
 }
 
 function voiceMemberStatusSuffix(entry: SidebarEntry): string {
-  return `${entry.muted ? " 🔇" : ""}${entry.deafened || entry.localMuted ? " 🔕" : ""}${entry.cameraOn ? " 📷" : ""}`;
+  return `${entry.muted ? " 🔇" : ""}${entry.deafened || entry.localMuted ? " 🔕" : ""}`;
 }
 
 function selectedEntrySnapshot(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions): Pick<SidebarEntry, "kind" | "id" | "guildId"> | null {
@@ -2788,17 +2788,20 @@ function renderEntryRow(
   if (entry.kind === "voice-member") {
     const rawLabel = voiceMemberNameLabel(entry);
     const statusSuffix = voiceMemberStatusSuffix(entry);
+    const cameraIndicator = entry.cameraOn ? "📷" : "";
     const liveBadge = renderLiveBadge(Boolean(entry.streaming));
-    const badgeGap = liveBadge ? 1 : 0;
-    const badgeWidth = liveBadge?.width ?? 0;
+    const cameraWidth = cameraIndicator ? 1 + termWidth(cameraIndicator) : 0;
+    const liveWidth = liveBadge ? 1 + liveBadge.width : 0;
     const contentWidth = Math.max(0, innerWidth - termWidth(prefix));
-    const textWidth = Math.max(0, contentWidth - badgeGap - badgeWidth);
+    const textWidth = Math.max(0, contentWidth - cameraWidth - liveWidth);
     const labelWidth = Math.max(0, textWidth - termWidth(statusSuffix));
     const clippedLabel = truncate(rawLabel, labelWidth);
     const title = padRight(`${clippedLabel}${statusSuffix}`, textWidth);
     const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
 
-    return theme.reset + bg + fg + prefix + text + (liveBadge ? ` ${liveBadge.text}` : "")
+    return theme.reset + bg + fg + prefix + text
+      + (cameraIndicator ? ` ${cameraIndicator}` : "")
+      + (liveBadge ? ` ${liveBadge.text}` : "")
       + theme.reset + borderBg + borderFg + "│" + theme.reset;
   }
 
@@ -2831,9 +2834,9 @@ function renderNotificationBadge(count: number): { text: string; width: number }
 
 function renderLiveBadge(streaming: boolean): { text: string; width: number } | null {
   if (!streaming) return null;
-  const text = "[LIVE]";
+  const text = "LIVE";
   return {
-    text: `${theme.notificationBg}${theme.notificationFg}${text}${theme.reset}`,
+    text: `${theme.notificationBg}${theme.notificationFg}${theme.bold}${text}${theme.boldOff}${theme.reset}`,
     width: termWidth(text),
   };
 }
