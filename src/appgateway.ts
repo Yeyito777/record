@@ -105,6 +105,11 @@ export interface StreamDeleteEvent {
   unavailable: boolean;
 }
 
+export interface ApplicationCommandAutocompleteEvent {
+  nonce: string;
+  choices: Array<{ name: string; value: string | number; name_localized?: string | null }>;
+}
+
 export interface AppGatewayCallbacks {
   onAuthTokenRefresh?: (token: string) => void;
   onInitialNotifications: (notifications: InitialNotification[]) => void;
@@ -116,6 +121,7 @@ export interface AppGatewayCallbacks {
   onStreamCreate?: (event: StreamCreateEvent) => void;
   onStreamServerUpdate?: (event: StreamServerUpdateEvent) => void;
   onStreamDelete?: (event: StreamDeleteEvent) => void;
+  onApplicationCommandAutocomplete?: (event: ApplicationCommandAutocompleteEvent) => void;
   onGuildMuteSettings?: (mutedByGuildId: Record<string, boolean>) => void;
   onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
   onChannelMuteSettings?: (mutedByChannelId: Record<string, boolean>, options?: { reset?: boolean }) => void;
@@ -674,6 +680,11 @@ export class AppGatewayClient implements VoiceSignalingClient {
           }
           break;
         }
+        case "APPLICATION_COMMAND_AUTOCOMPLETE_RESPONSE": {
+          const event = mapApplicationCommandAutocompleteEvent(data);
+          if (event) this.callbacks.onApplicationCommandAutocomplete?.(event);
+          break;
+        }
         case "GUILD_MEMBER_UPDATE": {
           if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.roles)) break;
           const member = mapGatewayMember(data);
@@ -1088,6 +1099,20 @@ export function mapStreamDeleteEvent(data: unknown): StreamDeleteEvent | null {
     reason: typeof data.reason === "string" ? data.reason : "unknown",
     unavailable: Boolean(data.unavailable),
   };
+}
+
+export function mapApplicationCommandAutocompleteEvent(data: unknown): ApplicationCommandAutocompleteEvent | null {
+  if (!isObject(data) || (typeof data.nonce !== "string" && typeof data.nonce !== "number") || !Array.isArray(data.choices)) return null;
+  const choices = data.choices.flatMap((choice): ApplicationCommandAutocompleteEvent["choices"] => {
+    if (!isObject(choice) || typeof choice.name !== "string") return [];
+    if (typeof choice.value !== "string" && typeof choice.value !== "number") return [];
+    return [{
+      name: choice.name,
+      value: choice.value,
+      ...(typeof choice.name_localized === "string" ? { name_localized: choice.name_localized } : {}),
+    }];
+  });
+  return { nonce: String(data.nonce), choices };
 }
 
 function mapCallGatewayVoiceState(data: unknown): CallGatewayVoiceState | null {

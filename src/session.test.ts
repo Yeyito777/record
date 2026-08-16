@@ -9,7 +9,7 @@ import { loadConfig } from "./config";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSessionPreview, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, ensureCurrentServerCommands, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSessionPreview, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 import { renderStatusLine } from "./statusline";
 import { normalizeParticipantVolumes } from "./volume";
@@ -72,6 +72,65 @@ afterEach(() => {
 });
 
 describe("session", () => {
+  test("lazily fetches and caches the active guild's application commands", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify({
+        applications: [{ id: "app-1", name: "Dice Bot" }],
+        application_commands: [{
+          id: "command-1",
+          application_id: "app-1",
+          guild_id: "guild-1",
+          version: "1",
+          type: 1,
+          name: "ping",
+          description: "Ping",
+        }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannel = state.channelList.channels[0]!;
+    state.channelList.activeChannelId = "channel-1";
+    state.editor.buffer = "/";
+    state.editor.cursor = 1;
+
+    ensureCurrentServerCommands(state, { scheduleRender: () => {} });
+    ensureCurrentServerCommands(state, { scheduleRender: () => {} });
+    await flushTimers();
+
+    expect(requests).toEqual(["https://discord.com/api/v9/guilds/guild-1/application-command-index"]);
+    expect(state.serverCommands.guilds["guild-1"]).toMatchObject({
+      loading: false,
+      loaded: true,
+      commands: [{ name: "ping", applicationName: "Dice Bot" }],
+    });
+    expect(state.autocomplete?.matches).toContainEqual({ name: "/@dice_bot", desc: "Dice Bot app" });
+  });
+
+  test("does not retry a failed command-index request on every keypress", async () => {
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests += 1;
+      return new Response(JSON.stringify({ message: "Nope" }), { status: 500, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannel = state.channelList.channels[0]!;
+    state.channelList.activeChannelId = "channel-1";
+
+    ensureCurrentServerCommands(state, { scheduleRender: () => {} });
+    await flushTimers();
+    ensureCurrentServerCommands(state, { scheduleRender: () => {} });
+
+    expect(requests).toBe(1);
+    expect(state.serverCommands.guilds["guild-1"]).toMatchObject({ loaded: true, loading: false, error: "Discord returned 500. Nope" });
+    expect(state.notice).toMatchObject({ text: "Could not load server commands: Discord returned 500. Nope", statusLine: false });
+  });
+
   test("non-authoritative gateway refreshes and regular channel updates preserve cached thread rows", () => {
     const state = createInitialState("token-1", "/tmp/record-config.json");
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };

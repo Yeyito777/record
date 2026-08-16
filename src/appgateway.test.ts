@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { AppGatewayClient, extractChannelMuteSettings, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, extractResumeGatewayUrl, mapCallGatewayEvent, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
+import { AppGatewayClient, extractChannelMuteSettings, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, extractResumeGatewayUrl, mapApplicationCommandAutocompleteEvent, mapCallGatewayEvent, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -521,6 +521,23 @@ describe("app gateway helpers", () => {
       ringing: ["user-2"],
       voice_states: [],
     })?.isActive).toBe(false);
+  });
+
+  test("maps application command autocomplete gateway responses", () => {
+    expect(mapApplicationCommandAutocompleteEvent({
+      nonce: "interaction-nonce",
+      choices: [
+        { name: "Kittens", value: "kittens", name_localized: "Kittens" },
+        { name: "Count", value: 2 },
+        { name: "invalid", value: true },
+      ],
+    })).toEqual({
+      nonce: "interaction-nonce",
+      choices: [
+        { name: "Kittens", value: "kittens", name_localized: "Kittens" },
+        { name: "Count", value: 2 },
+      ],
+    });
   });
 
   test("maps stream gateway events", () => {

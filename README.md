@@ -18,7 +18,8 @@ What it does right now:
 - show server voice/stage channels in the sidebar and join them from the terminal
 - start DM voice calls with `/call`, leave with `/hangup`, and toggle `/mute` or `/deafen`
 - watch a call participant's stream with `/watch` in a GPU-accelerated player window; close the window (or run `/watch` again) to stop watching
-- run slash commands like `/login <token>`, `/logout`, `/refresh`, and `/theme <name>`
+- run local slash commands like `/login <token>`, `/logout`, `/refresh`, and `/theme <name>`
+- discover and run application commands registered by apps/bots in the active server
 - browse every pinned message in the current Discord channel with `/pinned`
 - create a public thread with `/thread <name>`; when replying to a message, the new thread is anchored to that message
 - treat the prompt as message/command input only
@@ -49,6 +50,18 @@ Controls:
 - `Enter` in the prompt: submit the current message or slash command
 - `Tab` / `Shift+Tab`: cycle slash-command autocomplete
 - `Ctrl+C` or `q` in normal mode: quit
+
+### App/bot commands
+
+Typing `/` in a server lazily loads that server's application-command index. Use `Tab` to choose the app, command, subcommand/group, option, and any available static or app-provided autocomplete choice.
+
+The text form is app-qualified so commands with the same name from different bots cannot collide:
+
+```text
+/@app_name command [subcommand | group subcommand] --option=value
+```
+
+The `@` marks an app namespace so it cannot collide with Record's local slash commands. Spaces in an app name become underscores. Quote values containing spaces, for example `/@poll_bot create --question="tea or coffee?"`. User, role, and channel options accept Discord mentions or raw IDs. Attachment options consume images already attached to the prompt.
 
 Run it:
 

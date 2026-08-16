@@ -36,7 +36,9 @@ import {
   fetchCurrentUserGuildRoleIds,
   fetchGuildRoles,
   fetchGuilds,
+  fetchGuildApplicationCommandIndex,
   generateMessageNonce,
+  sendApplicationCommandInteraction,
   sendChannelMessage,
   setDirectMessageChannelMuted,
   setGuildChannelMuted,
@@ -199,6 +201,14 @@ import { ScreenStreamController } from "./streamcontroller";
 import { WatchStreamService, syncVoiceMemberWatchAction } from "./watchstream";
 import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, normalizeRemoteUserVolumePercent, formatGainDbWithUnit, normalizeGainDb, type NoiseSuppressionMode } from "./volume";
 import { normalizeToken } from "./token";
+import { updateAutocomplete } from "./autocomplete";
+import {
+  buildServerCommandAutocompleteRequest,
+  createServerCommandGuildState,
+  createServerCommandsState,
+  normalizeServerCommandIndex,
+  type ServerCommandInteractionRequest,
+} from "./servercommands";
 
 export interface SessionEffects {
   scheduleRender: () => void;
@@ -224,11 +234,13 @@ const MEMBER_LIST_SUBSCRIBE_RETRIES = 2;
 const VOICE_MEMBER_HYDRATION_RETRY_MS = 30_000;
 const PRESENCE_STATUS_PERSIST_RETRIES = 3;
 const PRESENCE_STATUS_PERSIST_RETRY_DELAY_MS = 3_000;
+const SERVER_COMMAND_AUTOCOMPLETE_DELAY_MS = 350;
 
 let memberListGateway: MemberListGatewayClient | null = null;
 let memberListGatewayToken: string | null = null;
 let appGateway: AppGatewayClient | null = null;
 let appGatewayToken: string | null = null;
+let serverCommandAutocompleteTimer: ReturnType<typeof setTimeout> | null = null;
 let voiceCallController: VoiceCallController | null = null;
 let streamController: ScreenStreamController | null = null;
 let watchStreamService: WatchStreamService | null = null;
@@ -340,6 +352,10 @@ export function disconnectMemberListGateway(): void {
 }
 
 export function disconnectAppGateway(): void {
+  if (serverCommandAutocompleteTimer) {
+    clearTimeout(serverCommandAutocompleteTimer);
+    serverCommandAutocompleteTimer = null;
+  }
   streamController?.stop("gateway_disconnect");
   streamController = null;
   watchStreamService?.disconnect("gateway_disconnect");
@@ -3088,6 +3104,14 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       watchStreamService?.handleDelete(event);
       effects.scheduleRender();
     },
+    onApplicationCommandAutocomplete: (event) => {
+      const autocomplete = state.serverCommands.autocomplete;
+      if (!autocomplete || autocomplete.nonce !== event.nonce) return;
+      autocomplete.status = "ready";
+      autocomplete.choices = event.choices;
+      updateAutocomplete(state);
+      effects.scheduleRender();
+    },
     onMessageCreate: (message) => handleGatewayMessageCreate(state, effects, message),
     onMessageUpdate: (message) => handleGatewayMessageUpdate(state, effects, message),
     onMessageDelete: (channelId, messageId) => {
@@ -3152,6 +3176,149 @@ export function currentAppGatewaySessionId(token: string | null | undefined): st
   return appGateway.getSessionId();
 }
 
+function setServerCommandWarning(state: AppState, message: string): void {
+  pushTimelineSystemMessage(state.timeline, message);
+  setNotice(state, message, "warning", { statusLine: false, chat: true });
+}
+
+/** Lazily fetch the heavily rate-limited command index when slash input is used. */
+export function ensureCurrentServerCommands(state: AppState, effects: SessionEffects): void {
+  const token = state.auth.savedToken;
+  const channel = state.channelList.activeChannel;
+  const guildId = channel?.guildId ?? state.channelList.guildId;
+  if (!token || !channel || !guildId || guildId === DIRECT_MESSAGES_GUILD_ID || guildId === WHATSAPP_GUILD_ID) return;
+
+  const existing = state.serverCommands.guilds[guildId] ?? createServerCommandGuildState();
+  if (existing.loading || existing.loaded) return;
+  const requestId = existing.requestId + 1;
+  state.serverCommands.guilds[guildId] = { ...existing, requestId, loading: true, error: null };
+
+  void fetchGuildApplicationCommandIndex(token, guildId).then((value) => {
+    const current = state.serverCommands.guilds[guildId];
+    if (!current || current.requestId !== requestId) return;
+    const normalized = normalizeServerCommandIndex(value);
+    state.serverCommands.guilds[guildId] = {
+      ...current,
+      loading: false,
+      loaded: true,
+      error: null,
+      applications: normalized.applications,
+      commands: normalized.commands,
+    };
+    debugLog("server_commands.loaded", {
+      guildId,
+      applications: normalized.applications.length,
+      commands: normalized.commands.length,
+    });
+    if (state.editor.buffer.trimStart().startsWith("/")) {
+      updateAutocomplete(state);
+      syncCurrentServerCommandAutocomplete(state, effects);
+    }
+    effects.scheduleRender();
+  }).catch((error) => {
+    const current = state.serverCommands.guilds[guildId];
+    if (!current || current.requestId !== requestId) return;
+    const message = error instanceof Error ? error.message : String(error);
+    // Cache failures for this session as well: this endpoint is heavily rate-limited,
+    // so each keypress must not turn into another retry. /refresh clears the cache.
+    state.serverCommands.guilds[guildId] = { ...current, loading: false, loaded: true, error: message };
+    setServerCommandWarning(state, `Could not load server commands: ${message}`);
+    debugLog("server_commands.load_failed", { guildId, error: message });
+    effects.scheduleRender();
+  });
+}
+
+/** Debounce type-4 interactions for options whose command schema requests autocomplete. */
+export function syncCurrentServerCommandAutocomplete(state: AppState, effects: SessionEffects): void {
+  const request = buildServerCommandAutocompleteRequest(state, state.editor.buffer);
+  const token = state.auth.savedToken;
+  const sessionId = currentAppGatewaySessionId(token);
+  if (!request || !request.key || !token || !sessionId) {
+    if (serverCommandAutocompleteTimer) {
+      clearTimeout(serverCommandAutocompleteTimer);
+      serverCommandAutocompleteTimer = null;
+    }
+    if (!request) state.serverCommands.autocomplete = null;
+    return;
+  }
+  if (state.serverCommands.autocomplete?.key === request.key) return;
+
+  if (serverCommandAutocompleteTimer) clearTimeout(serverCommandAutocompleteTimer);
+  state.serverCommands.autocomplete = {
+    key: request.key,
+    nonce: null,
+    status: "waiting",
+    choices: [],
+  };
+  serverCommandAutocompleteTimer = setTimeout(() => {
+    serverCommandAutocompleteTimer = null;
+    const current = state.serverCommands.autocomplete;
+    const liveToken = state.auth.savedToken;
+    const liveSessionId = currentAppGatewaySessionId(liveToken);
+    if (!current || current.key !== request.key || !liveToken || !liveSessionId) return;
+    const nonce = generateMessageNonce();
+    current.nonce = nonce;
+    current.status = "pending";
+    void sendApplicationCommandInteraction(liveToken, request, liveSessionId, nonce).catch((error) => {
+      const live = state.serverCommands.autocomplete;
+      if (!live || live.nonce !== nonce) return;
+      live.status = "error";
+      live.choices = [];
+      debugLog("server_commands.autocomplete_failed", {
+        guildId: request.guildId,
+        commandId: request.data.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      effects.scheduleRender();
+    });
+  }, SERVER_COMMAND_AUTOCOMPLETE_DELAY_MS);
+}
+
+export function executeCurrentServerCommand(
+  state: AppState,
+  token: string | null,
+  request: ServerCommandInteractionRequest,
+  sourceText: string,
+  effects: SessionEffects,
+): void {
+  const sessionId = currentAppGatewaySessionId(token);
+  const activeChannelId = state.channelList.activeChannelId ?? state.timeline.channelId;
+  if (!token) {
+    setServerCommandWarning(state, "Login before running a server command.");
+    effects.scheduleRender();
+    return;
+  }
+  if (!sessionId) {
+    setServerCommandWarning(state, "Discord is still connecting; try the server command again in a moment.");
+    effects.scheduleRender();
+    return;
+  }
+  if (activeChannelId !== request.channelId) {
+    setServerCommandWarning(state, "The active channel changed before the server command could run.");
+    effects.scheduleRender();
+    return;
+  }
+
+  const pendingImages = state.pendingImages.slice();
+  clearPrompt(state);
+  state.pendingImages = pendingImages.slice(request.uploads.length);
+  setNotice(state, "", "muted", { statusLine: false, chat: false });
+  effects.scheduleRender();
+
+  void sendApplicationCommandInteraction(token, request, sessionId).catch((error) => {
+    if (state.channelList.activeChannelId === request.channelId && state.editor.buffer.length === 0) {
+      state.editor.buffer = sourceText;
+      state.editor.cursor = sourceText.length;
+      state.pendingImages = pendingImages;
+    }
+    setServerCommandWarning(
+      state,
+      `Server command failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    effects.scheduleRender();
+  });
+}
+
 export function clearReadOnlyClient(state: AppState): void {
   guildRoleFetchState.delete(state);
   deletedGuildChannelIds.delete(state);
@@ -3178,6 +3345,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.channelMuteSettings = {};
   state.messageCacheByChannelId = {};
   state.channelPinCacheByChannelId = {};
+  state.serverCommands = createServerCommandsState();
   state.replyTarget = null;
   state.editTarget = null;
   state.messageDeletePending = null;

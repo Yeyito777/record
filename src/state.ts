@@ -18,6 +18,7 @@ import { createTypingState, type TypingState } from "./typing";
 import { normalizeToken } from "./token";
 import type { ClipboardImageAttachment } from "./imageclipboard";
 import type { NoticeTone } from "./theme";
+import { createServerCommandsState, type ServerCommandsState } from "./servercommands";
 import type { VoiceConnectionState } from "./voice";
 import type { VoiceMessagePromptState } from "./voice-message";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, normalizeParticipantVolumes, type LocalAudioVolumes, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
@@ -132,6 +133,7 @@ export interface AppState {
   memberRoleCacheVersion: number;
   channelMuteSettings: Record<string, boolean>;
   showHiddenChannels: boolean;
+  serverCommands: ServerCommandsState;
   whatsapp: WhatsAppUiState;
   auth: AuthState;
   notice: Notice;
@@ -192,6 +194,7 @@ export function createInitialState(
     memberRoleCacheVersion: 0,
     channelMuteSettings: {},
     showHiddenChannels: options.showHiddenChannels ?? false,
+    serverCommands: createServerCommandsState(),
     whatsapp: createWhatsAppUiState(),
     auth: {
       status: "idle",

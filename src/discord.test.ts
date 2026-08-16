@@ -18,6 +18,7 @@ import {
   fetchGuilds,
   fetchGuildChannels,
   fetchGuildRoles,
+  fetchGuildApplicationCommandIndex,
   formatChannelName,
   isDirectMessageChannel,
   isForumChannel,
@@ -28,6 +29,7 @@ import {
   mapDiscordMessageReactionPatch,
   deleteChannelMessage,
   editChannelMessage,
+  sendApplicationCommandInteraction,
   sendChannelMessage,
   setDirectMessageChannelMuted,
   setGuildChannelMuted,
@@ -139,6 +141,109 @@ describe("discord helpers", () => {
     expect(headers["Origin"]).toBe("https://discord.com");
     expect(headers["Referer"]).toBe("https://discord.com/channels/@me");
     expect(headers["X-Super-Properties"]).toEqual(expect.any(String));
+  });
+
+  test("fetches a guild application-command index", async () => {
+    let requested = "";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requested = String(input);
+      return new Response(JSON.stringify({ applications: [], application_commands: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    expect(await fetchGuildApplicationCommandIndex("token", "guild-1")).toEqual({
+      applications: [],
+      application_commands: [],
+    });
+    expect(requested).toBe("https://discord.com/api/v9/guilds/guild-1/application-command-index");
+  });
+
+  test("posts a typed application-command interaction with gateway session metadata", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await sendApplicationCommandInteraction("token", {
+      type: 2,
+      applicationId: "app-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      uploads: [],
+      data: {
+        application_command: { id: "command-1", application_id: "app-1", type: 1, name: "ping", description: "Ping", version: "2" },
+        attachments: [],
+        id: "command-1",
+        name: "ping",
+        options: [],
+        type: 1,
+        version: "2",
+        guild_id: "guild-1",
+      },
+    }, "gateway-session", "interaction-nonce");
+
+    expect(requests).toEqual([{
+      url: "https://discord.com/api/v9/interactions",
+      method: "POST",
+      body: {
+        type: 2,
+        application_id: "app-1",
+        guild_id: "guild-1",
+        channel_id: "channel-1",
+        session_id: "gateway-session",
+        data: expect.objectContaining({ id: "command-1", name: "ping", application_command: expect.objectContaining({ id: "command-1" }) }),
+        nonce: "interaction-nonce",
+        analytics_location: "slash_ui",
+      },
+    }]);
+  });
+
+  test("uploads application-command attachment options as multipart form data", async () => {
+    const bodies: FormData[] = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(init?.body as FormData);
+      return new Response("", { status: 204 });
+    }) as unknown as typeof fetch;
+
+    await sendApplicationCommandInteraction("token", {
+      type: 2,
+      applicationId: "app-1",
+      guildId: "guild-1",
+      channelId: "channel-1",
+      uploads: [{ mediaType: "image/png", base64: Buffer.from("image").toString("base64"), sizeBytes: 5, filename: "chart.png" }],
+      data: {
+        application_command: { id: "command-1", application_id: "app-1", type: 1, name: "chart", description: "Chart", version: "2" },
+        attachments: [{ id: "0", filename: "chart.png" }],
+        id: "command-1",
+        name: "chart",
+        options: [{ type: 11, name: "image", value: 0 }],
+        type: 1,
+        version: "2",
+        guild_id: "guild-1",
+      },
+    }, "gateway-session", "interaction-nonce");
+
+    expect(bodies).toHaveLength(1);
+    const payload = JSON.parse(String(bodies[0]!.get("payload_json")));
+    expect(payload).toMatchObject({
+      application_id: "app-1",
+      session_id: "gateway-session",
+      data: {
+        attachments: [{ id: "0", filename: "chart.png" }],
+        options: [{ type: 11, name: "image", value: 0 }],
+      },
+    });
+    const file = bodies[0]!.get("files[0]") as File;
+    expect(file.name).toBe("chart.png");
+    expect(file.type).toBe("image/png");
+    expect(await file.text()).toBe("image");
   });
 
   test("deletes a channel message through Discord REST", async () => {

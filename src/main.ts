@@ -59,6 +59,7 @@ import {
   canWatchVoiceMemberStream,
   currentAppGatewaySessionId,
   disconnectAppGateway,
+  ensureCurrentServerCommands,
   disconnectMemberListGateway,
   deleteMessage,
   focusThreadChannel,
@@ -76,6 +77,7 @@ import {
   restoreCachedSessionPreview,
   sendCurrentChannelVoiceMessage,
   startCurrentVoiceCall,
+  syncCurrentServerCommandAutocomplete,
   syncMemberListForCurrentChannel,
   isWatchingVoiceMemberStream,
   toggleVoiceMemberMute,
@@ -431,8 +433,13 @@ function isPromptTyping(): boolean {
 function syncPromptAutocomplete(): void {
   if (isPromptTyping()) {
     updateAutocomplete(state);
+    if (state.editor.buffer.trimStart().startsWith("/")) {
+      ensureCurrentServerCommands(state, { scheduleRender });
+      syncCurrentServerCommandAutocomplete(state, { scheduleRender });
+    }
   } else {
     state.autocomplete = null;
+    state.serverCommands.autocomplete = null;
   }
 }
 

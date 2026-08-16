@@ -10,11 +10,13 @@ import { tryCommand } from "./commands";
 import { fetchCurrentUserStatusSettings, setCurrentUserSettingsProtoCustomStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
 import { expandMacros } from "./macros";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
-import { clearReadOnlyClient, createCurrentChannelThread, editCurrentMessage, hangUpCurrentCall, loadCurrentChannelPinnedMessages, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserCustomStatus, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, toggleCurrentStream, uploadCurrentChannelFile, watchCurrentStream, type SessionEffects } from "./session";
+import { clearReadOnlyClient, createCurrentChannelThread, editCurrentMessage, executeCurrentServerCommand, hangUpCurrentCall, loadCurrentChannelPinnedMessages, refreshReadOnlyClient, sendCurrentChannelMessage, setCurrentCallDeaf, setCurrentCallMute, setCurrentUserCustomStatus, setCurrentUserPresenceStatus, setLocalMicVolume, setLocalNoiseSuppression, setLocalSpeakerVolume, startCurrentVoiceCall, toggleCurrentStream, uploadCurrentChannelFile, watchCurrentStream, type SessionEffects } from "./session";
+import { tryServerCommand } from "./servercommands";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
 import { isWhatsAppChannelId } from "./chatproviders";
+import { pushTimelineSystemMessage } from "./timeline";
 
 export interface AppEffects extends SessionEffects {
   quit: () => void;
@@ -223,6 +225,19 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
   }
 }
 
+function handleServerCommandSubmit(state: AppState, text: string, effects: AppEffects): boolean {
+  const result = tryServerCommand(text, state);
+  if (result === null) return false;
+  if (result.type === "error") {
+    pushTimelineSystemMessage(state.timeline, result.message);
+    setNotice(state, result.message, "warning", { statusLine: false, chat: true });
+    effects.scheduleRender();
+    return true;
+  }
+  executeCurrentServerCommand(state, state.auth.savedToken, result.request, result.sourceText, effects);
+  return true;
+}
+
 export function submitCurrentBuffer(state: AppState, effects: AppEffects): void {
   const rawText = state.editor.buffer;
   const text = rawText.trim();
@@ -240,7 +255,14 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   if (!text && !hasImages) return;
 
   const expandedText = expandMacros(text);
-  if (text && !hasImages && expandedText === text && handleCommandSubmit(state, text, effects)) return;
+  if (text && expandedText === text) {
+    // The advertised /@app namespace is always an app command. Legacy /app
+    // input remains accepted, but local commands keep priority there so an app
+    // with a colliding name can never shadow Record's own controls.
+    if (!hasImages && !text.startsWith("/@") && handleCommandSubmit(state, text, effects)) return;
+    if (handleServerCommandSubmit(state, text, effects)) return;
+    if (!hasImages && handleCommandSubmit(state, text, effects)) return;
+  }
 
   const activeChannelId = state.channelList.activeChannelId ?? state.timeline.channelId;
   if (isWhatsAppChannelId(activeChannelId) && effects.sendWhatsAppMessage(expandedText)) return;

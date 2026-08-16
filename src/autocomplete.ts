@@ -11,6 +11,7 @@ import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
 import { emojiCompletions, emojiQueryAtCursor } from "./emojis";
 import { MACRO_LIST, getMacroArgs } from "./macros";
 import { loadedMentionCandidates, mentionCandidateMatches, mentionQueryAtCursor } from "./mentions";
+import { getServerCommandArgumentCompletions, getServerCommandRootCompletions } from "./servercommands";
 import { readdirSync } from "fs";
 import { basename, dirname, resolve } from "path";
 import { homedir } from "os";
@@ -46,10 +47,17 @@ function getCommandMatches(state: AppState, input: string): CompletionItem[] {
   if (!raw.startsWith("/")) return [];
 
   const argMatch = matchArgCompletion(raw, getCommandArgs(state)) ?? matchArgCompletion(raw, getMacroArgs());
+  const serverArgs = getServerCommandArgumentCompletions(state, raw);
+  if (serverArgs !== null) {
+    if (!raw.startsWith("/@") && argMatch) return argMatch;
+    return serverArgs;
+  }
   if (argMatch) return argMatch;
 
   const prefix = raw.toLowerCase();
-  return [...COMMAND_LIST, ...MACRO_LIST].filter((command) => command.name.startsWith(prefix));
+  const localMatches = [...COMMAND_LIST, ...MACRO_LIST]
+    .filter((command) => command.name.toLowerCase().startsWith(prefix));
+  return [...localMatches, ...getServerCommandRootCompletions(state, raw)];
 }
 
 function getMacroMatches(token: string): CompletionItem[] {

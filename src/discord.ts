@@ -3,6 +3,7 @@
  */
 
 import { summarizeInlineMessageParts, type DisplayAttachment, type DisplayEmbed } from "./messageparts";
+import type { ServerCommandInteractionRequest } from "./servercommands";
 
 const API_BASE = "https://discord.com/api/v9";
 const DISCORD_CLIENT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
@@ -2280,6 +2281,50 @@ function inviteRequestHeaders(code: string, inviteDetails: DiscordInviteResponse
     "X-Discord-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     "X-Super-Properties": discordSuperProperties(),
   };
+}
+
+/** Fetch chat-input commands visible in a guild to the current user account. */
+export async function fetchGuildApplicationCommandIndex(token: string, guildId: string): Promise<unknown> {
+  return apiGetJson<unknown>(token, `/guilds/${guildId}/application-command-index`);
+}
+
+/**
+ * Invoke a command (type 2) or request command-option autocomplete (type 4).
+ * This is the same client interaction envelope used by Discord's desktop app.
+ */
+export async function sendApplicationCommandInteraction(
+  token: string,
+  request: ServerCommandInteractionRequest,
+  sessionId: string,
+  nonce: string = generateMessageNonce(),
+): Promise<void> {
+  const payload = {
+    type: request.type,
+    application_id: request.applicationId,
+    guild_id: request.guildId,
+    channel_id: request.channelId,
+    session_id: sessionId,
+    data: request.data,
+    nonce,
+    analytics_location: "slash_ui",
+  };
+  const body: BodyInit = request.uploads.length > 0
+    ? buildApplicationCommandMultipartBody(payload, request.uploads)
+    : JSON.stringify(payload);
+  await requestJson<unknown>(token, "/interactions", { method: "POST", body });
+}
+
+function buildApplicationCommandMultipartBody(
+  payload: Record<string, unknown>,
+  uploads: ServerCommandInteractionRequest["uploads"],
+): FormData {
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify(payload));
+  uploads.forEach((upload, index) => {
+    const bytes = Buffer.from(upload.base64, "base64");
+    form.append(`files[${index}]`, new Blob([bytes], { type: upload.mediaType }), upload.filename ?? `attachment-${index + 1}`);
+  });
+  return form;
 }
 
 export async function acceptDiscordInvite(token: string, invite: string, options: DiscordInviteAcceptOptions = {}): Promise<DiscordInviteJoinResult> {
