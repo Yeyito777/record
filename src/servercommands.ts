@@ -519,6 +519,48 @@ function findApplication(
   )) ?? null;
 }
 
+/**
+ * Count the leading tokens that form a recognized app command route.
+ *
+ * A valid app namespace counts even before a command is chosen, matching how
+ * Record highlights its local slash commands. Command and nested branch tokens
+ * are included only while they match the active guild's available schema.
+ */
+export function getServerCommandPathLength(state: AppState, tokens: readonly string[]): number {
+  const firstToken = tokens[0];
+  if (!firstToken?.startsWith("/") || firstToken.length <= 1) return 0;
+
+  const active = activeServerCommands(state);
+  if (!active) return 0;
+  const application = findApplication(active, firstToken);
+  if (!application) return 0;
+
+  const commandName = tokens[1]?.toLocaleLowerCase();
+  const command = commandName
+    ? active.commands.find((candidate) => (
+      candidate.applicationId === application.id && candidate.name.toLocaleLowerCase() === commandName
+    ))
+    : undefined;
+  if (!command) return 1;
+
+  const branches = command.options.filter((option) => option.type === 1 || option.type === 2);
+  if (branches.length === 0) return 2;
+  const firstBranchName = tokens[2]?.toLocaleLowerCase();
+  const firstBranch = firstBranchName
+    ? branches.find((option) => option.name.toLocaleLowerCase() === firstBranchName)
+    : undefined;
+  if (!firstBranch) return 2;
+  if (firstBranch.type === 1) return 3;
+
+  const secondBranchName = tokens[3]?.toLocaleLowerCase();
+  const secondBranch = secondBranchName
+    ? (firstBranch.options ?? []).find((option) => (
+      option.type === 1 && option.name.toLocaleLowerCase() === secondBranchName
+    ))
+    : undefined;
+  return secondBranch ? 4 : 3;
+}
+
 function resolveRoute(state: AppState, tokens: string[]): ResolvedCommandRoute | null {
   const active = activeServerCommands(state);
   if (!active || tokens.length < 2) return null;

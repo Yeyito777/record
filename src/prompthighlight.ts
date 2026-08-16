@@ -7,6 +7,7 @@
 import { COMMAND_LIST, getCommandArgs } from "./commands";
 import { MACRO_LIST, getMacroArgs } from "./macros";
 import { promptMentionSpans } from "./mentions";
+import { getServerCommandPathLength } from "./servercommands";
 import type { AppState } from "./state";
 import { theme } from "./theme";
 
@@ -43,18 +44,23 @@ function findCommandSpans(buffer: string, state: AppState): Span[] {
     if (wordPositions.length === 0) continue;
 
     const baseCommand = full.slice(0, wordPositions[0].end);
-    if (!VALID_NAMES.has(baseCommand)) continue;
+    let spanEnd: number;
+    if (VALID_NAMES.has(baseCommand)) {
+      spanEnd = commandStart + wordPositions[0].end;
+      let key = baseCommand;
 
-    let spanEnd = commandStart + wordPositions[0].end;
-    let key = baseCommand;
-
-    for (let i = 1; i < wordPositions.length; i++) {
-      if (validArgs[key]?.some((arg) => arg.name === wordPositions[i].word)) {
-        spanEnd = commandStart + wordPositions[i].end;
-        key = `${key} ${wordPositions[i].word}`;
-      } else {
-        break;
+      for (let i = 1; i < wordPositions.length; i++) {
+        if (validArgs[key]?.some((arg) => arg.name === wordPositions[i].word)) {
+          spanEnd = commandStart + wordPositions[i].end;
+          key = `${key} ${wordPositions[i].word}`;
+        } else {
+          break;
+        }
       }
+    } else {
+      const pathLength = getServerCommandPathLength(state, wordPositions.map(({ word }) => word));
+      if (pathLength === 0) continue;
+      spanEnd = commandStart + wordPositions[pathLength - 1].end;
     }
 
     spans.push({ start: commandStart, end: spanEnd });
