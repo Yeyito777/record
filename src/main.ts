@@ -32,7 +32,8 @@ import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./ch
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
-import { parseInput, PasteBuffer, type KeyEvent } from "./input";
+import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
+import { handleMouseEvent } from "./mouse";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { resolveAction, resolveNavigationAction } from "./keybinds";
 import {
@@ -132,10 +133,12 @@ import {
   disableBracketedPaste,
   disableClipboardPasteEvents,
   disableKittyKeyboard,
+  disableMouse,
   enterAlt,
   enableBracketedPaste,
   enableClipboardPasteEvents,
   enableKittyKeyboard,
+  enableMouse,
   hideCursor,
   leaveAlt,
   resetCursorColor,
@@ -1429,6 +1432,61 @@ function handleServerModalKey(key: KeyEvent): void {
   scheduleRender();
 }
 
+/** Activate the current sidebar row through the same path for Enter and clicks. */
+function activateSidebarSelection(): void {
+  const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+  if (selectedBefore.kind === "folder" || selectedBefore.kind === "up") {
+    activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+    scheduleRender();
+    return;
+  }
+
+  if (selectedBefore.kind === "guild" && selectedBefore.guildId === WHATSAPP_GUILD_ID) {
+    const entry = activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()) ?? selectedBefore;
+    if (state.sidebar.expandedGuildId === entry.guildId) whatsAppController.openRoot();
+    else scheduleRender();
+    return;
+  }
+
+  if (selectedBefore.kind === "channel" && selectedBefore.guildId === WHATSAPP_GUILD_ID) {
+    whatsAppController.openChannel(selectedBefore.id);
+    return;
+  }
+
+  const token = tokenOrWarn();
+  if (!token) return;
+
+  const entry = activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()) ?? selectedBefore;
+
+  if (entry.kind === "guild") {
+    if (state.sidebar.expandedGuildId === entry.guildId) {
+      void loadGuildChannels(state, token, entry.guildId, { scheduleRender }, { openFirstChannel: false });
+    } else {
+      scheduleRender();
+    }
+    return;
+  }
+
+  if (entry.kind === "channel") {
+    ensureSidebarEntryGuildLoaded(entry.guildId);
+    const channel = state.channelList.channels.find((candidate) => candidate.id === entry.id)
+      ?? state.sidebar.cachedChannelsByGuildId[entry.guildId]?.find((candidate) => candidate.id === entry.id)
+      ?? null;
+    if (channel && isGuildVoiceChannel(channel)) {
+      startCurrentVoiceCall(state, { scheduleRender }, { voiceChannel: channel });
+      return;
+    }
+    if (isForumChannel(channel)) {
+      scheduleRender();
+      return;
+    }
+    void loadChannelMessages(state, token, entry.id, { scheduleRender });
+    return;
+  }
+
+  scheduleRender();
+}
+
 function handleSidebarFocused(key: KeyEvent): boolean {
   if (state.sidebar.prompt) {
     state.navigationPendingKeys = "";
@@ -1656,57 +1714,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     }
     case "nav_select": {
-      const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
-      if (selectedBefore.kind === "folder" || selectedBefore.kind === "up") {
-        activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
-        scheduleRender();
-        return true;
-      }
-
-      if (selectedBefore.kind === "guild" && selectedBefore.guildId === WHATSAPP_GUILD_ID) {
-        const entry = activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()) ?? selectedBefore;
-        if (state.sidebar.expandedGuildId === entry.guildId) whatsAppController.openRoot();
-        else scheduleRender();
-        return true;
-      }
-
-      if (selectedBefore.kind === "channel" && selectedBefore.guildId === WHATSAPP_GUILD_ID) {
-        whatsAppController.openChannel(selectedBefore.id);
-        return true;
-      }
-
-      const token = tokenOrWarn();
-      if (!token) return true;
-
-      const entry = activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()) ?? selectedBefore;
-
-      if (entry.kind === "guild") {
-        if (state.sidebar.expandedGuildId === entry.guildId) {
-          void loadGuildChannels(state, token, entry.guildId, { scheduleRender }, { openFirstChannel: false });
-        } else {
-          scheduleRender();
-        }
-        return true;
-      }
-
-      if (entry.kind === "channel") {
-        ensureSidebarEntryGuildLoaded(entry.guildId);
-        const channel = state.channelList.channels.find((candidate) => candidate.id === entry.id)
-          ?? state.sidebar.cachedChannelsByGuildId[entry.guildId]?.find((candidate) => candidate.id === entry.id)
-          ?? null;
-        if (channel && isGuildVoiceChannel(channel)) {
-          startCurrentVoiceCall(state, { scheduleRender }, { voiceChannel: channel });
-          return true;
-        }
-        if (isForumChannel(channel)) {
-          scheduleRender();
-          return true;
-        }
-        void loadChannelMessages(state, token, entry.id, { scheduleRender });
-        return true;
-      }
-
-      scheduleRender();
+      activateSidebarSelection();
       return true;
     }
     default:
@@ -2009,6 +2017,30 @@ function handleKey(key: KeyEvent): void {
   handlePromptFocused(key);
 }
 
+function handleMouse(event: MouseEvent): void {
+  if (voiceMessageController?.isRecording() || state.voiceMessagePrompt) return;
+
+  const previousFocus = state.panelFocus;
+  const previousIndex = state.sidebar.selectedIndex;
+  const previousScrollOffset = state.sidebar.scrollOffset;
+  const result = handleMouseEvent(event, state);
+  if (state.panelFocus !== previousFocus) syncPromptAutocomplete();
+
+  if (result.type === "activate_sidebar") {
+    activateSidebarSelection();
+    return;
+  }
+
+  // All non-motion events can affect the viewport. Avoid redraws for the high
+  // volume stream of no-op motion reports generated by all-motion tracking.
+  if (event.action !== "motion"
+      || state.panelFocus !== previousFocus
+      || state.sidebar.selectedIndex !== previousIndex
+      || state.sidebar.scrollOffset !== previousScrollOffset) {
+    scheduleRender();
+  }
+}
+
 function setupTerminal(): void {
   process.stdout.write(
     enterAlt
@@ -2017,6 +2049,7 @@ function setupTerminal(): void {
       + queryClipboardPasteEvents
       + enableClipboardPasteEvents
       + enableKittyKeyboard
+      + enableMouse
       + (theme.cursorColor ? setCursorColor(theme.cursorColor) : ""),
   );
   process.stdin.setRawMode(true);
@@ -2029,6 +2062,7 @@ function restoreTerminal(): void {
   process.stdin.setRawMode(false);
   process.stdout.write(
     (terminalGraphicsCells ? setStGraphicsCells(false) : "")
+      + disableMouse
       + disableKittyKeyboard
       + disableClipboardPasteEvents
       + disableBracketedPaste
@@ -2138,7 +2172,8 @@ function processInput(input: string): void {
 
   const events = parseInput(input);
   for (const event of events) {
-    handleKey(event);
+    if (event.type === "mouse") handleMouse(event);
+    else handleKey(event);
     if (!running) break;
   }
 }

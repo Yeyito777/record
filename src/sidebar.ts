@@ -1941,6 +1941,71 @@ export function getSelectedSidebarEntry(sidebar: SidebarState, channels: Discord
   };
 }
 
+export interface SidebarHit {
+  entry: SidebarEntry;
+  index: number;
+}
+
+/** Map a 1-based terminal row to a selectable row in the visible sidebar. */
+export function sidebarHitTest(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  screenRow: number,
+  totalRows: number,
+  options: SidebarVisibilityOptions = {},
+): SidebarHit | null {
+  // The title and separator are chrome, not list entries.
+  if (screenRow <= 2) return null;
+
+  const viewportRows = sidebarViewportRows(totalRows, sidebar);
+  const viewportIndex = screenRow - 3;
+  // This also excludes filler rows and the search/prompt/autocomplete area.
+  if (viewportIndex < 0 || viewportIndex >= viewportRows) return null;
+
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  const index = sidebar.scrollOffset + viewportIndex;
+  const entry = entries[index];
+  if (!entry || !isSelectableEntry(entry)) return null;
+  return { entry, index };
+}
+
+/** Focus the selectable sidebar entry at a terminal row without activating it. */
+export function focusSidebarAtMouse(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  screenRow: number,
+  totalRows: number,
+  options: SidebarVisibilityOptions = {},
+): SidebarEntry | null {
+  const hit = sidebarHitTest(sidebar, channels, screenRow, totalRows, options);
+  if (!hit) return null;
+  sidebar.selectedIndex = hit.index;
+  sidebar.selectedItem = hit.entry.item ?? null;
+  sidebar.pendingDeleteItem = null;
+  return hit.entry;
+}
+
+/** Scroll only the sidebar viewport (positive values move toward later rows). */
+export function scrollSidebarAtMouse(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  delta: number,
+  totalRows: number,
+  options: SidebarVisibilityOptions = {},
+): void {
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  const viewportRows = sidebarViewportRows(totalRows, sidebar);
+  const maxScroll = Math.max(0, entries.length - viewportRows);
+  const requested = Math.max(0, Math.min(sidebar.scrollOffset + delta, maxScroll));
+  sidebar.scrollOffset = snapSidebarViewportStart(
+    entries,
+    viewportRows,
+    requested,
+    delta < 0 ? -1 : delta > 0 ? 1 : 0,
+    sidebar.selectedIndex,
+  );
+}
+
 export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordChannel[], delta: number, options: SidebarVisibilityOptions = {}): void {
   const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   const selectableIndices = entries

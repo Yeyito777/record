@@ -64,6 +64,73 @@ describe("input parser", () => {
     expect(parseInput("\x1b[32;1:3;32u")).toEqual([{ type: "char", char: " ", event: "release" }]);
   });
 
+  test("parses SGR mouse presses, releases, motion, wheel, and modifiers", () => {
+    expect(parseInput("\x1b[<0;7;4M\x1b[<0;7;4m")).toEqual([
+      {
+        type: "mouse",
+        button: 0,
+        col: 7,
+        row: 4,
+        action: "press",
+        shift: false,
+        meta: false,
+        ctrl: false,
+      },
+      {
+        type: "mouse",
+        button: 0,
+        col: 7,
+        row: 4,
+        action: "release",
+        shift: false,
+        meta: false,
+        ctrl: false,
+      },
+    ]);
+    expect(parseInput("\x1b[<35;9;5M")).toEqual([{
+      type: "mouse",
+      button: 3,
+      col: 9,
+      row: 5,
+      action: "motion",
+      shift: false,
+      meta: false,
+      ctrl: false,
+    }]);
+    expect(parseInput("\x1b[<64;3;6M\x1b[<65;3;6M")).toEqual([
+      {
+        type: "mouse",
+        button: 64,
+        col: 3,
+        row: 6,
+        action: "press",
+        shift: false,
+        meta: false,
+        ctrl: false,
+      },
+      {
+        type: "mouse",
+        button: 65,
+        col: 3,
+        row: 6,
+        action: "press",
+        shift: false,
+        meta: false,
+        ctrl: false,
+      },
+    ]);
+    expect(parseInput("\x1b[<28;2;3M")).toEqual([{
+      type: "mouse",
+      button: 0,
+      col: 2,
+      row: 3,
+      action: "press",
+      shift: true,
+      meta: true,
+      ctrl: true,
+    }]);
+  });
+
   test("parses st ctrl-number-row symbol function keys", () => {
     expect(parseInput("\x1b[1;2Q")).toEqual([{ type: "f14" }]);
     expect(parseInput("\x1b[1;2R")).toEqual([{ type: "f15" }]);

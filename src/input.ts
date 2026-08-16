@@ -59,7 +59,21 @@ export interface KeyEvent {
   text?: string;
 }
 
-export type InputEvent = KeyEvent;
+export interface MouseEvent {
+  type: "mouse";
+  /** 0=left, 1=middle, 2=right, 3=motion only, 64=wheel up, 65=wheel down. */
+  button: number;
+  /** 1-based terminal column. */
+  col: number;
+  /** 1-based terminal row. */
+  row: number;
+  action: "press" | "release" | "motion";
+  shift: boolean;
+  meta: boolean;
+  ctrl: boolean;
+}
+
+export type InputEvent = KeyEvent | MouseEvent;
 
 const CONTROL_BYTE_MAP: Partial<Record<number, KeyEvent["type"]>> = {
   2: "ctrl-b",
@@ -192,6 +206,9 @@ function parseCsiU(params: string): KeyEvent | null {
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
+/** Strip modifier/motion bits from an SGR mouse button mask. */
+const SGR_BUTTON_MASK = 0x43;
+
 export class PasteBuffer {
   private buf = "";
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -270,6 +287,44 @@ export function parseInput(data: Buffer | string): InputEvent[] {
       }
 
       if (str[i + 1] === "[") {
+        // SGR mouse: ESC [ < Pb ; Px ; Py M (press/motion) or m (release).
+        if (str[i + 2] === "<") {
+          const pressEnd = str.indexOf("M", i + 3);
+          const releaseEnd = str.indexOf("m", i + 3);
+          let endPos = -1;
+          let isRelease = false;
+          if (pressEnd !== -1 && (releaseEnd === -1 || pressEnd < releaseEnd)) {
+            endPos = pressEnd;
+          } else if (releaseEnd !== -1) {
+            endPos = releaseEnd;
+            isRelease = true;
+          }
+
+          if (endPos !== -1) {
+            const parts = str.slice(i + 3, endPos).split(";");
+            if (parts.length === 3) {
+              const cb = parseInt(parts[0] ?? "", 10);
+              const col = parseInt(parts[1] ?? "", 10);
+              const row = parseInt(parts[2] ?? "", 10);
+              if (Number.isFinite(cb) && Number.isFinite(col) && Number.isFinite(row)) {
+                const isMotion = Boolean(cb & 32);
+                events.push({
+                  type: "mouse",
+                  button: cb & SGR_BUTTON_MASK,
+                  col,
+                  row,
+                  action: isRelease ? "release" : isMotion ? "motion" : "press",
+                  shift: Boolean(cb & 4),
+                  meta: Boolean(cb & 8),
+                  ctrl: Boolean(cb & 16),
+                });
+                i = endPos + 1;
+                continue;
+              }
+            }
+          }
+        }
+
         let j = i + 2;
         while (j < str.length && (str.charCodeAt(j) < 0x40 || str.charCodeAt(j) > 0x7e)) j++;
         if (j < str.length) {

@@ -19,6 +19,12 @@ export const disableClipboardPasteEvents = `${ESC}?5522l`;
 // The event-type flag is what lets hold-to-talk see space releases.
 export const enableKittyKeyboard = `${ESC}>27u`;
 export const disableKittyKeyboard = `${ESC}<u`;
+/** Track button presses, wheel events, and motion using SGR coordinates. */
+export const enableMouse = `${ESC}?1003h${ESC}?1006h`;
+export const disableMouse = `${ESC}?1003l${ESC}?1006l`;
+/** st/Exocortex OSC extension for the desktop pointer shape. */
+export const mouseCursorPointer = `\x1b]777;mouseshape;pointer\x07`;
+export const mouseCursorHand = `\x1b]777;mouseshape;hand\x07`;
 export const clearLine = `${ESC}2K`;
 export const cursorBlock = `${ESC}2 q`;
 export const cursorUnderline = `${ESC}4 q`;

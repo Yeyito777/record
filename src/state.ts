@@ -137,6 +137,8 @@ export interface AppState {
   notice: Notice;
   loadingFrameIndex: number;
   configPath: string;
+  /** Desktop mouse cursor shape, cached to avoid redundant OSC writes. */
+  mouseCursor: "pointer" | "hand";
 }
 
 export function createInitialState(
@@ -206,6 +208,7 @@ export function createInitialState(
     notice: { tone: "muted", text: "", loading: false, statusLine: true, chat: true },
     loadingFrameIndex: 0,
     configPath: path,
+    mouseCursor: "pointer",
   };
 }
 
