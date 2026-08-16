@@ -17,10 +17,25 @@ export interface LocalAudioVolumes {
   speakerVolume: number;
 }
 
+export type ParticipantVolumes = Record<string, number>;
+
 export function normalizeRemoteUserVolumePercent(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_REMOTE_USER_VOLUME_PERCENT;
   const stepped = Math.round(value / REMOTE_USER_VOLUME_STEP_PERCENT) * REMOTE_USER_VOLUME_STEP_PERCENT;
   return Math.max(MIN_REMOTE_USER_VOLUME_PERCENT, Math.min(MAX_REMOTE_USER_VOLUME_PERCENT, stepped));
+}
+
+/** Normalize persisted per-participant volumes and omit neutral 100% entries. */
+export function normalizeParticipantVolumes(value: unknown): ParticipantVolumes {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+
+  const volumes: ParticipantVolumes = {};
+  for (const [userId, volume] of Object.entries(value)) {
+    if (!userId || typeof volume !== "number" || !Number.isFinite(volume)) continue;
+    const normalized = normalizeRemoteUserVolumePercent(volume);
+    if (normalized !== DEFAULT_REMOTE_USER_VOLUME_PERCENT) volumes[userId] = normalized;
+  }
+  return volumes;
 }
 
 export function parseNoiseSuppressionMode(value: string | undefined): NoiseSuppressionMode | null {

@@ -20,7 +20,7 @@ import type { ClipboardImageAttachment } from "./imageclipboard";
 import type { NoticeTone } from "./theme";
 import type { VoiceConnectionState } from "./voice";
 import type { VoiceMessagePromptState } from "./voice-message";
-import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, type LocalAudioVolumes, type NoiseSuppressionMode } from "./volume";
+import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, normalizeParticipantVolumes, type LocalAudioVolumes, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
 import { createWhatsAppUiState, type WhatsAppUiState } from "./whatsapp/integration";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
@@ -124,6 +124,7 @@ export interface AppState {
   voiceCall: VoiceCallStatus | null;
   voiceMessagePrompt: VoiceMessagePromptState | null;
   audio: LocalAudioVolumes;
+  participantVolumes: ParticipantVolumes;
   noiseSuppression: NoiseSuppressionMode;
   roleIdsByGuildId: Record<string, string[]>;
   guildRolesByGuildId: Record<string, DiscordRole[]>;
@@ -142,7 +143,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number } = {},
+  options: { showHiddenChannels?: boolean; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -181,6 +182,7 @@ export function createInitialState(
       micVolume: options.micGainDb ?? DEFAULT_LOCAL_GAIN_DB,
       speakerVolume: DEFAULT_LOCAL_GAIN_DB,
     },
+    participantVolumes: normalizeParticipantVolumes(options.participantVolumes),
     noiseSuppression: options.noiseSuppression ?? DEFAULT_NOISE_SUPPRESSION_MODE,
     roleIdsByGuildId: {},
     guildRolesByGuildId: {},

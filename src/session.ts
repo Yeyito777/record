@@ -288,7 +288,6 @@ const callVoiceStatesByChannelId = new Map<string, Map<string, TrackedCallVoiceS
 const callJoinSoundUserIdsByChannelId = new Map<string, Set<string>>();
 const speakingCallUserIds = new Set<string>();
 const locallyMutedCallUserIds = new Set<string>();
-const remoteCallUserVolumes = new Map<string, number>();
 const speakingCallTimersByUserId = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingVoiceMemberHydrationKeys = new Set<string>();
 const pendingVoiceMemberHydrationTargets = new Map<string, Set<string>>();
@@ -353,7 +352,6 @@ export function disconnectAppGateway(): void {
   departedCallParticipantsByChannelId.clear();
   callJoinSoundUserIdsByChannelId.clear();
   locallyMutedCallUserIds.clear();
-  remoteCallUserVolumes.clear();
   clearAllSpeakingCallUsers();
   clearVoiceMemberHydrationState();
   callWidget.stop();
@@ -1043,16 +1041,21 @@ export function toggleVoiceMemberMute(state: AppState, effects: SessionEffects, 
   effects.scheduleRender();
 }
 
-export function voiceMemberVolume(userId: string): number {
-  return remoteCallUserVolumes.get(userId) ?? DEFAULT_REMOTE_USER_VOLUME_PERCENT;
+export function voiceMemberVolume(state: AppState, userId: string): number {
+  return state.participantVolumes[userId] ?? DEFAULT_REMOTE_USER_VOLUME_PERCENT;
 }
 
 export function adjustVoiceMemberVolume(state: AppState, effects: SessionEffects, userId: string, deltaPercent: number): number {
   if (!userId || userId === state.auth.user?.id) return DEFAULT_REMOTE_USER_VOLUME_PERCENT;
-  const next = normalizeRemoteUserVolumePercent(voiceMemberVolume(userId) + deltaPercent);
-  if (next === DEFAULT_REMOTE_USER_VOLUME_PERCENT) remoteCallUserVolumes.delete(userId);
-  else remoteCallUserVolumes.set(userId, next);
+  const next = normalizeRemoteUserVolumePercent(voiceMemberVolume(state, userId) + deltaPercent);
+  if (next === DEFAULT_REMOTE_USER_VOLUME_PERCENT) delete state.participantVolumes[userId];
+  else state.participantVolumes[userId] = next;
   voiceCallController?.setRemoteUserVolume(userId, next);
+  try {
+    saveConfig({ audio: { participantVolumes: { ...state.participantVolumes } } });
+  } catch (error) {
+    setNotice(state, `Participant volume set to ${next}%, but saving failed: ${(error as Error).message}`, "warning", { statusLine: false });
+  }
   effects.scheduleRender();
   return next;
 }
@@ -2906,7 +2909,7 @@ function ensureVoiceCallController(state: AppState, token: string, effects: Sess
     },
   });
   for (const userId of locallyMutedCallUserIds) voiceCallController.setRemoteUserMuted(userId, true);
-  for (const [userId, volumePercent] of remoteCallUserVolumes) voiceCallController.setRemoteUserVolume(userId, volumePercent);
+  for (const [userId, volumePercent] of Object.entries(state.participantVolumes)) voiceCallController.setRemoteUserVolume(userId, volumePercent);
   return voiceCallController;
 }
 

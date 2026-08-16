@@ -42,7 +42,7 @@ Controls:
 - `m` on a server, category, channel, or voice member: toggle mute directly
 - `e` / `Shift+E` on a Direct Message or WhatsApp conversation: move it up/down within its pinned or unpinned section
 - `p` on a Direct Message or WhatsApp conversation: pin/unpin it
-- `h` / `l` on a voice member's Volume action: lower/raise that user's playback volume by 10%
+- `h` / `l` on a voice member's Volume action: lower/raise that user's playback volume by 10%; the per-user setting persists across sessions
 - `-` / `+` / `=` on a selected voice member: lower/raise that user's playback volume by 10% directly
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode

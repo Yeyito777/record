@@ -5,7 +5,7 @@
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { flushDataCacheSync } from "./datacache";
 import { configPath, loadConfig, loadSavedLogins } from "./config";
-import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
+import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
 import {
@@ -173,6 +173,7 @@ let initialToken: string | null = null;
 let initialShowHiddenChannels = false;
 let initialNoiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE;
 let initialMicGainDb = DEFAULT_LOCAL_GAIN_DB;
+let initialParticipantVolumes: ParticipantVolumes = {};
 let initialSavedLogins: Record<string, string> = {};
 const startupWarnings: string[] = [];
 
@@ -182,6 +183,7 @@ try {
   initialShowHiddenChannels = config.channels?.showHidden === true;
   initialNoiseSuppression = parseNoiseSuppressionMode(config.audio?.noiseSuppression) ?? DEFAULT_NOISE_SUPPRESSION_MODE;
   initialMicGainDb = normalizeGainDb(config.audio?.micGainDb ?? DEFAULT_LOCAL_GAIN_DB);
+  initialParticipantVolumes = normalizeParticipantVolumes(config.audio?.participantVolumes);
 } catch (error) {
   const err = error as NodeJS.ErrnoException;
   if (err.code !== "ENOENT") {
@@ -199,7 +201,7 @@ try {
 }
 
 const savedStartingState = loadTuiStartingState();
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes });
 let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
@@ -1234,7 +1236,7 @@ function openSelectedServerActionModal(): boolean {
       userId: selected.userId,
       displayName: selected.label,
       muted: selected.self ? Boolean(selected.selfMuted) : Boolean(selected.localMuted),
-      volumePercent: selected.self ? null : voiceMemberVolume(selected.userId),
+      volumePercent: selected.self ? null : voiceMemberVolume(state, selected.userId),
       streaming: canWatchVoiceMemberStream(state, selected.channelId, selected.userId),
       watching: isWatchingVoiceMemberStream(selected.channelId, selected.userId),
       ...moderation,

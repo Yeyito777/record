@@ -47,9 +47,9 @@ describe("config", () => {
   test("merges audio config updates", () => {
     process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-config-test-"));
 
-    saveConfig({ audio: { noiseSuppression: "simple" } });
+    saveConfig({ audio: { noiseSuppression: "simple", participantVolumes: { friend: 80 } } });
     saveConfig({ audio: { micGainDb: -20 } });
 
-    expect(loadConfig().audio).toEqual({ noiseSuppression: "simple", micGainDb: -20 });
+    expect(loadConfig().audio).toEqual({ noiseSuppression: "simple", participantVolumes: { friend: 80 }, micGainDb: -20 });
   });
 });

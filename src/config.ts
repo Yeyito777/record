@@ -36,6 +36,8 @@ export interface AudioConfig {
   noiseSuppression?: "off" | "simple";
   /** Local microphone capture gain in dB. 0 dB is neutral/default. */
   micGainDb?: number;
+  /** Local playback volume percentages keyed by Discord participant user ID. */
+  participantVolumes?: Record<string, number>;
 }
 
 export interface RecordConfig {

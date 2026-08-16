@@ -5,12 +5,14 @@ import { join } from "path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChannelLayout, loadCachedSidebarFolders, saveCachedChannelMessages, saveCachedDirectMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
+import { loadConfig } from "./config";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
 import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSessionPreview, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { createInitialState, focusSidebar } from "./state";
 import { renderStatusLine } from "./statusline";
+import { normalizeParticipantVolumes } from "./volume";
 
 const originalFetch = globalThis.fetch;
 const originalXdg = process.env.XDG_CONFIG_HOME;
@@ -1915,22 +1917,32 @@ describe("session", () => {
     clearReadOnlyClient(state);
   });
 
-  test("adjusts a remote voice member in 10 percent steps and clamps to Discord's 0-200 range", () => {
+  test("adjusts and persists a remote voice member volume across client and app sessions", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
     let renders = 0;
     const effects = { scheduleRender: () => { renders += 1; } };
 
-    expect(voiceMemberVolume("volume-friend")).toBe(100);
+    expect(voiceMemberVolume(state, "volume-friend")).toBe(100);
     expect(adjustVoiceMemberVolume(state, effects, "volume-friend", -10)).toBe(90);
-    expect(voiceMemberVolume("volume-friend")).toBe(90);
+    expect(voiceMemberVolume(state, "volume-friend")).toBe(90);
     expect(adjustVoiceMemberVolume(state, effects, "volume-friend", -1000)).toBe(0);
     expect(adjustVoiceMemberVolume(state, effects, "volume-friend", 1000)).toBe(200);
     expect(adjustVoiceMemberVolume(state, effects, "self", -10)).toBe(100);
     expect(renders).toBe(3);
+    expect(loadConfig().audio?.participantVolumes).toEqual({ "volume-friend": 200 });
 
     clearReadOnlyClient(state);
-    expect(voiceMemberVolume("volume-friend")).toBe(100);
+    expect(voiceMemberVolume(state, "volume-friend")).toBe(200);
+
+    const restoredState = createInitialState(null, "/tmp/record-config.json", {}, {
+      participantVolumes: normalizeParticipantVolumes(loadConfig().audio?.participantVolumes),
+    });
+    expect(voiceMemberVolume(restoredState, "volume-friend")).toBe(200);
+
+    adjustVoiceMemberVolume(restoredState, { scheduleRender: () => {} }, "volume-friend", -100);
+    expect(voiceMemberVolume(restoredState, "volume-friend")).toBe(100);
+    expect(loadConfig().audio?.participantVolumes).toEqual({});
   });
 
   test("voice actions use channel permissions while kick and ban also use role hierarchy", () => {
