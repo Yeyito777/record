@@ -24,7 +24,7 @@
   "dependencies": {
     "@lng2004/node-datachannel": "^0.32.0-20260202",
     "@snazzah/davey": "^0.1.12",
-    "@whiskeysockets/baileys": "7.0.0-rc.9",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "discord-emoji": "2.5.3",
     "pino": "9.6.0",
     "qrcode": "1.5.4",
