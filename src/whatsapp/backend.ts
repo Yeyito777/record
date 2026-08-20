@@ -39,6 +39,7 @@ import type {
   WhatsAppDisconnect,
   WhatsAppLoginResult,
   WhatsAppChat,
+  WhatsAppMediaRecoveryAnchor,
   WhatsAppMessage,
 } from "./types";
 
@@ -93,6 +94,7 @@ const DEFAULT_RECONNECT_POLICY: WhatsAppReconnectPolicy = {
   maxAttempts: 8,
   jitterRatio: 0.2,
 };
+const MEDIA_RECOVERY_TIMEOUT_MS = 15_000;
 
 const defaultTimers: WhatsAppTimers = {
   setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
@@ -250,6 +252,83 @@ export class RecordWhatsAppBackend {
       throw new Error("WhatsApp is not connected.");
     }
     return this.activeSocket.socket;
+  }
+
+  /** Re-fetch media metadata discarded by Record caches from before media opening existed. */
+  async recoverMediaMessage(
+    message: WhatsAppMessage,
+    historyAnchor?: WhatsAppMediaRecoveryAnchor,
+  ): Promise<WhatsAppMessage> {
+    if (message.content.kind === "media" && message.content.download) return message;
+
+    const socket = this.getSocket();
+    const key = {
+      id: message.key.id,
+      remoteJid: message.key.chatId,
+      fromMe: message.key.fromMe ?? message.fromMe,
+      participant: message.key.participantId,
+      remoteJidAlt: message.key.alternateChatId,
+      participantAlt: message.key.alternateParticipantId,
+    };
+    const metadata: WAMessage = {
+      key,
+      messageTimestamp: Math.floor((message.timestampMs ?? this.timers.now()) / 1_000),
+      pushName: message.senderName,
+    };
+
+    return await new Promise<WhatsAppMessage>((resolveRecovery, rejectRecovery) => {
+      let settled = false;
+      const finish = (recovered?: WhatsAppMessage, error?: Error) => {
+        if (settled) return;
+        settled = true;
+        this.timers.clearTimeout(timeout);
+        unsubscribeHistory();
+        unsubscribeMessages();
+        if (recovered) resolveRecovery(recovered);
+        else rejectRecovery(error ?? new Error("WhatsApp media recovery failed."));
+      };
+      const findRecovered = (messages: readonly WhatsAppMessage[]) => {
+        const recovered = messages.find((candidate) => (
+          candidate.id === message.id
+          && candidate.content.kind === "media"
+          && candidate.content.download !== undefined
+        ));
+        if (recovered) finish(recovered);
+      };
+      const unsubscribeHistory = this.on("history", (event) => findRecovered(event.messages));
+      const unsubscribeMessages = this.on("messages", (event) => findRecovered(event.messages));
+      const timeout = this.timers.setTimeout(() => {
+        finish(undefined, new Error(
+          "WhatsApp could not recover this older attachment. Make sure the linked phone is online.",
+        ));
+      }, MEDIA_RECOVERY_TIMEOUT_MS);
+
+      const requests: Promise<unknown>[] = [];
+      try {
+        requests.push(socket.requestPlaceholderResend(key, metadata));
+      } catch (error) {
+        requests.push(Promise.reject(error));
+      }
+      if (historyAnchor?.key.id && historyAnchor.key.chatId && historyAnchor.timestampMs > 0) {
+        try {
+          requests.push(socket.fetchMessageHistory(50, {
+            id: historyAnchor.key.id,
+            remoteJid: historyAnchor.key.chatId,
+            fromMe: historyAnchor.key.fromMe,
+            participant: historyAnchor.key.participantId,
+            remoteJidAlt: historyAnchor.key.alternateChatId,
+            participantAlt: historyAnchor.key.alternateParticipantId,
+          }, historyAnchor.timestampMs));
+        } catch (error) {
+          requests.push(Promise.reject(error));
+        }
+      }
+      void Promise.allSettled(requests).then((results) => {
+        if (results.every((result) => result.status === "rejected")) {
+          finish(undefined, new Error("WhatsApp rejected the older attachment recovery request."));
+        }
+      });
+    });
   }
 
   on<K extends WhatsAppBackendEventName>(

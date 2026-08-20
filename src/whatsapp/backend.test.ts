@@ -14,7 +14,7 @@ import {
   type WhatsAppTimers,
 } from "./backend";
 import type { WhatsAppAuthStateBundle } from "./auth";
-import type { WhatsAppBackendEventMap, WhatsAppConnectionState } from "./types";
+import type { WhatsAppBackendEventMap, WhatsAppConnectionState, WhatsAppMessage } from "./types";
 
 type EventCallback = (payload: unknown) => void;
 
@@ -55,6 +55,8 @@ interface MockSocket {
   socket: WASocket;
   emitter: MockBaileysEmitter;
   endCalls: number;
+  placeholderRequests: Array<{ key: unknown; metadata: unknown }>;
+  historyRequests: Array<{ count: number; key: unknown; timestampMs: number }>;
 }
 
 function mockSocket(user?: { id: string; lid?: string; name?: string }): MockSocket {
@@ -63,11 +65,21 @@ function mockSocket(user?: { id: string; lid?: string; name?: string }): MockSoc
     socket: undefined as unknown as WASocket,
     emitter,
     endCalls: 0,
+    placeholderRequests: [],
+    historyRequests: [],
   };
   mock.socket = {
     ev: emitter,
     user,
     end: () => { mock.endCalls += 1; },
+    requestPlaceholderResend: async (key: unknown, metadata: unknown) => {
+      mock.placeholderRequests.push({ key, metadata });
+      return "placeholder-request";
+    },
+    fetchMessageHistory: async (count: number, key: unknown, timestampMs: number) => {
+      mock.historyRequests.push({ count, key, timestampMs });
+      return "history-request";
+    },
   } as unknown as WASocket;
   return mock;
 }
@@ -347,6 +359,74 @@ describe("RecordWhatsAppBackend", () => {
       "contacts:update:Person",
       "lid:opaque@lid:person@s.whatsapp.net",
     ]);
+  });
+
+  test("recovers media metadata omitted by caches from before attachment opening", async () => {
+    const { backend, sockets } = setup(false);
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+
+    const legacyMessage: WhatsAppMessage = {
+      key: { id: "old-image", chatId: "person@s.whatsapp.net", fromMe: false },
+      id: "old-image",
+      chatId: "person@s.whatsapp.net",
+      senderId: "person@s.whatsapp.net",
+      senderName: "Person",
+      fromMe: false,
+      timestampMs: 123_000,
+      content: { kind: "media", mediaKind: "image", mimeType: "image/jpeg", sizeBytes: 4 },
+    };
+    const recovery = backend.recoverMediaMessage(legacyMessage, {
+      key: { id: "newer-message", chatId: "person@s.whatsapp.net", fromMe: true },
+      timestampMs: 456_000,
+    });
+    await flushPromises();
+
+    expect(sockets[0].placeholderRequests).toHaveLength(1);
+    expect(sockets[0].placeholderRequests[0]?.key).toMatchObject({
+      id: "old-image",
+      remoteJid: "person@s.whatsapp.net",
+      fromMe: false,
+    });
+    expect(sockets[0].historyRequests).toEqual([{
+      count: 50,
+      key: {
+        id: "newer-message",
+        remoteJid: "person@s.whatsapp.net",
+        fromMe: true,
+        participant: undefined,
+        remoteJidAlt: undefined,
+        participantAlt: undefined,
+      },
+      timestampMs: 456_000,
+    }]);
+
+    sockets[0].emitter.emit("messages.upsert", {
+      type: "notify",
+      messages: [{
+        key: { id: "old-image", remoteJid: "person@s.whatsapp.net", fromMe: false },
+        messageTimestamp: 123,
+        message: {
+          imageMessage: {
+            mimetype: "image/jpeg",
+            fileLength: 4,
+            mediaKey: new Uint8Array([1, 2, 3, 4]),
+            directPath: "/v/old-image.enc",
+          },
+        },
+      }],
+    });
+
+    expect((await recovery).content).toMatchObject({
+      kind: "media",
+      mediaKind: "image",
+      download: {
+        mediaKeyBase64: "AQIDBA==",
+        directPath: "/v/old-image.enc",
+      },
+    });
   });
 
   test("forwards message-level disappearing settings as chat patches", async () => {

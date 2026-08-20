@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { createInitialState } from "../state";
@@ -24,6 +24,11 @@ class FakeBackend implements WhatsAppBackendHandle {
   sentImageBatches: Array<{ caption: string; count: number }> = [];
   sentExpirations: Array<number | undefined> = [];
   historyRequests: Array<{ count: number; oldestId: string; oldestTimestampMs: number }> = [];
+  mediaDownloads: Array<{
+    messageId: string;
+    recoveryAnchor?: import("./types").WhatsAppMediaRecoveryAnchor;
+  }> = [];
+  mediaDownloadBytes: Uint8Array | null = null;
   readMessageIds: string[] = [];
   muteRequests: Array<{ chatId: string; muted: boolean }> = [];
   muteError: Error | null = null;
@@ -105,10 +110,16 @@ class FakeBackend implements WhatsAppBackendHandle {
   }
 
   async downloadMedia(
-    _message: import("./types").WhatsAppMessage,
+    message: import("./types").WhatsAppMessage,
     destinationPath: string,
+    recoveryAnchor?: import("./types").WhatsAppMediaRecoveryAnchor,
   ): Promise<import("./worker-protocol").WhatsAppDownloadMediaResult> {
-    return { path: destinationPath, sizeBytes: 0 };
+    this.mediaDownloads.push({ messageId: message.id, recoveryAnchor });
+    if (this.mediaDownloadBytes) {
+      mkdirSync(dirname(destinationPath), { recursive: true });
+      writeFileSync(destinationPath, this.mediaDownloadBytes);
+    }
+    return { path: destinationPath, sizeBytes: this.mediaDownloadBytes?.byteLength ?? 0 };
   }
 
   async setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult> {
@@ -393,6 +404,71 @@ describe("WhatsApp controller", () => {
     ]);
   });
 
+  test("downloads a legacy cached attachment using a newer history anchor", async () => {
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    const xdg = mkdtempSync(join(tmpdir(), "record-wa-legacy-media-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    try {
+      const { state, backend, controller } = fixture();
+      const jid = "15551234567@s.whatsapp.net";
+      backend.mediaDownloadBytes = new Uint8Array([1, 2, 3, 4]);
+      backend.emit("state", {
+        status: "connected",
+        resumed: true,
+        connectedAtMs: 1,
+        account: { id: "self@s.whatsapp.net" },
+      });
+      backend.emit("history", {
+        chats: [{ id: jid, kind: "direct", name: "Mom" }],
+        contacts: [],
+        messages: [{
+          key: { id: "legacy-image", chatId: jid, fromMe: false },
+          id: "legacy-image",
+          chatId: jid,
+          senderId: jid,
+          fromMe: false,
+          timestampMs: 10,
+          content: {
+            kind: "media",
+            mediaKind: "image",
+            mimeType: "image/jpeg",
+            sizeBytes: 4,
+          },
+        }, {
+          key: { id: "newer-message", chatId: jid, fromMe: true },
+          id: "newer-message",
+          chatId: jid,
+          senderId: "self@s.whatsapp.net",
+          fromMe: true,
+          timestampMs: 20,
+          content: { kind: "text", text: "newer" },
+        }],
+        skippedMessages: 0,
+        syncKind: "recent",
+      });
+      controller.openRoot();
+      controller.openChannel(whatsappChannelId(jid));
+      const attachment = state.timeline.messages[0]?.attachments[0];
+      expect(attachment).toBeDefined();
+
+      expect(await controller.downloadAttachment(attachment!)).toMatchObject({
+        ok: true,
+        cached: false,
+      });
+      expect(backend.mediaDownloads).toEqual([{
+        messageId: "legacy-image",
+        recoveryAnchor: {
+          key: { id: "newer-message", chatId: jid, fromMe: true },
+          timestampMs: 20,
+        },
+      }]);
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+      rmSync(xdg, { recursive: true, force: true });
+    }
+  });
+
   test("keeps a live unread notification when the cached chat count was zero", () => {
     const { state, backend } = fixture();
     const jid = "15551234567@s.whatsapp.net";
@@ -466,6 +542,62 @@ describe("WhatsApp controller", () => {
     });
     expect(state.notifications.byChannelId[whatsappChannelId(jid)]).toBeUndefined();
     expect(backend.readMessageIds).toContain("new");
+  });
+
+  test("updates a recovered existing message without jumping to the bottom or re-reading it", () => {
+    const { state, backend, controller } = fixture();
+    const jid = "15551234567@s.whatsapp.net";
+    backend.emit("state", {
+      status: "connected",
+      resumed: true,
+      connectedAtMs: 1,
+      account: { id: "self@s.whatsapp.net" },
+    });
+    backend.emit("history", {
+      chats: [{ id: jid, kind: "direct", name: "Mom" }],
+      contacts: [],
+      messages: [{
+        key: { id: "legacy-media", chatId: jid, fromMe: false },
+        id: "legacy-media",
+        chatId: jid,
+        senderId: jid,
+        fromMe: false,
+        timestampMs: 10,
+        content: { kind: "media", mediaKind: "image", mimeType: "image/jpeg" },
+      }],
+      skippedMessages: 0,
+      syncKind: "recent",
+    });
+    controller.openRoot();
+    controller.openChannel(whatsappChannelId(jid));
+    state.timeline.scrollOffset = 7;
+    const readCount = backend.readMessageIds.length;
+
+    backend.emit("messages", {
+      kind: "upsert",
+      upsertType: "notify",
+      skippedMessages: 0,
+      messages: [{
+        key: { id: "legacy-media", chatId: jid, fromMe: false },
+        id: "legacy-media",
+        chatId: jid,
+        senderId: jid,
+        fromMe: false,
+        timestampMs: 10,
+        content: {
+          kind: "media",
+          mediaKind: "image",
+          mimeType: "image/jpeg",
+          download: { mediaKeyBase64: "AQIDBA==", directPath: "/v/legacy.enc" },
+        },
+      }],
+    });
+
+    expect(state.timeline.scrollOffset).toBe(7);
+    expect(backend.readMessageIds).toHaveLength(readCount);
+    expect(state.whatsapp.messagesByChatId[jid]?.[0]?.content).toMatchObject({
+      download: { directPath: "/v/legacy.enc" },
+    });
   });
 
   test("requests and displays older WhatsApp history when opening a sparse chat", async () => {
