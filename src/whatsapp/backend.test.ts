@@ -369,7 +369,12 @@ describe("RecordWhatsAppBackend", () => {
     await login;
 
     const legacyMessage: WhatsAppMessage = {
-      key: { id: "old-image", chatId: "person@s.whatsapp.net", fromMe: false },
+      key: {
+        id: "old-image",
+        chatId: "opaque-person@lid",
+        alternateChatId: "person@s.whatsapp.net",
+        fromMe: false,
+      },
       id: "old-image",
       chatId: "person@s.whatsapp.net",
       senderId: "person@s.whatsapp.net",
@@ -379,7 +384,12 @@ describe("RecordWhatsAppBackend", () => {
       content: { kind: "media", mediaKind: "image", mimeType: "image/jpeg", sizeBytes: 4 },
     };
     const recovery = backend.recoverMediaMessage(legacyMessage, {
-      key: { id: "newer-message", chatId: "person@s.whatsapp.net", fromMe: true },
+      key: {
+        id: "newer-message",
+        chatId: "opaque-person@lid",
+        alternateChatId: "person@s.whatsapp.net",
+        fromMe: true,
+      },
       timestampMs: 456_000,
     });
     await flushPromises();
@@ -388,6 +398,7 @@ describe("RecordWhatsAppBackend", () => {
     expect(sockets[0].placeholderRequests[0]?.key).toMatchObject({
       id: "old-image",
       remoteJid: "person@s.whatsapp.net",
+      remoteJidAlt: "opaque-person@lid",
       fromMe: false,
     });
     expect(sockets[0].historyRequests).toEqual([{
@@ -397,7 +408,7 @@ describe("RecordWhatsAppBackend", () => {
         remoteJid: "person@s.whatsapp.net",
         fromMe: true,
         participant: undefined,
-        remoteJidAlt: undefined,
+        remoteJidAlt: "opaque-person@lid",
         participantAlt: undefined,
       },
       timestampMs: 456_000,

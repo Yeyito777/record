@@ -41,6 +41,7 @@ import type {
   WhatsAppChat,
   WhatsAppMediaRecoveryAnchor,
   WhatsAppMessage,
+  WhatsAppMessageKey,
 } from "./types";
 
 function mergeMessageChatSettings(chats: WhatsAppChat[], messages: readonly WAMessage[]): WhatsAppChat[] {
@@ -94,7 +95,24 @@ const DEFAULT_RECONNECT_POLICY: WhatsAppReconnectPolicy = {
   maxAttempts: 8,
   jitterRatio: 0.2,
 };
-const MEDIA_RECOVERY_TIMEOUT_MS = 15_000;
+const MEDIA_RECOVERY_TIMEOUT_MS = 30_000;
+
+/** WhatsApp ignores old direct-chat history requests keyed to the migrated LID thread. */
+function mediaRecoveryChatId(key: WhatsAppMessageKey, canonicalChatId?: string): string {
+  const candidates = [key.chatId, key.alternateChatId, canonicalChatId].filter((value): value is string => Boolean(value));
+  return candidates.find((value) => value.endsWith("@s.whatsapp.net"))
+    ?? candidates.find((value) => !value.endsWith("@lid"))
+    ?? key.chatId;
+}
+
+function mediaRecoveryParticipantId(key: WhatsAppMessageKey): string | undefined {
+  const candidates = [key.participantId, key.alternateParticipantId].filter((value): value is string => Boolean(value));
+  return candidates.find((value) => value.endsWith("@s.whatsapp.net")) ?? candidates[0];
+}
+
+function alternateRecoveryId(primary: string | undefined, candidates: readonly (string | undefined)[]): string | undefined {
+  return candidates.find((value): value is string => Boolean(value && value !== primary));
+}
 
 const defaultTimers: WhatsAppTimers = {
   setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
@@ -262,13 +280,15 @@ export class RecordWhatsAppBackend {
     if (message.content.kind === "media" && message.content.download) return message;
 
     const socket = this.getSocket();
+    const remoteJid = mediaRecoveryChatId(message.key, message.chatId);
+    const participant = mediaRecoveryParticipantId(message.key);
     const key = {
       id: message.key.id,
-      remoteJid: message.key.chatId,
+      remoteJid,
       fromMe: message.key.fromMe ?? message.fromMe,
-      participant: message.key.participantId,
-      remoteJidAlt: message.key.alternateChatId,
-      participantAlt: message.key.alternateParticipantId,
+      participant,
+      remoteJidAlt: alternateRecoveryId(remoteJid, [message.key.chatId, message.key.alternateChatId]),
+      participantAlt: alternateRecoveryId(participant, [message.key.participantId, message.key.alternateParticipantId]),
     };
     const metadata: WAMessage = {
       key,
@@ -299,7 +319,7 @@ export class RecordWhatsAppBackend {
       const unsubscribeMessages = this.on("messages", (event) => findRecovered(event.messages));
       const timeout = this.timers.setTimeout(() => {
         finish(undefined, new Error(
-          "WhatsApp could not recover this older attachment. Make sure the linked phone is online.",
+          "WhatsApp did not return media details for this pre-update attachment. It may need to be resent.",
         ));
       }, MEDIA_RECOVERY_TIMEOUT_MS);
 
@@ -311,13 +331,15 @@ export class RecordWhatsAppBackend {
       }
       if (historyAnchor?.key.id && historyAnchor.key.chatId && historyAnchor.timestampMs > 0) {
         try {
+          const historyRemoteJid = mediaRecoveryChatId(historyAnchor.key, message.chatId);
+          const historyParticipant = mediaRecoveryParticipantId(historyAnchor.key);
           requests.push(socket.fetchMessageHistory(50, {
             id: historyAnchor.key.id,
-            remoteJid: historyAnchor.key.chatId,
+            remoteJid: historyRemoteJid,
             fromMe: historyAnchor.key.fromMe,
-            participant: historyAnchor.key.participantId,
-            remoteJidAlt: historyAnchor.key.alternateChatId,
-            participantAlt: historyAnchor.key.alternateParticipantId,
+            participant: historyParticipant,
+            remoteJidAlt: alternateRecoveryId(historyRemoteJid, [historyAnchor.key.chatId, historyAnchor.key.alternateChatId]),
+            participantAlt: alternateRecoveryId(historyParticipant, [historyAnchor.key.participantId, historyAnchor.key.alternateParticipantId]),
           }, historyAnchor.timestampMs));
         } catch (error) {
           requests.push(Promise.reject(error));
