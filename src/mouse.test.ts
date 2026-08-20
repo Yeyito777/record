@@ -30,7 +30,7 @@ function mouseEvent(overrides: Partial<Parameters<typeof handleMouseEvent>[0]> =
   };
 }
 
-describe("sidebar mouse routing", () => {
+describe("mouse routing", () => {
   test("focus and keyboard selection follow a hovered sidebar row", () => {
     const state = mouseState();
     const cursorWrites: string[] = [];
@@ -84,6 +84,33 @@ describe("sidebar mouse routing", () => {
 
     handleMouseEvent(mouseEvent({ button: 64, action: "press" }), state, () => {});
     expect(state.sidebar.scrollOffset).toBe(0);
+  });
+
+  test("wheel requests a three-line chat-history scroll outside the sidebar", () => {
+    const state = mouseState();
+    const chatCol = SIDEBAR_WIDTH + 1;
+
+    expect(handleMouseEvent(
+      mouseEvent({ button: 64, col: chatCol, action: "press" }),
+      state,
+      () => {},
+    )).toEqual({ type: "scroll_chat", delta: -3 });
+
+    expect(handleMouseEvent(
+      mouseEvent({ button: 65, col: chatCol, action: "press" }),
+      state,
+      () => {},
+    )).toEqual({ type: "scroll_chat", delta: 3 });
+  });
+
+  test("wheel releases do not scroll chat history", () => {
+    const state = mouseState();
+
+    expect(handleMouseEvent(
+      mouseEvent({ button: 64, col: SIDEBAR_WIDTH + 1, action: "release" }),
+      state,
+      () => {},
+    )).toEqual({ type: "handled" });
   });
 
   test("moving out of the sidebar returns panel focus to chat", () => {

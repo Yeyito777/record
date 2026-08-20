@@ -11,9 +11,14 @@ import {
 import { focusSidebar, type AppState } from "./state";
 import { mouseCursorHand, mouseCursorPointer } from "./terminal";
 
-export type MouseResult = { type: "handled" } | { type: "activate_sidebar" };
+export type MouseResult =
+  | { type: "handled" }
+  | { type: "activate_sidebar" }
+  | { type: "scroll_chat"; delta: number };
 
 type CursorWriter = (sequence: string) => void;
+
+const CHAT_SCROLL_LINES = 3;
 
 function sidebarVisibilityOptions(state: AppState): SidebarVisibilityOptions {
   return {
@@ -71,9 +76,12 @@ export function handleMouseEvent(
     return { type: "handled" };
   }
 
-  // Wheel events use the same one-row sidebar viewport movement as Exocortex.
-  if (inSidebar && (ev.button === 64 || ev.button === 65)) {
-    if (ev.action === "press") {
+  // Wheel events use the same sidebar/chat split as Exocortex. The timeline
+  // stores its viewport as a top-relative offset, so wheel-up is negative.
+  if (ev.button === 64 || ev.button === 65) {
+    if (ev.action !== "press") return { type: "handled" };
+
+    if (inSidebar) {
       scrollSidebarAtMouse(
         state.sidebar,
         state.channelList.channels,
@@ -81,8 +89,13 @@ export function handleMouseEvent(
         state.rows,
         options,
       );
+      return { type: "handled" };
     }
-    return { type: "handled" };
+
+    return {
+      type: "scroll_chat",
+      delta: ev.button === 64 ? -CHAT_SCROLL_LINES : CHAT_SCROLL_LINES,
+    };
   }
 
   if (inSidebar && ev.button === 0 && ev.action === "press") {
