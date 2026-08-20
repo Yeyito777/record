@@ -9,7 +9,8 @@ import { loadConfig } from "./config";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, ensureCurrentServerCommands, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSessionPreview, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, applyDiscordChannelMuteSettings, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, ensureCurrentServerCommands, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSessionPreview, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { renderSidebar } from "./sidebar";
 import { createInitialState, focusSidebar } from "./state";
 import { renderStatusLine } from "./statusline";
 import { normalizeParticipantVolumes } from "./volume";
@@ -1849,6 +1850,36 @@ describe("session", () => {
         },
       },
     });
+  });
+
+  test("Discord mute synchronization does not clear WhatsApp mute icons", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    const channelId = whatsappChannelId("15551234567@s.whatsapp.net");
+    const whatsappChannel = {
+      id: channelId,
+      guildId: WHATSAPP_GUILD_ID,
+      parentId: null,
+      name: "Mom",
+      topic: null,
+      position: 0,
+      type: 1,
+      nsfw: false,
+      muted: true,
+    };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [{ id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null }];
+    state.sidebar.expandedGuildId = WHATSAPP_GUILD_ID;
+    state.sidebar.cachedChannelsByGuildId[WHATSAPP_GUILD_ID] = [whatsappChannel];
+    state.channelList.guildId = WHATSAPP_GUILD_ID;
+    state.channelList.channels = [whatsappChannel];
+
+    applyDiscordChannelMuteSettings(state, {}, { reset: true });
+
+    expect(state.sidebar.cachedChannelsByGuildId[WHATSAPP_GUILD_ID]?.[0]?.muted).toBe(true);
+    expect(state.channelList.channels[0]?.muted).toBe(true);
+    expect(state.channelMuteSettings[channelId]).toBeUndefined();
+    const rows = renderSidebar(state.sidebar, state.channelList.channels, 5);
+    expect(rows.join("\n")).toContain("🔕");
   });
 
   test("gateway DM messages badge Direct Messages before the DM list is open", () => {
