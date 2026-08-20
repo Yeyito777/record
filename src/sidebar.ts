@@ -457,7 +457,13 @@ export function sidebarChannelsForGuild(sidebar: SidebarState, activeChannels: D
   for (const channel of activeChannels) {
     if (channel.guildId === guildId) {
       const cached = byId.get(channel.id);
-      byId.set(channel.id, { ...channel, muted: channel.muted ?? cached?.muted });
+      // WhatsApp's provider cache is rebuilt from its persisted chat state, while
+      // the active channel list can briefly retain the pre-hydration snapshot.
+      // Prefer the provider value so stale false/true flags cannot hide or retain a mute.
+      const muted = guildId === WHATSAPP_GUILD_ID
+        ? cached?.muted ?? channel.muted
+        : channel.muted ?? cached?.muted;
+      byId.set(channel.id, { ...channel, muted });
     }
   }
   return Array.from(byId.values());

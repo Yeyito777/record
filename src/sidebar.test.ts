@@ -260,6 +260,29 @@ describe("sidebar state", () => {
     expect(rows.find((row) => row.includes("announcements"))).toContain("🔕");
   });
 
+  test("prefers current WhatsApp mute state over a stale active channel snapshot", () => {
+    const sidebar = createSidebarState();
+    sidebar.open = true;
+    setSidebarGuilds(sidebar, [{ id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = WHATSAPP_GUILD_ID;
+    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, [
+      { id: "wa:chat", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Mom", topic: null, position: 0, type: 1, nsfw: false, muted: true },
+    ]);
+
+    const staleUnmutedRows = renderSidebar(sidebar, [
+      { id: "wa:chat", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Mom", topic: null, position: 0, type: 1, nsfw: false, muted: false },
+    ], 5).map(stripAnsiForTest);
+    expect(staleUnmutedRows.find((row) => row.includes("Mom"))).toContain("🔕");
+
+    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, [
+      { id: "wa:chat", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Mom", topic: null, position: 0, type: 1, nsfw: false, muted: false },
+    ]);
+    const staleMutedRows = renderSidebar(sidebar, [
+      { id: "wa:chat", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Mom", topic: null, position: 0, type: 1, nsfw: false, muted: true },
+    ], 5).map(stripAnsiForTest);
+    expect(staleMutedRows.find((row) => row.includes("Mom"))).not.toContain("🔕");
+  });
+
   test("renders muted DM icon and suppresses its channel badge", () => {
     const sidebar = createSidebarState();
     sidebar.open = true;
