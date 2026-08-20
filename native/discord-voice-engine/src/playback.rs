@@ -600,7 +600,7 @@ struct LiveStream {
     pending_samples: VecDeque<f32>,
     start_at: Instant,
     last_receive: Instant,
-    consecutive_plc: usize,
+    consecutive_missing: usize,
 }
 
 impl LiveStream {
@@ -612,7 +612,7 @@ impl LiveStream {
             pending_samples: VecDeque::new(),
             start_at,
             last_receive: Instant::now(),
-            consecutive_plc: 0,
+            consecutive_missing: 0,
         })
     }
 
@@ -645,47 +645,40 @@ impl LiveStream {
                     .decode_payload_f32(&packet.payload, &mut decoded, stats)?;
                 self.pending_samples.extend(decoded);
                 self.expected_sequence = self.expected_sequence.wrapping_add(1);
-                self.consecutive_plc = 0;
+                self.consecutive_missing = 0;
                 continue;
             }
 
             if self.buffer.is_empty()
                 && now.duration_since(self.last_receive) >= Duration::from_millis(idle_timeout_ms)
-                && self.consecutive_plc > 0
+                && self.consecutive_missing > 0
                 && self.pending_samples.is_empty()
             {
                 return Ok(None);
             }
 
-            self.consecutive_plc += 1;
-            if self.consecutive_plc > max_plc_packets && self.buffer.is_empty() {
+            self.consecutive_missing += 1;
+            if self.consecutive_missing > max_plc_packets && self.buffer.is_empty() {
                 if self.pending_samples.is_empty() {
                     return Ok(None);
                 }
                 break;
             }
             stats.missing_packets += 1;
-            stats.sequence_gap_events += usize::from(self.consecutive_plc == 1);
+            stats.sequence_gap_events += usize::from(self.consecutive_missing == 1);
             stats.max_consecutive_missing_packets = stats
                 .max_consecutive_missing_packets
-                .max(self.consecutive_plc);
+                .max(self.consecutive_missing);
 
-            let mut concealed = Vec::new();
-            if use_fec {
-                let next = self.expected_sequence.wrapping_add(1);
-                if let Some(next_packet) = self.buffer.get(&next) {
-                    self.decoder.decode_fec_or_plc_f32(
-                        &next_packet.payload,
-                        &mut concealed,
-                        stats,
-                    )?;
-                } else {
-                    self.decoder.decode_plc_f32(&mut concealed, stats)?;
-                }
-            } else {
-                self.decoder.decode_plc_f32(&mut concealed, stats)?;
-            }
-            self.pending_samples.extend(concealed);
+            let next = self.expected_sequence.wrapping_add(1);
+            let fec_payload = use_fec
+                .then(|| self.buffer.get(&next))
+                .flatten()
+                .map(|packet| packet.payload.as_slice());
+            let mut silence = Vec::new();
+            self.decoder
+                .advance_loss_silently_f32(fec_payload, &mut silence, stats)?;
+            self.pending_samples.extend(silence);
             self.expected_sequence = self.expected_sequence.wrapping_add(1);
         }
 
@@ -820,6 +813,34 @@ impl OpusStreamDecoder {
             Err(error) => {
                 stats.decode_errors += 1;
                 Err(error).context("decode Opus PLC playback frame")
+            }
+        }
+    }
+
+    fn advance_loss_silently_f32(
+        &mut self,
+        fec_payload: Option<&[u8]>,
+        frame: &mut Vec<f32>,
+        stats: &mut PlaybackRecoveryStats,
+    ) -> Result<()> {
+        let mut discarded = vec![0.0f32; FRAME_SAMPLES * self.channels as usize];
+        let decoded = match fec_payload {
+            Some(payload) => {
+                stats.fec_attempts += 1;
+                self.decoder.decode_float(payload, &mut discarded, true)
+            }
+            None => self.decoder.decode_float(&[], &mut discarded, false),
+        };
+        match decoded {
+            Ok(samples_per_channel) => {
+                frame.resize(samples_per_channel * self.channels as usize, 0.0);
+                stats.concealed_packets += 1;
+                stats.decoded_packets += 1;
+                Ok(())
+            }
+            Err(error) => {
+                stats.decode_errors += 1;
+                Err(error).context("advance Opus state across silent playback loss")
             }
         }
     }
@@ -972,5 +993,76 @@ mod tests {
         assert_eq!(stats.concealed_packets, 0);
         assert_eq!(stats.missing_packets, 0);
         assert_eq!(stream.pending_samples.len(), 0);
+    }
+
+    #[test]
+    fn live_playback_keeps_missing_packets_silent() {
+        let channels = 2u8;
+        let config = EngineConfig::new(
+            AudioMode::Music,
+            channels,
+            Some(160_000),
+            DEFAULT_PAYLOAD_TYPE,
+            99,
+        );
+        let mut samples = Vec::with_capacity(3 * FRAME_SAMPLES * channels as usize);
+        for n in 0..3 * FRAME_SAMPLES {
+            let t = n as f32 / SAMPLE_RATE as f32;
+            let sample = (t * 330.0 * std::f32::consts::TAU).sin() * 0.20;
+            samples.push(sample);
+            samples.push(sample);
+        }
+        let payloads = encode_float_frames(&samples, &config).unwrap();
+        assert_eq!(payloads.len(), 3);
+
+        let arrival = Instant::now();
+        let mut stream = LiveStream::new(channels, 77, arrival).unwrap();
+        for (sequence, index) in [(77u16, 0usize), (79u16, 2usize)] {
+            assert_eq!(
+                stream.insert(
+                    RtpAudioPacket {
+                        sequence,
+                        timestamp: (index * FRAME_SAMPLES) as u32,
+                        ssrc: 99,
+                        payload_type: DEFAULT_PAYLOAD_TYPE,
+                        payload: payloads[index].clone(),
+                    },
+                    arrival,
+                ),
+                PacketInsertResult::Inserted
+            );
+        }
+
+        let mut stats = PlaybackRecoveryStats::default();
+        let first = stream
+            .decode_next_frame(arrival, 1_000, 10, false, &mut stats)
+            .unwrap()
+            .unwrap();
+        let missing = stream
+            .decode_next_frame(
+                arrival + Duration::from_millis(20),
+                1_000,
+                10,
+                false,
+                &mut stats,
+            )
+            .unwrap()
+            .unwrap();
+        let third = stream
+            .decode_next_frame(
+                arrival + Duration::from_millis(40),
+                1_000,
+                10,
+                false,
+                &mut stats,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert!(first.iter().any(|sample| sample.abs() > 0.001));
+        assert!(missing.iter().all(|sample| *sample == 0.0));
+        assert!(third.iter().any(|sample| sample.abs() > 0.001));
+        assert_eq!(stats.missing_packets, 1);
+        assert_eq!(stats.concealed_packets, 1);
     }
 }

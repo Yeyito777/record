@@ -8,7 +8,7 @@ import { debugLog } from "../debuglog";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, DEFAULT_REMOTE_USER_VOLUME_PERCENT, formatGainDb, normalizeGainDb, normalizeRemoteUserVolumePercent, type LocalAudioVolumes, type NoiseSuppressionMode } from "../volume";
 import { OPUS_PAYLOAD_TYPE, OPUS_RTP_CLOCK_INCREMENT, OPUS_SILENCE_FRAME, RTP_HEADER_LENGTH } from "./constants";
 import { dbToLinear, linearToDb, speakingIdleMs, speakingStartThresholdDb, speakingStopThresholdDb } from "./env";
-import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parseDiscordRtpPacket, parsePlainRtpPacket, reserveUdpPort } from "./rtp";
+import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parseDiscordRtpPacket, parsePlainRtpPacket, reserveUdpPort, stripRtpPadding } from "./rtp";
 import { NoopVoiceAudioBackend, type VoiceAudioBackend, type VoiceAudioContext } from "./types";
 
 const VOICE_HELPER_SHUTDOWN_GRACE_MS = 1_500;
@@ -78,6 +78,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
   private playbackWrongPayloadCount = 0;
   private playbackInvalidPacketCount = 0;
   private playbackInvalidOpusPacketCount = 0;
+  private playbackPaddedPacketCount = 0;
+  private playbackMalformedPaddingCount = 0;
   private playbackSelfDeafDropCount = 0;
   private playbackLocalMuteDropCount = 0;
   private playbackFirstPacketLogged = false;
@@ -421,8 +423,23 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       this.logPlaybackStats("transport_fail");
       return;
     }
+    if (parsed.hasPadding) this.playbackPaddedPacketCount += 1;
+    const unpaddedPayload = stripRtpPadding(decrypted, parsed.hasPadding);
+    if (!unpaddedPayload) {
+      this.playbackMalformedPaddingCount += 1;
+      this.playbackInvalidPacketCount += 1;
+      debugLog("voice.playback.invalid_padding", {
+        ssrc: parsed.ssrc,
+        sequence: parsed.sequence,
+        timestamp: parsed.timestamp,
+        decryptedBytes: decrypted.length,
+        paddingBytes: decrypted[decrypted.length - 1] ?? null,
+      });
+      this.logPlaybackStats("invalid_padding");
+      return;
+    }
     const extensionBodyLength = parsed.hasExtension ? packet.readUInt16BE(parsed.headerLength - 2) * 4 : 0;
-    const opusPayload = extensionBodyLength < decrypted.length ? decrypted.subarray(extensionBodyLength) : Buffer.alloc(0);
+    const opusPayload = extensionBodyLength < unpaddedPayload.length ? unpaddedPayload.subarray(extensionBodyLength) : Buffer.alloc(0);
     if (opusPayload.length === 0) {
       this.playbackEmptyPayloadCount += 1;
       this.logPlaybackStats("empty_payload");
@@ -532,6 +549,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
     this.playbackWrongPayloadCount = 0;
     this.playbackInvalidPacketCount = 0;
     this.playbackInvalidOpusPacketCount = 0;
+    this.playbackPaddedPacketCount = 0;
+    this.playbackMalformedPaddingCount = 0;
     this.playbackSelfDeafDropCount = 0;
     this.playbackLocalMuteDropCount = 0;
     this.playbackFirstPacketLogged = false;
@@ -565,6 +584,8 @@ export class FfmpegRtpVoiceAudioBackend implements VoiceAudioBackend {
       emptyPayloads: this.playbackEmptyPayloadCount,
       invalidPackets: this.playbackInvalidPacketCount,
       invalidOpusPackets: this.playbackInvalidOpusPacketCount,
+      paddedPackets: this.playbackPaddedPacketCount,
+      malformedPaddingPackets: this.playbackMalformedPaddingCount,
       wrongPayloads: this.playbackWrongPayloadCount,
       selfDeafDrops: this.playbackSelfDeafDropCount,
       localMuteDrops: this.playbackLocalMuteDropCount,

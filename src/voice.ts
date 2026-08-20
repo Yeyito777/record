@@ -6,3 +6,4 @@ export * from "./voice/regions";
 export * from "./voice/payloads";
 export * from "./voice/errors";
 export { stripDavePadding } from "./voice/util";
+export { stripRtpPadding } from "./voice/rtp";

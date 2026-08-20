@@ -104,7 +104,7 @@ enum Command {
         #[arg(long)]
         stats_json: Option<PathBuf>,
     },
-    /// Receive plain Opus RTP, run jitter-buffered Opus PLC recovery, and play decoded PCM.
+    /// Receive plain Opus RTP, preserve dropped frames as silence, and play decoded PCM.
     ///
     /// Runtime stdin controls: `user-volume <ssrc> <percent>` and `gain-db <db>`.
     PlayRtp {
@@ -139,7 +139,7 @@ enum Command {
         #[arg(long)]
         parent_pid: Option<u32>,
     },
-    /// Deterministically inject Opus RTP packet loss and verify decoder-state PLC recovery.
+    /// Deterministically inject Opus RTP packet loss and evaluate the offline recovery path.
     TestPlaybackRecovery {
         #[arg(short, long)]
         input: PathBuf,

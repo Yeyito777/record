@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildDiscordWebRtcAnswer, buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, confirmedPlaybackLossFrames, DiscordVoiceGatewayConnection, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, shouldUseNativePlayback, stripDavePadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
+import { buildDiscordWebRtcAnswer, buildFfplayPlaybackArgs, buildMediaSinkWantsPayload, buildPlainPlaybackRtpPacket, buildVoiceEngineCaptureArgs, buildVoiceEnginePlaybackArgs, buildVoiceIdentifyPayload, buildVoicePlaybackSdp, buildVoiceResumePayload, buildVoiceStatePayload, confirmedPlaybackLossFrames, DiscordVoiceGatewayConnection, fetchPreferredVoiceRegions, isOpusSilenceFrame, isRecoverableVoiceGatewayClose, isValidOpusPacket, NoopVoiceAudioBackend, PlaybackStreamDiagnostics, resolveVoiceEngineCommand, shouldUseNativePlayback, stripDavePadding, stripRtpPadding, voiceGatewayCloseError, VoiceCallController, VoiceGatewayCloseError, type VoiceGatewayConnection, type VoiceGatewayConnectionCallbacks, type VoiceGatewayJoinData, type VoiceStateRequest } from "./voice";
 import { DaveVoiceEncryption } from "./voice/dave";
 
 class FakeSignaling {
@@ -489,6 +489,15 @@ describe("voice backend", () => {
     expect(stripDavePadding(clean)).toBe(clean);
     const mixedSuffix = Buffer.from([0x01, 0x02, 0xfa, 0xfa, 0x37, 0x38]);
     expect(stripDavePadding(mixedSuffix)).toBe(mixedSuffix);
+  });
+
+  test("strips standard RTP padding before media processing", () => {
+    const decrypted = Buffer.from([0xf8, 0xff, 0xfe, 0xaa, 0xbb, 0x03]);
+    expect(stripRtpPadding(decrypted, true)).toEqual(Buffer.from([0xf8, 0xff, 0xfe]));
+    expect(stripRtpPadding(decrypted, false)).toBe(decrypted);
+    expect(stripRtpPadding(Buffer.from([0xf8, 0x00]), true)).toBeNull();
+    expect(stripRtpPadding(Buffer.from([0xf8, 0x03]), true)).toBeNull();
+    expect(stripRtpPadding(Buffer.alloc(0), true)).toBeNull();
   });
 
   test("passes Opus through while DAVE is still establishing", () => {

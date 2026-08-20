@@ -220,6 +220,7 @@ typedef struct {
   uint64_t decoded_packets;
   uint64_t normal_packets;
   uint64_t concealed_packets;
+  uint64_t silent_loss_frames;
   uint64_t fec_attempts;
   uint64_t sequence_gap_events;
   uint64_t missing_packets;
@@ -273,7 +274,7 @@ typedef struct {
   uint64_t start_at_ms;
   uint64_t last_receive_ms;
   uint32_t jitter_ms;
-  uint64_t consecutive_plc;
+  uint64_t consecutive_missing;
 } PlaybackStream;
 
 typedef struct UserVolumeControl {
@@ -371,7 +372,7 @@ static void stream_rebase(
   stream->expected_sequence_set = true;
   stream->expected_timestamp = timestamp;
   stream->expected_timestamp_set = true;
-  stream->consecutive_plc = 0;
+  stream->consecutive_missing = 0;
   if (rebuffer) stream->start_at_ms = monotonic_ms() + stream->jitter_ms;
   if (stats) stats->resync_events++;
 }
@@ -509,7 +510,7 @@ static void stream_advance_after_packet(PlaybackStream *stream, uint32_t packet_
   }
 }
 
-static void stream_advance_after_concealment(PlaybackStream *stream, int samples_per_channel) {
+static void stream_advance_after_loss(PlaybackStream *stream, int samples_per_channel) {
   if (stream->expected_timestamp_set) stream->expected_timestamp += (uint32_t)samples_per_channel;
 }
 
@@ -523,45 +524,40 @@ static bool append_silence_into_pending(PlaybackStream *stream, int channels, Pl
   float silence[FRAME_SAMPLES * 2];
   memset(silence, 0, sizeof(silence));
   size_t count = (size_t)FRAME_SAMPLES * (size_t)channels;
-  if (!fifo_append(&stream->pending, silence, count)) die("out of memory appending silence concealment");
+  if (!fifo_append(&stream->pending, silence, count)) die("out of memory appending silent loss frame");
   stats->concealed_packets++;
+  stats->silent_loss_frames++;
   stats->decoded_packets++;
   return true;
 }
 
-static int decode_concealment_into_pending(
+static int silence_dropped_frame_into_pending(
     PlaybackStream *stream,
     const RtpPacketNode *recovery_packet,
     int channels,
     bool use_fec,
     PlaybackStats *stats) {
-  float decoded[FRAME_SAMPLES * 2];
-  int samples = OPUS_INVALID_PACKET;
+  float discarded[FRAME_SAMPLES * 2];
+  int samples;
 
+  // Advance libopus's private predictor state so the next real packet does not
+  // decode against stale pre-gap history, but never put the synthesized PLC/FEC
+  // samples in the audible FIFO. A packet that did not arrive remains a quiet
+  // 20 ms hole instead of becoming metallic decoder-generated audio.
   if (use_fec && recovery_packet) {
     stats->fec_attempts++;
     samples = opus_decode_float(stream->decoder,
                                 recovery_packet->payload,
                                 (opus_int32)recovery_packet->payload_len,
-                                decoded, FRAME_SAMPLES, 1);
-    if (samples < 0) stats->decode_errors++;
-  }
-  if (!use_fec || !recovery_packet || samples < 0) {
-    samples = opus_decode_float(stream->decoder, NULL, 0, decoded, FRAME_SAMPLES, 0);
+                                discarded, FRAME_SAMPLES, 1);
+  } else {
+    samples = opus_decode_float(stream->decoder, NULL, 0, discarded, FRAME_SAMPLES, 0);
   }
   if (samples < 0) {
     stats->decode_errors++;
-    // Decoder failure is a real state boundary. Fall back to a quiet dropout,
-    // but do not use signal-shape heuristics to classify successful decodes.
     stream_reset_decoder_state(stream, stats, false);
-    return append_silence_into_pending(stream, channels, stats) ? FRAME_SAMPLES : -1;
   }
-
-  size_t count = (size_t)samples * (size_t)channels;
-  if (!fifo_append(&stream->pending, decoded, count)) die("out of memory appending Opus concealment");
-  stats->concealed_packets++;
-  stats->decoded_packets++;
-  return samples;
+  return append_silence_into_pending(stream, channels, stats) ? FRAME_SAMPLES : -1;
 }
 
 typedef enum {
@@ -614,7 +610,7 @@ static StreamFrameResult stream_next_frame(
           // were absent, so adopt the new timestamp without touching the Opus
           // predictor or manufacturing recovery audio.
           stream->expected_timestamp = future->timestamp;
-          stream->consecutive_plc = 0;
+          stream->consecutive_missing = 0;
           stats->resync_events++;
           continue;
         }
@@ -624,23 +620,20 @@ static StreamFrameResult stream_next_frame(
           continue;
         }
 
-        // This is bounded, timestamp-confirmed loss. Let libopus perform the
-        // recovery it was designed for while preserving predictor continuity.
-        // Resetting the decoder and injecting hard silence here made the next
-        // real packet start from arbitrary state and caused robotic/metallic
-        // discontinuities. FEC is valid only for one immediately preceding
-        // 20 ms frame; otherwise decoder-state PLC is the conservative choice.
-        stream->consecutive_plc++;
+        // This is bounded, timestamp-confirmed loss. Preserve its place in the
+        // output timeline as silence. libopus may advance its internal state,
+        // but no PLC/FEC waveform is ever made audible.
+        stream->consecutive_missing++;
         stats->missing_packets++;
-        stats->sequence_gap_events += stream->consecutive_plc == 1 ? 1u : 0u;
-        if (stream->consecutive_plc > stats->max_consecutive_missing_packets) {
-          stats->max_consecutive_missing_packets = stream->consecutive_plc;
+        stats->sequence_gap_events += stream->consecutive_missing == 1 ? 1u : 0u;
+        if (stream->consecutive_missing > stats->max_consecutive_missing_packets) {
+          stats->max_consecutive_missing_packets = stream->consecutive_missing;
         }
         bool try_fec = use_fec && missing_audio_frames == 1u && sequence_gap == 1u;
-        int concealed_samples = decode_concealment_into_pending(
+        int silent_samples = silence_dropped_frame_into_pending(
             stream, try_fec ? future : NULL, channels, try_fec, stats);
-        if (concealed_samples < 0) return STREAM_FRAME_ENDED;
-        stream_advance_after_concealment(stream, concealed_samples);
+        if (silent_samples < 0) return STREAM_FRAME_ENDED;
+        stream_advance_after_loss(stream, silent_samples);
         continue;
       }
 
@@ -650,7 +643,7 @@ static StreamFrameResult stream_next_frame(
         // transition packets.  If RTP timestamps show no missing audio time,
         // skip those sequence numbers instead of manufacturing PLC audio.
         stream->expected_sequence = future->sequence;
-        stream->consecutive_plc = 0;
+        stream->consecutive_missing = 0;
       }
 
       RtpPacketNode *packet = stream_pop_expected(stream);
@@ -659,7 +652,7 @@ static StreamFrameResult stream_next_frame(
       int samples = decode_packet_into_pending(stream, packet, channels, stats);
       free(packet);
       stream->expected_sequence = (uint16_t)(stream->expected_sequence + 1u);
-      stream->consecutive_plc = 0;
+      stream->consecutive_missing = 0;
       if (samples >= 0) {
         stream_advance_after_packet(stream, packet_timestamp, samples);
       } else {
@@ -668,7 +661,7 @@ static StreamFrameResult stream_next_frame(
         // artifacts; a tiny dropout is less objectionable and easier to reason
         // about in live Discord playback.
         if (!append_silence_into_pending(stream, channels, stats)) return STREAM_FRAME_ENDED;
-        stream_advance_after_concealment(stream, FRAME_SAMPLES);
+        stream_advance_after_loss(stream, FRAME_SAMPLES);
       }
       continue;
     }
@@ -861,13 +854,13 @@ static void usage(FILE *f) {
     "  --payload-type N          RTP payload type (default 120)\n"
     "  --jitter-ms N             initial jitter buffer delay (default 240)\n"
     "  --idle-timeout-ms N       end idle stream after timeout (default 350)\n"
-    "  --max-plc-packets N       max bounded PLC frames before a timeline rebase (default 10)\n"
-    "  --max-resync-gap N        resync instead of PLC for huge timestamp gaps (default 120)\n"
+    "  --max-plc-packets N       max silent loss frames before a timeline rebase (legacy name; default 10)\n"
+    "  --max-resync-gap N        resync instead of filling huge timestamp gaps (default 120)\n"
     "  --gain-db DB              initial global playback gain in dB (default 0)\n"
     "  --output pipewire|pulse|null|wav\n"
     "  --output-wav PATH         WAV output path when --output wav\n"
     "  --duration-ms N           stop after N milliseconds\n"
-    "  --fec                     try in-band Opus FEC before PLC for isolated gaps\n"
+    "  --fec                     use in-band FEC only to advance decoder state; lost output stays silent\n"
     "  --stats-json PATH         write playback stats JSON on exit\n"
     "  --ready-file PATH         write a file after UDP bind/output init\n"
     "\n"
@@ -1286,6 +1279,7 @@ static void write_stats_json(const char *path, const PlaybackStats *stats) {
     "  \"decoded_packets\": %llu,\n"
     "  \"normal_packets\": %llu,\n"
     "  \"concealed_packets\": %llu,\n"
+    "  \"silent_loss_frames\": %llu,\n"
     "  \"fec_attempts\": %llu,\n"
     "  \"sequence_gap_events\": %llu,\n"
     "  \"missing_packets\": %llu,\n"
@@ -1313,6 +1307,7 @@ static void write_stats_json(const char *path, const PlaybackStats *stats) {
     (unsigned long long)stats->decoded_packets,
     (unsigned long long)stats->normal_packets,
     (unsigned long long)stats->concealed_packets,
+    (unsigned long long)stats->silent_loss_frames,
     (unsigned long long)stats->fec_attempts,
     (unsigned long long)stats->sequence_gap_events,
     (unsigned long long)stats->missing_packets,
@@ -1464,7 +1459,7 @@ static int play_rtp(PlaybackOptions *options) {
   stats.output_duration_ms = (stats.output_frames * 1000u) / SAMPLE_RATE;
   write_stats_json(options->stats_json, &stats);
   fprintf(stderr,
-          "discord-voice-engine: received %llu packet(s), decoded %llu, concealed %llu, missing %llu, late %llu, decoder_resets %llu, errors %llu\n",
+          "discord-voice-engine: received %llu packet(s), decoded %llu, silenced %llu, missing %llu, late %llu, decoder_resets %llu, errors %llu\n",
           (unsigned long long)stats.received_packets,
           (unsigned long long)stats.normal_packets,
           (unsigned long long)stats.concealed_packets,
@@ -1731,13 +1726,14 @@ static void run_self_tests(void) {
   parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
   parse_rtp_packet(pkt12, pkt12_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
   test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loss first packet");
-  test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loss PLC packet");
+  test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loss silent packet");
   bool concealed_has_energy = false;
   for (size_t s = 0; s < sizeof(frame) / sizeof(frame[0]); s++) if (fabsf(frame[s]) > 0.000001f) { concealed_has_energy = true; break; }
-  test_assert(concealed_has_energy, "loss concealment uses decoder-state PLC");
+  test_assert(!concealed_has_energy, "dropped packet remains silent");
   test_assert(stream_next_frame(&stream, monotonic_ms(), channels, 1000, 10, DEFAULT_MAX_RESYNC_GAP, false, &stats, frame) == STREAM_FRAME_AUDIO, "loss future packet");
   test_assert(stats.normal_packets == 2, "loss normal decode count");
-  test_assert(stats.concealed_packets == 1, "loss PLC concealment count");
+  test_assert(stats.concealed_packets == 1, "loss silence count");
+  test_assert(stats.silent_loss_frames == 1, "loss records one silent frame");
   test_assert(stats.missing_packets == 1, "loss missing count");
   test_assert(stats.decoder_resets == 0, "bounded loss preserves Opus predictor state");
   stream_destroy(&stream);
@@ -1752,10 +1748,14 @@ static void run_self_tests(void) {
   parse_rtp_packet(pkt10, pkt10_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
   parse_rtp_packet(pkt12, pkt12_len, &parsed); stream_insert_packet(&stream, &parsed, &stats);
   test_assert(stream_next_frame(&stream, monotonic_ms(), 1, 1000, 10, DEFAULT_MAX_RESYNC_GAP, true, &stats, frame) == STREAM_FRAME_AUDIO, "FEC first packet");
-  test_assert(stream_next_frame(&stream, monotonic_ms(), 1, 1000, 10, DEFAULT_MAX_RESYNC_GAP, true, &stats, frame) == STREAM_FRAME_AUDIO, "FEC recovers isolated loss");
+  test_assert(stream_next_frame(&stream, monotonic_ms(), 1, 1000, 10, DEFAULT_MAX_RESYNC_GAP, true, &stats, frame) == STREAM_FRAME_AUDIO, "FEC advances isolated loss state");
+  concealed_has_energy = false;
+  for (size_t s = 0; s < FRAME_SAMPLES; s++) if (fabsf(frame[s]) > 0.000001f) { concealed_has_energy = true; break; }
+  test_assert(!concealed_has_energy, "FEC-recoverable packet remains silent");
   test_assert(stream_next_frame(&stream, monotonic_ms(), 1, 1000, 10, DEFAULT_MAX_RESYNC_GAP, true, &stats, frame) == STREAM_FRAME_AUDIO, "FEC successor decodes normally");
   test_assert(stats.fec_attempts == 1, "isolated loss attempts in-band FEC once");
   test_assert(stats.concealed_packets == 1, "FEC recovery counts one concealment");
+  test_assert(stats.silent_loss_frames == 1, "FEC-recoverable loss records one silent frame");
   test_assert(stats.decoder_resets == 0, "FEC recovery preserves decoder state");
   stream_destroy(&stream);
 

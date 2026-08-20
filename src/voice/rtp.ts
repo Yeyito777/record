@@ -152,3 +152,16 @@ export function decryptAes256GcmRtp(packet: Buffer, headerLength: number, key: B
     return null;
   }
 }
+
+/**
+ * Remove RFC 3550 RTP padding from an already transport-decrypted payload.
+ * The padding count is encrypted along with the media, so this must run after
+ * transport decryption and before RTP-extension, DAVE, or codec processing.
+ */
+export function stripRtpPadding(payload: Buffer, hasPadding: boolean): Buffer | null {
+  if (!hasPadding) return payload;
+  if (payload.length === 0) return null;
+  const paddingBytes = payload[payload.length - 1];
+  if (paddingBytes === 0 || paddingBytes > payload.length) return null;
+  return payload.subarray(0, payload.length - paddingBytes);
+}
