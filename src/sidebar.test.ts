@@ -760,12 +760,12 @@ describe("sidebar state", () => {
     expect(selectedMember?.userId).toBe("user-1");
   });
 
-  test("keeps muted and deafened voice member icons visible when names truncate", () => {
+  test("keeps distinct muted, locally muted, and deafened voice member icons visible when names truncate", () => {
     const sidebar = createSidebarState();
     sidebar.open = true;
     sidebar.voiceMembersByChannelId = {
       "voice-1": [
-        { userId: "user-1", displayName: "A very very very very long voice member name", muted: true, deafened: true },
+        { userId: "user-1", displayName: "A very very very very long voice member name", muted: true, localMuted: true, deafened: true },
       ],
     };
     setSidebarGuilds(sidebar, [{ id: "guild-1", name: "Guild", icon: null }]);
@@ -783,8 +783,10 @@ describe("sidebar state", () => {
     expect(memberRow).toContain("…");
     expect(memberRow).toContain("🔇");
     expect(memberRow).toContain("🔕");
+    expect(memberRow).toContain("🎧");
     expect(memberRow!.indexOf("…")).toBeLessThan(memberRow!.indexOf("🔇"));
     expect(memberRow!.indexOf("🔇")).toBeLessThan(memberRow!.indexOf("🔕"));
+    expect(memberRow!.indexOf("🔕")).toBeLessThan(memberRow!.indexOf("🎧"));
     expect(termWidth(memberRow!)).toBe(SIDEBAR_WIDTH);
   });
 

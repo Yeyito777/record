@@ -1972,7 +1972,7 @@ describe("session", () => {
       sessionId: "voice-session-friend",
       displayName: "Friend",
       selfMute: false,
-      selfDeaf: false,
+      selfDeaf: true,
       selfStream: true,
       selfVideo: true,
       mute: false,
@@ -1984,13 +1984,17 @@ describe("session", () => {
     toggleSelectedGuildMute(state, effects);
 
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]).toMatchObject({ userId: "friend", localMuted: true, streaming: true, cameraOn: true });
-    expect(renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"))).toContain("🔕");
+    const locallyMutedRow = renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"));
+    expect(locallyMutedRow).toContain("🔕");
+    expect(locallyMutedRow).toContain("🎧");
     expect(state.notice.text).toBe("");
     expect(effects.renders).toBeGreaterThan(0);
 
     toggleSelectedGuildMute(state, effects);
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.localMuted).toBe(false);
-    expect(renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"))).not.toContain("🔕");
+    const locallyUnmutedRow = renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"));
+    expect(locallyUnmutedRow).not.toContain("🔕");
+    expect(locallyUnmutedRow).toContain("🎧");
 
     handleVoiceStateUpdate(state, effects, {
       userId: "friend",
@@ -2030,7 +2034,7 @@ describe("session", () => {
       mute: true,
       deaf: true,
     });
-    expect(renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"))).toContain("🔇 🔕");
+    expect(renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"))).toContain("🔇 🎧");
 
     expect(setTrackedVoiceMemberServerMuted(state, "voice-1", "friend", false)).toBe(true);
     expect(setTrackedVoiceMemberServerDeafened(state, "voice-1", "friend", false)).toBe(true);
@@ -2043,6 +2047,7 @@ describe("session", () => {
     const friendRow = renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"));
     expect(friendRow).not.toContain("🔇");
     expect(friendRow).not.toContain("🔕");
+    expect(friendRow).not.toContain("🎧");
     expect(voiceMemberModerationContext(state, "guild-1", "voice-1", "friend")).toMatchObject({
       serverMuted: false,
       serverDeafened: false,

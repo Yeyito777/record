@@ -1605,7 +1605,7 @@ function voiceMemberNameLabel(entry: SidebarEntry): string {
 }
 
 function voiceMemberStatusSuffix(entry: SidebarEntry): string {
-  return `${entry.muted ? " 🔇" : ""}${entry.deafened || entry.localMuted ? " 🔕" : ""}`;
+  return `${entry.muted ? " 🔇" : ""}${entry.localMuted ? " 🔕" : ""}${entry.deafened ? " 🎧" : ""}`;
 }
 
 function selectedEntrySnapshot(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions): Pick<SidebarEntry, "kind" | "id" | "guildId"> | null {
