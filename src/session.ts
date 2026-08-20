@@ -681,19 +681,24 @@ function withChannelMuteSettings(state: AppState, channels: DiscordChannel[]): D
   ));
 }
 
-function applyChannelMuteSettings(state: AppState, mutedByChannelId: Record<string, boolean>, options: { reset?: boolean } = {}): void {
-  const nextMutedByChannelId = { ...mutedByChannelId };
+export function applyDiscordChannelMuteSettings(state: AppState, mutedByChannelId: Record<string, boolean>, options: { reset?: boolean } = {}): void {
+  const nextMutedByChannelId = Object.fromEntries(
+    Object.entries(mutedByChannelId).filter(([channelId]) => !isWhatsAppChannelId(channelId)),
+  );
   if (options.reset) {
     const knownChannels = [
       ...state.channelList.channels,
       ...Object.values(state.sidebar.cachedChannelsByGuildId).flat(),
-    ];
+    ].filter((channel) => !isWhatsAppChannel(channel));
     for (const channel of knownChannels) {
       if (!Object.prototype.hasOwnProperty.call(nextMutedByChannelId, channel.id)) nextMutedByChannelId[channel.id] = false;
     }
   }
 
-  state.channelMuteSettings = options.reset ? { ...nextMutedByChannelId } : { ...state.channelMuteSettings, ...nextMutedByChannelId };
+  const currentDiscordSettings = Object.fromEntries(
+    Object.entries(state.channelMuteSettings).filter(([channelId]) => !isWhatsAppChannelId(channelId)),
+  );
+  state.channelMuteSettings = options.reset ? { ...nextMutedByChannelId } : { ...currentDiscordSettings, ...nextMutedByChannelId };
   applySidebarChannelMuteSettings(state.sidebar, nextMutedByChannelId);
   for (const [channelId, muted] of Object.entries(nextMutedByChannelId)) {
     setChannelListChannelMuted(state, channelId, muted);
@@ -704,7 +709,7 @@ function applyChannelMuteSettings(state: AppState, mutedByChannelId: Record<stri
   if (accountId && directMessages) saveCachedDirectMessages(accountId, directMessages);
   if (accountId) {
     for (const [guildId, channels] of Object.entries(state.sidebar.cachedChannelsByGuildId)) {
-      if (guildId !== DIRECT_MESSAGES_GUILD_ID) saveCachedGuildChannels(accountId, guildId, channels);
+      if (guildId !== DIRECT_MESSAGES_GUILD_ID && guildId !== WHATSAPP_GUILD_ID) saveCachedGuildChannels(accountId, guildId, channels);
     }
   }
   persistNotifications(state);
@@ -3003,7 +3008,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       effects.scheduleRender();
     },
     onChannelMuteSettings: (mutedByChannelId, options) => {
-      applyChannelMuteSettings(state, mutedByChannelId, options);
+      applyDiscordChannelMuteSettings(state, mutedByChannelId, options);
       effects.scheduleRender();
     },
     onGuildMuteSetting: (guildId, muted) => {
