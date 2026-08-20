@@ -82,6 +82,7 @@ export interface WhatsAppBackendHandle {
   downloadMedia(
     message: import("./types").WhatsAppMessage,
     destinationPath: string,
+    recoveryAnchor?: import("./types").WhatsAppMediaRecoveryAnchor,
   ): Promise<import("./worker-protocol").WhatsAppDownloadMediaResult>;
   setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult>;
   on<K extends WhatsAppBackendEventName>(event: K, listener: WhatsAppBackendEventListener<K>): () => void;
@@ -462,15 +463,26 @@ export class WhatsAppController {
     const message = messageId && jid
       ? (this.state.whatsapp.messagesByChatId[jid] ?? []).find((candidate) => candidate.id === messageId)
       : null;
-    if (!message || message.content.kind !== "media" || !message.content.download) {
-      return { ok: false, error: "WhatsApp media download information is unavailable." };
+    if (!jid || !message || message.content.kind !== "media") {
+      return { ok: false, error: "WhatsApp media message is unavailable." };
     }
     if (!this.backend.isConnected) {
       return { ok: false, error: "WhatsApp must be connected to download this attachment." };
     }
 
     try {
-      await this.backend.downloadMedia(message, path);
+      const messages = this.state.whatsapp.messagesByChatId[jid] ?? [];
+      const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
+      const newerAnchor = messageIndex >= 0
+        ? messages.slice(messageIndex + 1).find((candidate) => (
+          candidate.timestampMs !== null && candidate.timestampMs > 0
+          && Boolean(candidate.key.id && candidate.key.chatId)
+        ))
+        : undefined;
+      const recoveryAnchor = newerAnchor?.timestampMs
+        ? { key: newerAnchor.key, timestampMs: newerAnchor.timestampMs }
+        : undefined;
+      await this.backend.downloadMedia(message, path, recoveryAnchor);
       if (!cachedAttachmentIsComplete(path, attachment.size)) {
         rmSync(path, { force: true });
         return { ok: false, error: "WhatsApp returned an incomplete attachment." };
@@ -549,6 +561,13 @@ export class WhatsAppController {
         this.syncProviderState(true);
       }),
       this.backend.on("messages", (event) => {
+        const previouslyKnownIds = new Set(event.messages
+          .filter((message) => {
+            const chatId = canonicalWhatsAppJid(this.state.whatsapp, message.chatId);
+            return (this.state.whatsapp.messagesByChatId[chatId] ?? [])
+              .some((candidate) => candidate.id === message.id);
+          })
+          .map((message) => message.id));
         upsertWhatsAppMessages(this.state.whatsapp, event.messages);
         // A message can reveal an LID→phone mapping after the corresponding
         // chats.update already created a temporary LID notification. Reconcile
@@ -562,8 +581,9 @@ export class WhatsAppController {
           const mapped = whatsAppMessageToTimeline(this.state.whatsapp, stored);
           if (this.state.timeline.channelId === mapped.channelId) {
             appendTimelineMessage(this.state.timeline, mapped);
-            if (event.kind === "upsert") this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
-            if (!message.fromMe && event.kind === "upsert" && event.upsertType === "notify") {
+            const isNewUpsert = event.kind === "upsert" && !previouslyKnownIds.has(message.id);
+            if (isNewUpsert) this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+            if (!message.fromMe && isNewUpsert && event.upsertType === "notify") {
               const chat = this.state.whatsapp.chatsById[storedChatId];
               if (chat) chat.unreadCount = 0;
               clearChannelNotifications(this.state.notifications, mapped.channelId);

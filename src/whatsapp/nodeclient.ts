@@ -8,6 +8,7 @@ import type {
   WhatsAppBackendEventName,
   WhatsAppConnectionState,
   WhatsAppLoginResult,
+  WhatsAppMediaRecoveryAnchor,
   WhatsAppMessage,
   WhatsAppMessageKey,
 } from "./types";
@@ -114,8 +115,12 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
     return await this.request("send-images", params as unknown as Record<string, unknown>) as WhatsAppMessage[];
   }
 
-  async downloadMedia(message: WhatsAppMessage, destinationPath: string): Promise<WhatsAppDownloadMediaResult> {
-    const params: WhatsAppDownloadMediaParams = { message, destinationPath };
+  async downloadMedia(
+    message: WhatsAppMessage,
+    destinationPath: string,
+    recoveryAnchor?: WhatsAppMediaRecoveryAnchor,
+  ): Promise<WhatsAppDownloadMediaResult> {
+    const params: WhatsAppDownloadMediaParams = { message, destinationPath, recoveryAnchor };
     return await this.request("download-media", params as unknown as Record<string, unknown>) as WhatsAppDownloadMediaResult;
   }
 

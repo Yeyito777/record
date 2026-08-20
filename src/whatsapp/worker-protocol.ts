@@ -2,6 +2,7 @@ import type {
   WhatsAppBackendEventMap,
   WhatsAppBackendEventName,
   WhatsAppLoginResult,
+  WhatsAppMediaRecoveryAnchor,
   WhatsAppMessage,
   WhatsAppMessageKey,
 } from "./types";
@@ -67,6 +68,7 @@ export interface WhatsAppSendImagesParams {
 export interface WhatsAppDownloadMediaParams {
   message: WhatsAppMessage;
   destinationPath: string;
+  recoveryAnchor?: WhatsAppMediaRecoveryAnchor;
 }
 
 export interface WhatsAppDownloadMediaResult {

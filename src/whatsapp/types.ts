@@ -40,6 +40,12 @@ export interface WhatsAppMediaDownload {
   url?: string;
 }
 
+/** A known newer message used to request an on-demand page containing old media. */
+export interface WhatsAppMediaRecoveryAnchor {
+  key: WhatsAppMessageKey;
+  timestampMs: number;
+}
+
 /** A message Record does not render yet, retained so event consumers do not lose it. */
 export interface WhatsAppUnsupportedContent {
   kind: "unsupported";

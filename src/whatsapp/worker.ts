@@ -156,9 +156,12 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
       if (!params?.message?.id || typeof params.destinationPath !== "string" || !params.destinationPath) {
         throw new Error("Invalid download-media request.");
       }
+      const message = params.message.content.kind === "media" && params.message.content.download
+        ? params.message
+        : await backend.recoverMediaMessage(params.message, params.recoveryAnchor);
       return await downloadWhatsAppMediaToFile(
         backend.getSocket(),
-        params.message,
+        message,
         params.destinationPath,
       );
     }
