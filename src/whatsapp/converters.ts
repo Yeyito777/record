@@ -156,6 +156,9 @@ function mediaContent(
     gifPlayback?: boolean | null;
     isAnimated?: boolean | null;
     viewOnce?: boolean | null;
+    mediaKey?: Uint8Array | null;
+    directPath?: string | null;
+    url?: string | null;
   },
 ): WhatsAppMediaContent {
   const content: WhatsAppMediaContent = { kind: "media", mediaKind };
@@ -172,6 +175,13 @@ function mediaContent(
   if (media.gifPlayback != null) content.animated = media.gifPlayback;
   if (media.isAnimated != null) content.animated = media.isAnimated;
   if (media.viewOnce != null) content.viewOnce = media.viewOnce;
+  if (media.mediaKey?.byteLength && (media.directPath || media.url)) {
+    content.download = {
+      mediaKeyBase64: Buffer.from(media.mediaKey).toString("base64"),
+      ...(media.directPath ? { directPath: media.directPath } : {}),
+      ...(media.url ? { url: media.url } : {}),
+    };
+  }
   return content;
 }
 

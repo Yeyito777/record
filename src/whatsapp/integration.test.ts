@@ -158,7 +158,43 @@ describe("WhatsApp UI integration", () => {
 
     const [mapped] = whatsAppTimelineMessages(state, whatsappChannelId(chatId));
     expect(mapped?.content).toBe("photo");
-    expect(mapped?.attachments[0]).toMatchObject({ contentType: "image/jpeg", size: 42 });
+    expect(mapped?.attachments[0]).toMatchObject({
+      id: "wa-media:image-1",
+      contentType: "image/jpeg",
+      size: 42,
+      url: "",
+    });
+  });
+
+  test("keeps media download information across sparse message updates", () => {
+    const state = createWhatsAppUiState();
+    const chatId = "15551234567@s.whatsapp.net";
+    upsertWhatsAppMessages(state, [{
+      ...message("image-1", chatId, 10, ""),
+      content: {
+        kind: "media",
+        mediaKind: "image",
+        mimeType: "image/jpeg",
+        download: {
+          mediaKeyBase64: "AQIDBA==",
+          directPath: "/v/example.enc",
+        },
+      },
+    }]);
+    upsertWhatsAppMessages(state, [{
+      ...message("image-1", chatId, 10, ""),
+      content: { kind: "media", mediaKind: "image", caption: "edited caption" },
+    }]);
+
+    expect(state.messagesByChatId[chatId]?.[0]?.content).toMatchObject({
+      kind: "media",
+      caption: "edited caption",
+      mimeType: "image/jpeg",
+      download: {
+        mediaKeyBase64: "AQIDBA==",
+        directPath: "/v/example.enc",
+      },
+    });
   });
 
   test("never passes terminal controls from WhatsApp into sidebar or timeline output", () => {

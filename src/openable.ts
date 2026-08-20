@@ -261,10 +261,10 @@ function openableUrlCachePath(target: string): string {
   return join(openableUrlCacheDir(), `${hash}-${base}${ext}`);
 }
 
-function cachedAttachmentIsComplete(path: string, expectedSize: number): boolean {
+export function cachedAttachmentIsComplete(path: string, expectedSize: number): boolean {
   try {
     const stat = statSync(path);
-    return stat.isFile() && (expectedSize <= 0 || stat.size === expectedSize);
+    return stat.isFile() && stat.size > 0 && (expectedSize <= 0 || stat.size === expectedSize);
   } catch {
     return false;
   }

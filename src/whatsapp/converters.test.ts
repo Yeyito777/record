@@ -133,6 +133,32 @@ describe("WhatsApp provider-neutral converters", () => {
     });
   });
 
+  test("retains encrypted media download information across worker IPC", () => {
+    const converted = toWhatsAppMessage(message({
+      key: { id: "downloadable-image", remoteJid: "15550001@s.whatsapp.net" },
+      message: {
+        imageMessage: {
+          mimetype: "image/jpeg",
+          fileLength: 3,
+          mediaKey: new Uint8Array([1, 2, 3, 4]),
+          directPath: "/v/t62.7118-24/example.enc",
+          url: "https://mmg.whatsapp.net/v/example.enc",
+        },
+      },
+    }));
+
+    expect(converted?.content).toMatchObject({
+      kind: "media",
+      mediaKind: "image",
+      download: {
+        mediaKeyBase64: "AQIDBA==",
+        directPath: "/v/t62.7118-24/example.enc",
+        url: "https://mmg.whatsapp.net/v/example.enc",
+      },
+    });
+    expect(JSON.parse(JSON.stringify(converted)).content.download.mediaKeyBase64).toBe("AQIDBA==");
+  });
+
   test("renders common WhatsApp contact, location, interactive, PTV, and wrapped messages", () => {
     const chatId = "15550001@s.whatsapp.net";
     expect(toWhatsAppMessage(message({

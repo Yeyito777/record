@@ -250,9 +250,17 @@ export function upsertWhatsAppMessages(state: WhatsAppUiState, messages: readonl
     const index = existing.findIndex((candidate) => candidate.id === message.id);
     if (index >= 0) {
       const previous = existing[index];
+      const content = message.content.kind === "media" && previous.content.kind === "media"
+        ? {
+          ...previous.content,
+          ...message.content,
+          download: message.content.download ?? previous.content.download,
+        }
+        : message.content;
       existing[index] = {
         ...previous,
         ...message,
+        content,
         key: { ...previous.key, ...message.key },
         timestampMs: message.timestampMs ?? previous.timestampMs,
         senderId: message.senderId ?? previous.senderId,

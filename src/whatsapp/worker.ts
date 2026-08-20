@@ -5,6 +5,7 @@ import type { WhatsAppMessage } from "./types";
 import type {
   WhatsAppMarkReadParams,
   WhatsAppFetchHistoryParams,
+  WhatsAppDownloadMediaParams,
   WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
   WhatsAppSetChatMutedParams,
@@ -16,6 +17,7 @@ import { WHATSAPP_CHAT_MUTE_DURATION_MS } from "./worker-protocol";
 import { toWhatsAppMessage } from "./converters";
 import { startWhatsAppDiagnosticsServer, WhatsAppDiagnostics } from "./diagnostics";
 import { buildWhatsAppSendOptions, resolveWhatsAppEphemeralExpiration, sendWhatsAppImages } from "./sending";
+import { downloadWhatsAppMediaToFile } from "./media";
 
 // Baileys creates credential/key files itself. A private process umask ensures
 // they are private from the instant they are opened, before our auth wrapper's
@@ -148,6 +150,17 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
       const converted = sent.map((message) => toWhatsAppMessage(message, { selfId: socket.user?.id }));
       if (converted.some((message) => message === null)) throw new Error("WhatsApp returned an invalid sent image.");
       return converted;
+    }
+    case "download-media": {
+      const params = request.params as unknown as WhatsAppDownloadMediaParams;
+      if (!params?.message?.id || typeof params.destinationPath !== "string" || !params.destinationPath) {
+        throw new Error("Invalid download-media request.");
+      }
+      return await downloadWhatsAppMediaToFile(
+        backend.getSocket(),
+        params.message,
+        params.destinationPath,
+      );
     }
     case "mark-read": {
       const params = request.params as unknown as WhatsAppMarkReadParams;

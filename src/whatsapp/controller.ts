@@ -4,7 +4,8 @@ import { dirname, join } from "node:path";
 import { WHATSAPP_GUILD_ID, whatsappChannelId, whatsappGuild, whatsappJidFromChannelId, whatsappSidebarLayoutScope } from "../chatproviders";
 import { clearChannelList, setActiveChannelEntry, setChannelList } from "../channels";
 import { loadCachedSidebarChannelLayout, saveCachedSidebarChannelLayout } from "../datacache";
-import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME } from "../discord";
+import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessageAttachment } from "../discord";
+import { cachedAttachmentIsComplete, cachedAttachmentPath, type AttachmentOpenResult } from "../openable";
 import {
   clearChannelNotifications,
   setChannelNotificationCount,
@@ -78,6 +79,10 @@ export interface WhatsAppBackendHandle {
     oldestKey: import("./types").WhatsAppMessageKey,
     oldestTimestampMs: number,
   ): Promise<string>;
+  downloadMedia(
+    message: import("./types").WhatsAppMessage,
+    destinationPath: string,
+  ): Promise<import("./worker-protocol").WhatsAppDownloadMediaResult>;
   setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult>;
   on<K extends WhatsAppBackendEventName>(event: K, listener: WhatsAppBackendEventListener<K>): () => void;
 }
@@ -442,6 +447,39 @@ export class WhatsAppController {
       this.syncProviderState(true);
     });
     return true;
+  }
+
+  async downloadAttachment(attachment: DiscordMessageAttachment): Promise<AttachmentOpenResult> {
+    const path = cachedAttachmentPath(attachment);
+    if (cachedAttachmentIsComplete(path, attachment.size)) {
+      return { ok: true, path, cached: true };
+    }
+
+    const messageId = attachment.id.startsWith("wa-media:")
+      ? attachment.id.slice("wa-media:".length)
+      : null;
+    const jid = this.activeWhatsAppJid();
+    const message = messageId && jid
+      ? (this.state.whatsapp.messagesByChatId[jid] ?? []).find((candidate) => candidate.id === messageId)
+      : null;
+    if (!message || message.content.kind !== "media" || !message.content.download) {
+      return { ok: false, error: "WhatsApp media download information is unavailable." };
+    }
+    if (!this.backend.isConnected) {
+      return { ok: false, error: "WhatsApp must be connected to download this attachment." };
+    }
+
+    try {
+      await this.backend.downloadMedia(message, path);
+      if (!cachedAttachmentIsComplete(path, attachment.size)) {
+        rmSync(path, { force: true });
+        return { ok: false, error: "WhatsApp returned an incomplete attachment." };
+      }
+      return { ok: true, path, cached: false };
+    } catch (error) {
+      rmSync(path, { force: true });
+      return { ok: false, error: safeErrorMessage(error) };
+    }
   }
 
   async shutdown(): Promise<void> {

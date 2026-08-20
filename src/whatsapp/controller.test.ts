@@ -104,6 +104,13 @@ class FakeBackend implements WhatsAppBackendHandle {
     return `history-${this.historyRequests.length}`;
   }
 
+  async downloadMedia(
+    _message: import("./types").WhatsAppMessage,
+    destinationPath: string,
+  ): Promise<import("./worker-protocol").WhatsAppDownloadMediaResult> {
+    return { path: destinationPath, sizeBytes: 0 };
+  }
+
   async setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult> {
     this.muteRequests.push({ chatId, muted });
     if (this.muteError) throw this.muteError;

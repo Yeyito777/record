@@ -14,6 +14,8 @@ import type {
 import type {
   WhatsAppMarkReadParams,
   WhatsAppFetchHistoryParams,
+  WhatsAppDownloadMediaParams,
+  WhatsAppDownloadMediaResult,
   WhatsAppImageUpload,
   WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
@@ -110,6 +112,11 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
   ): Promise<WhatsAppMessage[]> {
     const params: WhatsAppSendImagesParams = { chatId, images, caption, quoted, ephemeralExpirationSeconds };
     return await this.request("send-images", params as unknown as Record<string, unknown>) as WhatsAppMessage[];
+  }
+
+  async downloadMedia(message: WhatsAppMessage, destinationPath: string): Promise<WhatsAppDownloadMediaResult> {
+    const params: WhatsAppDownloadMediaParams = { message, destinationPath };
+    return await this.request("download-media", params as unknown as Record<string, unknown>) as WhatsAppDownloadMediaResult;
   }
 
   async markRead(keys: WhatsAppMessageKey[]): Promise<void> {

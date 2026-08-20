@@ -29,6 +29,15 @@ export interface WhatsAppMediaContent {
   voiceNote?: boolean;
   animated?: boolean;
   viewOnce?: boolean;
+  /** Encrypted-media locator retained so the worker can download on demand. */
+  download?: WhatsAppMediaDownload;
+}
+
+export interface WhatsAppMediaDownload {
+  /** Base64 is used because provider messages cross the JSON-lines worker IPC. */
+  mediaKeyBase64: string;
+  directPath?: string;
+  url?: string;
 }
 
 /** A message Record does not render yet, retained so event consumers do not lose it. */

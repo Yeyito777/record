@@ -11,6 +11,7 @@ export type WhatsAppWorkerMethod =
   | "cancel-login"
   | "send-text"
   | "send-images"
+  | "download-media"
   | "fetch-history"
   | "set-chat-muted"
   | "mark-read"
@@ -61,6 +62,16 @@ export interface WhatsAppSendImagesParams {
   quoted?: WhatsAppMessage;
   /** Known per-chat disappearing-message duration. Zero explicitly means off. */
   ephemeralExpirationSeconds?: number;
+}
+
+export interface WhatsAppDownloadMediaParams {
+  message: WhatsAppMessage;
+  destinationPath: string;
+}
+
+export interface WhatsAppDownloadMediaResult {
+  path: string;
+  sizeBytes: number;
 }
 
 export interface WhatsAppMarkReadParams {

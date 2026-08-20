@@ -1807,12 +1807,14 @@ function handleHistoryFocused(key: KeyEvent): boolean {
         setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true, chat: false });
         scheduleRender();
         void (async () => {
-          const downloaded = await downloadAttachment(attachment, {
-            onProgress: (progress) => {
-              if (!running) return;
-              showAttachmentDownloadProgress(attachment.filename, progress);
-            },
-          });
+          const downloaded = isWhatsAppChannelId(state.timeline.channelId)
+            ? await whatsAppController.downloadAttachment(attachment)
+            : await downloadAttachment(attachment, {
+              onProgress: (progress) => {
+                if (!running) return;
+                showAttachmentDownloadProgress(attachment.filename, progress);
+              },
+            });
           if (!running) return;
           if (!downloaded.ok || !downloaded.path) {
             setNotice(state, `Could not open ${attachment.filename}: ${downloaded.error ?? "unknown error"}`, "warning");
