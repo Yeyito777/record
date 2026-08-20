@@ -9,7 +9,7 @@ import { loadConfig } from "./config";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
 import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
-import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, applyDiscordChannelMuteSettings, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, ensureCurrentServerCommands, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSessionPreview, restoreCachedSidebarPreview, sendCurrentChannelMessage, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
+import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, applyDiscordChannelMuteSettings, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, ensureCurrentServerCommands, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSessionPreview, restoreCachedSidebarPreview, sendCurrentChannelMessage, setTrackedVoiceMemberServerDeafened, setTrackedVoiceMemberServerMuted, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { renderSidebar } from "./sidebar";
 import { createInitialState, focusSidebar } from "./state";
 import { renderStatusLine } from "./statusline";
@@ -1984,11 +1984,13 @@ describe("session", () => {
     toggleSelectedGuildMute(state, effects);
 
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]).toMatchObject({ userId: "friend", localMuted: true, streaming: true, cameraOn: true });
+    expect(renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"))).toContain("🔕");
     expect(state.notice.text).toBe("");
     expect(effects.renders).toBeGreaterThan(0);
 
     toggleSelectedGuildMute(state, effects);
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.localMuted).toBe(false);
+    expect(renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"))).not.toContain("🔕");
 
     handleVoiceStateUpdate(state, effects, {
       userId: "friend",
@@ -2004,6 +2006,47 @@ describe("session", () => {
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.streaming).toBe(false);
     expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]?.cameraOn).toBe(false);
 
+    clearReadOnlyClient(state);
+  });
+
+  test("successful Discord moderation actions update participant status icons without waiting for another gateway event", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null }];
+    state.sidebar.expandedGuildId = "guild-1";
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "Voice", topic: null, position: 0, type: 2, nsfw: false }];
+    const effects = { renders: 0, scheduleRender: () => { effects.renders += 1; } };
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "friend",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "voice-session-friend",
+      displayName: "Friend",
+      selfMute: false,
+      selfDeaf: false,
+      mute: true,
+      deaf: true,
+    });
+    expect(renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"))).toContain("🔇 🔕");
+
+    expect(setTrackedVoiceMemberServerMuted(state, "voice-1", "friend", false)).toBe(true);
+    expect(setTrackedVoiceMemberServerDeafened(state, "voice-1", "friend", false)).toBe(true);
+
+    expect(state.sidebar.voiceMembersByChannelId["voice-1"]?.[0]).toMatchObject({
+      userId: "friend",
+      muted: false,
+      deafened: false,
+    });
+    const friendRow = renderSidebar(state.sidebar, state.channelList.channels, 5).find((row) => row.includes("Friend"));
+    expect(friendRow).not.toContain("🔇");
+    expect(friendRow).not.toContain("🔕");
+    expect(voiceMemberModerationContext(state, "guild-1", "voice-1", "friend")).toMatchObject({
+      serverMuted: false,
+      serverDeafened: false,
+    });
     clearReadOnlyClient(state);
   });
 

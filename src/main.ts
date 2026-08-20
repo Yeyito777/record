@@ -76,6 +76,8 @@ import {
   removeSessionGuild,
   restoreCachedSessionPreview,
   sendCurrentChannelVoiceMessage,
+  setTrackedVoiceMemberServerDeafened,
+  setTrackedVoiceMemberServerMuted,
   startCurrentVoiceCall,
   syncCurrentServerCommandAutocomplete,
   syncMemberListForCurrentChannel,
@@ -1379,6 +1381,7 @@ function runServerModalAction(action: ServerAction): void {
     if (action === "toggle_server_mute") {
       const muted = !modal.serverMuted;
       void setGuildMemberServerMute(token, modal.guildId, modal.targetId, muted).then(() => {
+        setTrackedVoiceMemberServerMuted(state, modal.channelId!, modal.targetId, muted);
         finishModalAction();
       }).catch((error) => failModalAction(error, `Could Not ${muted ? "Server Mute" : "Server Unmute"}`));
       return;
@@ -1387,6 +1390,7 @@ function runServerModalAction(action: ServerAction): void {
     if (action === "toggle_server_deafen") {
       const deafened = !modal.serverDeafened;
       void setGuildMemberServerDeafen(token, modal.guildId, modal.targetId, deafened).then(() => {
+        setTrackedVoiceMemberServerDeafened(state, modal.channelId!, modal.targetId, deafened);
         finishModalAction();
       }).catch((error) => failModalAction(error, `Could Not Server ${deafened ? "Deafen" : "Undeafen"}`));
       return;

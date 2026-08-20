@@ -1117,6 +1117,48 @@ function syncAllSidebarVoiceMembers(state: AppState): void {
   syncSidebarVoiceMembersForChannels(state, callVoiceStatesByChannelId.keys());
 }
 
+function patchTrackedVoiceMemberState(
+  state: AppState,
+  channelId: string,
+  userId: string,
+  patch: Partial<Pick<TrackedCallVoiceState, "selfMute" | "selfDeaf" | "mute" | "deaf">>,
+): boolean {
+  const voiceState = callVoiceStatesByChannelId.get(channelId)?.get(userId);
+  if (!voiceState) return false;
+
+  const changed = Object.entries(patch).some(([key, value]) => (
+    voiceState[key as keyof typeof patch] !== value
+  ));
+  if (!changed) return false;
+
+  Object.assign(voiceState, patch);
+  if (voiceState.selfMute || voiceState.mute) clearSpeakingCallUser(userId);
+  syncSidebarVoiceMembersForChannel(state, channelId);
+  const activeSession = voiceCallController?.activeSession;
+  if (activeSession?.target.channelId === channelId) syncVoiceCallStatus(state, activeSession);
+  return true;
+}
+
+/** Keep the participant row current when a server-mute REST action succeeds. */
+export function setTrackedVoiceMemberServerMuted(
+  state: AppState,
+  channelId: string,
+  userId: string,
+  muted: boolean,
+): boolean {
+  return patchTrackedVoiceMemberState(state, channelId, userId, { mute: muted });
+}
+
+/** Keep the participant row current when a server-deafen REST action succeeds. */
+export function setTrackedVoiceMemberServerDeafened(
+  state: AppState,
+  channelId: string,
+  userId: string,
+  deafened: boolean,
+): boolean {
+  return patchTrackedVoiceMemberState(state, channelId, userId, { deaf: deafened });
+}
+
 export function canWatchVoiceMemberStream(state: AppState, channelId: string, userId: string): boolean {
   const voiceState = callVoiceStatesByChannelId.get(channelId)?.get(userId);
   return watchStreamService?.canWatch(channelId, userId, Boolean(voiceState?.streaming)) ?? false;
@@ -5233,6 +5275,10 @@ export function setCurrentCallMute(state: AppState, effects: SessionEffects, mut
   if (!voiceCallController.setSelfMute(target)) {
     setNotice(state, "Discord gateway is not ready to update voice mute.", "warning", { chat: false });
   } else {
+    const selfUserId = state.auth.user?.id;
+    if (selfUserId) {
+      patchTrackedVoiceMemberState(state, session.target.channelId, selfUserId, { selfMute: target });
+    }
     playSoundEffect(target ? "mute" : "unmute");
     setNotice(state, "", "muted");
   }
@@ -5251,6 +5297,10 @@ export function setCurrentCallDeaf(state: AppState, effects: SessionEffects, dea
   if (!voiceCallController.setSelfDeaf(target)) {
     setNotice(state, "Discord gateway is not ready to update voice deafen.", "warning", { chat: false });
   } else {
+    const selfUserId = state.auth.user?.id;
+    if (selfUserId) {
+      patchTrackedVoiceMemberState(state, session.target.channelId, selfUserId, { selfDeaf: target });
+    }
     playSoundEffect(target ? "deafen" : "undeafen");
     setNotice(state, "", "muted");
   }
