@@ -2529,7 +2529,7 @@ export function voiceMemberModerationContext(
   if (guildId === DIRECT_MESSAGES_GUILD_ID) return unavailable;
 
   const currentUserId = state.auth.user?.id;
-  if (!currentUserId || currentUserId === userId) return unavailable;
+  if (!currentUserId) return unavailable;
   const guild = state.sidebar.guilds.find((candidate) => candidate.id === guildId);
   const currentUserIsOwner = guild?.owner === true || guild?.ownerId === currentUserId;
   const currentUserRoleIds = state.roleIdsByGuildId[guildId]

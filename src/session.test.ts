@@ -2083,7 +2083,7 @@ describe("session", () => {
     expect(loadConfig().audio?.participantVolumes).toEqual({});
   });
 
-  test("voice actions use channel permissions while kick and ban also use role hierarchy", () => {
+  test("voice actions use channel permissions for self and others while kick and ban also use role hierarchy", () => {
     const state = createInitialState("token-1", "/tmp/record-config.json");
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
     state.sidebar.guilds = [{ id: "guild-1", name: "Guild", icon: null, permissions: "29360134" }];
@@ -2117,6 +2117,27 @@ describe("session", () => {
       canKickFromVc: true,
       canKickFromServer: true,
       canBanFromServer: true,
+    });
+
+    handleVoiceStateUpdate(state, effects, {
+      userId: "self",
+      channelId: "voice-1",
+      guildId: "guild-1",
+      sessionId: "voice-session-self",
+      roleIds: ["mod-role"],
+      selfMute: false,
+      selfDeaf: false,
+      mute: false,
+      deaf: true,
+    });
+    expect(voiceMemberModerationContext(state, "guild-1", "voice-1", "self")).toEqual({
+      serverMuted: false,
+      serverDeafened: true,
+      canServerMute: true,
+      canServerDeafen: true,
+      canKickFromVc: true,
+      canKickFromServer: false,
+      canBanFromServer: false,
     });
 
     handleGuildMembersChunk(state, effects, "guild-1", [{
