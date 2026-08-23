@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildLineAnchorIndex,
   getHistoryVisualSelection,
+  getHistoryVisualYank,
   handleHistoryVimKey,
   jumpHistoryCursorToReplyTarget,
   placeHistoryCursorAtVisibleBottom,
@@ -214,6 +215,62 @@ describe("history cursor", () => {
 
     expect(state.editor.mode).toBe("visual");
     expect(getHistoryVisualSelection(state)).toBe("quick brown");
+  });
+
+  test("yanks one selected inline attachment as PNG clipboard data", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==";
+    state.editor.mode = "visual";
+    state.historyLines = ["", ""];
+    state.historyLineAnchors = ["msg:m1:image:attachment%3A1:0", "msg:m1:image:attachment%3A1:1"];
+    state.historyWrapContinuation = [false, false];
+    state.historyVisualAnchor = { row: 0, col: 0 };
+    state.historyCursor = { row: 1, col: 0 };
+    state.timeline.inlineImages["attachment:1"] = {
+      phase: "ready",
+      attachmentId: "attachment:1",
+      filename: "cat.png",
+      sourceUrl: "https://cdn.example/cat.png",
+      requestId: 1,
+      imageId: 0x40000001,
+      pngBase64,
+      pixelWidth: 1,
+      pixelHeight: 1,
+    };
+
+    const yank = getHistoryVisualYank(state);
+
+    expect(yank.image).toMatchObject({
+      mediaType: "image/png",
+      base64: pngBase64,
+      filename: "cat.png",
+    });
+    expect(yank.image?.sizeBytes).toBe(Buffer.from(pngBase64, "base64").length);
+  });
+
+  test("does not choose an arbitrary image from a multiple-image selection", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.editor.mode = "visual-line";
+    state.historyLines = ["", ""];
+    state.historyLineAnchors = ["msg:m1:image:a1:0", "msg:m1:image:a2:0"];
+    state.historyWrapContinuation = [false, false];
+    state.historyVisualAnchor = { row: 0, col: 0 };
+    state.historyCursor = { row: 1, col: 0 };
+    for (const [index, attachmentId] of ["a1", "a2"].entries()) {
+      state.timeline.inlineImages[attachmentId] = {
+        phase: "ready",
+        attachmentId,
+        filename: `${attachmentId}.png`,
+        sourceUrl: `https://cdn.example/${attachmentId}.png`,
+        requestId: index + 1,
+        imageId: 0x40000001 + index,
+        pngBase64: "AQIDBA==",
+        pixelWidth: 1,
+        pixelHeight: 1,
+      };
+    }
+
+    expect(getHistoryVisualYank(state).image).toBeNull();
   });
 
   test("lowercase message text object selects only message text", () => {

@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -21,6 +21,7 @@ export interface ClipboardImageAttachment {
 }
 
 type ImageClipboardBackend = "macos" | "xclip" | "wl" | "powershell" | null;
+type CommandLookup = (command: string) => string | null;
 
 let backend: ImageClipboardBackend | undefined;
 
@@ -229,6 +230,69 @@ export function readClipboardImage(): ClipboardImageAttachment | null {
     return selectedBackend === "wl" ? readImageWayland() : readImageXclip();
   } catch {
     return null;
+  }
+}
+
+export function resolveImageClipboardWriteCommand(
+  mediaType: ImageMediaType,
+  platform: NodeJS.Platform = process.platform,
+  waylandDisplay: string | undefined = process.env.WAYLAND_DISPLAY,
+  which: CommandLookup = Bun.which,
+): string[] | null {
+  if (platform !== "linux") return null;
+  if (waylandDisplay && which("wl-copy")) return ["wl-copy", "--type", mediaType];
+  if (which("xclip")) return ["xclip", "-selection", "clipboard", "-t", mediaType];
+  return null;
+}
+
+function decodeClipboardImage(image: ClipboardImageAttachment): Buffer | null {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(image.base64)) {
+    return null;
+  }
+  const bytes = Buffer.from(image.base64, "base64");
+  if (bytes.length === 0 || bytes.length !== image.sizeBytes || bytes.length > 50 * 1024 * 1024) return null;
+  return bytes;
+}
+
+function copyImageWithTempFile(image: ClipboardImageAttachment, bytes: Buffer): boolean {
+  const tempDir = mkdtempSync(join(tmpdir(), "record-yank-image-"));
+  const imagePath = join(tempDir, `selection.${imageExtension(image.mediaType)}`);
+  try {
+    writeFileSync(imagePath, bytes, { mode: 0o600 });
+    if (process.platform === "darwin") {
+      const script = "on run argv\nset the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)\nend run";
+      return spawnSync("osascript", ["-e", script, imagePath], { timeout: 5000 }).status === 0;
+    }
+    if (process.platform === "win32") {
+      const script = [
+        "Add-Type -AssemblyName System.Windows.Forms",
+        "Add-Type -AssemblyName System.Drawing",
+        "$image = [System.Drawing.Image]::FromFile($args[0])",
+        "try { [System.Windows.Forms.Clipboard]::SetImage($image) } finally { $image.Dispose() }",
+      ].join("\n");
+      return spawnSync("powershell", ["-NoProfile", "-STA", "-Command", script, imagePath], { timeout: 5000 }).status === 0;
+    }
+    return false;
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+/** Publish one selected image as binary clipboard data rather than base64 text. */
+export function copyImageToClipboard(image: ClipboardImageAttachment): boolean {
+  try {
+    const bytes = decodeClipboardImage(image);
+    if (!bytes) return false;
+    const command = resolveImageClipboardWriteCommand(image.mediaType);
+    if (command) {
+      const proc = Bun.spawn(command, { stdin: "pipe" });
+      proc.stdin.write(bytes);
+      proc.stdin.end();
+      return true;
+    }
+    return copyImageWithTempFile(image, bytes);
+  } catch {
+    return false;
   }
 }
 

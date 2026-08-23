@@ -5,11 +5,12 @@
  */
 
 import { copyToClipboard } from "./editor-clipboard";
-import { decodeCustomEmojiMarkers } from "./customemoji";
+import { customEmojiImages, decodeCustomEmojiMarkers } from "./customemoji";
 import { nextGraphemeEnd } from "./editor-buffer";
 import { isBufferSpace, isWORDChar, isWordChar } from "./editor-chars";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
 import type { KeyEvent } from "./input";
+import { copyImageToClipboard, type ClipboardImageAttachment } from "./imageclipboard";
 import type { AppState } from "./state";
 import type { TimelineMessageBound } from "./timeline";
 import {
@@ -509,7 +510,7 @@ function normalizeSelection(anchor: HistoryCursor, cursor: HistoryCursor): { sta
   return { start: forward ? anchor : cursor, end: forward ? cursor : anchor };
 }
 
-export function getHistoryVisualSelection(state: AppState): string {
+function getHistoryVisualSelectionRaw(state: AppState): string {
   const { start, end } = normalizeSelection(state.historyVisualAnchor, state.historyCursor);
   const lines = state.historyLines;
 
@@ -525,12 +526,12 @@ export function getHistoryVisualSelection(state: AppState): string {
         parts[parts.length - 1] += ` ${text.trimStart()}`;
       }
     }
-    return decodeCustomEmojiMarkers(parts.join("\n"));
+    return parts.join("\n");
   }
 
   if (start.row === end.row) {
     const plain = stripAnsi(lines[start.row] ?? "");
-    return decodeCustomEmojiMarkers(plain.slice(start.col, nextGraphemeEnd(plain, end.col)));
+    return plain.slice(start.col, nextGraphemeEnd(plain, end.col));
   }
 
   const parts: string[] = [];
@@ -549,12 +550,68 @@ export function getHistoryVisualSelection(state: AppState): string {
     }
   }
 
-  return decodeCustomEmojiMarkers(parts.join("\n"));
+  return parts.join("\n");
+}
+
+export function getHistoryVisualSelection(state: AppState): string {
+  return decodeCustomEmojiMarkers(getHistoryVisualSelectionRaw(state));
+}
+
+export interface HistoryVisualYank {
+  text: string;
+  image: ClipboardImageAttachment | null;
+}
+
+function imageAttachmentIdFromAnchor(anchor: string): string | null {
+  const match = /^msg:.*:image:([^:]+):\d+$/.exec(anchor);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+export function getHistoryVisualYank(state: AppState): HistoryVisualYank {
+  const rawText = getHistoryVisualSelectionRaw(state);
+  const text = decodeCustomEmojiMarkers(rawText);
+  const { start, end } = normalizeSelection(state.historyVisualAnchor, state.historyCursor);
+  const first = state.editor.mode === "visual-line"
+    ? logicalLineRange(start.row, state.historyWrapContinuation).first
+    : start.row;
+  const last = state.editor.mode === "visual-line"
+    ? logicalLineRange(end.row, state.historyWrapContinuation).last
+    : end.row;
+  const attachmentIds = new Set<string>();
+  for (let row = first; row <= last; row++) {
+    const attachmentId = imageAttachmentIdFromAnchor(state.historyLineAnchors[row] ?? "");
+    if (attachmentId) attachmentIds.add(attachmentId);
+  }
+
+  const images: ClipboardImageAttachment[] = [];
+  for (const attachmentId of attachmentIds) {
+    const image = state.timeline.inlineImages[attachmentId];
+    if (image?.phase !== "ready") continue;
+    const bytes = Buffer.from(image.pngBase64, "base64");
+    images.push({
+      mediaType: "image/png",
+      base64: image.pngBase64,
+      sizeBytes: bytes.length,
+      filename: image.filename,
+    });
+  }
+  for (const marker of rawText) {
+    const image = customEmojiImages.clipboardImageForMarker(marker);
+    if (image) images.push(image);
+  }
+
+  return { text, image: images.length === 1 ? images[0] : null };
 }
 
 function copyHistorySelection(state: AppState): void {
-  const text = getHistoryVisualSelection(state);
-  if (text) copyToClipboard(text);
+  const yank = getHistoryVisualYank(state);
+  if (yank.image && copyImageToClipboard(yank.image)) return;
+  if (yank.text) copyToClipboard(yank.text);
 }
 
 type HistoryRange = { start: HistoryCursor; end: HistoryCursor };

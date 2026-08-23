@@ -4,6 +4,7 @@ import { moveTo } from "./terminal";
 import { termWidth } from "./textwidth";
 import { theme } from "./theme";
 import type { DiscordCustomEmoji } from "./discord";
+import type { ClipboardImageAttachment } from "./imageclipboard";
 import {
   kittyGraphicsDeleteImageRange,
   kittyGraphicsDeleteZ,
@@ -149,6 +150,17 @@ export class CustomEmojiImageRenderer {
       result += emoji ? `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>` : char;
     }
     return result;
+  }
+
+  clipboardImageForMarker(marker: string): ClipboardImageAttachment | null {
+    const emoji = this.byMarker.get(marker);
+    if (emoji?.status !== "ready" || !emoji.pngBase64) return null;
+    return {
+      mediaType: "image/png",
+      base64: emoji.pngBase64,
+      sizeBytes: Buffer.from(emoji.pngBase64, "base64").length,
+      filename: `${emoji.name}.png`,
+    };
   }
 
   beginFrame(): CustomEmojiRenderBatch {

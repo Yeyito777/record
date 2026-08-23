@@ -51,6 +51,12 @@ describe("Discord custom emoji images", () => {
     expect(frame.payload).toContain("\x1b_Ga=t,t=d,f=100");
     expect(frame.payload).toContain("\x1b[5;5H\x1b_Ga=p");
     expect(frame.payload).toContain("c=2,r=1,C=1,z=1478");
+    expect(renderer.clipboardImageForMarker(marker)).toMatchObject({
+      mediaType: "image/png",
+      base64: PNG.toString("base64"),
+      sizeBytes: PNG.length,
+      filename: "aliencat_stare_2.png",
+    });
 
     const maskedBatch = renderer.beginFrame();
     const maskedLine = renderer.renderLine(marker, 5, 4, maskedBatch, {
