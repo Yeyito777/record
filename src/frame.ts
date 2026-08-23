@@ -20,12 +20,21 @@ export interface ScrollRegion {
 export interface RenderFrame {
   rows: string[];
   cursor: string;
+  terminalCursor: { row: number; col: number } | null;
   scrollRegion: ScrollRegion | null;
   viewStart: number;
-  graphics?: { key: string; payload: string };
+  graphics?: {
+    key: string;
+    payload: string;
+    repaintPayload?: string;
+    cells?: Array<{ row: number; startCol: number; endCol: number }>;
+  };
 }
 
 const lastRenderedFrames = new WeakMap<object, RenderFrame>();
+// st's configured maximum draw latency is 33 ms; wait beyond that boundary so
+// the repair cannot be coalesced into the cursor-move draw it is fixing.
+const GRAPHICS_CURSOR_SETTLE_MS = 40;
 
 export function invalidateFrame(owner: object): void {
   lastRenderedFrames.delete(owner);
@@ -70,6 +79,23 @@ function sameRowContent(a: string | undefined, b: string | undefined): boolean {
 
 function sameScrollRegion(a: ScrollRegion | null, b: ScrollRegion | null): a is ScrollRegion {
   return !!a && !!b && a.start === b.start && a.end === b.end;
+}
+
+function cursorIntersectsGraphics(
+  cursor: { row: number; col: number } | null | undefined,
+  cells: Array<{ row: number; startCol: number; endCol: number }> | undefined,
+): boolean {
+  if (!cursor || !cells) return false;
+  return cells.some((cell) => (
+    cell.row === cursor.row && cursor.col >= cell.startCol && cursor.col <= cell.endCol
+  ));
+}
+
+function cursorMoved(
+  previous: { row: number; col: number } | null | undefined,
+  next: { row: number; col: number } | null | undefined,
+): boolean {
+  return Boolean(previous && (!next || previous.row !== next.row || previous.col !== next.col));
 }
 
 function scrollUpRegion(region: ScrollRegion, amount: number): string {
@@ -147,4 +173,24 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
   }
 
   lastRenderedFrames.set(owner, nextFrame);
+
+  const oldCursorDamagedImage = cursorMoved(prevFrame?.terminalCursor, nextFrame.terminalCursor)
+    && cursorIntersectsGraphics(prevFrame?.terminalCursor, nextFrame.graphics?.cells);
+  if (oldCursorDamagedImage && nextFrame.graphics?.repaintPayload) {
+    // st's GPU cursor restoration is composited after above-text graphics. On
+    // the frame where the cursor leaves an image, that old-cell restoration
+    // temporarily paints over the image until st's next draw (often its blink
+    // timer). Give st one separate follow-up draw with the cursor now settled.
+    const settledFrame = nextFrame;
+    const timer = setTimeout(() => {
+      if (lastRenderedFrames.get(owner) !== settledFrame) return;
+      process.stdout.write(
+        beginSynchronizedUpdate
+          + settledFrame.graphics!.repaintPayload
+          + settledFrame.cursor
+          + endSynchronizedUpdate,
+      );
+    }, GRAPHICS_CURSOR_SETTLE_MS);
+    timer.unref?.();
+  }
 }

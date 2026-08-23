@@ -269,10 +269,10 @@ describe("timeline rendering", () => {
     expect(plainLines).toContain("reactable");
     const reactionLine = plainLines.find((line) => line.startsWith("╰─")) ?? "";
     expect(decodeCustomEmojiMarkers(reactionLine)).toBe("╰─ 👍 2 <:blobcat:1478284001298087936> 1");
-    expect(termWidth(reactionLine)).toBe(termWidth("╰─ 👍 2 x 1"));
+    expect(termWidth(reactionLine)).toBe(termWidth("╰─ 👍 2 xx 1"));
   });
 
-  test("lays out custom emoji in message content as one terminal cell", () => {
+  test("lays out custom emoji in message content as one atomic square footprint", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message(
       "message-1",
@@ -284,7 +284,7 @@ describe("timeline rendering", () => {
     expect(decodeCustomEmojiMarkers(content)).toBe(
       "before <:aliencat_stare_2:1478284001298087936> after <a:dance:1478284001298087937>",
     );
-    expect(termWidth(content)).toBe(termWidth("before x after x"));
+    expect(termWidth(content)).toBe(termWidth("before xx after xx"));
   });
 
   test("shows a top loader while fetching older messages", () => {

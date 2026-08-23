@@ -16,8 +16,11 @@ const MARKER_LAST = 0xf8ff;
 const IMAGE_ID_FIRST = 0x72000000;
 const IMAGE_ID_LAST = IMAGE_ID_FIRST + (MARKER_LAST - MARKER_FIRST);
 const EMOJI_Z_INDEX = 1478;
+const EMOJI_COLUMNS = 2;
+const EMOJI_ROWS = 1;
 const MAX_PNG_BYTES = 2 * 1024 * 1024;
 const LOADING_GLYPH = "◇";
+const IMAGE_PLACEHOLDER = "　";
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export interface DiscordCustomEmoji {
@@ -53,8 +56,9 @@ function isPng(bytes: Buffer): boolean {
 
 /**
  * Registry, downloader, and frame builder for custom emoji. Message layout uses
- * one BMP private-use marker per distinct emoji, so wrapping and Vim history
- * navigation continue to see every image as exactly one character.
+ * one BMP private-use marker per distinct emoji, so Vim history navigation sees
+ * every image as one atomic character while terminal wrapping reserves its
+ * square, two-column display footprint.
  */
 export class CustomEmojiImageRenderer {
   private readonly byKey = new Map<string, RegisteredCustomEmoji>();
@@ -142,12 +146,12 @@ export class CustomEmojiImageRenderer {
 
       if (this.enabled) this.ensureLoaded(emoji);
       if (this.enabled && emoji.status === "ready") {
-        result += " ";
+        result += IMAGE_PLACEHOLDER;
         batch.placements.push({ emoji, row, col });
       } else {
-        result += LOADING_GLYPH;
+        result += `${LOADING_GLYPH} `;
       }
-      col += 1;
+      col += EMOJI_COLUMNS;
       chunkStart = index + 1;
     }
 
@@ -169,14 +173,28 @@ export class CustomEmojiImageRenderer {
       const emoji = placements.find((placement) => placement.emoji.imageId === imageId)?.emoji;
       if (emoji?.pngBase64) payload += kittyGraphicsTransmitPng(imageId, emoji.pngBase64);
     }
-    payload += kittyGraphicsDeleteZ(EMOJI_Z_INDEX);
+    let repaintPayload = kittyGraphicsDeleteZ(EMOJI_Z_INDEX);
     for (const placement of placements) {
-      payload += moveTo(placement.row, placement.col);
-      payload += kittyGraphicsPlace(placement.emoji.imageId, { columns: 1, rows: 1, z: EMOJI_Z_INDEX });
+      repaintPayload += moveTo(placement.row, placement.col);
+      repaintPayload += kittyGraphicsPlace(placement.emoji.imageId, {
+        columns: EMOJI_COLUMNS,
+        rows: EMOJI_ROWS,
+        z: EMOJI_Z_INDEX,
+      });
     }
+    payload += repaintPayload;
 
     this.lastVisibleImageIds = visibleImageIds;
-    return { key, payload };
+    return {
+      key,
+      payload,
+      repaintPayload,
+      cells: placements.map((placement) => ({
+        row: placement.row,
+        startCol: placement.col,
+        endCol: placement.col + EMOJI_COLUMNS - 1,
+      })),
+    };
   }
 
   cleanupSequence(): string {
@@ -221,4 +239,3 @@ export function customEmojiMarker(emoji: DiscordCustomEmoji): string {
 export function decodeCustomEmojiMarkers(text: string): string {
   return customEmojiImages.decodeMarkers(text);
 }
-

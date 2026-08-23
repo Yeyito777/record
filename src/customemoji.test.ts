@@ -9,17 +9,17 @@ const PNG = Buffer.from(
 );
 
 describe("Discord custom emoji images", () => {
-  test("replaces static and animated syntax with one-cell logical markers", () => {
+  test("replaces static and animated syntax with atomic two-column markers", () => {
     const renderer = new CustomEmojiImageRenderer();
     const source = "x <:aliencat_stare_2:1478284001298087936> <a:dance:1478284001298087937> y";
     const marked = renderer.replaceTokens(source);
 
     expect(renderer.decodeMarkers(marked)).toBe(source);
-    expect(termWidth(marked)).toBe(termWidth("x x x y"));
+    expect(termWidth(marked)).toBe(termWidth("x xx xx y"));
     expect(marked).not.toContain("aliencat_stare_2");
   });
 
-  test("downloads visible PNGs and emits a one-cell inline placement", async () => {
+  test("downloads visible PNGs and emits an aspect-preserving inline placement", async () => {
     const urls: string[] = [];
     let updates = 0;
     let resolveReady: (() => void) | null = null;
@@ -38,18 +38,19 @@ describe("Discord custom emoji images", () => {
 
     renderer.setEnabled(true);
     const loadingBatch = renderer.beginFrame();
-    expect(renderer.renderLine(`\x1b[31mA${marker}B`, 5, 4, loadingBatch)).toContain("A◇B");
+    expect(renderer.renderLine(`\x1b[31mA${marker}B`, 5, 4, loadingBatch)).toContain("A◇ B");
     await ready;
 
     const readyBatch = renderer.beginFrame();
     const line = renderer.renderLine(`\x1b[31mA${marker}B`, 5, 4, readyBatch);
     const frame = renderer.finishFrame(readyBatch);
-    expect(line).toBe("\x1b[31mA B");
+    expect(line).toBe("\x1b[31mA　B");
     expect(urls).toEqual(["https://cdn.discordapp.com/emojis/1478284001298087936.png?size=32&quality=lossless"]);
     expect(frame.key).toContain("@5,5");
     expect(frame.payload).toContain("\x1b_Ga=t,t=d,f=100");
     expect(frame.payload).toContain("\x1b[5;5H\x1b_Ga=p");
-    expect(frame.payload).toContain("c=1,r=1,C=1,z=1478");
+    expect(frame.payload).toContain("c=2,r=1,C=1,z=1478");
+    expect(frame.cells).toEqual([{ row: 5, startCol: 5, endCol: 6 }]);
   });
 
   test("always requests a PNG first frame for animated CDN emoji", () => {
@@ -58,4 +59,3 @@ describe("Discord custom emoji images", () => {
     );
   });
 });
-

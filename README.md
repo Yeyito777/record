@@ -13,7 +13,7 @@ What it does right now:
 - persist the saved token to `~/.config/record/config.json` (or `$XDG_CONFIG_HOME/record/config.json`)
 - keep the config directory/file locked down to `0700` / `0600` permissions when possible
 - load servers, categories, channels, and recent messages
-- render Discord custom emoji inline as one-cell images when the terminal reports Kitty graphics support
+- render Discord custom emoji inline with an aspect-preserving two-column footprint when the terminal reports Kitty graphics support
 - render the server tree as a collapsible sidebar
 - show active announcement/public/private threads beneath their text or forum parent, with live updates and full read/send support
 - show server voice/stage channels in the sidebar and join them from the terminal

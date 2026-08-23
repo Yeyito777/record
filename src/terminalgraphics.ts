@@ -16,6 +16,10 @@ export interface KittyGraphicsFrame {
   key: string;
   /** Commands needed to transition to this set of placements. */
   payload: string;
+  /** Placement-only redraw used to repair terminal cursor overlay damage. */
+  repaintPayload?: string;
+  /** Absolute terminal cells occupied by this frame's placements. */
+  cells?: Array<{ row: number; startCol: number; endCol: number }>;
 }
 
 export interface TerminalGraphicsClientOptions {
@@ -64,8 +68,8 @@ export function kittyGraphicsPlace(
   const columns = Math.max(1, Math.floor(options.columns ?? 1));
   const rows = Math.max(1, Math.floor(options.rows ?? 1));
   const z = Math.trunc(options.z ?? 0);
-  // C=1 keeps placement from moving the terminal cursor. The caller writes one
-  // ordinary space into the text row, so the image occupies exactly that cell.
+  // C=1 keeps placement from moving the terminal cursor. The caller reserves
+  // the same number of terminal columns in the underlying text row.
   return `${APC}a=p,i=${id},c=${columns},r=${rows},C=1,z=${z},q=2${ST}`;
 }
 
@@ -142,4 +146,3 @@ export class TerminalGraphicsClient {
     this.timeout = null;
   }
 }
-

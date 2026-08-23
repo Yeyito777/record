@@ -2114,6 +2114,7 @@ function cleanup(): void {
   disconnectMemberListGateway();
   disconnectAppGateway();
   flushDataCacheSync();
+  invalidateFrame(state);
   restoreTerminal();
   const forceExit = setTimeout(() => process.exit(0), 1_000);
   void whatsAppController.shutdown().finally(() => {
