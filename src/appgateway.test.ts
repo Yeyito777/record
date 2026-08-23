@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { AppGatewayClient, extractChannelMuteSettings, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, extractResumeGatewayUrl, mapApplicationCommandAutocompleteEvent, mapCallGatewayEvent, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
+import { AppGatewayClient, extractChannelMuteSettings, extractCurrentUserPremiumType, extractCurrentUserRoleIdsByGuildId, extractGuildMuteSettings, extractGuildVoiceStates, extractInitialNotifications, extractReadyGuilds, extractReadyVoiceStates, extractResumeGatewayUrl, mapApplicationCommandAutocompleteEvent, mapCallGatewayEvent, mapGatewayCustomEmojis, mapGuildMembersChunk, mapStreamCreateEvent, mapStreamDeleteEvent, mapStreamServerUpdateEvent, mapVoiceServerUpdate, mapVoiceStateUpdate, typingDisplayName } from "./appgateway";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
@@ -570,13 +570,72 @@ describe("app gateway helpers", () => {
   test("extracts guilds from READY", () => {
     expect(extractReadyGuilds({
       guilds: [
-        { id: "guild-1", properties: { name: "One", icon: "icon-1" } },
+        {
+          id: "guild-1",
+          properties: { name: "One", icon: "icon-1" },
+          emojis: [
+            { id: "emoji-1", name: "aliencat", animated: false, available: true, roles: [] },
+            { id: "emoji-2", name: "restricted", animated: true, available: true, roles: ["role-1"] },
+            { id: "emoji-3", name: "unavailable", available: false },
+          ],
+        },
         { id: "guild-2", name: "Two", icon: null },
         { id: "guild-3", unavailable: true },
       ],
     })).toEqual([
-      { id: "guild-1", name: "One", icon: "icon-1" },
+      {
+        id: "guild-1",
+        name: "One",
+        icon: "icon-1",
+        emojis: [
+          { id: "emoji-1", name: "aliencat", animated: false, roleIds: [] },
+          { id: "emoji-2", name: "restricted", animated: true, roleIds: ["role-1"] },
+        ],
+      },
       { id: "guild-2", name: "Two", icon: null },
     ]);
+  });
+
+  test("normalizes custom emoji and premium type from gateway data", () => {
+    expect(mapGatewayCustomEmojis([
+      { id: "1", name: "still", roles: [] },
+      { id: "2", name: "dance", animated: true, roles: ["role-1", 123] },
+      { id: "3", name: "gone", available: false },
+      { id: "4", name: null },
+    ])).toEqual([
+      { id: "1", name: "still", animated: false, roleIds: [] },
+      { id: "2", name: "dance", animated: true, roleIds: ["role-1"] },
+    ]);
+    expect(extractCurrentUserPremiumType({ user: { premium_type: 2 } })).toBe(2);
+    expect(extractCurrentUserPremiumType({ user: { premium_type: -1 } })).toBe(0);
+    expect(extractCurrentUserPremiumType({ user: {} })).toBe(0);
+  });
+
+  test("dispatches live guild emoji catalog updates", () => {
+    const updates: unknown[] = [];
+    const client = new AppGatewayClient("token", {
+      onInitialNotifications: () => {},
+      onGuildEmojisUpdate: (guildId, emojis) => updates.push({ guildId, emojis }),
+      onMessageCreate: () => {},
+      onMessageUpdate: () => {},
+      onMessageDelete: () => {},
+      onMessageDeleteBulk: () => {},
+      onMessageAck: () => {},
+      onChannelCreate: () => {},
+      onChannelUpdate: () => {},
+      onChannelDelete: () => {},
+      onTypingStart: () => {},
+    }) as any;
+
+    client.handleMessage({ data: JSON.stringify({
+      op: 0,
+      t: "GUILD_EMOJIS_UPDATE",
+      d: { guild_id: "guild-1", emojis: [{ id: "emoji-1", name: "wave", animated: true, available: true }] },
+    }) });
+
+    expect(updates).toEqual([{
+      guildId: "guild-1",
+      emojis: [{ id: "emoji-1", name: "wave", animated: true, roleIds: [] }],
+    }]);
   });
 });

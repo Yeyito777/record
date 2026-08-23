@@ -14,6 +14,7 @@ What it does right now:
 - keep the config directory/file locked down to `0700` / `0600` permissions when possible
 - load servers, categories, channels, and recent messages
 - render Discord custom emoji inline with an aspect-preserving two-column footprint when the terminal reports Kitty graphics support
+- autocomplete and send server custom emoji: type `:name`, then press `Tab` to insert the selected Discord emoji token
 - render the server tree as a collapsible sidebar
 - show active announcement/public/private threads beneath their text or forum parent, with live updates and full read/send support
 - show server voice/stage channels in the sidebar and join them from the terminal
@@ -49,7 +50,7 @@ Controls:
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
 - `Enter` in the prompt: submit the current message or slash command
-- `Tab` / `Shift+Tab`: cycle slash-command autocomplete
+- `Tab` / `Shift+Tab`: cycle autocomplete, including custom emoji choices
 - `Ctrl+C` or `q` in normal mode: quit
 
 ### App/bot commands
@@ -81,6 +82,7 @@ That installs `discord-voice-engine` to `~/.local/bin` by default, so Record and
 
 Notes:
 - custom emoji support uses direct-stream Kitty graphics, so it works over SSH without exposing local file paths; animated emoji use Discord's PNG first frame
+- custom emoji autocomplete uses the active server's emoji for non-Nitro accounts and all joined servers' emoji for Nitro accounts
 - tokens are stored as plaintext for now, just with strict file permissions
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`

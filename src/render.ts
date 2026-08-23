@@ -14,7 +14,7 @@ import {
   wrappedLineOffsets,
 } from "./editor";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
-import { customEmojiImages } from "./customemoji";
+import { customEmojiImages, customEmojiMarker, type CustomEmojiRenderBatch } from "./customemoji";
 import { renderBodyLines } from "./bodypanel";
 import { appendPositionedPayload, appendRowWrite, createFrameRows, flushFrame } from "./frame";
 import {
@@ -78,6 +78,7 @@ function renderAutocompletePopup(
   width: number,
   promptSeparatorRow: number,
   mainCol: number,
+  customEmojiFrame: CustomEmojiRenderBatch,
 ): string {
   const autocomplete = state.autocomplete;
   if (!autocomplete || autocomplete.matches.length === 0) return "";
@@ -107,13 +108,13 @@ function renderAutocompletePopup(
     const selected = selection === index;
     const bg = selected ? theme.sidebarSelBg : theme.sidebarBg;
     const marker = selected ? "▸ " : "  ";
-    const name = padRight(matches[index].name, nameWidth);
-    const desc = padRight(matches[index].desc, descWidth);
-    const nameColor = matches[index].color ?? theme.text;
-    out.push(
-      moveTo(row, mainCol)
-      + `${bg}${theme.accent}${marker}${nameColor}${name}${theme.muted}${desc}${theme.reset}`,
-    );
+    const item = matches[index];
+    const displayName = item.customEmoji ? customEmojiMarker(item.customEmoji) : item.name;
+    const name = padRight(displayName, nameWidth);
+    const desc = padRight(item.desc, descWidth);
+    const nameColor = item.color ?? theme.text;
+    const line = `${bg}${theme.accent}${marker}${nameColor}${name}${theme.muted}${desc}${theme.reset}`;
+    out.push(moveTo(row, mainCol) + customEmojiImages.renderLine(line, row, mainCol, customEmojiFrame));
   }
 
   return out.join("");
@@ -466,7 +467,7 @@ export function render(state: AppState): void {
   }
 
   if (state.autocomplete) {
-    appendPositionedPayload(frameRows, renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol));
+    appendPositionedPayload(frameRows, renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol, customEmojiFrame));
   }
 
   emitSidebarCol(promptSeparatorRow);

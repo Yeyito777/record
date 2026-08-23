@@ -2,6 +2,7 @@
 
 import { moveTo } from "./terminal";
 import { termWidth } from "./textwidth";
+import type { DiscordCustomEmoji } from "./discord";
 import {
   kittyGraphicsDeleteImageRange,
   kittyGraphicsDeleteZ,
@@ -9,6 +10,8 @@ import {
   kittyGraphicsTransmitPng,
   type KittyGraphicsFrame,
 } from "./terminalgraphics";
+
+type RenderableCustomEmoji = Pick<DiscordCustomEmoji, "id" | "name" | "animated">;
 
 const CUSTOM_EMOJI_RE = /<(a?):([A-Za-z0-9_]{1,64}):(\d+)>/g;
 const MARKER_FIRST = 0xe000;
@@ -23,13 +26,7 @@ const LOADING_GLYPH = "◇";
 const IMAGE_PLACEHOLDER = "　";
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-export interface DiscordCustomEmoji {
-  id: string;
-  name: string;
-  animated: boolean;
-}
-
-interface RegisteredCustomEmoji extends DiscordCustomEmoji {
+interface RegisteredCustomEmoji extends RenderableCustomEmoji {
   key: string;
   marker: string;
   imageId: number;
@@ -95,7 +92,7 @@ export class CustomEmojiImageRenderer {
     ));
   }
 
-  markerFor(emoji: DiscordCustomEmoji): string {
+  markerFor(emoji: RenderableCustomEmoji): string {
     // Keep the raw name/animation spelling per occurrence identity. Emoji can be
     // renamed, and yanking an older message should reproduce its original token.
     const key = `${emoji.animated ? "a" : "s"}:${emoji.name}:${emoji.id}`;
@@ -222,7 +219,7 @@ export function replaceCustomEmojiTokens(text: string): string {
   return customEmojiImages.replaceTokens(text);
 }
 
-export function customEmojiMarker(emoji: DiscordCustomEmoji): string {
+export function customEmojiMarker(emoji: RenderableCustomEmoji): string {
   return customEmojiImages.markerFor(emoji);
 }
 

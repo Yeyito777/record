@@ -30,6 +30,7 @@ export interface AppEffects extends SessionEffects {
 function setAuthError(state: AppState, message: string): void {
   state.auth.status = "error";
   state.auth.user = null;
+  state.auth.premiumType = 0;
   state.auth.error = message;
   setNotice(state, message, "error");
 }
@@ -37,6 +38,7 @@ function setAuthError(state: AppState, message: string): void {
 function resetAuthState(state: AppState): void {
   state.auth.status = "idle";
   state.auth.user = null;
+  state.auth.premiumType = 0;
   state.auth.presenceStatus = null;
   state.auth.customStatus = null;
   state.auth.error = null;
@@ -68,6 +70,7 @@ export async function validateAndMaybeSave(
 
   state.auth.status = "loading";
   state.auth.user = null;
+  state.auth.premiumType = 0;
   state.auth.presenceStatus = null;
   state.auth.customStatus = null;
   state.auth.error = null;

@@ -179,6 +179,30 @@ describe("render", () => {
     expect(output).toContain(`${theme.accent}⠋ Listening…${theme.reset}`);
   });
 
+  test("renders custom emoji completion markers through the inline image renderer", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 80;
+    state.rows = 12;
+    state.autocomplete = {
+      type: "replace",
+      selection: -1,
+      prefix: ":alien",
+      replaceStart: 0,
+      replaceEnd: 6,
+      matches: [{
+        name: "◇ ",
+        desc: ":aliencat_stare_2: · Alien Cats",
+        insertText: "<:aliencat_stare_2:1478284001298087936>",
+        customEmoji: { id: "1478284001298087936", name: "aliencat_stare_2", animated: false },
+      }],
+    };
+
+    const output = captureRender(state);
+
+    expect(output).toContain("◇ ");
+    expect(output).not.toMatch(/[\ue000-\uf8ff]/);
+  });
+
   test("renders reply context in the prompt separator", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.cols = 100;

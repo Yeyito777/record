@@ -15,6 +15,7 @@ import {
   mapGuildChannel,
   type DiscordChannel,
   type DiscordGuild,
+  type DiscordCustomEmoji,
   type DiscordChannelResponse,
   type DiscordMessage,
   type DiscordMessagePatch,
@@ -126,6 +127,7 @@ export interface AppGatewayCallbacks {
   onGuildMuteSetting?: (guildId: string, muted: boolean) => void;
   onChannelMuteSettings?: (mutedByChannelId: Record<string, boolean>, options?: { reset?: boolean }) => void;
   onCurrentUserRoleIds?: (roleIdsByGuildId: Record<string, string[]>) => void;
+  onCurrentUserPremiumType?: (premiumType: number) => void;
   onCurrentUserGuildRoles?: (guildId: string, roleIds: string[]) => void;
   onGuildMemberUpdate?: (guildId: string, member: DiscordGuildMember) => void;
   onGuildMembersChunk?: (guildId: string, members: DiscordGuildMember[]) => void;
@@ -135,6 +137,7 @@ export interface AppGatewayCallbacks {
   onGuildCreate?: (guild: DiscordGuild) => void;
   onGuildUpdate?: (guild: DiscordGuild) => void;
   onGuildDelete?: (guildId: string) => void;
+  onGuildEmojisUpdate?: (guildId: string, emojis: DiscordCustomEmoji[]) => void;
   onMessageCreate: (message: DiscordMessage) => void;
   onMessageUpdate: (patch: DiscordMessagePatch) => void;
   onMessageDelete: (channelId: string, messageId: string) => void;
@@ -390,6 +393,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.sessionId = isObject(payload.d) && typeof payload.d.session_id === "string" ? payload.d.session_id : null;
       this.resumeGatewayUrl = extractResumeGatewayUrl(payload.d) ?? this.resumeGatewayUrl;
       debugLog("app_gateway.ready", { userId: this.currentUserId, hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl) });
+      this.callbacks.onCurrentUserPremiumType?.(extractCurrentUserPremiumType(payload.d));
       this.callbacks.onCurrentUserRoleIds?.(extractCurrentUserRoleIdsByGuildId(payload.d));
       this.callbacks.onReadyGuilds?.(extractReadyGuilds(payload.d));
       this.callbacks.onGuildMuteSettings?.(extractGuildMuteSettings(payload.d));
@@ -606,6 +610,16 @@ export class AppGatewayClient implements VoiceSignalingClient {
         case "GUILD_DELETE": {
           if (!isObject(data) || typeof data.id !== "string") break;
           this.callbacks.onGuildDelete?.(data.id);
+          break;
+        }
+        case "GUILD_EMOJIS_UPDATE": {
+          if (!isObject(data) || typeof data.guild_id !== "string" || !Array.isArray(data.emojis)) break;
+          this.callbacks.onGuildEmojisUpdate?.(data.guild_id, mapGatewayCustomEmojis(data.emojis));
+          break;
+        }
+        case "USER_UPDATE": {
+          if (!isObject(data) || typeof data.premium_type !== "number") break;
+          this.callbacks.onCurrentUserPremiumType?.(normalizePremiumType(data.premium_type));
           break;
         }
         case "TYPING_START": {
@@ -1190,8 +1204,37 @@ function mapGatewayGuild(data: unknown): DiscordGuild | null {
     id,
     name,
     icon: typeof properties.icon === "string" ? properties.icon : null,
+    ...(Array.isArray(data.emojis) ? { emojis: mapGatewayCustomEmojis(data.emojis) } : {}),
     ...(typeof properties.owner_id === "string" ? { ownerId: properties.owner_id } : {}),
   };
+}
+
+export function mapGatewayCustomEmojis(data: unknown): DiscordCustomEmoji[] {
+  if (!Array.isArray(data)) return [];
+  return data.flatMap((rawEmoji) => {
+    if (!isObject(rawEmoji)
+      || typeof rawEmoji.id !== "string"
+      || typeof rawEmoji.name !== "string"
+      || !rawEmoji.name
+      || rawEmoji.available === false) return [];
+    return [{
+      id: rawEmoji.id,
+      name: rawEmoji.name,
+      animated: rawEmoji.animated === true,
+      roleIds: Array.isArray(rawEmoji.roles)
+        ? rawEmoji.roles.filter((roleId): roleId is string => typeof roleId === "string")
+        : [],
+    }];
+  });
+}
+
+function normalizePremiumType(value: number): number {
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+export function extractCurrentUserPremiumType(data: unknown): number {
+  if (!isObject(data) || !isObject(data.user) || typeof data.user.premium_type !== "number") return 0;
+  return normalizePremiumType(data.user.premium_type);
 }
 
 export function extractReadyGuilds(data: unknown): DiscordGuild[] {

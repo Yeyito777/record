@@ -3038,6 +3038,11 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       }
       effects.scheduleRender();
     },
+    onCurrentUserPremiumType: (premiumType) => {
+      if (state.auth.premiumType === premiumType) return;
+      state.auth.premiumType = premiumType;
+      effects.scheduleRender();
+    },
     onCurrentUserGuildRoles: (guildId, roleIds) => {
       debugLog("gateway.self_roles.update", { guildId, count: roleIds.length });
       state.roleIdsByGuildId[guildId] = roleIds;
@@ -3074,6 +3079,10 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     },
     onGuildDelete: (guildId) => {
       if (removeSessionGuild(state, guildId)) effects.scheduleRender();
+    },
+    onGuildEmojisUpdate: (guildId, emojis) => {
+      const guild = state.sidebar.guilds.find((candidate) => candidate.id === guildId);
+      if (guild && mergeGatewayGuilds(state, [{ ...guild, emojis }])) effects.scheduleRender();
     },
     onInitialNotifications: (notifications) => {
       const whatsAppNotifications = currentWhatsAppNotifications(state);
@@ -3387,6 +3396,7 @@ export function clearReadOnlyClient(state: AppState): void {
   clearTimeline(state.timeline);
   replaceNotifications(state.notifications, []);
   state.roleIdsByGuildId = {};
+  state.auth.premiumType = 0;
   state.guildRolesByGuildId = {};
   state.memberRoleIdsByGuildId = {};
   state.channelMuteSettings = {};

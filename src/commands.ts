@@ -5,7 +5,7 @@
  */
 
 import { saveConfig } from "./config";
-import { DISCORD_CUSTOM_STATUS_MAX_LENGTH, DISCORD_PRESENCE_STATUSES, type DiscordPresenceStatus } from "./discord";
+import { DISCORD_CUSTOM_STATUS_MAX_LENGTH, DISCORD_PRESENCE_STATUSES, type DiscordCustomEmoji, type DiscordPresenceStatus } from "./discord";
 import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
@@ -14,9 +14,14 @@ import { pushTimelineSystemMessage } from "./timeline";
 import { DEFAULT_LOCAL_GAIN_DB, formatGainDbWithUnit, parseGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
 
 export interface CompletionItem {
+  /** Text or inline marker shown in the autocomplete popup. */
   name: string;
   desc: string;
   color?: string;
+  /** Text inserted into the prompt when it differs from the popup name. */
+  insertText?: string;
+  /** Custom emoji rendered lazily only when this completion row is visible. */
+  customEmoji?: Pick<DiscordCustomEmoji, "id" | "name" | "animated">;
 }
 
 export type CommandResult =

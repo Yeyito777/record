@@ -137,6 +137,40 @@ describe("submitCurrentBuffer", () => {
     expect(state.timeline.messages[0]?.content).toBe("ヽ(o＾▽＾o)ノ friend");
   });
 
+  test("preserves a selected custom emoji token when sending", () => {
+    let requestedBody = "";
+    const content = "look <:aliencat_stare_2:1478284001298087936>";
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestedBody = String(init?.body ?? "");
+      return new Response(JSON.stringify({
+        id: "message-1",
+        channel_id: "channel-1",
+        guild_id: "guild-1",
+        type: 0,
+        content,
+        mentions: [],
+        timestamp: "2026-01-01T12:00:00.000Z",
+        edited_timestamp: null,
+        author: { id: "self", username: "self", global_name: "Self" },
+        attachments: [],
+        embeds: [],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.channelList.activeChannel = state.channelList.channels[0] ?? null;
+    state.timeline.channelId = "channel-1";
+    state.editor.buffer = content;
+
+    submitCurrentBuffer(state, effects);
+
+    expect(JSON.parse(requestedBody).content).toBe(content);
+    expect(state.timeline.messages[0]?.content).toBe(content);
+  });
+
   test("sends an unknown slash command as an ordinary message", () => {
     let requestedBody = "";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

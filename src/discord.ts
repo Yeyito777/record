@@ -351,12 +351,22 @@ export interface DiscordGuild {
   id: string;
   name: string;
   icon: string | null;
+  /** Available custom emoji advertised by READY/GUILD_CREATE. */
+  emojis?: DiscordCustomEmoji[];
   muted?: boolean;
   /** Whether the authenticated user owns this guild (from /users/@me/guilds). */
   owner?: boolean;
   ownerId?: string;
   /** Authenticated user's base guild permissions, before channel overwrites. */
   permissions?: string;
+}
+
+export interface DiscordCustomEmoji {
+  id: string;
+  name: string;
+  animated: boolean;
+  /** Empty means every member of the guild may use the emoji. */
+  roleIds: string[];
 }
 
 export interface DiscordPermissionOverwrite {

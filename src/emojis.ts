@@ -6,6 +6,7 @@
  */
 
 import type { CompletionItem } from "./commands";
+import type { DiscordCustomEmoji } from "./discord";
 import { theme } from "./theme";
 import { activity, food, nature, objects, people, symbols, travel } from "discord-emoji";
 
@@ -21,8 +22,14 @@ export interface EmojiQuery {
   query: string;
 }
 
+export interface CustomEmojiCandidate {
+  emoji: DiscordCustomEmoji;
+  guildName: string;
+}
+
 const EMOJI_BOUNDARY_RE = /(^|[\s([{])(:([A-Za-z0-9_+-]*))$/;
 const EMOJI_QUERY_RE = /[^a-z0-9_+-]/g;
+const MAX_CUSTOM_EMOJI_COMPLETIONS = 100;
 
 const PREFERRED_EMOJI_CANDIDATES: EmojiCandidate[] = [
   { emoji: "😭", name: "sob", aliases: ["loudly_crying", "crying"] },
@@ -522,8 +529,28 @@ export function emojiQueryAtCursor(buffer: string, cursor: number): EmojiQuery |
   return { start, end: clampedCursor, query };
 }
 
-export function emojiCompletions(query: string): CompletionItem[] {
-  return [...EMOJI_CANDIDATES]
+function customEmojiCompletions(query: string, candidates: readonly CustomEmojiCandidate[]): CompletionItem[] {
+  const key = normalizeEmojiKey(query);
+  return candidates
+    .filter(({ emoji }) => !key || normalizeEmojiKey(emoji.name).startsWith(key))
+    .sort((left, right) => {
+      const leftExact = normalizeEmojiKey(left.emoji.name) === key ? 0 : 1;
+      const rightExact = normalizeEmojiKey(right.emoji.name) === key ? 0 : 1;
+      return leftExact - rightExact;
+    })
+    .slice(0, MAX_CUSTOM_EMOJI_COMPLETIONS)
+    .map(({ emoji, guildName }) => ({
+      name: "◇ ",
+      desc: `:${emoji.name}: · ${guildName}`,
+      color: theme.text,
+      insertText: `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`,
+      customEmoji: { id: emoji.id, name: emoji.name, animated: emoji.animated },
+    }));
+}
+
+export function emojiCompletions(query: string, customCandidates: readonly CustomEmojiCandidate[] = []): CompletionItem[] {
+  const custom = customEmojiCompletions(query, customCandidates);
+  const standard = [...EMOJI_CANDIDATES]
     .filter((candidate) => emojiCandidateMatches(candidate, query))
     .sort((left, right) => emojiRank(left, query) - emojiRank(right, query))
     .map((candidate) => ({
@@ -531,4 +558,5 @@ export function emojiCompletions(query: string): CompletionItem[] {
       desc: `:${emojiDisplayName(candidate, query)}:`,
       color: theme.text,
     }));
+  return [...custom, ...standard];
 }

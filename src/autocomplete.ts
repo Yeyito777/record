@@ -8,7 +8,8 @@
 
 import type { AppState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
-import { emojiCompletions, emojiQueryAtCursor } from "./emojis";
+import { WHATSAPP_GUILD_ID } from "./chatproviders";
+import { emojiCompletions, emojiQueryAtCursor, type CustomEmojiCandidate } from "./emojis";
 import { MACRO_LIST, getMacroArgs } from "./macros";
 import { loadedMentionCandidates, mentionCandidateMatches, mentionQueryAtCursor } from "./mentions";
 import { getServerCommandArgumentCompletions, getServerCommandRootCompletions } from "./servercommands";
@@ -120,6 +121,31 @@ function getMentionMatches(state: AppState, query: string): CompletionItem[] {
     }));
 }
 
+function customEmojiCandidates(state: AppState): CustomEmojiCandidate[] {
+  const activeGuildId = state.channelList.activeChannel?.guildId
+    ?? state.channelList.guildId
+    ?? state.sidebar.activeGuildId;
+  // Discord custom emoji tokens have no meaning on the WhatsApp transport.
+  if (activeGuildId === WHATSAPP_GUILD_ID) return [];
+
+  const guilds = state.auth.premiumType > 0
+    ? state.sidebar.guilds
+    : state.sidebar.guilds.filter((guild) => guild.id === activeGuildId);
+  const activeFirst = [...guilds].sort((left, right) => (
+    Number(right.id === activeGuildId) - Number(left.id === activeGuildId)
+  ));
+
+  const candidates: CustomEmojiCandidate[] = [];
+  for (const guild of activeFirst) {
+    const currentRoleIds = new Set(state.roleIdsByGuildId[guild.id] ?? []);
+    for (const emoji of guild.emojis ?? []) {
+      if (emoji.roleIds.length > 0 && !emoji.roleIds.some((roleId) => currentRoleIds.has(roleId))) continue;
+      candidates.push({ emoji, guildName: guild.name });
+    }
+  }
+  return candidates;
+}
+
 export function updateAutocomplete(state: AppState): void {
   // Path popup is dismissed on any typing — user must press Tab again.
   if (state.autocomplete?.type === "path") {
@@ -144,7 +170,7 @@ export function updateAutocomplete(state: AppState): void {
 
   const emojiQuery = emojiQueryAtCursor(state.editor.buffer, state.editor.cursor);
   if (emojiQuery) {
-    const matches = emojiCompletions(emojiQuery.query);
+    const matches = emojiCompletions(emojiQuery.query, customEmojiCandidates(state));
     if (matches.length > 0) {
       state.autocomplete = {
         type: "replace",
@@ -239,7 +265,8 @@ export function cycleAutocomplete(state: AppState, direction: 1 | -1): void {
     autocomplete.selection = autocomplete.selection <= 0 ? autocomplete.matches.length - 1 : (autocomplete.selection - 1);
   }
 
-  fillAutocomplete(state, autocomplete.matches[autocomplete.selection].name);
+  const selected = autocomplete.matches[autocomplete.selection];
+  fillAutocomplete(state, selected.insertText ?? selected.name);
 }
 
 export function dismissAutocomplete(state: AppState): void {

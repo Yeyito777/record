@@ -42,6 +42,8 @@ export interface Notice {
 export interface AuthState {
   status: AuthStatus;
   user: DiscordIdentity | null;
+  /** Discord premium_type; any non-zero tier may use guild emoji externally. */
+  premiumType: number;
   presenceStatus: PresenceStatus | null;
   customStatus: DiscordCustomStatus | null;
   error: string | null;
@@ -199,6 +201,7 @@ export function createInitialState(
     auth: {
       status: "idle",
       user: null,
+      premiumType: 0,
       presenceStatus: null,
       customStatus: null,
       error: null,
