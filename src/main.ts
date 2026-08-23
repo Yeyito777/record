@@ -31,7 +31,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { collapseInlineImageToPreview, inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
@@ -449,11 +449,19 @@ function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): bool
   return true;
 }
 
-function expandInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
+function toggleInlineAttachmentResolution(attachment: DiscordMessageAttachment): boolean {
   if (!isImageAttachment(attachment)) return false;
   const existing = state.timeline.inlineImages[attachment.id];
   if (existing?.phase !== "ready") return false;
-  if (existing.fullResolution || inlineImageFullResolutionRequests.has(attachment.id)) return true;
+  if (existing.fullResolution) {
+    const preview = collapseInlineImageToPreview(existing);
+    if (preview) {
+      setTimelineInlineImageState(state.timeline, preview);
+      scheduleRender();
+    }
+    return true;
+  }
+  if (inlineImageFullResolutionRequests.has(attachment.id)) return true;
 
   const requestId = ++nextInlineImageRequestId;
   const channelId = state.timeline.channelId;
@@ -493,6 +501,9 @@ function expandInlineAttachmentImage(attachment: DiscordMessageAttachment): bool
         fullResolution: true,
         displayMaxColumns: timelineContentWidth(),
         displayMaxRows: timelinePageSize(),
+        previewPngBase64: current.pngBase64,
+        previewPixelWidth: current.pixelWidth,
+        previewPixelHeight: current.pixelHeight,
       });
       scheduleRender();
     } catch (error) {
@@ -2006,7 +2017,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       return true;
     case "nav_select": {
       const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
-      if (imageBodyAttachment && expandInlineAttachmentImage(imageBodyAttachment)) return true;
+      if (imageBodyAttachment && toggleInlineAttachmentResolution(imageBodyAttachment)) return true;
 
       const attachment = attachmentAtHistoryCursor(state);
       if (attachment && toggleInlineAttachmentImage(attachment)) return true;

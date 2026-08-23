@@ -54,6 +54,10 @@ export interface InlineChatImageReady extends InlineChatImageBase {
   fullResolution?: boolean;
   displayMaxColumns?: number;
   displayMaxRows?: number;
+  /** Retain the cheap default preview so full-resolution mode can collapse instantly. */
+  previewPngBase64?: string;
+  previewPixelWidth?: number;
+  previewPixelHeight?: number;
 }
 
 export type InlineChatImageState = InlineChatImageLoading | InlineChatImageError | InlineChatImageReady;
@@ -255,6 +259,28 @@ export function inlineImagePreviewPixelBounds(cellWidthPixels = 8, cellHeightPix
   return {
     maxPixelWidth: INLINE_IMAGE_MAX_COLUMNS * Math.max(1, Math.floor(cellWidthPixels)),
     maxPixelHeight: INLINE_IMAGE_MAX_ROWS * Math.max(1, Math.floor(cellHeightPixels)),
+  };
+}
+
+export function collapseInlineImageToPreview(image: InlineChatImageReady): InlineChatImageReady | null {
+  if (!image.fullResolution
+    || image.previewPngBase64 === undefined
+    || image.previewPixelWidth === undefined
+    || image.previewPixelHeight === undefined) return null;
+  const {
+    fullResolution: _fullResolution,
+    displayMaxColumns: _displayMaxColumns,
+    displayMaxRows: _displayMaxRows,
+    previewPngBase64,
+    previewPixelWidth,
+    previewPixelHeight,
+    ...base
+  } = image;
+  return {
+    ...base,
+    pngBase64: previewPngBase64,
+    pixelWidth: previewPixelWidth,
+    pixelHeight: previewPixelHeight,
   };
 }
 

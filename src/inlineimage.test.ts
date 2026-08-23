@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  collapseInlineImageToPreview,
   inlineImageCellLayout,
   inlineImageId,
   inlineImagePreviewPixelBounds,
@@ -76,6 +77,39 @@ describe("inline chat images", () => {
     const attachment = { id: "attachment-1", url: "https://cdn.example/cat.png" };
     expect(inlineImageId(attachment)).toBe(inlineImageId(attachment));
     expect(inlineImageId(attachment)).toBeGreaterThanOrEqual(0x40000000);
+  });
+
+  test("collapses a full-resolution image back to its retained preview", () => {
+    const full = {
+      phase: "ready" as const,
+      attachmentId: "a1",
+      filename: "cat.png",
+      sourceUrl: "cat",
+      requestId: 2,
+      imageId: 0x40000001,
+      pngBase64: "full",
+      pixelWidth: 1920,
+      pixelHeight: 1080,
+      fullResolution: true,
+      displayMaxColumns: 120,
+      displayMaxRows: 40,
+      previewPngBase64: "preview",
+      previewPixelWidth: 512,
+      previewPixelHeight: 288,
+    };
+
+    expect(collapseInlineImageToPreview(full)).toEqual({
+      phase: "ready",
+      attachmentId: "a1",
+      filename: "cat.png",
+      sourceUrl: "cat",
+      requestId: 2,
+      imageId: 0x40000001,
+      pngBase64: "preview",
+      pixelWidth: 512,
+      pixelHeight: 288,
+    });
+    expect(collapseInlineImageToPreview({ ...full, fullResolution: false })).toBeNull();
   });
 
   test("finds only image attachments in visible message bounds", () => {
