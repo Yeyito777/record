@@ -3,26 +3,54 @@
  */
 
 import type { EditorViewport, InputLinesResult } from "./editor-types";
+import { nextWidthClusterEnd, sliceByWidth, termWidth } from "./textwidth";
 
 export const PROMPT_PREFIX_WIDTH = 4;
 export const MAX_PROMPT_ROWS = 8;
 
+interface WrappedChunk {
+  text: string;
+  start: number;
+  end: number;
+}
+
+/** Split one logical line without dividing terminal-width clusters. */
+function wrapLine(line: string, maxWidth: number): WrappedChunk[] {
+  if (!line) return [{ text: "", start: 0, end: 0 }];
+
+  const chunks: WrappedChunk[] = [];
+  let start = 0;
+  while (start < line.length) {
+    const [fitting] = sliceByWidth(line.slice(start), maxWidth);
+    // A two-cell cluster cannot fit in a one-cell viewport. Consume it anyway
+    // so layout always makes progress and keeps the cluster atomic.
+    const end = fitting.length > 0
+      ? start + fitting.length
+      : nextWidthClusterEnd(line, start);
+    chunks.push({ text: line.slice(start, end), start, end });
+    start = end;
+  }
+  return chunks;
+}
+
 export function getViewport(buffer: string, cursor: number, width: number, previousScroll = 0): EditorViewport {
   const safeWidth = Math.max(1, width);
-  let scroll = Math.max(0, previousScroll);
+  const safeCursor = Math.max(0, Math.min(cursor, buffer.length));
+  let scroll = Math.max(0, Math.min(previousScroll, buffer.length));
 
-  if (cursor < scroll) {
-    scroll = cursor;
-  } else if (cursor >= scroll + safeWidth) {
-    scroll = cursor - safeWidth + 1;
+  if (safeCursor < scroll) {
+    scroll = safeCursor;
   }
 
-  const maxScroll = Math.max(0, Math.max(buffer.length - safeWidth, cursor - safeWidth + 1));
-  scroll = Math.max(0, Math.min(scroll, maxScroll));
+  while (scroll < safeCursor && termWidth(buffer.slice(scroll, safeCursor)) >= safeWidth) {
+    scroll = nextWidthClusterEnd(buffer, scroll);
+  }
+
+  const [text] = sliceByWidth(buffer.slice(scroll), safeWidth);
 
   return {
-    text: buffer.slice(scroll, scroll + safeWidth),
-    cursorCol: Math.max(0, cursor - scroll),
+    text,
+    cursorCol: termWidth(buffer.slice(scroll, safeCursor)),
     scroll,
   };
 }
@@ -34,12 +62,8 @@ export function wrappedLineOffsets(buffer: string, maxWidth: number): number[] {
   let pos = 0;
 
   for (const line of lines) {
-    if (line.length <= maxWidth) {
-      offsets.push(pos);
-    } else {
-      for (let i = 0; i < line.length; i += maxWidth) {
-        offsets.push(pos + i);
-      }
+    for (const chunk of wrapLine(line, maxWidth)) {
+      offsets.push(pos + chunk.start);
     }
     pos += line.length + 1;
   }
@@ -66,25 +90,18 @@ export function getInputLines(
   for (let li = 0; li < bufferLines.length; li++) {
     const line = bufferLines[li];
 
-    if (line.length <= maxWidth) {
-      if (cursorPos >= bufOffset && cursorPos <= bufOffset + line.length) {
+    const chunks = wrapLine(line, maxWidth);
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      const chunk = chunks[chunkIndex]!;
+      const chunkStart = bufOffset + chunk.start;
+      const chunkEnd = bufOffset + chunk.end;
+      if (cursorPos >= chunkStart && cursorPos <= chunkEnd) {
         cursorWrappedLine = wrapped.length;
-        cursorColInLine = cursorPos - bufOffset;
+        const cursorInChunk = Math.max(0, Math.min(cursorPos - chunkStart, chunk.text.length));
+        cursorColInLine = termWidth(chunk.text.slice(0, cursorInChunk));
       }
-      wrapped.push(line);
-      isNewLineArr.push(li > 0);
-    } else {
-      for (let i = 0; i < line.length; i += maxWidth) {
-        const chunk = line.slice(i, i + maxWidth);
-        const chunkStart = bufOffset + i;
-        const chunkEnd = chunkStart + chunk.length;
-        if (cursorPos >= chunkStart && cursorPos <= chunkEnd) {
-          cursorWrappedLine = wrapped.length;
-          cursorColInLine = cursorPos - chunkStart;
-        }
-        wrapped.push(chunk);
-        isNewLineArr.push(li > 0 && i === 0);
-      }
+      wrapped.push(chunk.text);
+      isNewLineArr.push(li > 0 && chunkIndex === 0);
     }
 
     bufOffset += line.length + 1;

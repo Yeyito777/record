@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 
-import { createEditorState, getInputLines, getViewport, handleEditorKey } from "./editor";
+import { createEditorState, getInputLines, getViewport, handleEditorKey, wrappedLineOffsets } from "./editor";
 
 describe("editor", () => {
   test("escape leaves insert mode and moves cursor left", () => {
@@ -243,5 +243,27 @@ describe("editor", () => {
     expect(input.lines).toEqual([" worl", "d"]);
     expect(input.cursorLine).toBe(1);
     expect(input.cursorCol).toBe(1);
+  });
+
+  test("prompt cursor columns use terminal width for inline custom emoji", () => {
+    const marker = "\ue000";
+    const buffer = `look ${marker}`;
+    const input = getInputLines(buffer, buffer.length, 20, 2, 0);
+
+    expect(input.lines).toEqual([buffer]);
+    expect(input.cursorLine).toBe(0);
+    expect(input.cursorCol).toBe(7);
+  });
+
+  test("prompt wrapping keeps a two-column custom emoji atomic", () => {
+    const marker = "\ue000";
+    const buffer = `abcd${marker}x`;
+    const afterEmoji = "abcd".length + marker.length;
+    const input = getInputLines(buffer, afterEmoji, 5, 3, 0);
+
+    expect(input.lines).toEqual(["abcd", `${marker}x`]);
+    expect(input.cursorLine).toBe(1);
+    expect(input.cursorCol).toBe(2);
+    expect(wrappedLineOffsets(buffer, 5)).toEqual([0, 4]);
   });
 });

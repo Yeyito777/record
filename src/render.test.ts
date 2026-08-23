@@ -8,6 +8,7 @@ import type { DiscordMessage } from "./discord";
 import { recordTypingStart } from "./typing";
 import { createLoginModalState } from "./whatsapp/loginmodal";
 import { customEmojiMarker } from "./customemoji";
+import { moveTo } from "./terminal";
 
 function message(id: string, content: string): DiscordMessage {
   const numericId = Number(id);
@@ -217,6 +218,9 @@ describe("render", () => {
     expect(output).toContain("◇ ");
     expect(output).not.toContain("<:aliencat_stare_2:1478284001298087936>");
     expect(output).not.toContain(marker);
+    // Prompt starts at column 5: "look " occupies five cells and the image two,
+    // so the insert cursor belongs immediately after it at column 12.
+    expect(output).toContain(moveTo(10, 12));
   });
 
   test("renders reply context in the prompt separator", () => {

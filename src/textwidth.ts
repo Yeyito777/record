@@ -199,6 +199,13 @@ function nextCluster(text: string, start: number): [width: number, end: number] 
   return [width, end];
 }
 
+/** Source-string end offset of the next terminal-width cluster. */
+export function nextWidthClusterEnd(text: string, start = 0): number {
+  if (start < 0) start = 0;
+  if (start >= text.length) return text.length;
+  return nextCluster(text, start)[1];
+}
+
 export function termWidth(text: string): number {
   let width = 0;
   let index = 0;
