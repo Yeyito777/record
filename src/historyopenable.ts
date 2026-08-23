@@ -55,6 +55,34 @@ function selectedHistoryMessage(state: AppState) {
   return state.timeline.messages.find((message) => message.id === bound.messageId) ?? null;
 }
 
+function attachmentIdFromInlineImageAnchor(anchor: string | undefined): string | null {
+  if (!anchor) return null;
+  const marker = anchor.includes(":image-status:") ? ":image-status:" : ":image:";
+  const markerIndex = anchor.lastIndexOf(marker);
+  if (markerIndex < 0) return null;
+  const encoded = anchor.slice(markerIndex + marker.length).split(":", 1)[0] ?? "";
+  if (!encoded) return null;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
+}
+
+function attachmentIdFromInlineImageBodyAnchor(anchor: string | undefined): string | null {
+  if (!anchor) return null;
+  const marker = ":image:";
+  const markerIndex = anchor.lastIndexOf(marker);
+  if (markerIndex < 0) return null;
+  const encoded = anchor.slice(markerIndex + marker.length).split(":", 1)[0] ?? "";
+  if (!encoded) return null;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
+}
+
 export function forwardedOriginAtHistoryCursor(state: AppState): ForwardedOriginTarget | null {
   const message = selectedHistoryMessage(state);
   const forwarded = message?.forwarded;
@@ -93,11 +121,16 @@ export function threadChannelAtHistoryCursor(state: AppState): ThreadChannelTarg
 }
 
 export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttachment | null {
+  const message = selectedHistoryMessage(state);
+  const attachments = message ? [...message.attachments, ...(message.forwarded?.attachments ?? [])] : [];
+  const anchoredAttachmentId = attachmentIdFromInlineImageAnchor(state.historyLineAnchors[state.historyCursor.row]);
+  if (anchoredAttachmentId) {
+    return attachments.find((attachment) => attachment.id === anchoredAttachmentId) ?? null;
+  }
+
   const logicalLine = logicalLineAtHistoryCursor(state);
   if (!logicalLine) return null;
 
-  const message = selectedHistoryMessage(state);
-  const attachments = message ? [...message.attachments, ...(message.forwarded?.attachments ?? [])] : [];
   if (!message || attachments.length === 0) return null;
 
   for (const attachment of attachments) {
@@ -114,6 +147,17 @@ export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttach
   }
 
   return null;
+}
+
+/** Return an attachment only when the cursor is on its rendered image body. */
+export function inlineImageBodyAttachmentAtHistoryCursor(state: AppState): DiscordMessageAttachment | null {
+  const message = selectedHistoryMessage(state);
+  if (!message) return null;
+  const attachmentId = attachmentIdFromInlineImageBodyAnchor(state.historyLineAnchors[state.historyCursor.row]);
+  if (!attachmentId) return null;
+  return [...message.attachments, ...(message.forwarded?.attachments ?? [])]
+    .find((attachment) => attachment.id === attachmentId)
+    ?? null;
 }
 
 /**

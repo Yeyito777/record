@@ -4,13 +4,13 @@
  * Structured after the Exocortex TUI command system, but scoped to record.
  */
 
-import { saveConfig } from "./config";
+import { saveConfig, type ImageDisplayMode } from "./config";
 import { DISCORD_CUSTOM_STATUS_MAX_LENGTH, DISCORD_PRESENCE_STATUSES, type DiscordCustomEmoji, type DiscordPresenceStatus } from "./discord";
 import { clearPrompt } from "./promptstate";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
 import { THEME_NAMES, setTheme, theme, type ThemeName } from "./theme";
-import { pushTimelineSystemMessage } from "./timeline";
+import { clearTimelineInlineImageStates, pushTimelineSystemMessage } from "./timeline";
 import { DEFAULT_LOCAL_GAIN_DB, formatGainDbWithUnit, parseGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
 
 export interface CompletionItem {
@@ -70,6 +70,11 @@ const CHANNELS_ARGS: CompletionItem[] = [
 const SHOW_HIDDEN_ARGS: CompletionItem[] = [
   { name: "on", desc: "Show inaccessible channel rows" },
   { name: "off", desc: "Hide inaccessible channel rows" },
+];
+
+const IMAGE_MODE_ARGS: CompletionItem[] = [
+  { name: "show", desc: "Expand visible image attachments automatically" },
+  { name: "hide", desc: "Keep images collapsed until Enter is pressed" },
 ];
 
 const VOICE_TOGGLE_ARGS: CompletionItem[] = [
@@ -151,6 +156,44 @@ function handleChannelsCommand(text: string, state: AppState): CommandResult {
     setNotice(state, `Hidden channels ${next ? "shown" : "hidden"}, but saving failed: ${(error as Error).message}`, "warning", { statusLine: false });
   }
 
+  return { type: "handled" };
+}
+
+function handleImagesCommand(text: string, state: AppState): CommandResult {
+  const parts = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const requested = parts[1] as ImageDisplayMode | undefined;
+  if (parts.length > 2 || (requested !== undefined && requested !== "show" && requested !== "hide")) {
+    pushTimelineSystemMessage(state.timeline, "Usage: /images hide|show");
+    setNotice(state, "", "muted", { statusLine: false, chat: false });
+    clearPrompt(state);
+    return { type: "handled" };
+  }
+
+  if (requested === undefined) {
+    pushTimelineSystemMessage(state.timeline, `Images: ${state.imageDisplayMode}`);
+    setNotice(state, "", "muted", { statusLine: false, chat: false });
+    clearPrompt(state);
+    return { type: "handled" };
+  }
+
+  state.imageDisplayMode = requested;
+  state.inlineImageHiddenAttachmentIds.clear();
+  clearTimelineInlineImageStates(state.timeline);
+  clearPrompt(state);
+
+  try {
+    saveConfig({ images: { mode: requested } });
+    pushTimelineSystemMessage(
+      state.timeline,
+      requested === "show"
+        ? "Images will expand automatically."
+        : "Images will stay collapsed until opened with Enter.",
+    );
+    setNotice(state, "", "muted", { statusLine: false, chat: false });
+  } catch (error) {
+    pushTimelineSystemMessage(state.timeline, `Image mode changed to ${requested}, but saving failed: ${(error as Error).message}`);
+    setNotice(state, "", "muted", { statusLine: false, chat: false });
+  }
   return { type: "handled" };
 }
 
@@ -443,6 +486,12 @@ const commands: SlashCommand[] = [
       "/channels show-hidden": SHOW_HIDDEN_ARGS,
     }),
     handler: handleChannelsCommand,
+  },
+  {
+    name: "/images",
+    description: "Set whether image attachments expand automatically",
+    args: IMAGE_MODE_ARGS,
+    handler: handleImagesCommand,
   },
   {
     name: "/theme",

@@ -36,6 +36,8 @@ Controls:
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
 - `Enter` on a thread (shown with `↳`): open its timeline; posting automatically joins the thread when needed
 - `Enter` on an authored “Started a thread” message in history: open and focus that thread
+- image attachments expand inline by default; press `Enter` on their filename or image rows to collapse/reopen one
+- `/images hide|show`: keep images collapsed until opened manually, or restore automatic expansion; the selected mode persists
 - `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
 - `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history
 - `/thread <name>` in the prompt: create and open a public thread; if a reply is active, anchor it to that replied-to message, otherwise create a standalone thread
@@ -84,6 +86,7 @@ Notes:
 - custom emoji support uses direct-stream Kitty graphics, so it works over SSH without exposing local file paths; animated emoji use Discord's PNG first frame
 - custom emoji autocomplete uses the active server's emoji for non-Nitro accounts and all joined servers' emoji for Nitro accounts
 - tokens are stored as plaintext for now, just with strict file permissions
+- expanded chat images use the Kitty direct-stream graphics protocol; PNGs are sent directly and other image formats use `ffmpeg` to produce a bounded first-frame PNG
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`

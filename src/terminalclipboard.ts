@@ -415,7 +415,6 @@ export class TerminalControlBuffer {
           this.armTimer(1000, true);
           return;
         }
-
         const end = stIndex + ST.length;
         const sequence = this.buffer.slice(0, end);
         this.buffer = this.buffer.slice(end);
@@ -437,7 +436,7 @@ export class TerminalControlBuffer {
 
         const sequence = this.buffer.slice(0, final + 1);
         this.buffer = this.buffer.slice(final + 1);
-        if (/^\x1b\[\?5522;[0-4]\$y$/.test(sequence)) {
+        if (/^\x1b\[\?5522;[0-4]\$y$/.test(sequence) || /^\x1b\[6;\d+;\d+t$/.test(sequence)) {
           this.onControlSequence(sequence);
         } else {
           this.emitInput(sequence);

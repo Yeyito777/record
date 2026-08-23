@@ -1497,9 +1497,52 @@ describe("session", () => {
     });
     const pendingNonce = state.timeline.messages[0]?.nonce;
     expect(pendingNonce).toMatch(/^\d+$/);
+    const localAttachmentId = state.timeline.messages[0]?.attachments[0]?.id;
+    expect(localAttachmentId).toBe(`local:${pendingNonce}:0`);
+    expect(state.localAttachmentImages[localAttachmentId ?? ""]).toEqual({
+      mediaType: "image/png",
+      base64: Buffer.from("test").toString("base64"),
+    });
     expect(requestedBody).toBeInstanceOf(FormData);
     const payload = JSON.parse(String((requestedBody as unknown as FormData).get("payload_json")));
     expect(payload.nonce).toBe(pendingNonce);
+  });
+
+  test("releases outgoing image bytes after the canonical upload replaces them", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      id: "message-1",
+      channel_id: "channel-1",
+      guild_id: "guild-1",
+      type: 0,
+      content: "caption",
+      mentions: [],
+      timestamp: "2026-01-01T12:00:00.000Z",
+      edited_timestamp: null,
+      author: { id: "self", username: "self", global_name: "Self" },
+      attachments: [{
+        id: "attachment-1",
+        filename: "image-1.png",
+        content_type: "image/png",
+        size: 4,
+        url: "https://cdn.example/image-1.png",
+      }],
+      embeds: [],
+    }), { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.channelList.activeChannelId = "channel-1";
+    state.timeline.channelId = "channel-1";
+    state.pendingImages = [{ mediaType: "image/png", base64: Buffer.from("test").toString("base64"), sizeBytes: 4, filename: "image-1.png" }];
+
+    sendCurrentChannelMessage(state, "token-1", "caption", { scheduleRender: () => {} });
+    const localAttachmentId = state.timeline.messages[0]?.attachments[0]?.id ?? "";
+    expect(state.localAttachmentImages[localAttachmentId]).toBeDefined();
+    await waitForCondition(() => state.timeline.messages[0]?.id === "message-1");
+
+    expect(state.localAttachmentImages[localAttachmentId]).toBeUndefined();
+    expect(state.timeline.messages[0]?.attachments[0]?.id).toBe("attachment-1");
   });
 
   test("uploading a local file appends a pending attachment message", async () => {
