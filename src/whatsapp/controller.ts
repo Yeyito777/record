@@ -5,7 +5,7 @@ import { WHATSAPP_GUILD_ID, whatsappChannelId, whatsappGuild, whatsappJidFromCha
 import { clearChannelList, setActiveChannelEntry, setChannelList } from "../channels";
 import { loadCachedSidebarChannelLayout, saveCachedSidebarChannelLayout } from "../datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessageAttachment } from "../discord";
-import { cachedAttachmentIsComplete, cachedAttachmentPath, type AttachmentOpenResult } from "../openable";
+import { cachedAttachmentIsComplete, cachedAttachmentPath, pruneAttachmentCache, refreshCachedAttachment, type AttachmentOpenResult } from "../openable";
 import {
   clearChannelNotifications,
   setChannelNotificationCount,
@@ -452,6 +452,7 @@ export class WhatsAppController {
   async downloadAttachment(attachment: DiscordMessageAttachment): Promise<AttachmentOpenResult> {
     const path = cachedAttachmentPath(attachment);
     if (cachedAttachmentIsComplete(path, attachment.size)) {
+      refreshCachedAttachment(path);
       return { ok: true, path, cached: true };
     }
 
@@ -486,6 +487,7 @@ export class WhatsAppController {
         rmSync(path, { force: true });
         return { ok: false, error: "WhatsApp returned an incomplete attachment." };
       }
+      pruneAttachmentCache(path);
       return { ok: true, path, cached: false };
     } catch (error) {
       rmSync(path, { force: true });

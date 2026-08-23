@@ -1,12 +1,13 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { defaultOpenersConfig, saveConfig } from "./config";
 import type { DiscordMessageAttachment } from "./discord";
 import {
+  ATTACHMENT_CACHE_MAX_ENTRIES,
   cachedAttachmentPath,
   cachedOpenableUrlPath,
   downloadAttachment,
@@ -176,6 +177,19 @@ describe("openable target command resolution", () => {
 });
 
 describe("attachment downloads", () => {
+  test("shares cached bytes between separate occurrences of the same media", () => {
+    const source = {
+      cacheKey: "discord-sticker:sticker-1:1",
+      filename: "catjam.png",
+      contentType: "image/png",
+      size: 0,
+      url: "https://cdn.discordapp.com/stickers/sticker-1.png",
+    };
+    expect(cachedAttachmentPath({ ...source, id: "sticker:message-1:sticker-1" })).toBe(
+      cachedAttachmentPath({ ...source, id: "sticker:message-2:sticker-1" }),
+    );
+  });
+
   test("downloads attachments into the record attachment cache", async () => {
     const previousFetch = globalThis.fetch;
     const attachment: DiscordMessageAttachment = {
@@ -228,6 +242,85 @@ describe("attachment downloads", () => {
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  test("refreshes cache hits and evicts the least recently used file at 100 entries", async () => {
+    const attachments = Array.from({ length: ATTACHMENT_CACHE_MAX_ENTRIES }, (_, index): DiscordMessageAttachment => ({
+      id: `seed-${index}`,
+      filename: `seed-${index}.png`,
+      contentType: "image/png",
+      size: 4,
+      url: `https://cdn.example/seed-${index}.png`,
+    }));
+    const paths = attachments.map(cachedAttachmentPath);
+    mkdirSync(dirname(paths[0]!), { recursive: true });
+    paths.forEach((path, index) => {
+      writeFileSync(path, new Uint8Array([1, 2, 3, 4]));
+      const age = new Date(1_000 + index * 1_000);
+      utimesSync(path, age, age);
+    });
+
+    const hit = await downloadAttachment(attachments[0]!);
+    expect(hit.cached).toBe(true);
+    expect(statSync(paths[0]!).mtimeMs).toBeGreaterThan(statSync(paths.at(-1)!).mtimeMs);
+
+    const added: DiscordMessageAttachment = {
+      id: "new-image",
+      filename: "new-image.png",
+      contentType: "image/png",
+      size: 4,
+      url: "https://cdn.example/new-image.png",
+    };
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = (() => Promise.resolve(new Response(new Uint8Array([5, 6, 7, 8])))) as unknown as typeof fetch;
+    try {
+      expect((await downloadAttachment(added)).ok).toBe(true);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+
+    const files = readdirSync(dirname(paths[0]!)).filter((name) => !name.includes(".part-"));
+    expect(files).toHaveLength(ATTACHMENT_CACHE_MAX_ENTRIES);
+    expect(existsSync(paths[0]!)).toBe(true);
+    expect(existsSync(paths[1]!)).toBe(false);
+    expect(existsSync(cachedAttachmentPath(added))).toBe(true);
+  });
+
+  test("does not evict an attachment when its replacement download fails", async () => {
+    const oldest: DiscordMessageAttachment = {
+      id: "oldest",
+      filename: "oldest.png",
+      contentType: "image/png",
+      size: 4,
+      url: "https://cdn.example/oldest.png",
+    };
+    const oldestPath = cachedAttachmentPath(oldest);
+    const directory = dirname(oldestPath);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(oldestPath, new Uint8Array([1, 2, 3, 4]));
+    const old = new Date(1_000);
+    utimesSync(oldestPath, old, old);
+    for (let index = 1; index < ATTACHMENT_CACHE_MAX_ENTRIES; index++) {
+      writeFileSync(join(directory, `seed-${index}.png`), new Uint8Array([1]));
+    }
+
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = (() => Promise.resolve(new Response("failed", { status: 500 }))) as unknown as typeof fetch;
+    try {
+      const result = await downloadAttachment({
+        id: "failed-new",
+        filename: "failed-new.png",
+        contentType: "image/png",
+        size: 4,
+        url: "https://cdn.example/failed-new.png",
+      });
+      expect(result.ok).toBe(false);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+
+    expect(readdirSync(directory)).toHaveLength(ATTACHMENT_CACHE_MAX_ENTRIES);
+    expect(existsSync(oldestPath)).toBe(true);
   });
 });
 

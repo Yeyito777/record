@@ -413,6 +413,8 @@ export interface DiscordChannel {
 
 export interface DiscordMessageAttachment {
   id: string;
+  /** Stable disk-cache identity when id represents one rendered occurrence. */
+  cacheKey?: string;
   filename: string;
   contentType: string | null;
   size: number;

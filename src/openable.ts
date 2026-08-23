@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 
@@ -53,6 +53,7 @@ const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/gi;
 const DOWNLOAD_BEFORE_OPEN_URL_EXTENSIONS = new Set(["gif"]);
 const TENOR_GIF_PAGE_HOST_RE = /(?:^|\.)tenor\.com$/i;
 const OPEN_STDERR_LOG_LIMIT = 8192;
+export const ATTACHMENT_CACHE_MAX_ENTRIES = 100;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -204,9 +205,65 @@ function openableUrlCacheDir(): string {
 }
 
 function attachmentCachePath(attachment: DiscordMessageAttachment): string {
-  const hash = createHash("sha256").update(`${attachment.id}\n${attachment.url}\n${attachment.filename}`).digest("hex").slice(0, 16);
+  const hash = createHash("sha256").update(`${attachment.cacheKey ?? attachment.id}\n${attachment.url}\n${attachment.filename}`).digest("hex").slice(0, 16);
   const ext = extensionFromFilename(attachment.filename);
   return join(attachmentCacheDir(), `${hash}-${safeFilename(attachment.filename).replace(/\.[^.]+$/, "")}${ext}`);
+}
+
+interface AttachmentCacheEntry {
+  path: string;
+  modifiedAtMs: number;
+}
+
+function attachmentCacheEntries(): AttachmentCacheEntry[] {
+  const directory = attachmentCacheDir();
+  try {
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      // In-progress atomic downloads are not cache entries and must never be
+      // removed out from under another concurrent Record download.
+      const temporary = /\.part-(?:\d+-\d+|[0-9a-f-]{36})$/i.test(entry.name);
+      if (!entry.isFile() || temporary) return [];
+      const path = join(directory, entry.name);
+      try {
+        return [{ path, modifiedAtMs: statSync(path).mtimeMs }];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Keep the shared Discord/WhatsApp attachment cache at its LRU file limit. */
+export function pruneAttachmentCache(protectedPath?: string): void {
+  const entries = attachmentCacheEntries();
+  let removeCount = entries.length - ATTACHMENT_CACHE_MAX_ENTRIES;
+  if (removeCount <= 0) return;
+
+  entries.sort((left, right) => left.modifiedAtMs - right.modifiedAtMs || left.path.localeCompare(right.path));
+  for (const entry of entries) {
+    if (removeCount <= 0) break;
+    if (entry.path === protectedPath) continue;
+    try {
+      rmSync(entry.path, { force: true });
+      removeCount -= 1;
+    } catch {
+      // Cache maintenance is best effort and must not fail a usable download.
+    }
+  }
+}
+
+/** Refresh an attachment cache hit so LRU pruning keeps recently used media. */
+export function refreshCachedAttachment(path: string): void {
+  try {
+    const now = new Date();
+    utimesSync(path, now, now);
+  } catch {
+    // Returning an already validated cache hit is still preferable if touching
+    // its timestamp fails; pruning below remains independently best effort.
+  }
+  pruneAttachmentCache(path);
 }
 
 function urlPathname(target: string): string | null {
@@ -547,6 +604,7 @@ export async function downloadAttachment(
 
   const path = attachmentCachePath(attachment);
   if (existsSync(path) && cachedAttachmentIsComplete(path, attachment.size)) {
+    refreshCachedAttachment(path);
     return { ok: true, path, cached: true };
   }
 
@@ -560,6 +618,7 @@ export async function downloadAttachment(
     const totalBytes = responseContentLength(response, attachment.size);
     notifyDownloadProgress(options, 0, totalBytes);
     await writeResponseBodyToFile(response, path, totalBytes, options);
+    pruneAttachmentCache(path);
     return { ok: true, path, cached: false };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };

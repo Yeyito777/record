@@ -101,6 +101,8 @@ export function stickerImageAttachment(
     // the message occurrence so collapsing/selecting one does not affect every
     // other use of the same sticker in the channel.
     id: `sticker:${occurrenceId}:${sticker.id}`,
+    // Repeated uses need separate UI state but share identical CDN bytes.
+    cacheKey: `discord-sticker:${sticker.id}:${sticker.formatType}`,
     filename: `${sticker.name}.${gif ? "gif" : "png"}`,
     contentType: gif ? "image/gif" : "image/png",
     // Sticker items do not include their CDN byte size. A zero size tells the
