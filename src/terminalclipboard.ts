@@ -398,6 +398,25 @@ export class TerminalControlBuffer {
         continue;
       }
 
+      if (this.buffer.startsWith(`${ESC}_`)) {
+        const stIndex = this.buffer.indexOf(ST, 2);
+        if (stIndex === -1) {
+          // Terminal replies are tiny. Do not let malformed APC input retain an
+          // unbounded buffer or delay ordinary key input indefinitely.
+          if (this.buffer.length > 4096) {
+            this.buffer = "";
+            return;
+          }
+          this.armTimer(100, false);
+          return;
+        }
+        const end = stIndex + ST.length;
+        const sequence = this.buffer.slice(0, end);
+        this.buffer = this.buffer.slice(end);
+        this.onControlSequence(sequence);
+        continue;
+      }
+
       if (this.buffer.startsWith(`${ESC}[`)) {
         let final = 2;
         while (final < this.buffer.length) {

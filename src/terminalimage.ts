@@ -80,7 +80,9 @@ function placeImage(placement: InlineTerminalImagePlacement): string {
     : "";
   return moveTo(placement.row, placement.col)
     + graphicsCommand(
-      `a=p,i=${placement.image.imageId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=1,q=2`,
+      // q=1 suppresses successful replies but lets the terminal report an
+      // evicted image ID. handleInlineTerminalImageResponse then retries it.
+      `a=p,i=${placement.image.imageId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=1,q=1`,
     );
 }
 
@@ -139,20 +141,6 @@ export function syncInlineTerminalImages(
     state.placements.delete(key);
   }
 
-  // st may evict addressed image data after its last placement disappears.
-  // Retransmit when an offscreen/cached image becomes placed again so returning
-  // to it remains reliable even after terminal-side memory pressure.
-  for (const imageId of new Set(placements.map((placement) => placement.image.imageId))) {
-    if (retransmitted.has(imageId)) continue;
-    const hasLivePlacement = [...state.placements.keys()].some((key) => key.startsWith(`${imageId}:`));
-    if (hasLivePlacement) continue;
-    const image = currentImages.get(imageId);
-    if (!image) continue;
-    out.push(transmitInlinePng(image));
-    state.images.set(imageId, imageFingerprint(image));
-    retransmitted.add(imageId);
-  }
-
   for (const placement of placements) {
     const key = placementKey(placement);
     const fingerprint = placementFingerprint(placement);
@@ -162,6 +150,27 @@ export function syncInlineTerminalImages(
   }
 
   if (out.length > 0) write(`${SAVE_CURSOR}${out.join("")}${RESTORE_CURSOR}`);
+}
+
+/**
+ * Consume a Kitty placement failure. st retains explicitly addressed image
+ * data after a soft placement deletion, so viewport re-entry normally needs
+ * only a placement command. If memory pressure really did evict the image,
+ * forget its residency here; the next render retransmits it exactly once.
+ */
+export function handleInlineTerminalImageResponse(owner: object, sequence: string): boolean {
+  const match = /^\x1b_Gi=(\d+)(?:,p=\d+)?;(ENOENT:image not found)\x1b\\$/.exec(sequence);
+  if (!match) return false;
+  const imageId = Number(match[1]);
+  if (!Number.isSafeInteger(imageId) || imageId <= 0) return false;
+
+  const state = syncStates.get(owner);
+  if (!state) return true;
+  state.images.delete(imageId);
+  for (const key of [...state.placements.keys()]) {
+    if (key.startsWith(`${imageId}:`)) state.placements.delete(key);
+  }
+  return true;
 }
 
 export function disposeInlineTerminalImages(

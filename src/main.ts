@@ -3,6 +3,7 @@
  */
 
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
+import { AsyncWorkQueue } from "./asyncwork";
 import { flushDataCacheSync } from "./datacache";
 import { configPath, loadConfig, loadSavedLogins, type ImageDisplayMode } from "./config";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
@@ -152,7 +153,7 @@ import {
   setCursorColor,
   showCursor,
 } from "./terminal";
-import { disposeInlineTerminalImages, parseTerminalCellSize, queryTerminalCellSize } from "./terminalimage";
+import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize } from "./terminalimage";
 import { dmAuthorColor, theme } from "./theme";
 import { clearTimeline, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
@@ -223,6 +224,7 @@ if (startupWarnings.length > 0) {
 }
 
 const LOADING_INTERVAL_MS = 80;
+const INLINE_IMAGE_LOAD_CONCURRENCY = 2;
 const OPEN_NOTICE_MS = 1200;
 const COPIED_INVITE_NOTICE_MS = 1800;
 
@@ -234,6 +236,7 @@ let terminalGraphicsCells = false;
 let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
 let nextInlineImageRequestId = 0;
+const inlineImageLoadQueue = new AsyncWorkQueue(INLINE_IMAGE_LOAD_CONCURRENCY);
 
 function syncTerminalGraphicsCells(): void {
   const modal = state.whatsapp.loginModal;
@@ -378,8 +381,10 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
   });
   scheduleRender();
 
-  void (async () => {
+  void inlineImageLoadQueue.enqueue(async () => {
     try {
+      const queued = currentInlineImageRequest(requestId);
+      if (!running || state.timeline.channelId !== channelId || !queued) return;
       const local = state.localAttachmentImages[attachment.id];
       let prepared: Awaited<ReturnType<typeof prepareInlineImage>>;
       if (local) {
@@ -419,7 +424,7 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
       debugLog("inline_image.prepare_failed", { attachmentId: current.attachmentId, filename: current.filename, error: message });
       setInlineImageError(current, message);
     }
-  })();
+  });
 }
 
 function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
@@ -2304,6 +2309,10 @@ async function main(): Promise<void> {
       const cellSize = parseTerminalCellSize(sequence);
       if (cellSize) {
         if (setTimelineTerminalCellSize(state.timeline, cellSize.width, cellSize.height)) scheduleRender();
+        return;
+      }
+      if (handleInlineTerminalImageResponse(state, sequence)) {
+        scheduleRender();
         return;
       }
       terminalClipboardClient?.handleControlSequence(sequence);

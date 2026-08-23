@@ -196,7 +196,7 @@ describe("render", () => {
     const first = captureRender(state);
     expect(first).toContain("\x1b_Ga=t,t=d,f=100,i=1073741825,q=2;");
     expect(first).toContain("\x1b_Ga=p,i=1073741825");
-    expect(first).toContain(",c=1,r=1,C=1,z=1,q=2;");
+    expect(first).toContain(",c=1,r=1,C=1,z=1,q=1;");
 
     const second = captureRender(state);
     expect(second).not.toContain("\x1b_Ga=t");

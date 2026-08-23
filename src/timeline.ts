@@ -152,7 +152,9 @@ export function createTimelineState(): TimelineState {
 
 export function setTimelineInlineImageState(timeline: TimelineState, image: InlineChatImageState): void {
   timeline.inlineImages = { ...timeline.inlineImages, [image.attachmentId]: image };
-  resetTimelineRenderCaches(timeline);
+  // Message fingerprints include their inline-image states. Preserve every
+  // unaffected message render and rebuild only the timeline composition.
+  invalidateTimelineContentCache(timeline);
 }
 
 export function removeTimelineInlineImageState(timeline: TimelineState, attachmentId: string): boolean {
@@ -160,14 +162,14 @@ export function removeTimelineInlineImageState(timeline: TimelineState, attachme
   const next = { ...timeline.inlineImages };
   delete next[attachmentId];
   timeline.inlineImages = next;
-  resetTimelineRenderCaches(timeline);
+  invalidateTimelineContentCache(timeline);
   return true;
 }
 
 export function clearTimelineInlineImageStates(timeline: TimelineState): boolean {
   if (Object.keys(timeline.inlineImages).length === 0) return false;
   timeline.inlineImages = {};
-  resetTimelineRenderCaches(timeline);
+  invalidateTimelineContentCache(timeline);
   return true;
 }
 

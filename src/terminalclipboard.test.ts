@@ -160,6 +160,17 @@ describe("terminal control stream framing", () => {
     buffer.dispose();
   });
 
+  test("routes fragmented Kitty graphics replies as control sequences", () => {
+    const input: string[] = [];
+    const controls: string[] = [];
+    const buffer = new TerminalControlBuffer((data) => input.push(data), (sequence) => controls.push(sequence));
+    const reply = "\x1b_Gi=1073741825,p=536870913;ENOENT:image not found\x1b\\";
+    for (const byte of Buffer.from(`a${reply}b`)) buffer.feed(Buffer.from([byte]));
+    expect(input.join("")).toBe("ab");
+    expect(controls).toEqual([reply]);
+    buffer.dispose();
+  });
+
   test("does not interpret control-looking text inside bracketed paste", () => {
     const input: string[] = [];
     const controls: string[] = [];
