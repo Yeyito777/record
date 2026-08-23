@@ -60,17 +60,20 @@ describe("inline terminal graphics", () => {
     expect(writes[1]).not.toContain("a=t");
     expect(writes[1]).toContain("\x1b[3;27H");
 
+    syncInlineTerminalImages(owner, [ready], [{ ...placement, row: 3, selected: true }], (payload) => writes.push(payload));
+    expect(writes[2]).toContain("z=1,V=1,q=1");
+
     syncInlineTerminalImages(owner, [ready], [], (payload) => writes.push(payload));
-    expect(writes[2]).toContain(`a=d,d=i,i=${ready.imageId},p=${placement.placementId}`);
+    expect(writes[3]).toContain(`a=d,d=i,i=${ready.imageId},p=${placement.placementId}`);
 
     syncInlineTerminalImages(owner, [ready], [placement], (payload) => writes.push(payload));
-    expect(writes[3]).not.toContain("a=t,t=d,f=100");
-    expect(writes[3]).toContain("a=p");
+    expect(writes[4]).not.toContain("a=t,t=d,f=100");
+    expect(writes[4]).toContain("a=p");
 
     syncInlineTerminalImages(owner, [], [], (payload) => writes.push(payload));
-    expect(writes[4]).toContain(`a=d,d=I,i=${ready.imageId}`);
+    expect(writes[5]).toContain(`a=d,d=I,i=${ready.imageId}`);
     disposeInlineTerminalImages(owner, (payload) => writes.push(payload));
-    expect(writes).toHaveLength(5);
+    expect(writes).toHaveLength(6);
   });
 
   test("can retain placements while deferring new or moved placements", () => {

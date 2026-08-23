@@ -2,6 +2,7 @@
 
 import { moveTo } from "./terminal";
 import { termWidth } from "./textwidth";
+import { theme } from "./theme";
 import type { DiscordCustomEmoji } from "./discord";
 import {
   kittyGraphicsDeleteImageRange,
@@ -25,6 +26,26 @@ const MAX_PNG_BYTES = 2 * 1024 * 1024;
 const LOADING_GLYPH = "◇";
 const IMAGE_PLACEHOLDER = "　";
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const SGR_RE = /\x1b\[([0-9;]*)m/g;
+
+function selectionStateAfter(text: string, initiallySelected: boolean): boolean {
+  let selected = initiallySelected;
+  for (const match of text.matchAll(SGR_RE)) {
+    const escape = match[0];
+    if (escape === theme.selectionBg) {
+      selected = true;
+      continue;
+    }
+
+    const params = (match[1] || "0").split(";").map(Number);
+    if (params.some((param) => param === 0 || param === 49
+      || (param >= 40 && param <= 48)
+      || (param >= 100 && param <= 107))) {
+      selected = false;
+    }
+  }
+  return selected;
+}
 
 interface RegisteredCustomEmoji extends RenderableCustomEmoji {
   key: string;
@@ -35,7 +56,14 @@ interface RegisteredCustomEmoji extends RenderableCustomEmoji {
 }
 
 export interface CustomEmojiRenderBatch {
-  placements: Array<{ emoji: RegisteredCustomEmoji; row: number; col: number }>;
+  placements: Array<{ emoji: RegisteredCustomEmoji; row: number; col: number; selected: boolean }>;
+}
+
+export interface CustomEmojiRenderLineOptions {
+  /** Preserve this background beneath ready image placeholders. */
+  imageBackground?: string;
+  /** Restore this background immediately after each placeholder. */
+  restoreBackground?: string;
 }
 
 export interface CustomEmojiImageRendererOptions {
@@ -128,10 +156,17 @@ export class CustomEmojiImageRenderer {
   }
 
   /** Replace markers in one rendered row and collect absolute cell placements. */
-  renderLine(text: string, row: number, startCol: number, batch: CustomEmojiRenderBatch): string {
+  renderLine(
+    text: string,
+    row: number,
+    startCol: number,
+    batch: CustomEmojiRenderBatch,
+    options: CustomEmojiRenderLineOptions = {},
+  ): string {
     let result = "";
     let chunkStart = 0;
     let col = startCol;
+    let selected = false;
 
     for (let index = 0; index < text.length; index++) {
       const emoji = this.byMarker.get(text[index]!);
@@ -140,11 +175,12 @@ export class CustomEmojiImageRenderer {
       const chunk = text.slice(chunkStart, index);
       result += chunk;
       col += termWidth(chunk);
+      selected = selectionStateAfter(chunk, selected);
 
       if (this.enabled) this.ensureLoaded(emoji);
       if (this.enabled && emoji.status === "ready") {
-        result += IMAGE_PLACEHOLDER;
-        batch.placements.push({ emoji, row, col });
+        result += `${options.imageBackground ?? ""}${IMAGE_PLACEHOLDER}${options.restoreBackground ?? ""}`;
+        batch.placements.push({ emoji, row, col, selected });
       } else {
         result += `${LOADING_GLYPH} `;
       }
@@ -162,7 +198,7 @@ export class CustomEmojiImageRenderer {
       [...visibleImageIds].filter((imageId) => !this.lastVisibleImageIds.has(imageId)),
     );
     const key = placements
-      .map((placement) => `${placement.emoji.imageId}@${placement.row},${placement.col}`)
+      .map((placement) => `${placement.emoji.imageId}@${placement.row},${placement.col}:${placement.selected ? 1 : 0}`)
       .join(";");
 
     let payload = "";
@@ -177,6 +213,7 @@ export class CustomEmojiImageRenderer {
         columns: EMOJI_COLUMNS,
         rows: EMOJI_ROWS,
         z: EMOJI_Z_INDEX,
+        selected: placement.selected,
       });
     }
 

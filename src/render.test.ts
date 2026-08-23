@@ -237,6 +237,47 @@ describe("render", () => {
     expect(second).not.toContain("\x1b_Ga=p");
   });
 
+  test("keeps the passive history-line highlight out of expanded image cells", () => {
+    const state = stateWithReadyInlineImage();
+    captureRender(state);
+    focusHistory(state);
+    const imageRow = state.historyLineAnchors.findIndex((anchor) => anchor.includes(":image:"));
+    expect(imageRow).toBeGreaterThanOrEqual(0);
+    state.historyCursor = { row: imageRow, col: 0 };
+    state.historyVisualAnchor = { ...state.historyCursor };
+
+    // Keep this assertion meaningful even when the test process reports only
+    // 16-color support and both dark backgrounds adapt to ANSI black.
+    const originalHistoryLineBg = theme.historyLineBg;
+    theme.historyLineBg = "\x1b[48;2;1;2;3m";
+    try {
+      const output = captureRender(state);
+      expect(output).toContain(theme.historyLineBg);
+      expect(output).toContain(`${theme.reset}${theme.appBg ?? "\x1b[49m"} ${theme.reset}`);
+    } finally {
+      theme.historyLineBg = originalHistoryLineBg;
+    }
+  });
+
+  test("marks an expanded image as one selected terminal placement", () => {
+    const state = stateWithReadyInlineImage();
+    captureRender(state);
+    focusHistory(state);
+    const imageRow = state.historyLineAnchors.findIndex((anchor) => anchor.includes(":image:"));
+    expect(imageRow).toBeGreaterThanOrEqual(0);
+    state.editor.mode = "visual";
+    state.historyCursor = { row: imageRow, col: 0 };
+    state.historyVisualAnchor = { ...state.historyCursor };
+
+    const selected = captureRender(state);
+    expect(selected).toContain("z=1,V=1,q=1");
+
+    state.editor.mode = "normal";
+    const unselected = captureRender(state);
+    expect(unselected).toContain("\x1b_Ga=p,i=1073741825");
+    expect(unselected).not.toContain("V=1");
+  });
+
   test("keeps expanded image placements while autocomplete covers their cells", () => {
     const state = stateWithReadyInlineImage();
 

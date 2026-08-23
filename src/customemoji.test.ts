@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { CustomEmojiImageRenderer, discordCustomEmojiCdnUrl } from "./customemoji";
 import { termWidth } from "./textwidth";
+import { theme } from "./theme";
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==",
@@ -50,6 +51,19 @@ describe("Discord custom emoji images", () => {
     expect(frame.payload).toContain("\x1b_Ga=t,t=d,f=100");
     expect(frame.payload).toContain("\x1b[5;5H\x1b_Ga=p");
     expect(frame.payload).toContain("c=2,r=1,C=1,z=1478");
+
+    const maskedBatch = renderer.beginFrame();
+    const maskedLine = renderer.renderLine(marker, 5, 4, maskedBatch, {
+      imageBackground: "\x1b[49m",
+      restoreBackground: "\x1b[48;2;1;2;3m",
+    });
+    expect(maskedLine).toBe("\x1b[49m　\x1b[48;2;1;2;3m");
+
+    const selectedBatch = renderer.beginFrame();
+    renderer.renderLine(`${theme.selectionBg}${marker}${theme.reset}`, 5, 4, selectedBatch);
+    const selectedFrame = renderer.finishFrame(selectedBatch);
+    expect(selectedFrame.key).toContain(":1");
+    expect(selectedFrame.payload).toContain("z=1478,V=1,q=2");
   });
 
   test("always requests a PNG first frame for animated CDN emoji", () => {

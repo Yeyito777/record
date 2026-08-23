@@ -26,6 +26,9 @@ describe("Kitty terminal graphics", () => {
 
     const placement = kittyGraphicsPlace(0x72000000, { columns: 1, rows: 1, z: 1478 });
     expect(placement).toBe("\x1b_Ga=p,i=1912602624,c=1,r=1,C=1,z=1478,q=2\x1b\\");
+
+    const selected = kittyGraphicsPlace(0x72000000, { columns: 2, rows: 1, z: 1478, selected: true });
+    expect(selected).toBe("\x1b_Ga=p,i=1912602624,c=2,r=1,C=1,z=1478,V=1,q=2\x1b\\");
   });
 
   test("recognizes the matching capability response and consumes graphics replies", () => {
@@ -53,4 +56,3 @@ describe("Kitty terminal graphics", () => {
     );
   });
 });
-

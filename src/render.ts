@@ -175,6 +175,31 @@ function isHistoryLineHighlighted(state: AppState, lineIndex: number, historyFoc
   return lineIndex >= first && lineIndex <= last;
 }
 
+function historyVisualSelectionRows(
+  state: AppState,
+  historyFocused: boolean,
+): { first: number; last: number } | null {
+  if (!historyFocused || (state.editor.mode !== "visual" && state.editor.mode !== "visual-line")) {
+    return null;
+  }
+
+  let first = Math.min(state.historyVisualAnchor.row, state.historyCursor.row);
+  let last = Math.max(state.historyVisualAnchor.row, state.historyCursor.row);
+  if (state.editor.mode === "visual-line") {
+    first = logicalLineRange(first, state.historyWrapContinuation).first;
+    last = logicalLineRange(last, state.historyWrapContinuation).last;
+  }
+  return { first, last };
+}
+
+function inlineImageColumnsOnLine(timeline: RenderedTimeline, lineIndex: number): number {
+  return timeline.inlineImages.reduce((columns, placement) => (
+    lineIndex >= placement.lineIndex && lineIndex < placement.lineIndex + placement.rows
+      ? Math.max(columns, placement.columns)
+      : columns
+  ), 0);
+}
+
 function isHistoryLinePendingDelete(state: AppState, lineIndex: number): boolean {
   const pending = state.messageDeletePending;
   if (!pending || state.timeline.channelId !== pending.channelId) return false;
@@ -263,6 +288,7 @@ function visibleInlineImagePlacements(
   bodyTop: number,
   bodyRows: number,
   imageCol: number,
+  selectedRows: { first: number; last: number } | null,
 ): InlineTerminalImagePlacement[] {
   if (bodyRows <= 0) return [];
   const viewEnd = viewStart + bodyRows;
@@ -291,6 +317,9 @@ function visibleInlineImagePlacements(
       rows: visibleRows,
       sourceY,
       sourceHeight: Math.max(1, sourceEnd - sourceY),
+      selected: Boolean(selectedRows
+        && imageStart <= selectedRows.last
+        && imageEnd > selectedRows.first),
     });
   }
 
@@ -480,6 +509,7 @@ export function render(state: AppState): void {
   const useTimeline = timeline.allLines.length > 0;
   const timelineLines = useTimeline ? timeline.lines : fallbackBody;
   const customEmojiFrame = customEmojiImages.beginFrame();
+  const selectedHistoryRows = historyVisualSelectionRows(state, historyFocused);
 
   for (let i = 0; i < bodyRows; i++) {
     const row = bodyTop + i;
@@ -495,17 +525,31 @@ export function render(state: AppState): void {
       : rawLine;
 
     const lineBackground = useTimeline ? (state.historyLineBackgrounds[lineIndex] ?? "") : "";
-    const renderedLine = useTimeline && !pendingDeleteLine && isHistoryLineHighlighted(state, lineIndex, historyFocused)
+    const highlighted = useTimeline
+      && !pendingDeleteLine
+      && isHistoryLineHighlighted(state, lineIndex, historyFocused);
+    const imageBackground = lineBackground || appBg || "\x1b[49m";
+    let renderedLine = highlighted
       ? applyLineBg(` ${line}`, theme.historyLineBg)
       : lineBackground
         ? applyLineBg(` ${line}`, lineBackground)
         : bgLine(` ${line}`);
+    const inlineImageColumns = highlighted ? inlineImageColumnsOnLine(timeline, lineIndex) : 0;
+    if (inlineImageColumns > 0) {
+      // Expanded attachment rows are otherwise blank. Keep the passive line
+      // highlight around the image while restoring its exact occupied cells to
+      // their ordinary background so st does not treat it as an occluding menu.
+      renderedLine += `${imageBackground}${" ".repeat(inlineImageColumns)}${theme.reset}`;
+    }
 
     appendRowWrite(
       frameRows,
       row,
       mainCol,
-      customEmojiImages.renderLine(renderedLine, row, mainCol, customEmojiFrame),
+      customEmojiImages.renderLine(renderedLine, row, mainCol, customEmojiFrame, highlighted ? {
+        imageBackground,
+        restoreBackground: theme.historyLineBg,
+      } : undefined),
     );
     emitMemberListCol(row);
   }
@@ -679,6 +723,7 @@ export function render(state: AppState): void {
         bodyTop,
         bodyRows,
         mainCol + 1,
+        selectedHistoryRows,
       );
   syncInlineTerminalImages(
     state,

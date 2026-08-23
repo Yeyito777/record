@@ -58,15 +58,18 @@ export function kittyGraphicsTransmitPng(imageId: number, pngBase64: string): st
 
 export function kittyGraphicsPlace(
   imageId: number,
-  options: { columns?: number; rows?: number; z?: number } = {},
+  options: { columns?: number; rows?: number; z?: number; selected?: boolean } = {},
 ): string {
   const id = uint32(imageId, "imageId");
   const columns = Math.max(1, Math.floor(options.columns ?? 1));
   const rows = Math.max(1, Math.floor(options.rows ?? 1));
   const z = Math.trunc(options.z ?? 0);
+  const selected = options.selected ? ",V=1" : "";
   // C=1 keeps placement from moving the terminal cursor. The caller reserves
-  // the same number of terminal columns in the underlying text row.
-  return `${APC}a=p,i=${id},c=${columns},r=${rows},C=1,z=${z},q=2${ST}`;
+  // the same number of terminal columns in the underlying text row. V=1 is an
+  // st extension: unknown Kitty implementations safely ignore it, while st
+  // tints the complete placement as one selected visual object.
+  return `${APC}a=p,i=${id},c=${columns},r=${rows},C=1,z=${z}${selected},q=2${ST}`;
 }
 
 export function kittyGraphicsDeleteZ(z: number): string {
