@@ -25,6 +25,11 @@ interface TerminalImageSyncState {
   placements: Map<string, string>;
 }
 
+export interface InlineTerminalImageSyncOptions {
+  /** Keep established placements but defer creating or moving them. */
+  allowPlacementUpdates?: boolean;
+}
+
 const syncStates = new WeakMap<object, TerminalImageSyncState>();
 
 function graphicsCommand(control: string, payload = ""): string {
@@ -100,6 +105,7 @@ export function syncInlineTerminalImages(
   images: readonly InlineChatImageReady[],
   placements: readonly InlineTerminalImagePlacement[],
   write: (payload: string) => void = (payload) => { process.stdout.write(payload); },
+  options: InlineTerminalImageSyncOptions = {},
 ): void {
   let state = syncStates.get(owner);
   if (!state) {
@@ -145,6 +151,7 @@ export function syncInlineTerminalImages(
     const key = placementKey(placement);
     const fingerprint = placementFingerprint(placement);
     if (!retransmitted.has(placement.image.imageId) && state.placements.get(key) === fingerprint) continue;
+    if (options.allowPlacementUpdates === false) continue;
     out.push(placeImage(placement));
     state.placements.set(key, fingerprint);
   }

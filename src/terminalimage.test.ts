@@ -73,6 +73,35 @@ describe("inline terminal graphics", () => {
     expect(writes).toHaveLength(5);
   });
 
+  test("can retain placements while deferring new or moved placements", () => {
+    const owner = {};
+    const writes: string[] = [];
+    const ready = image();
+    const placement = {
+      image: ready,
+      placementId: 0x20000001,
+      row: 4,
+      col: 27,
+      columns: 10,
+      rows: 3,
+    };
+    const write = (payload: string) => writes.push(payload);
+
+    syncInlineTerminalImages(owner, [ready], [placement], write, { allowPlacementUpdates: false });
+    expect(writes[0]).toContain("a=t,t=d,f=100");
+    expect(writes[0]).not.toContain("a=p");
+
+    syncInlineTerminalImages(owner, [ready], [placement], write, { allowPlacementUpdates: true });
+    expect(writes[1]).not.toContain("a=t,t=d,f=100");
+    expect(writes[1]).toContain("a=p");
+
+    syncInlineTerminalImages(owner, [ready], [{ ...placement, row: 3 }], write, { allowPlacementUpdates: false });
+    expect(writes).toHaveLength(2);
+
+    syncInlineTerminalImages(owner, [ready], [{ ...placement, row: 3 }], write, { allowPlacementUpdates: true });
+    expect(writes[2]).toContain("\x1b[3;27H");
+  });
+
   test("retransmits only after the terminal reports real image eviction", () => {
     const owner = {};
     const writes: string[] = [];

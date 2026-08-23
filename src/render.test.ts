@@ -45,6 +45,33 @@ function captureRender(state: ReturnType<typeof createInitialState>): string {
   return output;
 }
 
+function stateWithReadyInlineImage(): ReturnType<typeof createInitialState> {
+  const state = createInitialState(null, "/tmp/record-config.json");
+  state.cols = 100;
+  state.rows = 24;
+  const withImage = message("1", "look");
+  withImage.attachments = [{
+    id: "a1",
+    filename: "cat.png",
+    contentType: "image/png",
+    size: 68,
+    url: "https://cdn.example/cat.png",
+  }];
+  setTimelineMessages(state.timeline, "channel-1", [withImage]);
+  setTimelineInlineImageState(state.timeline, {
+    phase: "ready",
+    attachmentId: "a1",
+    filename: "cat.png",
+    sourceUrl: "https://cdn.example/cat.png",
+    requestId: 1,
+    imageId: 0x40000001,
+    pngBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==",
+    pixelWidth: 1,
+    pixelHeight: 1,
+  });
+  return state;
+}
+
 describe("render", () => {
   test("composes the centered WhatsApp QR modal over the retained frame", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
@@ -196,29 +223,7 @@ describe("render", () => {
   });
 
   test("places expanded attachment PNGs inside their reserved chat rows", () => {
-    const state = createInitialState(null, "/tmp/record-config.json");
-    state.cols = 100;
-    state.rows = 24;
-    const withImage = message("1", "look");
-    withImage.attachments = [{
-      id: "a1",
-      filename: "cat.png",
-      contentType: "image/png",
-      size: 68,
-      url: "https://cdn.example/cat.png",
-    }];
-    setTimelineMessages(state.timeline, "channel-1", [withImage]);
-    setTimelineInlineImageState(state.timeline, {
-      phase: "ready",
-      attachmentId: "a1",
-      filename: "cat.png",
-      sourceUrl: "https://cdn.example/cat.png",
-      requestId: 1,
-      imageId: 0x40000001,
-      pngBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==",
-      pixelWidth: 1,
-      pixelHeight: 1,
-    });
+    const state = stateWithReadyInlineImage();
 
     const first = captureRender(state);
     expect(first).toContain("\x1b_Ga=t,t=d,f=100,i=1073741825,q=2;");
@@ -228,6 +233,48 @@ describe("render", () => {
     const second = captureRender(state);
     expect(second).not.toContain("\x1b_Ga=t");
     expect(second).not.toContain("\x1b_Ga=p");
+  });
+
+  test("keeps expanded image placements while autocomplete covers their cells", () => {
+    const state = stateWithReadyInlineImage();
+
+    const first = captureRender(state);
+    expect(first).toContain("\x1b_Ga=p,i=1073741825");
+
+    state.autocomplete = {
+      type: "replace",
+      selection: -1,
+      prefix: ":",
+      matches: [{ name: "😀", desc: ":grinning_face:" }],
+      replaceStart: 0,
+      replaceEnd: 1,
+    };
+    const withAutocomplete = captureRender(state);
+
+    expect(withAutocomplete).toContain(":grinning_face:");
+    expect(withAutocomplete).not.toContain("a=d,d=i,i=1073741825");
+    expect(withAutocomplete).not.toContain("\x1b_Ga=p,i=1073741825");
+  });
+
+  test("defers a new image placement until autocomplete closes", () => {
+    const state = stateWithReadyInlineImage();
+    state.autocomplete = {
+      type: "replace",
+      selection: -1,
+      prefix: ":",
+      matches: [{ name: "😀", desc: ":grinning_face:" }],
+      replaceStart: 0,
+      replaceEnd: 1,
+    };
+
+    const coveredFirstFrame = captureRender(state);
+    expect(coveredFirstFrame).toContain(":grinning_face:");
+    expect(coveredFirstFrame).not.toContain("\x1b_Ga=p,i=1073741825");
+
+    state.autocomplete = null;
+    const unobscuredFrame = captureRender(state);
+    expect(unobscuredFrame).toContain("\x1b_Ga=p,i=1073741825");
+    expect(unobscuredFrame).not.toContain("\x1b_Ga=t,t=d,f=100");
   });
 
   test("renders voice-message listening prompt in the theme accent color", () => {

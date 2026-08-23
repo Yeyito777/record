@@ -655,7 +655,7 @@ export function render(state: AppState): void {
 
   const inlinePlacements = state.imageModal
     ? imageModal?.placement ? [imageModal.placement] : []
-    : state.autocomplete || state.whatsapp.loginModal
+    : state.whatsapp.loginModal
       ? []
       : visibleInlineImagePlacements(
         timeline,
@@ -664,5 +664,11 @@ export function render(state: AppState): void {
         bodyRows,
         mainCol + 1,
       );
-  syncInlineTerminalImages(state, readyInlineImages(state), inlinePlacements);
+  syncInlineTerminalImages(
+    state,
+    readyInlineImages(state),
+    inlinePlacements,
+    undefined,
+    { allowPlacementUpdates: !state.autocomplete || !!state.imageModal },
+  );
 }
