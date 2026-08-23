@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { createInitialState } from "../state";
 import { WhatsAppController, type WhatsAppBackendHandle } from "./controller";
+import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 import type {
   WhatsAppBackendEventListener,
   WhatsAppBackendEventMap,
@@ -125,7 +126,7 @@ class FakeBackend implements WhatsAppBackendHandle {
   async setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult> {
     this.muteRequests.push({ chatId, muted });
     if (this.muteError) throw this.muteError;
-    return { mutedUntilMs: muted ? Date.now() + 7 * 24 * 60 * 60 * 1_000 : null };
+    return { mutedUntilMs: muted ? WHATSAPP_MUTE_FOREVER_END_MS : null };
   }
 
   on<K extends WhatsAppBackendEventName>(event: K, listener: WhatsAppBackendEventListener<K>): () => void {
@@ -326,7 +327,7 @@ describe("WhatsApp controller", () => {
     state.notifications.channelGuildIds[channelId] = WHATSAPP_GUILD_ID;
 
     expect(controller.toggleChatMute(channelId)).toBe(true);
-    expect(state.whatsapp.chatsById[jid]?.mutedUntilMs).toBeGreaterThan(Date.now());
+    expect(state.whatsapp.chatsById[jid]?.mutedUntilMs).toBe(WHATSAPP_MUTE_FOREVER_END_MS);
     expect(state.notifications.byChannelId[channelId]).toBeUndefined();
     expect(state.sidebar.cachedChannelsByGuildId[WHATSAPP_GUILD_ID]?.[0]?.muted).toBe(true);
     await Promise.resolve();

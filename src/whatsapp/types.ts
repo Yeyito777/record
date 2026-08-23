@@ -99,6 +99,7 @@ export interface WhatsAppChat {
   unreadCount?: number;
   archived?: boolean;
   pinned?: boolean;
+  /** Epoch milliseconds, -1 for no expiry, or null when explicitly unmuted. */
   mutedUntilMs?: number | null;
   readOnly?: boolean;
   ephemeralExpirationSeconds?: number;

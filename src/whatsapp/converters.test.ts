@@ -332,6 +332,7 @@ describe("WhatsApp provider-neutral converters", () => {
     const epochSeconds = 1_800_000_000;
     expect(toWhatsAppChat({ id: "group@g.us", muteEndTime: epochSeconds })?.mutedUntilMs)
       .toBe(epochSeconds * 1_000);
+    expect(toWhatsAppChat({ id: "group@g.us", muteEndTime: -1 })?.mutedUntilMs).toBe(-1);
     expect(toWhatsAppChat({ id: "group@g.us", muteEndTime: 0 })?.mutedUntilMs).toBeNull();
   });
 

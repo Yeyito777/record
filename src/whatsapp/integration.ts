@@ -1,6 +1,7 @@
 import type { DiscordChannel, DiscordGuildMember, DiscordMessage, DiscordMessageAttachment, DiscordMessageReply } from "../discord";
 import { WHATSAPP_GUILD_ID, whatsappChannelId, whatsappJidFromChannelId } from "../chatproviders";
 import { createLoginModalState, type LoginModalState } from "./loginmodal";
+import { isWhatsAppChatMuted } from "./mute";
 import { sanitizeTerminalLabel, sanitizeTerminalText } from "./sanitize";
 import type {
   WhatsAppAccount,
@@ -369,7 +370,7 @@ export function whatsAppChannels(state: WhatsAppUiState): DiscordChannel[] {
       type: chat.kind === "group" ? 3 : 1,
       nsfw: false,
       pinned: Boolean(chat.pinned),
-      muted: Boolean(chat.mutedUntilMs && chat.mutedUntilMs > Date.now()),
+      muted: isWhatsAppChatMuted(chat.mutedUntilMs),
       recipients: chatRecipient(state, chat),
     }));
 }

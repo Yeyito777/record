@@ -86,8 +86,6 @@ export interface WhatsAppFetchHistoryParams {
   oldestTimestampMs: number;
 }
 
-export const WHATSAPP_CHAT_MUTE_DURATION_MS = 7 * 24 * 60 * 60 * 1_000;
-
 export interface WhatsAppSetChatMutedParams {
   chatId: string;
   muted: boolean;

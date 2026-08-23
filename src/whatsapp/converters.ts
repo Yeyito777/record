@@ -22,6 +22,7 @@ import type {
   WhatsAppReactionEvent,
   WhatsAppTextContent,
 } from "./types";
+import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 
 function finiteNumber(value: unknown): number | undefined {
   if (value == null) return undefined;
@@ -39,6 +40,7 @@ function epochMilliseconds(value: unknown): number | undefined {
 function muteEndMilliseconds(value: unknown): number | null | undefined {
   const number = finiteNumber(value);
   if (number === undefined) return undefined;
+  if (number === WHATSAPP_MUTE_FOREVER_END_MS) return WHATSAPP_MUTE_FOREVER_END_MS;
   if (number <= 0) return null;
   // Baileys emits our own documented 8-hour/7-day chatModify values as a
   // duration, while synchronized WhatsApp snapshots use an epoch timestamp.

@@ -32,7 +32,7 @@ import {
   whatsAppMessageToTimeline,
   whatsAppTimelineMessages,
 } from "./integration";
-import { WHATSAPP_CHAT_MUTE_DURATION_MS } from "./worker-protocol";
+import { isWhatsAppChatMuted, WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 import { setLoginModalPhase } from "./loginmodal";
 import { getRecordWhatsAppPaths } from "./paths";
 import { sanitizeTerminalLabel } from "./sanitize";
@@ -414,11 +414,10 @@ export class WhatsAppController {
       return true;
     }
 
-    const now = Date.now();
     const previousMutedUntilMs = chat.mutedUntilMs;
-    const previousMuted = Boolean(previousMutedUntilMs && previousMutedUntilMs > now);
+    const previousMuted = isWhatsAppChatMuted(previousMutedUntilMs);
     const nextMuted = !previousMuted;
-    chat.mutedUntilMs = nextMuted ? now + WHATSAPP_CHAT_MUTE_DURATION_MS : null;
+    chat.mutedUntilMs = nextMuted ? WHATSAPP_MUTE_FOREVER_END_MS : null;
     if (nextMuted) clearChannelNotifications(this.state.notifications, whatsappChannelId(jid));
     this.queueCacheSave();
     setNotice(this.state, "", "muted");

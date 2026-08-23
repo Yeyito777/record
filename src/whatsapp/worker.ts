@@ -2,6 +2,7 @@ import type { WAMessage } from "@whiskeysockets/baileys";
 
 import { createRecordWhatsAppBackend } from "./backend";
 import type { WhatsAppMessage } from "./types";
+import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 import type {
   WhatsAppMarkReadParams,
   WhatsAppFetchHistoryParams,
@@ -13,7 +14,6 @@ import type {
   WhatsAppWorkerRequest,
   WhatsAppWorkerResponse,
 } from "./worker-protocol";
-import { WHATSAPP_CHAT_MUTE_DURATION_MS } from "./worker-protocol";
 import { toWhatsAppMessage } from "./converters";
 import { startWhatsAppDiagnosticsServer, WhatsAppDiagnostics } from "./diagnostics";
 import { buildWhatsAppSendOptions, resolveWhatsAppEphemeralExpiration, sendWhatsAppImages } from "./sending";
@@ -199,10 +199,10 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
       if (!params?.chatId || typeof params.muted !== "boolean") {
         throw new Error("Invalid set-chat-muted request.");
       }
-      const muteDuration = params.muted ? WHATSAPP_CHAT_MUTE_DURATION_MS : null;
-      await backend.getSocket().chatModify({ mute: muteDuration }, params.chatId);
+      const muteEnd = params.muted ? WHATSAPP_MUTE_FOREVER_END_MS : null;
+      await backend.getSocket().chatModify({ mute: muteEnd }, params.chatId);
       return {
-        mutedUntilMs: params.muted ? Date.now() + WHATSAPP_CHAT_MUTE_DURATION_MS : null,
+        mutedUntilMs: muteEnd,
       };
     }
     case "logout":
