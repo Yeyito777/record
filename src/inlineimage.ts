@@ -70,6 +70,29 @@ export function isImageAttachment(attachment: DiscordMessageAttachment): boolean
   return IMAGE_EXTENSIONS.has(extname(attachment.filename).slice(1).toLowerCase());
 }
 
+export function visibleImageAttachments(
+  messages: readonly { id: string; attachments: DiscordMessageAttachment[]; forwarded?: { attachments: DiscordMessageAttachment[] } | null }[],
+  bounds: readonly { messageId: string; start: number; end: number }[],
+  viewStart: number,
+  viewRows: number,
+): DiscordMessageAttachment[] {
+  const viewEnd = viewStart + Math.max(0, viewRows);
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const seen = new Set<string>();
+  const visible: DiscordMessageAttachment[] = [];
+  for (const bound of bounds) {
+    if (bound.end <= viewStart || bound.start >= viewEnd) continue;
+    const message = messagesById.get(bound.messageId);
+    if (!message) continue;
+    for (const attachment of [...message.attachments, ...(message.forwarded?.attachments ?? [])]) {
+      if (seen.has(attachment.id) || !isImageAttachment(attachment)) continue;
+      seen.add(attachment.id);
+      visible.push(attachment);
+    }
+  }
+  return visible;
+}
+
 export function pngDimensions(data: Uint8Array): { width: number; height: number } | null {
   const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
   if (bytes.length < 24 || !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return null;
@@ -93,22 +116,21 @@ function ffmpegError(stderr: string, code: number | null, signal: NodeJS.Signals
   return new Error(`Image conversion failed${code === null ? "" : ` (ffmpeg exit ${code})`}.`);
 }
 
-/** Convert the first frame of any ffmpeg-supported image to a bounded PNG. */
-export function convertImageToPng(path: string): Promise<Buffer> {
+function convertImageInputToPng(inputArgs: string[], input?: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const max = CONVERTED_IMAGE_MAX_DIMENSION;
     const scale = `scale='if(gt(iw,ih),min(iw,${max}),-2)':'if(gt(iw,ih),-2,min(ih,${max}))'`;
     const child = spawn("ffmpeg", [
       "-v", "error",
       "-nostdin",
-      "-i", path,
+      ...inputArgs,
       "-map", "0:v:0",
       "-vf", scale,
       "-frames:v", "1",
       "-f", "image2pipe",
       "-vcodec", "png",
       "pipe:1",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], { stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
 
     const chunks: Buffer[] = [];
     let size = 0;
@@ -129,6 +151,12 @@ export function convertImageToPng(path: string): Promise<Buffer> {
     child.stderr?.on("data", (chunk: string) => {
       if (stderr.length < 8192) stderr = `${stderr}${chunk}`.slice(0, 8192);
     });
+    if (input) {
+      child.stdin?.on("error", () => {
+        // The close/error path below reports conversion failures.
+      });
+      child.stdin?.end(input);
+    }
     child.once("error", (error) => reject(new Error(`Could not start ffmpeg: ${error.message}`)));
     child.once("close", (code, signal) => {
       if (rejectedForSize) {
@@ -149,6 +177,26 @@ export function convertImageToPng(path: string): Promise<Buffer> {
   });
 }
 
+/** Convert the first frame of any ffmpeg-supported image to a bounded PNG. */
+export function convertImageToPng(path: string): Promise<Buffer> {
+  return convertImageInputToPng(["-i", path]);
+}
+
+export function convertImageBytesToPng(data: Buffer): Promise<Buffer> {
+  return convertImageInputToPng(["-i", "pipe:0"], data);
+}
+
+function preparedPng(png: Buffer, dimensions: { width: number; height: number } | null): PreparedInlineImage {
+  if (!dimensions || !pngFitsTerminal(png, dimensions)) {
+    throw new Error("Image could not be converted to a terminal-compatible PNG.");
+  }
+  return {
+    pngBase64: png.toString("base64"),
+    pixelWidth: dimensions.width,
+    pixelHeight: dimensions.height,
+  };
+}
+
 export async function prepareInlineImage(path: string): Promise<PreparedInlineImage> {
   let png: Buffer = Buffer.from(await readFile(path));
   let dimensions = pngDimensions(png);
@@ -157,15 +205,17 @@ export async function prepareInlineImage(path: string): Promise<PreparedInlineIm
     dimensions = pngDimensions(png);
   }
 
-  if (!dimensions || !pngFitsTerminal(png, dimensions)) {
-    throw new Error("Image could not be converted to a terminal-compatible PNG.");
-  }
+  return preparedPng(png, dimensions);
+}
 
-  return {
-    pngBase64: png.toString("base64"),
-    pixelWidth: dimensions.width,
-    pixelHeight: dimensions.height,
-  };
+export async function prepareInlineImageBytes(data: Buffer): Promise<PreparedInlineImage> {
+  let png = data;
+  let dimensions = pngDimensions(png);
+  if (!dimensions || !pngFitsTerminal(png, dimensions)) {
+    png = await convertImageBytesToPng(data);
+    dimensions = pngDimensions(png);
+  }
+  return preparedPng(png, dimensions);
 }
 
 /**

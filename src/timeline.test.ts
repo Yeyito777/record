@@ -7,6 +7,7 @@ import {
   markTimelineCallEnded,
   prependTimelineMessages,
   pushTimelineSystemMessage,
+  replaceTimelineMessage,
   renderTimelineLines,
   setTimelineInlineImageState,
   setTimelineMessages,
@@ -1008,6 +1009,81 @@ describe("timeline rendering", () => {
     });
     rendered = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" }, 0);
     expect(rendered.allLines.map(stripAnsi)).toContain("✗ Could not display cat.jpg: decoder failed with details");
+  });
+
+  test("keeps a ready outgoing image expanded when its canonical upload replaces it", () => {
+    const timeline = createTimelineState();
+    const pending = message("local:123", "mine");
+    pending.localStatus = "pending";
+    pending.nonce = "123";
+    pending.attachments = [{ id: "local:123:0", filename: "mine.png", contentType: "image/png", size: 68, url: "" }];
+    setTimelineMessages(timeline, "channel-1", [pending]);
+    setTimelineInlineImageState(timeline, {
+      phase: "ready",
+      attachmentId: "local:123:0",
+      filename: "mine.png",
+      sourceUrl: "",
+      requestId: 1,
+      imageId: 0x40000001,
+      pngBase64: "cG5n",
+      pixelWidth: 100,
+      pixelHeight: 50,
+    });
+
+    const canonical = message("message-1", "mine");
+    canonical.nonce = "123";
+    canonical.attachments = [{
+      id: "attachment-1",
+      filename: "mine.png",
+      contentType: "image/png",
+      size: 68,
+      url: "https://cdn.example/mine.png",
+    }];
+    replaceTimelineMessage(timeline, pending.id, canonical);
+
+    expect(timeline.inlineImages["local:123:0"]).toBeUndefined();
+    expect(timeline.inlineImages["attachment-1"]).toMatchObject({
+      phase: "ready",
+      attachmentId: "attachment-1",
+      sourceUrl: "https://cdn.example/mine.png",
+      pngBase64: "cG5n",
+      pixelWidth: 100,
+      pixelHeight: 50,
+    });
+  });
+
+  test("retargets an in-flight outgoing image expansion to the canonical attachment", () => {
+    const timeline = createTimelineState();
+    const pending = message("local:456", "mine");
+    pending.localStatus = "pending";
+    pending.attachments = [{ id: "local:456:0", filename: "mine.jpg", contentType: "image/jpeg", size: 68, url: "" }];
+    setTimelineMessages(timeline, "channel-1", [pending]);
+    setTimelineInlineImageState(timeline, {
+      phase: "loading",
+      attachmentId: "local:456:0",
+      filename: "mine.jpg",
+      sourceUrl: "",
+      requestId: 42,
+    });
+
+    const canonical = message("message-2", "mine");
+    canonical.attachments = [{
+      id: "attachment-2",
+      filename: "mine.jpg",
+      contentType: "image/jpeg",
+      size: 68,
+      url: "https://cdn.example/mine.jpg",
+    }];
+    replaceTimelineMessage(timeline, pending.id, canonical);
+
+    expect(timeline.inlineImages["local:456:0"]).toBeUndefined();
+    expect(timeline.inlineImages["attachment-2"]).toEqual({
+      phase: "loading",
+      attachmentId: "attachment-2",
+      filename: "mine.jpg",
+      sourceUrl: "https://cdn.example/mine.jpg",
+      requestId: 42,
+    });
   });
 
   test("renders link embeds under their source line in muted color", () => {

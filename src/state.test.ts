@@ -20,6 +20,11 @@ describe("state", () => {
     expect(state.editor.mode).toBe("insert");
   });
 
+  test("shows images by default and accepts the persisted hide preference", () => {
+    expect(createInitialState(null, "/tmp/config.json").imageDisplayMode).toBe("show");
+    expect(createInitialState(null, "/tmp/config.json", {}, { imageDisplayMode: "hide" }).imageDisplayMode).toBe("hide");
+  });
+
   test("panel focus cycling preserves chat subfocus", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.sidebar.open = true;

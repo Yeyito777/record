@@ -31,6 +31,13 @@ export interface ChannelsConfig {
   showHidden?: boolean;
 }
 
+export type ImageDisplayMode = "show" | "hide";
+
+export interface ImagesConfig {
+  /** Whether image attachments expand automatically when they enter the viewport. */
+  mode?: ImageDisplayMode;
+}
+
 export interface AudioConfig {
   /** Local microphone noise suppression mode. */
   noiseSuppression?: "off" | "simple";
@@ -46,6 +53,8 @@ export interface RecordConfig {
   openers?: OpenersConfig;
   /** Sidebar/channel display preferences. */
   channels?: ChannelsConfig;
+  /** Chat image attachment display preferences. */
+  images?: ImagesConfig;
   /** Local audio capture/playback preferences. */
   audio?: AudioConfig;
   /** Preserve unknown future/user keys. */
@@ -160,6 +169,7 @@ export function saveConfig(config: RecordConfig): void {
     ...config,
     ...(existing.openers || config.openers ? { openers: { ...existing.openers, ...config.openers } } : {}),
     ...(existing.channels || config.channels ? { channels: { ...existing.channels, ...config.channels } } : {}),
+    ...(existing.images || config.images ? { images: { ...existing.images, ...config.images } } : {}),
     ...(existing.audio || config.audio ? { audio: { ...existing.audio, ...config.audio } } : {}),
   });
 }

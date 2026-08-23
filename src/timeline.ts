@@ -3,7 +3,7 @@
  */
 
 import { applyDiscordMessagePatch, isCompactSystemMessageType, isPendingLocalMessageEcho, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
-import { inlineImageCellLayout, inlineImagePlacementId, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
+import { inlineImageCellLayout, inlineImageId, inlineImagePlacementId, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { summarizeDisplayMessageParts } from "./messageparts";
@@ -164,6 +164,13 @@ export function removeTimelineInlineImageState(timeline: TimelineState, attachme
   return true;
 }
 
+export function clearTimelineInlineImageStates(timeline: TimelineState): boolean {
+  if (Object.keys(timeline.inlineImages).length === 0) return false;
+  timeline.inlineImages = {};
+  resetTimelineRenderCaches(timeline);
+  return true;
+}
+
 export function hasLoadingInlineTimelineImage(timeline: TimelineState): boolean {
   return Object.values(timeline.inlineImages).some((image) => image.phase === "loading");
 }
@@ -177,6 +184,42 @@ function pruneTimelineInlineImages(timeline: TimelineState): void {
     Object.entries(timeline.inlineImages).filter(([attachmentId, image]) => attachmentUrls.get(attachmentId) === image.sourceUrl),
   );
   if (Object.keys(next).length !== Object.keys(timeline.inlineImages).length) timeline.inlineImages = next;
+}
+
+function transferInlineImageStates(
+  timeline: TimelineState,
+  previous: DiscordMessage | undefined,
+  next: DiscordMessage,
+): void {
+  if (!previous) return;
+  const previousAttachments = [...previous.attachments, ...(previous.forwarded?.attachments ?? [])];
+  const nextAttachments = [...next.attachments, ...(next.forwarded?.attachments ?? [])];
+  let changed = false;
+  const states = { ...timeline.inlineImages };
+  for (let index = 0; index < Math.min(previousAttachments.length, nextAttachments.length); index++) {
+    const oldAttachment = previousAttachments[index];
+    const newAttachment = nextAttachments[index];
+    if (!oldAttachment || !newAttachment) continue;
+    const oldState = states[oldAttachment.id];
+    if (!oldState || states[newAttachment.id]) continue;
+    delete states[oldAttachment.id];
+    states[newAttachment.id] = oldState.phase === "ready"
+      ? {
+        ...oldState,
+        attachmentId: newAttachment.id,
+        filename: newAttachment.filename,
+        sourceUrl: newAttachment.url,
+        imageId: inlineImageId(newAttachment),
+      }
+      : {
+        ...oldState,
+        attachmentId: newAttachment.id,
+        filename: newAttachment.filename,
+        sourceUrl: newAttachment.url,
+      };
+    changed = true;
+  }
+  if (changed) timeline.inlineImages = states;
 }
 
 export function setTimelineTerminalCellSize(timeline: TimelineState, width: number, height: number): boolean {
@@ -271,6 +314,7 @@ export function appendTimelineMessage(timeline: TimelineState, message: DiscordM
 
   const pendingIndex = findMatchingPendingLocalMessageIndex(timeline, message);
   if (pendingIndex >= 0) {
+    transferInlineImageStates(timeline, timeline.messages[pendingIndex], message);
     timeline.messages[pendingIndex] = message;
   } else {
     timeline.messages.push(message);
@@ -302,6 +346,7 @@ export function replaceTimelineMessage(timeline: TimelineState, localMessageId: 
   const localIndex = timeline.messages.findIndex((existing) => existing.id === localMessageId);
   const canonicalIndex = timeline.messages.findIndex((existing) => existing.id === message.id);
   if (localIndex >= 0) {
+    transferInlineImageStates(timeline, timeline.messages[localIndex], message);
     timeline.messages[localIndex] = message;
     if (canonicalIndex >= 0 && canonicalIndex !== localIndex) {
       timeline.messages.splice(canonicalIndex, 1);

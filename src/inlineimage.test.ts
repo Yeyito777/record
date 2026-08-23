@@ -10,6 +10,8 @@ import {
   isImageAttachment,
   pngDimensions,
   prepareInlineImage,
+  prepareInlineImageBytes,
+  visibleImageAttachments,
 } from "./inlineimage";
 
 const PNG = Buffer.from(
@@ -42,6 +44,7 @@ describe("inline chat images", () => {
       pixelWidth: 1,
       pixelHeight: 1,
     });
+    expect(await prepareInlineImageBytes(PNG)).toEqual(prepared);
   });
 
   test("fits images using the terminal's real cell aspect ratio", () => {
@@ -59,5 +62,22 @@ describe("inline chat images", () => {
     const attachment = { id: "attachment-1", url: "https://cdn.example/cat.png" };
     expect(inlineImageId(attachment)).toBe(inlineImageId(attachment));
     expect(inlineImageId(attachment)).toBeGreaterThanOrEqual(0x40000000);
+  });
+
+  test("finds only image attachments in visible message bounds", () => {
+    const image = { id: "a1", filename: "cat.png", contentType: "image/png", size: 10, url: "cat" };
+    const pdf = { id: "a2", filename: "notes.pdf", contentType: "application/pdf", size: 10, url: "notes" };
+    const below = { id: "a3", filename: "dog.jpg", contentType: "image/jpeg", size: 10, url: "dog" };
+    const messages = [
+      { id: "m1", attachments: [image, pdf] },
+      { id: "m2", attachments: [below] },
+    ];
+    const bounds = [
+      { messageId: "m1", start: 2, end: 5 },
+      { messageId: "m2", start: 8, end: 10 },
+    ];
+
+    expect(visibleImageAttachments(messages, bounds, 0, 6)).toEqual([image]);
+    expect(visibleImageAttachments(messages, bounds, 6, 4)).toEqual([below]);
   });
 });

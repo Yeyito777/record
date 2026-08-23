@@ -283,6 +283,40 @@ describe("commands", () => {
     });
   });
 
+  test("persists /images show and hide without using the status line", () => {
+    withTempConfigHome(() => {
+      const state = createInitialState("token", "/tmp/record-config.json");
+      state.timeline.channelId = "channel-1";
+
+      expect(state.imageDisplayMode).toBe("show");
+      expect(tryCommand("/images hide", state)).toEqual({ type: "handled" });
+      expect(state.imageDisplayMode).toBe("hide");
+      expect(loadConfig().images).toEqual({ mode: "hide" });
+      expect(state.notice.statusLine).toBe(false);
+      expect(state.timeline.systemMessages.at(-1)?.text).toContain("stay collapsed");
+
+      expect(tryCommand("/images show", state)).toEqual({ type: "handled" });
+      expect(state.imageDisplayMode).toBe("show");
+      expect(loadConfig().images).toEqual({ mode: "show" });
+      expect(state.timeline.systemMessages.at(-1)?.text).toContain("expand automatically");
+      expect(getCommandArgs(state)["/images"]).toEqual([
+        { name: "show", desc: "Expand visible image attachments automatically" },
+        { name: "hide", desc: "Keep images collapsed until Enter is pressed" },
+      ]);
+    });
+  });
+
+  test("reports and validates /images mode", () => {
+    const state = createInitialState("token", "/tmp/record-config.json", {}, { imageDisplayMode: "hide" });
+    state.timeline.channelId = "channel-1";
+
+    expect(tryCommand("/images", state)).toEqual({ type: "handled" });
+    expect(state.timeline.systemMessages.at(-1)?.text).toBe("Images: hide");
+    expect(tryCommand("/images maybe", state)).toEqual({ type: "handled" });
+    expect(state.timeline.systemMessages.at(-1)?.text).toBe("Usage: /images hide|show");
+    expect(state.notice).toMatchObject({ text: "", statusLine: false });
+  });
+
   test("rejects /login without a token", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     const result = tryCommand("/login", state);

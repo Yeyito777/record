@@ -4476,9 +4476,9 @@ function uploadOptionsForFiles(files: LocalMessageUpload[]): SendMessageUpload[]
   }));
 }
 
-function localAttachmentsForFiles(files: LocalMessageUpload[]): DiscordMessageAttachment[] {
+function localAttachmentsForFiles(files: LocalMessageUpload[], messageNonce: string): DiscordMessageAttachment[] {
   return files.map((file, index) => ({
-    id: `local:${index}`,
+    id: `local:${messageNonce}:${index}`,
     filename: file.filename,
     contentType: file.mediaType,
     size: file.sizeBytes,
@@ -4486,6 +4486,19 @@ function localAttachmentsForFiles(files: LocalMessageUpload[]): DiscordMessageAt
     durationSecs: file.durationSecs,
     waveform: file.waveform,
   }));
+}
+
+function transferLocalAttachmentVisibility(
+  state: AppState,
+  localAttachments: readonly DiscordMessageAttachment[],
+  canonicalAttachments: readonly DiscordMessageAttachment[],
+): void {
+  for (let index = 0; index < Math.min(localAttachments.length, canonicalAttachments.length); index++) {
+    const local = localAttachments[index];
+    const canonical = canonicalAttachments[index];
+    if (!local || !canonical || !state.inlineImageHiddenAttachmentIds.delete(local.id)) continue;
+    state.inlineImageHiddenAttachmentIds.add(canonical.id);
+  }
 }
 
 export function editCurrentMessage(
@@ -4622,6 +4635,7 @@ export function deleteMessage(
 
   if (messageId.startsWith("local:")) {
     state.messageDeletePending = null;
+    for (const attachment of message.attachments) delete state.localAttachmentImages[attachment.id];
     if (removeCachedChannelMessage(state.messageCacheByChannelId, channelId, messageId)) {
       persistChannelMessageCache(state, channelId);
     }
@@ -4718,7 +4732,13 @@ export function sendCurrentChannelMessage(
     ...(options.uploads ?? []),
   ];
   const uploads = uploadOptionsForFiles(messageUploads);
-  const localAttachments = localAttachmentsForFiles(messageUploads);
+  const localAttachments = localAttachmentsForFiles(messageUploads, messageNonce);
+  for (let index = 0; index < messageUploads.length; index++) {
+    const upload = messageUploads[index];
+    const attachment = localAttachments[index];
+    if (!upload || !attachment || !upload.mediaType.toLowerCase().startsWith("image/")) continue;
+    state.localAttachmentImages[attachment.id] = { mediaType: upload.mediaType, base64: upload.base64 };
+  }
   const sendContent = options.sendContent ?? content;
   clearPrompt(state);
   state.pendingImages = [];
@@ -4777,6 +4797,7 @@ export function sendCurrentChannelMessage(
         nonce: messageNonce,
       });
       const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
+      transferLocalAttachmentVisibility(state, localAttachments, message.attachments);
       recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, localMessageId, message);
       persistChannelMessageCache(state, channelId);
@@ -4784,6 +4805,7 @@ export function sendCurrentChannelMessage(
         replaceTimelineMessage(state.timeline, localMessageId, message);
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
       }
+      for (const attachment of localAttachments) delete state.localAttachmentImages[attachment.id];
       if (options.loadingNotice && state.notice.text === options.loadingNotice) {
         setNotice(state, "", "muted");
       }

@@ -30,17 +30,20 @@ describe("config", () => {
       token: "old-token",
       openers: { url: { command: "browser", args: ["{target}"] }, rules: [] },
       channels: { showHidden: true },
+      images: { mode: "hide" },
     });
     saveConfig({ token: "new-token" });
 
     expect(loadConfig().openers).toEqual({ url: { command: "browser", args: ["{target}"] }, rules: [] });
     expect(loadConfig().channels).toEqual({ showHidden: true });
+    expect(loadConfig().images).toEqual({ mode: "hide" });
     expect(loadConfig().token).toBe("new-token");
 
     clearConfig();
     expect(loadConfig()).toEqual({
       openers: { url: { command: "browser", args: ["{target}"] }, rules: [] },
       channels: { showHidden: true },
+      images: { mode: "hide" },
     });
   });
 
@@ -51,5 +54,15 @@ describe("config", () => {
     saveConfig({ audio: { micGainDb: -20 } });
 
     expect(loadConfig().audio).toEqual({ noiseSuppression: "simple", participantVolumes: { friend: 80 }, micGainDb: -20 });
+  });
+
+  test("merges persisted image display preferences", () => {
+    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-config-test-"));
+
+    saveConfig({ images: { mode: "hide" }, channels: { showHidden: true } });
+    saveConfig({ images: { mode: "show" } });
+
+    expect(loadConfig().images).toEqual({ mode: "show" });
+    expect(loadConfig().channels).toEqual({ showHidden: true });
   });
 });

@@ -4,7 +4,7 @@
 
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { flushDataCacheSync } from "./datacache";
-import { configPath, loadConfig, loadSavedLogins } from "./config";
+import { configPath, loadConfig, loadSavedLogins, type ImageDisplayMode } from "./config";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
@@ -30,7 +30,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, isImageAttachment, prepareInlineImage, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
@@ -180,6 +180,7 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 
 let initialToken: string | null = null;
 let initialShowHiddenChannels = false;
+let initialImageDisplayMode: ImageDisplayMode = "show";
 let initialNoiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE;
 let initialMicGainDb = DEFAULT_LOCAL_GAIN_DB;
 let initialParticipantVolumes: ParticipantVolumes = {};
@@ -190,6 +191,7 @@ try {
   const config = loadConfig();
   initialToken = config.token ? normalizeToken(config.token) : null;
   initialShowHiddenChannels = config.channels?.showHidden === true;
+  initialImageDisplayMode = config.images?.mode === "hide" ? "hide" : "show";
   initialNoiseSuppression = parseNoiseSuppressionMode(config.audio?.noiseSuppression) ?? DEFAULT_NOISE_SUPPRESSION_MODE;
   initialMicGainDb = normalizeGainDb(config.audio?.micGainDb ?? DEFAULT_LOCAL_GAIN_DB);
   initialParticipantVolumes = normalizeParticipantVolumes(config.audio?.participantVolumes);
@@ -210,7 +212,7 @@ try {
 }
 
 const savedStartingState = loadTuiStartingState();
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes });
 let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
@@ -294,6 +296,7 @@ function scheduleRender(): void {
   renderTimer = setTimeout(() => {
     renderTimer = null;
     render(state);
+    autoShowVisibleImageAttachments();
   }, 16);
 }
 
@@ -327,9 +330,10 @@ function showAttachmentDownloadProgress(filename: string, progress: AttachmentDo
   scheduleRender();
 }
 
-function currentInlineImageRequest(attachmentId: string, requestId: number): boolean {
-  const image = state.timeline.inlineImages[attachmentId];
-  return image?.phase === "loading" && image.requestId === requestId;
+function currentInlineImageRequest(requestId: number): InlineChatImageLoading | null {
+  return Object.values(state.timeline.inlineImages)
+    .find((image): image is InlineChatImageLoading => image.phase === "loading" && image.requestId === requestId)
+    ?? null;
 }
 
 function availableInlineImageId(attachmentId: string, preferred: number): number {
@@ -345,16 +349,24 @@ function availableInlineImageId(attachmentId: string, preferred: number): number
   return candidate;
 }
 
-function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
-  if (!isImageAttachment(attachment)) return false;
+function setInlineImageError(attachment: InlineChatImageLoading, error: string): void {
+  setTimelineInlineImageState(state.timeline, {
+    phase: "error",
+    attachmentId: attachment.attachmentId,
+    filename: attachment.filename,
+    sourceUrl: attachment.sourceUrl,
+    requestId: attachment.requestId,
+    error,
+  });
+  scheduleRender();
+}
 
+function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void {
   const existing = state.timeline.inlineImages[attachment.id];
-  if (existing?.phase === "ready" || existing?.phase === "loading") {
-    removeTimelineInlineImageState(state.timeline, attachment.id);
-    scheduleRender();
-    return true;
-  }
+  if (existing && existing.sourceUrl === attachment.url) return;
+  if (existing) removeTimelineInlineImageState(state.timeline, attachment.id);
 
+  state.inlineImageHiddenAttachmentIds.delete(attachment.id);
   const requestId = ++nextInlineImageRequestId;
   const channelId = state.timeline.channelId;
   setTimelineInlineImageState(state.timeline, {
@@ -367,52 +379,81 @@ function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): bool
   scheduleRender();
 
   void (async () => {
-    const downloaded = isWhatsAppChannelId(channelId)
-      ? await whatsAppController.downloadAttachment(attachment)
-      : await downloadAttachment(attachment);
-    if (!running || state.timeline.channelId !== channelId || !currentInlineImageRequest(attachment.id, requestId)) return;
-    if (!downloaded.ok || !downloaded.path) {
-      setTimelineInlineImageState(state.timeline, {
-        phase: "error",
-        attachmentId: attachment.id,
-        filename: attachment.filename,
-        sourceUrl: attachment.url,
-        requestId,
-        error: downloaded.error ?? "unknown download error",
-      });
-      scheduleRender();
-      return;
-    }
-
     try {
-      const prepared = await prepareInlineImage(downloaded.path);
-      if (!running || state.timeline.channelId !== channelId || !currentInlineImageRequest(attachment.id, requestId)) return;
+      const local = state.localAttachmentImages[attachment.id];
+      let prepared: Awaited<ReturnType<typeof prepareInlineImage>>;
+      if (local) {
+        prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"));
+      } else {
+        const downloaded = isWhatsAppChannelId(channelId)
+          ? await whatsAppController.downloadAttachment(attachment)
+          : await downloadAttachment(attachment);
+        const current = currentInlineImageRequest(requestId);
+        if (!running || state.timeline.channelId !== channelId || !current) return;
+        if (!downloaded.ok || !downloaded.path) {
+          setInlineImageError(current, downloaded.error ?? "unknown download error");
+          return;
+        }
+        prepared = await prepareInlineImage(downloaded.path);
+      }
+
+      const current = currentInlineImageRequest(requestId);
+      if (!running || state.timeline.channelId !== channelId || !current) return;
       setTimelineInlineImageState(state.timeline, {
         phase: "ready",
-        attachmentId: attachment.id,
-        filename: attachment.filename,
-        sourceUrl: attachment.url,
+        attachmentId: current.attachmentId,
+        filename: current.filename,
+        sourceUrl: current.sourceUrl,
         requestId,
-        imageId: availableInlineImageId(attachment.id, inlineImageId(attachment)),
+        imageId: availableInlineImageId(
+          current.attachmentId,
+          inlineImageId({ id: current.attachmentId, url: current.sourceUrl }),
+        ),
         ...prepared,
       });
       scheduleRender();
     } catch (error) {
-      if (!running || state.timeline.channelId !== channelId || !currentInlineImageRequest(attachment.id, requestId)) return;
+      const current = currentInlineImageRequest(requestId);
+      if (!running || state.timeline.channelId !== channelId || !current) return;
       const message = error instanceof Error ? error.message : String(error);
-      debugLog("inline_image.prepare_failed", { attachmentId: attachment.id, filename: attachment.filename, error: message });
-      setTimelineInlineImageState(state.timeline, {
-        phase: "error",
-        attachmentId: attachment.id,
-        filename: attachment.filename,
-        sourceUrl: attachment.url,
-        requestId,
-        error: message,
-      });
-      scheduleRender();
+      debugLog("inline_image.prepare_failed", { attachmentId: current.attachmentId, filename: current.filename, error: message });
+      setInlineImageError(current, message);
     }
   })();
+}
+
+function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
+  if (!isImageAttachment(attachment)) return false;
+
+  const existing = state.timeline.inlineImages[attachment.id];
+  if (existing?.phase === "ready" || existing?.phase === "loading") {
+    removeTimelineInlineImageState(state.timeline, attachment.id);
+    if (state.imageDisplayMode === "show") state.inlineImageHiddenAttachmentIds.add(attachment.id);
+    scheduleRender();
+    return true;
+  }
+
+  if (existing) removeTimelineInlineImageState(state.timeline, attachment.id);
+  state.inlineImageHiddenAttachmentIds.delete(attachment.id);
+  startInlineAttachmentImage(attachment);
   return true;
+}
+
+function autoShowVisibleImageAttachments(): void {
+  if (!running || state.imageDisplayMode !== "show") return;
+  const viewportStart = state.timeline.scrollOffset;
+  const attachments = visibleImageAttachments(
+    state.timeline.messages,
+    state.historyMessageBounds,
+    viewportStart,
+    timelinePageSize(),
+  );
+  for (const attachment of attachments) {
+    if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
+    const existing = state.timeline.inlineImages[attachment.id];
+    if (existing?.sourceUrl === attachment.url) continue;
+    startInlineAttachmentImage(attachment);
+  }
 }
 
 function downloadAndOpenTarget(target: string): void {

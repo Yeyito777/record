@@ -4,7 +4,7 @@
 
 import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
-import type { SavedLogins } from "./config";
+import type { ImageDisplayMode, SavedLogins } from "./config";
 import type { DiscordCustomStatus, DiscordGuildMember, DiscordIdentity, DiscordPresenceStatus, DiscordRole } from "./discord";
 import type { ChannelMessageCache } from "./messagecache";
 import type { ChannelPinCache } from "./pincache";
@@ -91,6 +91,11 @@ export interface VoiceCallStatus {
   participantUserIds: string[];
 }
 
+export interface LocalAttachmentImageSource {
+  mediaType: string;
+  base64: string;
+}
+
 export interface AppState {
   cols: number;
   rows: number;
@@ -110,6 +115,11 @@ export interface AppState {
   historyMessageBounds: TimelineMessageBound[];
   autocomplete: AutocompleteState | null;
   pendingImages: ClipboardImageAttachment[];
+  imageDisplayMode: ImageDisplayMode;
+  /** Per-session exceptions made by collapsing an image while show mode is active. */
+  inlineImageHiddenAttachmentIds: Set<string>;
+  /** Outgoing upload bytes retained only until their optimistic message resolves. */
+  localAttachmentImages: Record<string, LocalAttachmentImageSource>;
   sidebar: SidebarState;
   memberList: MemberListState;
   channelList: ChannelListState;
@@ -147,7 +157,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown } = {},
+  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -168,6 +178,9 @@ export function createInitialState(
     historyMessageBounds: [],
     autocomplete: null,
     pendingImages: [],
+    imageDisplayMode: options.imageDisplayMode ?? "show",
+    inlineImageHiddenAttachmentIds: new Set(),
+    localAttachmentImages: {},
     sidebar: createSidebarState(),
     memberList: createMemberListState(),
     channelList: createChannelListState(),

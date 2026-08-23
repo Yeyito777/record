@@ -34,7 +34,8 @@ Controls:
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
 - `Enter` on a thread (shown with `↳`): open its timeline; posting automatically joins the thread when needed
 - `Enter` on an authored “Started a thread” message in history: open and focus that thread
-- `Enter` on an image attachment in history: download and expand it inline; press `Enter` again on its filename or image rows to collapse it
+- image attachments expand inline by default; press `Enter` on their filename or image rows to collapse/reopen one
+- `/images hide|show`: keep images collapsed until opened manually, or restore automatic expansion; the selected mode persists
 - `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
 - `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history
 - `/thread <name>` in the prompt: create and open a public thread; if a reply is active, anchor it to that replied-to message, otherwise create a standalone thread
