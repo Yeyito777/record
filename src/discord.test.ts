@@ -1014,6 +1014,7 @@ describe("discord helpers", () => {
       mentionUsers: [{ id: "user-2", username: "janthony", displayName: "Janthony", bot: false, roleIds: undefined }],
       attachments: [{ id: "a-1", filename: "note.txt", contentType: "text/plain", size: 16, url: "https://example.com/note.txt", durationSecs: undefined, waveform: undefined }],
       stickerNames: [],
+      stickers: [],
       embedsCount: 1,
       embeds: [{ type: null, title: "Snapshot", url: "https://example.com/snapshot", description: null, providerName: "Example", authorName: null }],
     });
@@ -1167,6 +1168,7 @@ describe("discord helpers", () => {
     const stickerMessage = messages.find((message) => message.id === "message-1");
     const replyMessage = messages.find((message) => message.id === "message-2");
     expect(stickerMessage?.stickerNames).toEqual(["catjam"]);
+    expect(stickerMessage?.stickers).toEqual([{ id: "sticker-1", name: "catjam", formatType: 1 }]);
     expect(replyMessage?.reply?.summary).toBe("[sticker] catjam");
   });
 

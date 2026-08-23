@@ -421,6 +421,13 @@ export interface DiscordMessageAttachment {
   waveform?: string;
 }
 
+export interface DiscordMessageSticker {
+  id: string;
+  name: string;
+  /** Discord sticker format: 1 PNG, 2 APNG, 3 Lottie, 4 GIF. */
+  formatType: number | null;
+}
+
 export interface DiscordMessageEmbed {
   type: string | null;
   title: string | null;
@@ -486,6 +493,7 @@ export interface DiscordForwardedMessage {
   mentionUsers: DiscordGuildMember[];
   attachments: DiscordMessageAttachment[];
   stickerNames: string[];
+  stickers?: DiscordMessageSticker[];
   embedsCount: number;
   embeds: DiscordMessageEmbed[];
 }
@@ -524,6 +532,8 @@ export interface DiscordMessage {
   call: DiscordMessageCall | null;
   attachments: DiscordMessageAttachment[];
   stickerNames: string[];
+  /** Full metadata is optional for caches written before inline stickers. */
+  stickers?: DiscordMessageSticker[];
   embedsCount: number;
   embeds?: DiscordMessageEmbed[];
   forwarded?: DiscordForwardedMessage | null;
@@ -558,6 +568,7 @@ export interface DiscordMessagePatch {
   call?: DiscordMessageCall | null;
   attachments?: DiscordMessageAttachment[];
   stickerNames?: string[];
+  stickers?: DiscordMessageSticker[];
   embedsCount?: number;
   embeds?: DiscordMessageEmbed[];
   forwarded?: DiscordForwardedMessage | null;
@@ -1029,6 +1040,14 @@ function mapDiscordAttachment(attachment: DiscordAttachmentResponse): DiscordMes
   };
 }
 
+function mapDiscordSticker(sticker: DiscordStickerItemResponse): DiscordMessageSticker {
+  return {
+    id: sticker.id,
+    name: sticker.name,
+    formatType: Number.isInteger(sticker.format_type) ? sticker.format_type! : null,
+  };
+}
+
 function mapForwardedMessage(message: Partial<DiscordMessageResponse>): DiscordForwardedMessage | undefined {
   const snapshot = firstMessageSnapshot(message);
   if (!snapshot) return undefined;
@@ -1044,6 +1063,7 @@ function mapForwardedMessage(message: Partial<DiscordMessageResponse>): DiscordF
     mentionUsers: snapshot.mentions?.map(mapMentionedUser) ?? [],
     attachments: snapshot.attachments?.map(mapDiscordAttachment) ?? [],
     stickerNames: snapshot.sticker_items?.map((sticker) => sticker.name) ?? [],
+    stickers: snapshot.sticker_items?.map(mapDiscordSticker) ?? [],
     embedsCount: embeds.length,
     embeds,
   };
@@ -1734,6 +1754,7 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
         : null,
     attachments: message.attachments?.map(mapDiscordAttachment),
     stickerNames: message.sticker_items?.map((sticker) => sticker.name),
+    stickers: message.sticker_items?.map(mapDiscordSticker),
     embedsCount: message.embeds?.length,
     embeds: message.embeds?.map(mapDiscordEmbed),
     forwarded,
@@ -1766,6 +1787,7 @@ export function applyDiscordMessagePatch(message: DiscordMessage, patch: Discord
       : patch.type === 3 && patch.call === undefined ? null : patch.call !== undefined ? patch.call : message.call,
     attachments: patch.attachments ?? message.attachments,
     stickerNames: patch.stickerNames ?? message.stickerNames,
+    stickers: patch.stickers ?? message.stickers,
     embedsCount: patch.embedsCount ?? message.embedsCount,
     embeds: patch.embeds ?? message.embeds,
     forwarded: patch.forwarded !== undefined ? patch.forwarded : message.forwarded,
@@ -1804,6 +1826,7 @@ export function mapDiscordMessage(message: DiscordMessageResponse): DiscordMessa
     call: patch.call ?? null,
     attachments: patch.attachments ?? [],
     stickerNames: patch.stickerNames ?? [],
+    stickers: patch.stickers ?? [],
     embedsCount: patch.embedsCount ?? 0,
     embeds: patch.embeds ?? [],
     forwarded: patch.forwarded ?? null,

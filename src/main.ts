@@ -32,7 +32,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { handleImageModalKey } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
@@ -304,7 +304,7 @@ function scheduleRender(): void {
   renderTimer = setTimeout(() => {
     renderTimer = null;
     render(state);
-    autoShowVisibleImageAttachments();
+    autoShowVisibleInlineImages();
   }, 16);
 }
 
@@ -522,10 +522,10 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   return true;
 }
 
-function autoShowVisibleImageAttachments(): void {
+function autoShowVisibleInlineImages(): void {
   if (!running || state.imageDisplayMode !== "show") return;
   const viewportStart = state.timeline.scrollOffset;
-  const attachments = visibleImageAttachments(
+  const attachments = visibleInlineImageSources(
     state.timeline.messages,
     state.historyMessageBounds,
     viewportStart,

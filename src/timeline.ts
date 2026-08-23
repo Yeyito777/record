@@ -4,7 +4,7 @@
 
 import { applyDiscordMessagePatch, isCompactSystemMessageType, isPendingLocalMessageEcho, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { customEmojiMarker, replaceCustomEmojiTokens } from "./customemoji";
-import { inlineImageCellLayout, inlineImageId, inlineImagePlacementId, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
+import { inlineImageCellLayout, inlineImageId, inlineImagePlacementId, inlineImageSourcesForMessage, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { summarizeDisplayMessageParts } from "./messageparts";
@@ -179,10 +179,9 @@ export function hasLoadingInlineTimelineImage(timeline: TimelineState): boolean 
 }
 
 function pruneTimelineInlineImages(timeline: TimelineState): void {
-  const attachmentUrls = new Map(timeline.messages.flatMap((message) => [
-    ...message.attachments.map((attachment) => [attachment.id, attachment.url] as const),
-    ...(message.forwarded?.attachments.map((attachment) => [attachment.id, attachment.url] as const) ?? []),
-  ]));
+  const attachmentUrls = new Map(timeline.messages.flatMap((message) => (
+    inlineImageSourcesForMessage(message).map((attachment) => [attachment.id, attachment.url] as const)
+  )));
   const next = Object.fromEntries(
     Object.entries(timeline.inlineImages).filter(([attachmentId, image]) => attachmentUrls.get(attachmentId) === image.sourceUrl),
   );
@@ -838,7 +837,7 @@ function inlineImageStatesForMessage(
   message: DiscordMessage,
   states: Readonly<Record<string, InlineChatImageState>>,
 ): InlineChatImageState[] {
-  const attachments = [...message.attachments, ...(message.forwarded?.attachments ?? [])];
+  const attachments = inlineImageSourcesForMessage(message);
   const seen = new Set<string>();
   const matched: InlineChatImageState[] = [];
   for (const attachment of attachments) {
@@ -1282,6 +1281,7 @@ function summarizeForwardedMessage(
     mentionUsers: forwarded.mentionUsers,
     attachments: forwarded.attachments,
     stickerNames: forwarded.stickerNames,
+    stickers: forwarded.stickers,
     embedsCount: forwarded.embedsCount,
     embeds: forwarded.embeds,
     forwarded: null,
@@ -1732,7 +1732,9 @@ function messageRenderFingerprint(
   const mentionKey = (message.mentionUsers ?? [])
     .map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002"))
     .join("\u0000");
-  const stickerKey = message.stickerNames.join("\u0000");
+  const stickerKey = (message.stickers ?? []).map((sticker) => (
+    [sticker.id, sticker.name, String(sticker.formatType ?? "")].join("\u0002")
+  )).join("\u0000") || message.stickerNames.join("\u0000");
   const embedKey = (message.embeds ?? [])
     .map((embed) => [embed.type ?? "", embed.providerName ?? "", embed.authorName ?? "", embed.title ?? "", embed.url ?? "", embed.description ?? ""].join("\u0002"))
     .join("\u0000");
@@ -1747,7 +1749,8 @@ function messageRenderFingerprint(
       forwarded.mentionRoleIds.join(","),
       forwarded.mentionUsers.map((mention) => [mention.id, mention.displayName, mention.roleIds?.join(",") ?? ""].join("\u0002")).join("\u0000"),
       forwarded.attachments.map((attachment) => [attachment.filename, attachment.contentType ?? "", String(attachment.size)].join("\u0002")).join("\u0000"),
-      forwarded.stickerNames.join("\u0000"),
+      (forwarded.stickers ?? []).map((sticker) => [sticker.id, sticker.name, String(sticker.formatType ?? "")].join("\u0002")).join("\u0000")
+        || forwarded.stickerNames.join("\u0000"),
       String(forwarded.embedsCount),
       forwarded.embeds.map((embed) => [embed.type ?? "", embed.providerName ?? "", embed.authorName ?? "", embed.title ?? "", embed.url ?? "", embed.description ?? ""].join("\u0002")).join("\u0000"),
     ].join("\u0001")

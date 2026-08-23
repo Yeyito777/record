@@ -1,5 +1,6 @@
 import { isThreadChannel, type DiscordMessageAttachment } from "./discord";
 import { contentBounds, logicalLineRange, stripAnsi } from "./historycursor";
+import { inlineImageSourcesForMessage } from "./inlineimage";
 import { findOpenableTargetMatches } from "./openable";
 import type { AppState } from "./state";
 
@@ -122,7 +123,7 @@ export function threadChannelAtHistoryCursor(state: AppState): ThreadChannelTarg
 
 export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttachment | null {
   const message = selectedHistoryMessage(state);
-  const attachments = message ? [...message.attachments, ...(message.forwarded?.attachments ?? [])] : [];
+  const attachments = message ? inlineImageSourcesForMessage(message) : [];
   const anchoredAttachmentId = attachmentIdFromInlineImageAnchor(state.historyLineAnchors[state.historyCursor.row]);
   if (anchoredAttachmentId) {
     return attachments.find((attachment) => attachment.id === anchoredAttachmentId) ?? null;
@@ -134,13 +135,18 @@ export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttach
   if (!message || attachments.length === 0) return null;
 
   for (const attachment of attachments) {
+    const sticker = attachment.id.startsWith("sticker:");
+    const displayName = sticker
+      ? attachment.filename.replace(/\.[^.]+$/, "")
+      : attachment.filename;
     let searchFrom = 0;
     while (searchFrom < logicalLine.text.length) {
-      const filenameStart = logicalLine.text.indexOf(attachment.filename, searchFrom);
+      const filenameStart = logicalLine.text.indexOf(displayName, searchFrom);
       if (filenameStart === -1) break;
-      const filenameEnd = filenameStart + attachment.filename.length;
-      const clipStart = logicalLine.text.lastIndexOf("📎", filenameStart);
-      const start = clipStart >= searchFrom ? clipStart : filenameStart;
+      const filenameEnd = filenameStart + displayName.length;
+      const prefix = sticker ? "[sticker]" : "📎";
+      const prefixStart = logicalLine.text.lastIndexOf(prefix, filenameStart);
+      const start = prefixStart >= searchFrom ? prefixStart : filenameStart;
       if (logicalLine.cursorOffset >= start && logicalLine.cursorOffset < filenameEnd) return attachment;
       searchFrom = filenameEnd;
     }
@@ -155,7 +161,7 @@ export function inlineImageBodyAttachmentAtHistoryCursor(state: AppState): Disco
   if (!message) return null;
   const attachmentId = attachmentIdFromInlineImageBodyAnchor(state.historyLineAnchors[state.historyCursor.row]);
   if (!attachmentId) return null;
-  return [...message.attachments, ...(message.forwarded?.attachments ?? [])]
+  return inlineImageSourcesForMessage(message)
     .find((attachment) => attachment.id === attachmentId)
     ?? null;
 }

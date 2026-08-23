@@ -15,6 +15,7 @@ import {
   startLoadingNewerMessages,
   startLoadingOlderMessages,
 } from "./timeline";
+import { inlineImageSourcesForMessage } from "./inlineimage";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { termWidth } from "./textwidth";
 import { decodeCustomEmojiMarkers } from "./customemoji";
@@ -904,6 +905,39 @@ describe("timeline rendering", () => {
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines).not.toContain("(empty message)");
     expect(plainLines[1]).toContain("[sticker] catjam");
+  });
+
+  test("reserves inline image rows for a ready raster sticker", () => {
+    const timeline = createTimelineState();
+    const sticker = message("message-1", "", { authorName: "Paramount" });
+    sticker.stickerNames = ["catjam"];
+    sticker.stickers = [{ id: "sticker-1", name: "catjam", formatType: 1 }];
+    setTimelineMessages(timeline, "channel-1", [sticker]);
+    const source = inlineImageSourcesForMessage(sticker)[0]!;
+    setTimelineInlineImageState(timeline, {
+      phase: "ready",
+      attachmentId: source.id,
+      filename: source.filename,
+      sourceUrl: source.url,
+      requestId: 1,
+      imageId: 0x40000031,
+      pngBase64: "cG5n",
+      pixelWidth: 320,
+      pixelHeight: 320,
+    });
+
+    const rendered = renderTimelineLines(
+      timeline,
+      60,
+      30,
+      { text: "", tone: "muted", loading: false },
+      0,
+    );
+
+    expect(rendered.lines.map(stripAnsi)).toContain("[sticker] catjam");
+    expect(rendered.inlineImages).toHaveLength(1);
+    expect(rendered.inlineImages[0]?.image.attachmentId).toBe("sticker:message-1:sticker-1");
+    expect(rendered.lineAnchors.some((anchor) => anchor.includes("image:sticker%3Amessage-1%3Asticker-1:"))).toBe(true);
   });
 
   test("renders forwarded message snapshots instead of empty deleted replies", () => {

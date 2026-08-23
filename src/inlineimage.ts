@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 
-import type { DiscordMessageAttachment } from "./discord";
+import type { DiscordMessage, DiscordMessageAttachment, DiscordMessageSticker } from "./discord";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MAX_TERMINAL_IMAGE_DIMENSION = 8192;
@@ -78,8 +78,55 @@ export function isImageAttachment(attachment: DiscordMessageAttachment): boolean
   return IMAGE_EXTENSIONS.has(extname(attachment.filename).slice(1).toLowerCase());
 }
 
-export function visibleImageAttachments(
-  messages: readonly { id: string; attachments: DiscordMessageAttachment[]; forwarded?: { attachments: DiscordMessageAttachment[] } | null }[],
+export function discordStickerImageUrl(sticker: Pick<DiscordMessageSticker, "id" | "formatType">): string | null {
+  if (sticker.formatType === 1 || sticker.formatType === 2) {
+    return `https://cdn.discordapp.com/stickers/${sticker.id}.png`;
+  }
+  if (sticker.formatType === 4) {
+    return `https://media.discordapp.net/stickers/${sticker.id}.gif`;
+  }
+  return null;
+}
+
+/** Adapt a raster-backed Discord sticker to the existing inline-image pipeline. */
+export function stickerImageAttachment(
+  sticker: DiscordMessageSticker,
+  occurrenceId = sticker.id,
+): DiscordMessageAttachment | null {
+  const url = discordStickerImageUrl(sticker);
+  if (!url) return null;
+  const gif = sticker.formatType === 4;
+  return {
+    // Sticker IDs are reusable across messages, unlike attachment IDs. Include
+    // the message occurrence so collapsing/selecting one does not affect every
+    // other use of the same sticker in the channel.
+    id: `sticker:${occurrenceId}:${sticker.id}`,
+    filename: `${sticker.name}.${gif ? "gif" : "png"}`,
+    contentType: gif ? "image/gif" : "image/png",
+    // Sticker items do not include their CDN byte size. A zero size tells the
+    // bounded downloader to validate non-empty content without exact matching.
+    size: 0,
+    url,
+  };
+}
+
+export function inlineImageSourcesForMessage(
+  message: Pick<DiscordMessage, "id" | "attachments" | "stickers" | "forwarded">,
+): DiscordMessageAttachment[] {
+  const stickers = [
+    ...(message.stickers ?? []),
+    ...(message.forwarded?.stickers ?? []),
+  ].map((sticker) => stickerImageAttachment(sticker, message.id))
+    .filter((source): source is DiscordMessageAttachment => source !== null);
+  return [
+    ...message.attachments,
+    ...(message.forwarded?.attachments ?? []),
+    ...stickers,
+  ];
+}
+
+export function visibleInlineImageSources(
+  messages: readonly Pick<DiscordMessage, "id" | "attachments" | "stickers" | "forwarded">[],
   bounds: readonly { messageId: string; start: number; end: number }[],
   viewStart: number,
   viewRows: number,
@@ -90,17 +137,16 @@ export function visibleImageAttachments(
   const visible: DiscordMessageAttachment[] = [];
   // Chats are normally anchored at the newest content beside the prompt. Load
   // from the bottom of the viewport upward so the images nearest that reading
-  // position become usable first. Reverse attachments within one message too,
+  // position become usable first. Reverse sources within one message too,
   // matching their visual bottom-to-top order.
   for (const bound of bounds.toReversed()) {
     if (bound.end <= viewStart || bound.start >= viewEnd) continue;
     const message = messagesById.get(bound.messageId);
     if (!message) continue;
-    const attachments = [...message.attachments, ...(message.forwarded?.attachments ?? [])];
-    for (const attachment of attachments.toReversed()) {
-      if (seen.has(attachment.id) || !isImageAttachment(attachment)) continue;
-      seen.add(attachment.id);
-      visible.push(attachment);
+    for (const source of inlineImageSourcesForMessage(message).toReversed()) {
+      if (seen.has(source.id) || !isImageAttachment(source)) continue;
+      seen.add(source.id);
+      visible.push(source);
     }
   }
   return visible;

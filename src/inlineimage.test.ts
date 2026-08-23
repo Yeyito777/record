@@ -5,14 +5,17 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  discordStickerImageUrl,
   inlineImageCellLayout,
   inlineImageId,
   inlineImagePreviewPixelBounds,
+  inlineImageSourcesForMessage,
   isImageAttachment,
   pngDimensions,
   prepareInlineImage,
   prepareInlineImageBytes,
-  visibleImageAttachments,
+  stickerImageAttachment,
+  visibleInlineImageSources,
 } from "./inlineimage";
 
 const PNG = Buffer.from(
@@ -69,13 +72,57 @@ describe("inline chat images", () => {
     expect(inlineImageId(attachment)).toBeGreaterThanOrEqual(0x40000000);
   });
 
-  test("finds only image attachments in visible message bounds", () => {
+  test("adapts raster Discord sticker formats to isolated image occurrences", () => {
+    expect(discordStickerImageUrl({ id: "sticker-1", formatType: 1 })).toBe(
+      "https://cdn.discordapp.com/stickers/sticker-1.png",
+    );
+    expect(discordStickerImageUrl({ id: "sticker-2", formatType: 2 })).toBe(
+      "https://cdn.discordapp.com/stickers/sticker-2.png",
+    );
+    expect(discordStickerImageUrl({ id: "sticker-4", formatType: 4 })).toBe(
+      "https://media.discordapp.net/stickers/sticker-4.gif",
+    );
+    expect(discordStickerImageUrl({ id: "sticker-3", formatType: 3 })).toBeNull();
+
+    expect(stickerImageAttachment({ id: "sticker-1", name: "catjam", formatType: 1 }, "message-1"))
+      .toMatchObject({
+        id: "sticker:message-1:sticker-1",
+        filename: "catjam.png",
+        contentType: "image/png",
+        size: 0,
+      });
+    expect(stickerImageAttachment({ id: "sticker-3", name: "vector", formatType: 3 }, "message-1"))
+      .toBeNull();
+  });
+
+  test("includes raster stickers beside ordinary message image sources", () => {
+    const attachment = { id: "a1", filename: "cat.png", contentType: "image/png", size: 10, url: "cat" };
+    const sources = inlineImageSourcesForMessage({
+      id: "message-1",
+      attachments: [attachment],
+      stickers: [
+        { id: "s1", name: "wave", formatType: 1 },
+        { id: "s2", name: "vector", formatType: 3 },
+      ],
+      forwarded: null,
+    });
+
+    expect(sources).toHaveLength(2);
+    expect(sources[0]).toBe(attachment);
+    expect(sources[1]).toMatchObject({ id: "sticker:message-1:s1", filename: "wave.png" });
+  });
+
+  test("finds image attachments and raster stickers in visible message bounds", () => {
     const image = { id: "a1", filename: "cat.png", contentType: "image/png", size: 10, url: "cat" };
     const pdf = { id: "a2", filename: "notes.pdf", contentType: "application/pdf", size: 10, url: "notes" };
     const secondImage = { id: "a4", filename: "bird.png", contentType: "image/png", size: 10, url: "bird" };
     const below = { id: "a3", filename: "dog.jpg", contentType: "image/jpeg", size: 10, url: "dog" };
     const messages = [
-      { id: "m1", attachments: [image, pdf, secondImage] },
+      {
+        id: "m1",
+        attachments: [image, pdf, secondImage],
+        stickers: [{ id: "s1", name: "wave", formatType: 1 }],
+      },
       { id: "m2", attachments: [below] },
     ];
     const bounds = [
@@ -83,8 +130,9 @@ describe("inline chat images", () => {
       { messageId: "m2", start: 8, end: 10 },
     ];
 
-    expect(visibleImageAttachments(messages, bounds, 0, 6)).toEqual([secondImage, image]);
-    expect(visibleImageAttachments(messages, bounds, 6, 4)).toEqual([below]);
-    expect(visibleImageAttachments(messages, bounds, 0, 10)).toEqual([below, secondImage, image]);
+    const sticker = stickerImageAttachment(messages[0]!.stickers![0]!, "m1")!;
+    expect(visibleInlineImageSources(messages, bounds, 0, 6)).toEqual([sticker, secondImage, image]);
+    expect(visibleInlineImageSources(messages, bounds, 6, 4)).toEqual([below]);
+    expect(visibleInlineImageSources(messages, bounds, 0, 10)).toEqual([below, sticker, secondImage, image]);
   });
 });

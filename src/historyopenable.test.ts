@@ -93,6 +93,28 @@ describe("history openable target lookup", () => {
     expect(inlineImageBodyAttachmentAtHistoryCursor(state)).toEqual(attachment);
   });
 
+  test("maps sticker labels and image rows back to the sticker CDN source", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    const message = baseMessage({
+      stickerNames: ["catjam"],
+      stickers: [{ id: "sticker-1", name: "catjam", formatType: 1 }],
+    });
+    state.timeline.messages = [message];
+    state.historyLines = ["[sticker] catjam", ""];
+    state.historyLineAnchors = ["msg:m1:content:0", "msg:m1:image:sticker%3Am1%3Asticker-1:0"];
+    state.historyMessageBounds = [{ messageId: "m1", start: 0, end: 2, contentStart: 0, contentEnd: 2 }];
+
+    state.historyCursor = { row: 0, col: "[st".length };
+    expect(attachmentAtHistoryCursor(state)).toMatchObject({
+      id: "sticker:m1:sticker-1",
+      filename: "catjam.png",
+    });
+    expect(openableTargetAtHistoryCursor(state)).toBe("https://cdn.discordapp.com/stickers/sticker-1.png");
+
+    state.historyCursor = { row: 1, col: 0 };
+    expect(inlineImageBodyAttachmentAtHistoryCursor(state)?.id).toBe("sticker:m1:sticker-1");
+  });
+
   test("does not treat the attachment row or loading status as image body", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     const attachment = { id: "a1", filename: "cat.png", contentType: "image/png", size: 10, url: "https://cdn.example/cat.png" };
