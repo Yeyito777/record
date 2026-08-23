@@ -455,6 +455,11 @@ function executeVisualCommand(editor: EditorState, command: PromptCommand): Edit
           exitVisualMode(editor);
           applyBufferEdit(editor, deleteRange(editor.buffer, start, endExclusive));
           return "handled";
+        case "visual_delete_yank":
+          copyToClipboard(editor.buffer.slice(start, endExclusive));
+          exitVisualMode(editor);
+          applyBufferEdit(editor, deleteRange(editor.buffer, start, endExclusive));
+          return "handled";
         case "visual_change":
           applyBufferEdit(editor, deleteRange(editor.buffer, start, endExclusive), "insert", true);
           return "handled";

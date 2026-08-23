@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import { createEditorState, getInputLines, getViewport, handleEditorKey } from "./editor";
 
@@ -111,6 +111,43 @@ describe("editor", () => {
 
     expect(editor.mode).toBe("normal");
     expect(editor.buffer).toBe(" world");
+  });
+
+  test("Shift+D deletes and yanks the visual selection", () => {
+    const copiedTexts: string[] = [];
+    const which = spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null);
+    const spawn = spyOn(Bun, "spawn").mockImplementation((() => ({
+      stdin: {
+        write(text: string) {
+          copiedTexts.push(text);
+        },
+        end() {},
+      },
+    })) as unknown as typeof Bun.spawn);
+    const editor = createEditorState("hello world", "normal");
+    editor.cursor = 0;
+    const lineEditor = createEditorState("one\ntwo\nthree", "normal");
+    lineEditor.cursor = 0;
+
+    try {
+      handleEditorKey(editor, { type: "char", char: "v" });
+      handleEditorKey(editor, { type: "char", char: "e" });
+      handleEditorKey(editor, { type: "char", char: "D" });
+
+      handleEditorKey(lineEditor, { type: "char", char: "V" });
+      handleEditorKey(lineEditor, { type: "char", char: "j" });
+      handleEditorKey(lineEditor, { type: "char", char: "D" });
+    } finally {
+      spawn.mockRestore();
+      which.mockRestore();
+    }
+
+    expect(editor.mode).toBe("normal");
+    expect(editor.buffer).toBe(" world");
+    expect(editor.cursor).toBe(0);
+    expect(lineEditor.mode).toBe("normal");
+    expect(lineEditor.buffer).toBe("three");
+    expect(copiedTexts).toEqual(["hello", "one\ntwo\n"]);
   });
 
   test("enter submits from insert mode", () => {
