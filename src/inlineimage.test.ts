@@ -72,9 +72,10 @@ describe("inline chat images", () => {
   test("finds only image attachments in visible message bounds", () => {
     const image = { id: "a1", filename: "cat.png", contentType: "image/png", size: 10, url: "cat" };
     const pdf = { id: "a2", filename: "notes.pdf", contentType: "application/pdf", size: 10, url: "notes" };
+    const secondImage = { id: "a4", filename: "bird.png", contentType: "image/png", size: 10, url: "bird" };
     const below = { id: "a3", filename: "dog.jpg", contentType: "image/jpeg", size: 10, url: "dog" };
     const messages = [
-      { id: "m1", attachments: [image, pdf] },
+      { id: "m1", attachments: [image, pdf, secondImage] },
       { id: "m2", attachments: [below] },
     ];
     const bounds = [
@@ -82,7 +83,8 @@ describe("inline chat images", () => {
       { messageId: "m2", start: 8, end: 10 },
     ];
 
-    expect(visibleImageAttachments(messages, bounds, 0, 6)).toEqual([image]);
+    expect(visibleImageAttachments(messages, bounds, 0, 6)).toEqual([secondImage, image]);
     expect(visibleImageAttachments(messages, bounds, 6, 4)).toEqual([below]);
+    expect(visibleImageAttachments(messages, bounds, 0, 10)).toEqual([below, secondImage, image]);
   });
 });

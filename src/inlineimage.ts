@@ -86,11 +86,16 @@ export function visibleImageAttachments(
   const messagesById = new Map(messages.map((message) => [message.id, message]));
   const seen = new Set<string>();
   const visible: DiscordMessageAttachment[] = [];
-  for (const bound of bounds) {
+  // Chats are normally anchored at the newest content beside the prompt. Load
+  // from the bottom of the viewport upward so the images nearest that reading
+  // position become usable first. Reverse attachments within one message too,
+  // matching their visual bottom-to-top order.
+  for (const bound of bounds.toReversed()) {
     if (bound.end <= viewStart || bound.start >= viewEnd) continue;
     const message = messagesById.get(bound.messageId);
     if (!message) continue;
-    for (const attachment of [...message.attachments, ...(message.forwarded?.attachments ?? [])]) {
+    const attachments = [...message.attachments, ...(message.forwarded?.attachments ?? [])];
+    for (const attachment of attachments.toReversed()) {
       if (seen.has(attachment.id) || !isImageAttachment(attachment)) continue;
       seen.add(attachment.id);
       visible.push(attachment);
