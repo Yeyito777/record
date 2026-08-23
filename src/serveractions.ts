@@ -5,7 +5,7 @@
 import type { KeyEvent } from "./input";
 import { moveTo } from "./frame";
 import { theme } from "./theme";
-import { padRight, termWidth, truncate } from "./textwidth";
+import { termWidth } from "./textwidth";
 import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, REMOTE_USER_VOLUME_FINE_STEP_PERCENT, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeRemoteUserVolumePercent } from "./volume";
 
 export type ServerAction =
@@ -250,7 +250,7 @@ export function renderServerActionModal(
   const availableWidth = totalCols - leftCol + 1;
   if (availableWidth < 6 || totalRows < 4) return "";
 
-  const errorText = modal.error ? truncate(modal.error, Math.max(1, Math.min(38, availableWidth - 4))) : null;
+  const errorText = modal.error;
   const maxVisibleActions = Math.max(1, totalRows - 2 - (errorText ? 1 : 0));
   const selectionIndex = Math.max(0, modal.actions.indexOf(modal.selection));
   const windowStart = Math.max(0, Math.min(
@@ -262,10 +262,9 @@ export function renderServerActionModal(
   const rawLines = labels.map((label) => `  ${label} `);
   if (errorText) rawLines.push(`  ${errorText} `);
 
-  const innerWidth = Math.max(1, Math.min(
-    Math.max(...rawLines.map(termWidth)),
-    availableWidth - 2,
-  ));
+  // This menu is transient and overlays the main pane, so size it to its full
+  // contents instead of ellipsizing useful action errors at an arbitrary width.
+  const innerWidth = Math.max(1, ...rawLines.map(termWidth));
   const boxHeight = rawLines.length + 2;
   const topRow = Math.max(1, Math.min(anchorRow, totalRows - boxHeight + 1));
   const border = theme.sidebarBg + theme.accent;
@@ -284,11 +283,11 @@ export function renderServerActionModal(
       : action === undefined
         ? theme.warning
         : theme.text;
-    const content = truncate(`${marker}${label} `, innerWidth);
+    const content = `${marker}${label} `;
     out.push(
       moveTo(topRow + index + 1, leftCol)
       + border + "│"
-      + bg + fg + padRight(content, innerWidth)
+      + bg + fg + content + " ".repeat(Math.max(0, innerWidth - termWidth(content)))
       + theme.reset + border + "│" + theme.reset,
     );
   }

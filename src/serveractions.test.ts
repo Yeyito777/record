@@ -85,6 +85,18 @@ describe("server actions modal", () => {
     expect(rendered).toContain("Unmute Server");
   });
 
+  test("grows right to show the full error instead of ellipsizing it", () => {
+    const modal = createServerActionModal("guild-1", "Example");
+    const error = "Could not leave server: Discord returned 404. Missing Access";
+    modal.error = error;
+
+    const rendered = stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80));
+
+    expect(rendered).toContain(error);
+    expect(rendered).not.toContain("…");
+    expect(rendered).toContain(`┌${"─".repeat(error.length + 3)}┐`);
+  });
+
   test("shows only the relevant title-cased mute action for categories and channels", () => {
     const category = createChannelActionModal("category", "guild-1", "category-1", "News", false);
     const channel = createChannelActionModal("channel", "guild-1", "channel-1", "general", true);
