@@ -7,6 +7,7 @@
 
 import { clearConfig, saveConfig, saveSavedLogins } from "./config";
 import { tryCommand } from "./commands";
+import { decodeCustomEmojiMarkers } from "./customemoji";
 import { fetchCurrentUserStatusSettings, setCurrentUserSettingsProtoCustomStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
 import { expandMacros } from "./macros";
 import { promptMentionUsers, resolvePromptMentionsForSend } from "./mentions";
@@ -242,7 +243,8 @@ function handleServerCommandSubmit(state: AppState, text: string, effects: AppEf
 }
 
 export function submitCurrentBuffer(state: AppState, effects: AppEffects): void {
-  const rawText = state.editor.buffer;
+  const failureBuffer = state.editor.buffer;
+  const rawText = decodeCustomEmojiMarkers(failureBuffer);
   const text = rawText.trim();
   const hasImages = state.pendingImages.length > 0;
   state.autocomplete = null;
@@ -251,6 +253,7 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
     const expandedRawText = expandMacros(rawText);
     editCurrentMessage(state, state.auth.savedToken, expandedRawText, effects, {
       sendContent: resolvePromptMentionsForSend(state, expandedRawText),
+      failureBuffer,
     });
     return;
   }
@@ -273,5 +276,6 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   sendCurrentChannelMessage(state, state.auth.savedToken, expandedText, effects, {
     sendContent: resolvePromptMentionsForSend(state, expandedText),
     localMentionUsers: promptMentionUsers(state, expandedText),
+    failureBuffer,
   });
 }

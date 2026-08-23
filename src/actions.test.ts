@@ -5,6 +5,7 @@ import { join } from "path";
 
 import { resolveLoginCredential, submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { loadConfig } from "./config";
+import { customEmojiMarker } from "./customemoji";
 import { createInitialState } from "./state";
 import { whatsappChannelId, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
@@ -163,7 +164,11 @@ describe("submitCurrentBuffer", () => {
     state.channelList.activeChannelId = "channel-1";
     state.channelList.activeChannel = state.channelList.channels[0] ?? null;
     state.timeline.channelId = "channel-1";
-    state.editor.buffer = content;
+    state.editor.buffer = `look ${customEmojiMarker({
+      id: "1478284001298087936",
+      name: "aliencat_stare_2",
+      animated: false,
+    })}`;
 
     submitCurrentBuffer(state, effects);
 

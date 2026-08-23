@@ -4,7 +4,7 @@
 
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { flushDataCacheSync } from "./datacache";
-import { customEmojiImages } from "./customemoji";
+import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
 import { configPath, loadConfig, loadSavedLogins } from "./config";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
@@ -1062,7 +1062,7 @@ function startEditSelectedHistoryMessage(): void {
   state.messageDeletePending = null;
   state.pendingImages = [];
   setNotice(state, "", "muted");
-  resetEditor(state.editor, message.content, "insert");
+  resetEditor(state.editor, replaceCustomEmojiTokens(message.content), "insert");
   focusPrompt(state);
   syncPromptAutocomplete();
   scheduleRender();
@@ -1939,7 +1939,10 @@ function handlePromptFocused(key: KeyEvent): void {
   const previousBuffer = state.editor.buffer;
   const previousCursor = state.editor.cursor;
   const previousMode = state.editor.mode;
-  const action = handleEditorKey(state.editor, key);
+  const editorKey = key.type === "paste" && key.text
+    ? { ...key, text: replaceCustomEmojiTokens(key.text) }
+    : key;
+  const action = handleEditorKey(state.editor, editorKey);
 
   if (action === "submit") {
     submitCurrentBuffer(state, effects);

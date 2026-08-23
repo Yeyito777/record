@@ -7,6 +7,7 @@ import { theme } from "./theme";
 import type { DiscordMessage } from "./discord";
 import { recordTypingStart } from "./typing";
 import { createLoginModalState } from "./whatsapp/loginmodal";
+import { customEmojiMarker } from "./customemoji";
 
 function message(id: string, content: string): DiscordMessage {
   const numericId = Number(id);
@@ -192,7 +193,6 @@ describe("render", () => {
       matches: [{
         name: "◇ ",
         desc: ":aliencat_stare_2: · Alien Cats",
-        insertText: "<:aliencat_stare_2:1478284001298087936>",
         customEmoji: { id: "1478284001298087936", name: "aliencat_stare_2", animated: false },
       }],
     };
@@ -201,6 +201,22 @@ describe("render", () => {
 
     expect(output).toContain("◇ ");
     expect(output).not.toMatch(/[\ue000-\uf8ff]/);
+  });
+
+  test("renders selected custom emoji as an inline image placeholder in the prompt", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 80;
+    state.rows = 12;
+    const marker = customEmojiMarker({ id: "1478284001298087936", name: "aliencat_stare_2", animated: false });
+    state.editor.buffer = `look ${marker}`;
+    state.editor.cursor = state.editor.buffer.length;
+
+    const output = captureRender(state);
+
+    expect(output).toContain("look ");
+    expect(output).toContain("◇ ");
+    expect(output).not.toContain("<:aliencat_stare_2:1478284001298087936>");
+    expect(output).not.toContain(marker);
   });
 
   test("renders reply context in the prompt separator", () => {

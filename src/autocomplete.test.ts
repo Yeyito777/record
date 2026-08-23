@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
+import { decodeCustomEmojiMarkers } from "./customemoji";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { emojiCompletions } from "./emojis";
 import { createInitialState } from "./state";
@@ -95,11 +96,11 @@ describe("autocomplete", () => {
 
     expect(state.autocomplete?.matches[0]).toMatchObject({
       desc: ":aliencat_stare_2: · Alien Cats",
-      insertText: "<:aliencat_stare_2:1478284001298087936>",
       customEmoji: { id: "1478284001298087936", name: "aliencat_stare_2", animated: false },
     });
     cycleAutocomplete(state, 1);
-    expect(state.editor.buffer).toBe("look <:aliencat_stare_2:1478284001298087936>");
+    expect(state.editor.buffer).toHaveLength("look ".length + 1);
+    expect(decodeCustomEmojiMarkers(state.editor.buffer)).toBe("look <:aliencat_stare_2:1478284001298087936>");
   });
 
   test("includes animated emoji from other servers for Nitro accounts", () => {
@@ -118,16 +119,17 @@ describe("autocomplete", () => {
     state.editor.cursor = state.editor.buffer.length;
 
     updateAutocomplete(state);
-    expect(state.autocomplete?.matches.some((match) => match.insertText === "<a:party_blob:200>") ?? false).toBe(false);
+    expect(state.autocomplete?.matches.some((match) => match.customEmoji?.id === "200") ?? false).toBe(false);
 
     state.auth.premiumType = 2;
     updateAutocomplete(state);
     expect(state.autocomplete?.matches[0]).toMatchObject({
       desc: ":party_blob: · Animations",
-      insertText: "<a:party_blob:200>",
+      customEmoji: { id: "200", name: "party_blob", animated: true },
     });
     cycleAutocomplete(state, 1);
-    expect(state.editor.buffer).toBe("<a:party_blob:200>");
+    expect(state.editor.buffer).toHaveLength(1);
+    expect(decodeCustomEmojiMarkers(state.editor.buffer)).toBe("<a:party_blob:200>");
   });
 
   test("hides role-restricted custom emoji until the current member has the role", () => {
@@ -143,11 +145,11 @@ describe("autocomplete", () => {
     state.editor.cursor = state.editor.buffer.length;
 
     updateAutocomplete(state);
-    expect(state.autocomplete?.matches.some((match) => match.insertText === "<:staff_only:300>") ?? false).toBe(false);
+    expect(state.autocomplete?.matches.some((match) => match.customEmoji?.id === "300") ?? false).toBe(false);
 
     state.roleIdsByGuildId["guild-1"] = ["staff"];
     updateAutocomplete(state);
-    expect(state.autocomplete?.matches[0]?.insertText).toBe("<:staff_only:300>");
+    expect(state.autocomplete?.matches[0]?.customEmoji?.id).toBe("300");
   });
 
   test("accepting autocomplete keeps the filled completion", () => {

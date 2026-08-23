@@ -513,7 +513,12 @@ export function render(state: AppState): void {
     }
 
     emitSidebarCol(row);
-    appendRowWrite(frameRows, row, mainCol, bgLine(`${prefix}${lineContent}`));
+    appendRowWrite(
+      frameRows,
+      row,
+      mainCol,
+      customEmojiImages.renderLine(bgLine(`${prefix}${lineContent}`), row, mainCol, customEmojiFrame),
+    );
     emitMemberListCol(row);
   }
 

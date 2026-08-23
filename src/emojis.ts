@@ -543,7 +543,6 @@ function customEmojiCompletions(query: string, candidates: readonly CustomEmojiC
       name: "◇ ",
       desc: `:${emoji.name}: · ${guildName}`,
       color: theme.text,
-      insertText: `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`,
       customEmoji: { id: emoji.id, name: emoji.name, animated: emoji.animated },
     }));
 }

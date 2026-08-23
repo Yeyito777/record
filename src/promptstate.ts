@@ -3,6 +3,7 @@
  */
 
 import type { AppState } from "./state";
+import { replaceCustomEmojiTokens } from "./customemoji";
 import { resetEditor } from "./editor";
 import { sanitizePromptTextForInsertion } from "./prompttext";
 import { commitInsertSession, pushUndo } from "./undo";
@@ -20,7 +21,7 @@ export function appendPromptQuoteBlock(state: AppState, text: string): boolean {
   const editor = state.editor;
   const currentLastLine = editor.buffer.slice(editor.buffer.lastIndexOf("\n") + 1);
   const leadingNewline = currentLastLine.length > 0 ? "\n" : "";
-  const quoteBlock = `"""\n${safeText}\n"""\n`;
+  const quoteBlock = `"""\n${replaceCustomEmojiTokens(safeText)}\n"""\n`;
 
   // Preserve any earlier insert session as its own undo step, then make the
   // appended quote independently undoable from the pre-existing draft.

@@ -9,6 +9,7 @@
 import type { AppState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
 import { WHATSAPP_GUILD_ID } from "./chatproviders";
+import { customEmojiMarker } from "./customemoji";
 import { emojiCompletions, emojiQueryAtCursor, type CustomEmojiCandidate } from "./emojis";
 import { MACRO_LIST, getMacroArgs } from "./macros";
 import { loadedMentionCandidates, mentionCandidateMatches, mentionQueryAtCursor } from "./mentions";
@@ -266,7 +267,10 @@ export function cycleAutocomplete(state: AppState, direction: 1 | -1): void {
   }
 
   const selected = autocomplete.matches[autocomplete.selection];
-  fillAutocomplete(state, selected.insertText ?? selected.name);
+  fillAutocomplete(
+    state,
+    selected.customEmoji ? customEmojiMarker(selected.customEmoji) : selected.insertText ?? selected.name,
+  );
 }
 
 export function dismissAutocomplete(state: AppState): void {

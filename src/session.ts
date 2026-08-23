@@ -4503,7 +4503,7 @@ export function editCurrentMessage(
   token: string | null,
   content: string,
   effects: SessionEffects,
-  options: { sendContent?: string } = {},
+  options: { sendContent?: string; failureBuffer?: string } = {},
 ): void {
   const target = state.editTarget;
   if (!target) return;
@@ -4597,7 +4597,7 @@ export function editCurrentMessage(
         }
       }
       state.editTarget = target;
-      state.editor.buffer = content;
+      state.editor.buffer = options.failureBuffer ?? content;
       state.editor.cursor = state.editor.buffer.length;
       const message = error instanceof Error ? error.message : String(error);
       setNotice(state, `Edit failed: ${message}`, "warning");

@@ -2,6 +2,8 @@
  * Clipboard helpers for prompt editor yanks and puts.
  */
 
+import { decodeCustomEmojiMarkers, replaceCustomEmojiTokens } from "./customemoji";
+
 interface ClipboardCommands {
   copy: string[];
   paste: string[];
@@ -59,13 +61,21 @@ function detectClipboardCommands(): ClipboardCommands | null {
   return clipboardCommands;
 }
 
+export function clipboardTextForCopy(text: string): string {
+  return decodeCustomEmojiMarkers(text);
+}
+
+export function editorTextFromClipboard(text: string): string {
+  return replaceCustomEmojiTokens(text);
+}
+
 export function copyToClipboard(text: string): void {
   const commands = detectClipboardCommands();
   if (!commands) return;
 
   try {
     const proc = Bun.spawn(commands.copy, { stdin: "pipe" });
-    proc.stdin.write(text);
+    proc.stdin.write(clipboardTextForCopy(text));
     proc.stdin.end();
   } catch {
     // Clipboard is best-effort.
@@ -78,7 +88,7 @@ export function pasteFromClipboard(): string {
 
   try {
     const result = Bun.spawnSync(commands.paste);
-    return result.exitCode === 0 ? decoder.decode(result.stdout) : "";
+    return result.exitCode === 0 ? editorTextFromClipboard(decoder.decode(result.stdout)) : "";
   } catch {
     return "";
   }
