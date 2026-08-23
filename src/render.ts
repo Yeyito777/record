@@ -35,6 +35,7 @@ import { renderStatusLine } from "./statusline";
 import { renderPromptSeparator } from "./promptbar";
 import { padRight, termWidth, truncate } from "./textwidth";
 import { formatSize, imageLabel } from "./imageclipboard";
+import type { InlineChatImageReady } from "./inlineimage";
 import type { AppState } from "./state";
 import { renderLoginModal } from "./whatsapp/loginmodal";
 import {
@@ -48,7 +49,8 @@ import {
   showCursor,
 } from "./terminal";
 import { theme } from "./theme";
-import { renderTimelineLines, setTimelineRenderContext } from "./timeline";
+import { renderTimelineLines, setTimelineRenderContext, type RenderedTimeline } from "./timeline";
+import { syncInlineTerminalImages, type InlineTerminalImagePlacement } from "./terminalimage";
 import { renderTopbar } from "./topbar";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
 import { voiceMessagePromptText } from "./voice-message";
@@ -243,6 +245,51 @@ function renderHistoryViewportLine(
   }
 
   return rendered;
+}
+
+function readyInlineImages(state: AppState): InlineChatImageReady[] {
+  return Object.values(state.timeline.inlineImages)
+    .filter((image): image is InlineChatImageReady => image.phase === "ready");
+}
+
+function visibleInlineImagePlacements(
+  timeline: RenderedTimeline,
+  viewStart: number,
+  bodyTop: number,
+  bodyRows: number,
+  imageCol: number,
+): InlineTerminalImagePlacement[] {
+  if (bodyRows <= 0) return [];
+  const viewEnd = viewStart + bodyRows;
+  const placements: InlineTerminalImagePlacement[] = [];
+
+  for (const placement of timeline.inlineImages) {
+    const imageStart = placement.lineIndex;
+    const imageEnd = imageStart + placement.rows;
+    const visibleStart = Math.max(imageStart, viewStart);
+    const visibleEnd = Math.min(imageEnd, viewEnd);
+    const visibleRows = visibleEnd - visibleStart;
+    if (visibleRows <= 0) continue;
+
+    const clippedTopRows = visibleStart - imageStart;
+    const sourceY = Math.floor((placement.image.pixelHeight * clippedTopRows) / placement.rows);
+    const sourceEnd = Math.min(
+      placement.image.pixelHeight,
+      Math.ceil((placement.image.pixelHeight * (clippedTopRows + visibleRows)) / placement.rows),
+    );
+    placements.push({
+      image: placement.image,
+      placementId: placement.placementId,
+      row: bodyTop + visibleStart - viewStart,
+      col: imageCol,
+      columns: placement.columns,
+      rows: visibleRows,
+      sourceY,
+      sourceHeight: Math.max(1, sourceEnd - sourceY),
+    });
+  }
+
+  return placements;
 }
 
 export function render(state: AppState): void {
@@ -590,4 +637,15 @@ export function render(state: AppState): void {
     scrollRegion: canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null,
     viewStart: state.timeline.scrollOffset,
   });
+
+  const inlinePlacements = state.autocomplete || state.whatsapp.loginModal
+    ? []
+    : visibleInlineImagePlacements(
+      timeline,
+      state.timeline.scrollOffset,
+      bodyTop,
+      bodyRows,
+      mainCol + 1,
+    );
+  syncInlineTerminalImages(state, readyInlineImages(state), inlinePlacements);
 }

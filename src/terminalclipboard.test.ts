@@ -150,6 +150,16 @@ describe("terminal control stream framing", () => {
     buffer.dispose();
   });
 
+  test("routes cell-geometry replies without turning them into key input", () => {
+    const input: string[] = [];
+    const controls: string[] = [];
+    const buffer = new TerminalControlBuffer((data) => input.push(data), (sequence) => controls.push(sequence));
+    buffer.feed(`a\x1b[6;18;9tb`);
+    expect(input.join("")).toBe("ab");
+    expect(controls).toEqual(["\x1b[6;18;9t"]);
+    buffer.dispose();
+  });
+
   test("does not interpret control-looking text inside bracketed paste", () => {
     const input: string[] = [];
     const controls: string[] = [];

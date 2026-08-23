@@ -30,6 +30,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
+import { inlineImageId, isImageAttachment, prepareInlineImage, type InlineChatImageReady } from "./inlineimage";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
@@ -151,9 +152,10 @@ import {
   setCursorColor,
   showCursor,
 } from "./terminal";
+import { disposeInlineTerminalImages, parseTerminalCellSize, queryTerminalCellSize } from "./terminalimage";
 import { dmAuthorColor, theme } from "./theme";
-import { clearTimeline, hasActiveTimelineCall, moveTimelineScroll, renderTimelineLines, setTimelineRenderContext, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
-import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage } from "./discord";
+import { clearTimeline, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
+import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
 import { formatTypingUsers, getTypingUsers, pruneTypingState } from "./typing";
@@ -229,6 +231,7 @@ let loadingTimer: ReturnType<typeof setInterval> | null = null;
 let terminalGraphicsCells = false;
 let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
+let nextInlineImageRequestId = 0;
 
 function syncTerminalGraphicsCells(): void {
   const modal = state.whatsapp.loginModal;
@@ -256,6 +259,7 @@ function hasActiveLoadingIndicator(): boolean {
     || state.timeline.loading
     || state.timeline.loadingOlder
     || state.timeline.loadingNewer
+    || hasLoadingInlineTimelineImage(state.timeline)
     || Boolean(state.whatsapp.loginModal && state.whatsapp.loginModal.phase !== "qr" && state.whatsapp.loginModal.phase !== "error")
     || hasActiveTimelineCall(state.timeline)
     || Boolean(state.voiceCall)
@@ -321,6 +325,94 @@ function formatAttachmentDownloadProgress(progress: AttachmentDownloadProgress):
 function showAttachmentDownloadProgress(filename: string, progress: AttachmentDownloadProgress): void {
   setNotice(state, `Downloading ${filename}… ${formatAttachmentDownloadProgress(progress)}`, "muted", { loading: true, chat: false });
   scheduleRender();
+}
+
+function currentInlineImageRequest(attachmentId: string, requestId: number): boolean {
+  const image = state.timeline.inlineImages[attachmentId];
+  return image?.phase === "loading" && image.requestId === requestId;
+}
+
+function availableInlineImageId(attachmentId: string, preferred: number): number {
+  const used = new Map(
+    Object.values(state.timeline.inlineImages)
+      .filter((image): image is InlineChatImageReady => image.phase === "ready")
+      .map((image) => [image.imageId, image.attachmentId]),
+  );
+  let candidate = preferred;
+  while (used.has(candidate) && used.get(candidate) !== attachmentId) {
+    candidate = ((candidate + 1) & 0x7fffffff) || 0x40000000;
+  }
+  return candidate;
+}
+
+function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
+  if (!isImageAttachment(attachment)) return false;
+
+  const existing = state.timeline.inlineImages[attachment.id];
+  if (existing?.phase === "ready" || existing?.phase === "loading") {
+    removeTimelineInlineImageState(state.timeline, attachment.id);
+    scheduleRender();
+    return true;
+  }
+
+  const requestId = ++nextInlineImageRequestId;
+  const channelId = state.timeline.channelId;
+  setTimelineInlineImageState(state.timeline, {
+    phase: "loading",
+    attachmentId: attachment.id,
+    filename: attachment.filename,
+    sourceUrl: attachment.url,
+    requestId,
+  });
+  scheduleRender();
+
+  void (async () => {
+    const downloaded = isWhatsAppChannelId(channelId)
+      ? await whatsAppController.downloadAttachment(attachment)
+      : await downloadAttachment(attachment);
+    if (!running || state.timeline.channelId !== channelId || !currentInlineImageRequest(attachment.id, requestId)) return;
+    if (!downloaded.ok || !downloaded.path) {
+      setTimelineInlineImageState(state.timeline, {
+        phase: "error",
+        attachmentId: attachment.id,
+        filename: attachment.filename,
+        sourceUrl: attachment.url,
+        requestId,
+        error: downloaded.error ?? "unknown download error",
+      });
+      scheduleRender();
+      return;
+    }
+
+    try {
+      const prepared = await prepareInlineImage(downloaded.path);
+      if (!running || state.timeline.channelId !== channelId || !currentInlineImageRequest(attachment.id, requestId)) return;
+      setTimelineInlineImageState(state.timeline, {
+        phase: "ready",
+        attachmentId: attachment.id,
+        filename: attachment.filename,
+        sourceUrl: attachment.url,
+        requestId,
+        imageId: availableInlineImageId(attachment.id, inlineImageId(attachment)),
+        ...prepared,
+      });
+      scheduleRender();
+    } catch (error) {
+      if (!running || state.timeline.channelId !== channelId || !currentInlineImageRequest(attachment.id, requestId)) return;
+      const message = error instanceof Error ? error.message : String(error);
+      debugLog("inline_image.prepare_failed", { attachmentId: attachment.id, filename: attachment.filename, error: message });
+      setTimelineInlineImageState(state.timeline, {
+        phase: "error",
+        attachmentId: attachment.id,
+        filename: attachment.filename,
+        sourceUrl: attachment.url,
+        requestId,
+        error: message,
+      });
+      scheduleRender();
+    }
+  })();
+  return true;
 }
 
 function downloadAndOpenTarget(target: string): void {
@@ -1801,12 +1893,14 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_select": {
+      const attachment = attachmentAtHistoryCursor(state);
+      if (attachment && toggleInlineAttachmentImage(attachment)) return true;
+
       if (returnToPinnedMessageInChannelHistory()) return true;
       if (focusThreadAtHistoryCursor()) return true;
       if (jumpToReplyTargetAtHistoryCursor()) return true;
       if (jumpToForwardedOriginAtHistoryCursor()) return true;
 
-      const attachment = attachmentAtHistoryCursor(state);
       if (attachment) {
         setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true, chat: false });
         scheduleRender();
@@ -2063,6 +2157,7 @@ function setupTerminal(): void {
   process.stdout.write(
     enterAlt
       + hideCursor
+      + queryTerminalCellSize()
       + enableBracketedPaste
       + queryClipboardPasteEvents
       + enableClipboardPasteEvents
@@ -2078,6 +2173,7 @@ function setupTerminal(): void {
 function restoreTerminal(): void {
   if (!terminalReady) return;
   process.stdin.setRawMode(false);
+  disposeInlineTerminalImages(state);
   process.stdout.write(
     (terminalGraphicsCells ? setStGraphicsCells(false) : "")
       + disableMouse
@@ -2163,7 +2259,14 @@ async function main(): Promise<void> {
       const ready = pasteBuffer.feed(Buffer.from(data));
       if (ready !== null) processInput(ready);
     },
-    (sequence) => terminalClipboardClient?.handleControlSequence(sequence),
+    (sequence) => {
+      const cellSize = parseTerminalCellSize(sequence);
+      if (cellSize) {
+        if (setTimelineTerminalCellSize(state.timeline, cellSize.width, cellSize.height)) scheduleRender();
+        return;
+      }
+      terminalClipboardClient?.handleControlSequence(sequence);
+    },
   );
   process.stdin.on("data", (data: Buffer) => terminalControlBuffer?.feed(data));
 
@@ -2171,6 +2274,7 @@ async function main(): Promise<void> {
     state.cols = process.stdout.columns || 80;
     state.rows = process.stdout.rows || 24;
     invalidateFrame(state);
+    if (terminalReady) process.stdout.write(queryTerminalCellSize());
     scheduleRender();
   });
 

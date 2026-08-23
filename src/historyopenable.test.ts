@@ -80,6 +80,18 @@ describe("history openable target lookup", () => {
     expect(openableTargetAtHistoryCursor(state)).toBe("https://cdn.example/cat.png");
   });
 
+  test("maps reserved inline-image rows back to their attachment", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.historyLines = [""];
+    state.historyLineAnchors = ["msg:m1:image:wa-media%3Aimage-1:0"];
+    state.historyCursor = { row: 0, col: 0 };
+    state.historyMessageBounds = [{ messageId: "m1", start: 0, end: 1, contentStart: 0, contentEnd: 1 }];
+    const attachment = { id: "wa-media:image-1", filename: "cat.jpg", contentType: "image/jpeg", size: 10, url: "wa://cat" };
+    state.timeline.messages = [baseMessage({ attachments: [attachment] })];
+
+    expect(attachmentAtHistoryCursor(state)).toEqual(attachment);
+  });
+
   test("finds forwarded message origins under the history cursor", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.historyLines = ["[Forwarded]: source text"];

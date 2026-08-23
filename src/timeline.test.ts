@@ -8,6 +8,7 @@ import {
   prependTimelineMessages,
   pushTimelineSystemMessage,
   renderTimelineLines,
+  setTimelineInlineImageState,
   setTimelineMessages,
   setTimelineRenderContext,
   startLoadingNewerMessages,
@@ -945,6 +946,68 @@ describe("timeline rendering", () => {
     expect(plainLines[4]).toBe("📎 notes.pdf • 41 KB");
     expect(rendered.lines[2]).toContain(theme.accent);
     expect(rendered.lines[2]).toContain(theme.muted);
+  });
+
+  test("reserves aspect-correct rows for an expanded image attachment", () => {
+    const timeline = createTimelineState();
+    const withImage = message("message-1", "look", { authorName: "Paramount" });
+    withImage.attachments = [
+      { id: "a1", filename: "cat.png", contentType: "image/png", size: 1536, url: "https://cdn.example/cat.png" },
+    ];
+    setTimelineMessages(timeline, "channel-1", [withImage]);
+    setTimelineInlineImageState(timeline, {
+      phase: "ready",
+      attachmentId: "a1",
+      filename: "cat.png",
+      sourceUrl: "https://cdn.example/cat.png",
+      requestId: 1,
+      imageId: 0x40000001,
+      pngBase64: "cG5n",
+      pixelWidth: 400,
+      pixelHeight: 200,
+    });
+
+    const rendered = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" });
+    expect(rendered.inlineImages).toHaveLength(1);
+    expect(rendered.inlineImages[0]).toMatchObject({
+      lineIndex: 3,
+      columns: 50,
+      rows: 13,
+    });
+    expect(rendered.lineAnchors.slice(3, 16)).toEqual(
+      Array.from({ length: 13 }, (_unused, row) => `msg:message-1:image:a1:${row}`),
+    );
+    expect(rendered.messageBounds[0]?.end).toBe(16);
+  });
+
+  test("shows inline loading and conversion errors beside the attachment", () => {
+    const timeline = createTimelineState();
+    const withImage = message("message-1", "", { authorName: "Paramount" });
+    withImage.attachments = [
+      { id: "a1", filename: "cat.jpg", contentType: "image/jpeg", size: 1536, url: "https://cdn.example/cat.jpg" },
+    ];
+    setTimelineMessages(timeline, "channel-1", [withImage]);
+    setTimelineInlineImageState(timeline, {
+      phase: "loading",
+      attachmentId: "a1",
+      filename: "cat.jpg",
+      sourceUrl: "https://cdn.example/cat.jpg",
+      requestId: 1,
+    });
+
+    let rendered = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" }, 1);
+    expect(rendered.allLines.map(stripAnsi)).toContain("⠙ Loading cat.jpg…");
+
+    setTimelineInlineImageState(timeline, {
+      phase: "error",
+      attachmentId: "a1",
+      filename: "cat.jpg",
+      sourceUrl: "https://cdn.example/cat.jpg",
+      requestId: 1,
+      error: "decoder failed\nwith details",
+    });
+    rendered = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" }, 0);
+    expect(rendered.allLines.map(stripAnsi)).toContain("✗ Could not display cat.jpg: decoder failed with details");
   });
 
   test("renders link embeds under their source line in muted color", () => {

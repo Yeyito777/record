@@ -3,6 +3,7 @@
  */
 
 import { applyDiscordMessagePatch, isCompactSystemMessageType, isPendingLocalMessageEcho, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
+import { inlineImageCellLayout, inlineImagePlacementId, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { summarizeDisplayMessageParts } from "./messageparts";
@@ -34,6 +35,10 @@ export interface TimelineState {
   memberRoleIdsByGuildId: Record<string, Record<string, string[]>>;
   memberRoleCacheVersion: number;
   activeGuildId: string | null;
+  /** Per-attachment inline expansion/loading state for the active timeline. */
+  inlineImages: Record<string, InlineChatImageState>;
+  terminalCellWidthPixels: number;
+  terminalCellHeightPixels: number;
 }
 
 export interface TimelineSystemMessage {
@@ -58,7 +63,17 @@ export interface RenderedTimeline {
   lineBackgrounds: string[];
   wrapContinuation: boolean[];
   messageBounds: TimelineMessageBound[];
+  inlineImages: TimelineInlineImagePlacement[];
   maxScroll: number;
+}
+
+export interface TimelineInlineImagePlacement {
+  image: InlineChatImageReady;
+  placementId: number;
+  /** Absolute line index within allLines. */
+  lineIndex: number;
+  columns: number;
+  rows: number;
 }
 
 interface WrappedLine {
@@ -72,6 +87,8 @@ interface RenderedMessage {
   lineAnchors: string[];
   lineBackgrounds: string[];
   wrapContinuation: boolean[];
+  /** Message-relative line indexes, made absolute by the content compositor. */
+  inlineImages: TimelineInlineImagePlacement[];
 }
 
 interface CachedRenderedMessage {
@@ -89,6 +106,7 @@ interface CachedTimelineContent {
   lineBackgrounds: string[];
   wrapContinuation: boolean[];
   messageBounds: TimelineMessageBound[];
+  inlineImages: TimelineInlineImagePlacement[];
 }
 
 type TimelineRenderEntry =
@@ -126,7 +144,51 @@ export function createTimelineState(): TimelineState {
     memberRoleIdsByGuildId: {},
     memberRoleCacheVersion: 0,
     activeGuildId: null,
+    inlineImages: {},
+    terminalCellWidthPixels: 8,
+    terminalCellHeightPixels: 16,
   };
+}
+
+export function setTimelineInlineImageState(timeline: TimelineState, image: InlineChatImageState): void {
+  timeline.inlineImages = { ...timeline.inlineImages, [image.attachmentId]: image };
+  resetTimelineRenderCaches(timeline);
+}
+
+export function removeTimelineInlineImageState(timeline: TimelineState, attachmentId: string): boolean {
+  if (!timeline.inlineImages[attachmentId]) return false;
+  const next = { ...timeline.inlineImages };
+  delete next[attachmentId];
+  timeline.inlineImages = next;
+  resetTimelineRenderCaches(timeline);
+  return true;
+}
+
+export function hasLoadingInlineTimelineImage(timeline: TimelineState): boolean {
+  return Object.values(timeline.inlineImages).some((image) => image.phase === "loading");
+}
+
+function pruneTimelineInlineImages(timeline: TimelineState): void {
+  const attachmentUrls = new Map(timeline.messages.flatMap((message) => [
+    ...message.attachments.map((attachment) => [attachment.id, attachment.url] as const),
+    ...(message.forwarded?.attachments.map((attachment) => [attachment.id, attachment.url] as const) ?? []),
+  ]));
+  const next = Object.fromEntries(
+    Object.entries(timeline.inlineImages).filter(([attachmentId, image]) => attachmentUrls.get(attachmentId) === image.sourceUrl),
+  );
+  if (Object.keys(next).length !== Object.keys(timeline.inlineImages).length) timeline.inlineImages = next;
+}
+
+export function setTimelineTerminalCellSize(timeline: TimelineState, width: number, height: number): boolean {
+  const normalizedWidth = Math.max(1, Math.floor(width));
+  const normalizedHeight = Math.max(1, Math.floor(height));
+  if (timeline.terminalCellWidthPixels === normalizedWidth && timeline.terminalCellHeightPixels === normalizedHeight) {
+    return false;
+  }
+  timeline.terminalCellWidthPixels = normalizedWidth;
+  timeline.terminalCellHeightPixels = normalizedHeight;
+  resetTimelineRenderCaches(timeline);
+  return true;
 }
 
 export function clearTimeline(timeline: TimelineState): void {
@@ -142,6 +204,7 @@ export function clearTimeline(timeline: TimelineState): void {
   timeline.loadingNewer = false;
   timeline.hasOlder = false;
   timeline.hasNewer = false;
+  timeline.inlineImages = {};
   resetTimelineRenderCaches(timeline);
 }
 
@@ -158,7 +221,9 @@ export function setTimelineMessages(
   const previousScrollOffset = timeline.scrollOffset;
   timeline.channelId = channelId;
   timeline.view = view;
+  if (!sameTimeline) timeline.inlineImages = {};
   timeline.messages = messages;
+  pruneTimelineInlineImages(timeline);
   timeline.systemMessages = [];
   timeline.emptyText = options.emptyText !== undefined ? options.emptyText : previousEmptyText;
   timeline.scrollOffset = preserveScroll ? previousScrollOffset : Number.MAX_SAFE_INTEGER;
@@ -199,6 +264,7 @@ export function appendTimelineMessage(timeline: TimelineState, message: DiscordM
   const existingIndex = timeline.messages.findIndex((existing) => existing.id === message.id);
   if (existingIndex >= 0) {
     timeline.messages[existingIndex] = message;
+    pruneTimelineInlineImages(timeline);
     invalidateTimelineContentCache(timeline);
     return;
   }
@@ -245,6 +311,7 @@ export function replaceTimelineMessage(timeline: TimelineState, localMessageId: 
   } else {
     timeline.messages.push(message);
   }
+  pruneTimelineInlineImages(timeline);
   invalidateTimelineContentCache(timeline);
 }
 
@@ -264,6 +331,7 @@ export function updateTimelineMessage(timeline: TimelineState, message: DiscordM
   const existingIndex = timeline.messages.findIndex((existing) => existing.id === message.id);
   if (existingIndex < 0) return;
   timeline.messages[existingIndex] = message;
+  pruneTimelineInlineImages(timeline);
   invalidateTimelineContentCache(timeline);
 }
 
@@ -274,6 +342,7 @@ export function patchTimelineMessage(timeline: TimelineState, patch: DiscordMess
   const existing = timeline.messages[existingIndex];
   if (!existing) return;
   timeline.messages[existingIndex] = applyDiscordMessagePatch(existing, patch);
+  pruneTimelineInlineImages(timeline);
   invalidateTimelineContentCache(timeline);
 }
 
@@ -294,6 +363,7 @@ export function removeTimelineMessage(timeline: TimelineState, messageId: string
   const before = timeline.messages.length;
   timeline.messages = timeline.messages.filter((message) => message.id !== messageId);
   if (timeline.messages.length !== before) {
+    pruneTimelineInlineImages(timeline);
     invalidateTimelineContentCache(timeline);
   }
 }
@@ -307,6 +377,7 @@ export function insertTimelineMessageAt(timeline: TimelineState, message: Discor
   } else {
     timeline.messages.splice(Math.max(0, Math.min(index, timeline.messages.length)), 0, message);
   }
+  pruneTimelineInlineImages(timeline);
   invalidateTimelineContentCache(timeline);
 }
 
@@ -316,6 +387,7 @@ export function removeTimelineMessages(timeline: TimelineState, messageIds: stri
   const before = timeline.messages.length;
   timeline.messages = timeline.messages.filter((message) => !ids.has(message.id));
   if (timeline.messages.length !== before) {
+    pruneTimelineInlineImages(timeline);
     invalidateTimelineContentCache(timeline);
   }
 }
@@ -434,6 +506,7 @@ export function renderTimelineLines(
   let lineBackgrounds: string[] = [];
   let wrapContinuation: boolean[] = [];
   let messageBounds: TimelineMessageBound[] = [];
+  let inlineImages: TimelineInlineImagePlacement[] = [];
 
   const showNoticeInTimeline = notice.chat !== false;
 
@@ -461,7 +534,7 @@ export function renderTimelineLines(
 
     if (timeline.messages.length > 0 || timeline.systemMessages.length > 0) {
       const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
-      appendRenderedTimelineContent(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, content);
+      appendRenderedTimelineContent(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, inlineImages, content);
     }
   } else {
     const content = getRenderedTimelineContent(timeline, width, loadingFrameIndex, Date.now());
@@ -472,7 +545,7 @@ export function renderTimelineLines(
         lineBackgrounds.push("");
         wrapContinuation.push(false);
       }
-      appendRenderedTimelineContent(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, content);
+      appendRenderedTimelineContent(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, inlineImages, content);
       if (timeline.loadingNewer) {
         allLines.push(`${theme.muted}${truncate(loadingLabel("Loading newer messages…", loadingFrameIndex), width)}${theme.reset}`);
         lineAnchors.push("timeline:loading-newer");
@@ -485,6 +558,7 @@ export function renderTimelineLines(
       lineBackgrounds = content.lineBackgrounds;
       wrapContinuation = content.wrapContinuation;
       messageBounds = content.messageBounds;
+      inlineImages = content.inlineImages;
     }
   }
 
@@ -494,10 +568,11 @@ export function renderTimelineLines(
     lineBackgrounds = [""];
     wrapContinuation = [false];
     messageBounds = [];
+    inlineImages = [];
   }
 
   if (!(showNoticeInTimeline && notice.text) && timeline.loading && (timeline.messages.length > 0 || timeline.systemMessages.length > 0)) {
-    prependBlankTimelineRows(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, Math.max(0, height - allLines.length));
+    prependBlankTimelineRows(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, inlineImages, Math.max(0, height - allLines.length));
   }
 
   const maxScroll = Math.max(0, allLines.length - Math.max(0, height));
@@ -512,6 +587,7 @@ export function renderTimelineLines(
     lineBackgrounds,
     wrapContinuation,
     messageBounds,
+    inlineImages,
     maxScroll,
   };
 }
@@ -545,6 +621,7 @@ function prependBlankTimelineRows(
   lineBackgrounds: string[],
   wrapContinuation: boolean[],
   messageBounds: TimelineMessageBound[],
+  inlineImages: TimelineInlineImagePlacement[],
   count: number,
 ): void {
   if (count <= 0) return;
@@ -558,6 +635,7 @@ function prependBlankTimelineRows(
     bound.contentStart += count;
     bound.contentEnd += count;
   }
+  for (const image of inlineImages) image.lineIndex += count;
 }
 
 function appendRenderedTimelineContent(
@@ -566,6 +644,7 @@ function appendRenderedTimelineContent(
   lineBackgrounds: string[],
   wrapContinuation: boolean[],
   messageBounds: TimelineMessageBound[],
+  inlineImages: TimelineInlineImagePlacement[],
   content: CachedTimelineContent,
 ): void {
   const offset = allLines.length;
@@ -573,6 +652,7 @@ function appendRenderedTimelineContent(
   lineAnchors.push(...content.lineAnchors);
   lineBackgrounds.push(...content.lineBackgrounds);
   wrapContinuation.push(...content.wrapContinuation);
+  inlineImages.push(...content.inlineImages.map((image) => ({ ...image, lineIndex: image.lineIndex + offset })));
   if (offset === 0) {
     messageBounds.push(...content.messageBounds);
     return;
@@ -609,6 +689,7 @@ function getRenderedTimelineContent(
   const lineBackgrounds: string[] = [];
   const wrapContinuation: boolean[] = [];
   const messageBounds: TimelineMessageBound[] = [];
+  const inlineImages: TimelineInlineImagePlacement[] = [];
 
   const entries = timelineRenderEntries(timeline);
   if (!timeline.channelId && entries.length === 0) {
@@ -659,6 +740,7 @@ function getRenderedTimelineContent(
       lineAnchors.push(...renderedMessage.lineAnchors);
       lineBackgrounds.push(...renderedMessage.lineBackgrounds);
       wrapContinuation.push(...renderedMessage.wrapContinuation);
+      inlineImages.push(...renderedMessage.inlineImages.map((image) => ({ ...image, lineIndex: image.lineIndex + start })));
       messageBounds.push({
         messageId: message.id,
         groupId: currentMessageGroupId ?? message.id,
@@ -680,6 +762,7 @@ function getRenderedTimelineContent(
     lineBackgrounds,
     wrapContinuation,
     messageBounds,
+    inlineImages,
   };
   cacheState.contentCache = content;
   return content;
@@ -703,6 +786,23 @@ function timelineRenderEntries(timeline: TimelineState): TimelineRenderEntry[] {
   return entries;
 }
 
+function inlineImageStatesForMessage(
+  message: DiscordMessage,
+  states: Readonly<Record<string, InlineChatImageState>>,
+): InlineChatImageState[] {
+  const attachments = [...message.attachments, ...(message.forwarded?.attachments ?? [])];
+  const seen = new Set<string>();
+  const matched: InlineChatImageState[] = [];
+  for (const attachment of attachments) {
+    if (seen.has(attachment.id)) continue;
+    seen.add(attachment.id);
+    const state = states[attachment.id];
+    if (!state || state.sourceUrl !== attachment.url) continue;
+    matched.push(state);
+  }
+  return matched;
+}
+
 function renderMessageCached(
   timeline: TimelineState,
   message: DiscordMessage,
@@ -712,14 +812,29 @@ function renderMessageCached(
   groupedWithPrevious = false,
 ): RenderedMessage {
   const cacheState = getTimelineCacheState(timeline);
-  const fingerprint = messageRenderFingerprint(message, loadingFrameIndex, nowMs, timeline.rolesByGuildId, timeline.activeGuildId, groupedWithPrevious);
+  const inlineImages = inlineImageStatesForMessage(message, timeline.inlineImages);
+  const fingerprint = messageRenderFingerprint(message, loadingFrameIndex, nowMs, timeline.rolesByGuildId, timeline.activeGuildId, groupedWithPrevious, inlineImages);
   const cacheKey = `${message.id}:${groupedWithPrevious ? "grouped" : "full"}`;
   const cached = cacheState.messageRenderCache.get(cacheKey);
   if (cached && cached.width === width && cached.fingerprint === fingerprint) {
     return cached.rendered;
   }
 
-  const rendered = renderMessage(message, width, timeline.viewerId, timeline.accentViewerInDirectMessages, timeline.rolesByGuildId, timeline.memberRoleIdsByGuildId, timeline.activeGuildId, loadingFrameIndex, nowMs, groupedWithPrevious);
+  const rendered = renderMessage(
+    message,
+    width,
+    timeline.viewerId,
+    timeline.accentViewerInDirectMessages,
+    timeline.rolesByGuildId,
+    timeline.memberRoleIdsByGuildId,
+    timeline.activeGuildId,
+    loadingFrameIndex,
+    nowMs,
+    groupedWithPrevious,
+    inlineImages,
+    timeline.terminalCellWidthPixels,
+    timeline.terminalCellHeightPixels,
+  );
   cacheState.messageRenderCache.set(cacheKey, { width, fingerprint, rendered });
   return rendered;
 }
@@ -729,6 +844,76 @@ export function formatLocalMessageTime(timestamp: number): string {
   const hours = date.getHours().toString().padStart(2, "0");
   const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${hours}:${minutes}`;
+}
+
+interface RenderedInlineImageExtras {
+  lines: string[];
+  lineAnchors: string[];
+  wrapContinuation: boolean[];
+  inlineImages: TimelineInlineImagePlacement[];
+}
+
+function inlineImageErrorText(error: string): string {
+  return error
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240) || "unknown image error";
+}
+
+function renderInlineImageExtras(
+  messageId: string,
+  states: readonly InlineChatImageState[],
+  width: number,
+  loadingFrameIndex: number,
+  terminalCellWidthPixels: number,
+  terminalCellHeightPixels: number,
+  lineOffset: number,
+): RenderedInlineImageExtras {
+  const lines: string[] = [];
+  const lineAnchors: string[] = [];
+  const wrapContinuation: boolean[] = [];
+  const inlineImages: TimelineInlineImagePlacement[] = [];
+
+  for (const state of states) {
+    if (state.phase === "ready") continue;
+    const encodedId = encodeURIComponent(state.attachmentId);
+    const label = state.phase === "loading"
+      ? loadingLabel(`Loading ${state.filename}…`, loadingFrameIndex)
+      : `✗ Could not display ${state.filename}: ${inlineImageErrorText(state.error)}`;
+    const color = state.phase === "loading" ? theme.muted : theme.error;
+    const wrapped = wrapPlainText(label, width);
+    wrapped.forEach((line, index) => {
+      lines.push(`${color}${line}${theme.reset}`);
+      lineAnchors.push(`msg:${messageId}:image-status:${encodedId}:${index}`);
+      wrapContinuation.push(index > 0);
+    });
+  }
+
+  for (const state of states) {
+    if (state.phase !== "ready") continue;
+    const layout = inlineImageCellLayout(
+      state,
+      width,
+      terminalCellWidthPixels,
+      terminalCellHeightPixels,
+    );
+    const encodedId = encodeURIComponent(state.attachmentId);
+    inlineImages.push({
+      image: state,
+      placementId: inlineImagePlacementId(state.imageId, messageId),
+      lineIndex: lineOffset + lines.length,
+      columns: layout.columns,
+      rows: layout.rows,
+    });
+    for (let row = 0; row < layout.rows; row++) {
+      lines.push("");
+      lineAnchors.push(`msg:${messageId}:image:${encodedId}:${row}`);
+      wrapContinuation.push(false);
+    }
+  }
+
+  return { lines, lineAnchors, wrapContinuation, inlineImages };
 }
 
 function renderMessage(
@@ -742,6 +927,9 @@ function renderMessage(
   loadingFrameIndex: number,
   nowMs: number,
   groupedWithPrevious = false,
+  inlineImages: readonly InlineChatImageState[] = [],
+  terminalCellWidthPixels = 8,
+  terminalCellHeightPixels = 16,
 ): RenderedMessage {
   const time = formatLocalMessageTime(message.timestamp);
   const author = message.author.bot
@@ -793,14 +981,25 @@ function renderMessage(
       lineAnchors: wrappedSystem.map((line) => `msg:${message.id}:system:${line.visualIndex}`),
       lineBackgrounds: lines.map(() => ""),
       wrapContinuation: wrappedSystem.map((line) => line.wrapContinuation),
+      inlineImages: [],
     };
   }
   const reactionLines = wrapReactionSummary(message, width);
   if (content === "") {
+    const extras = renderInlineImageExtras(
+      message.id,
+      inlineImages,
+      width,
+      loadingFrameIndex,
+      terminalCellWidthPixels,
+      terminalCellHeightPixels,
+      replyPreview.length + headerLines.length + 1,
+    );
     const lines = [
       ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
       ...headerLines,
       `${theme.dim}(empty message)${theme.reset}`,
+      ...extras.lines,
       ...reactionLines.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ];
     return {
@@ -809,20 +1008,38 @@ function renderMessage(
         ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
         ...headerAnchors,
         `msg:${message.id}:empty`,
+        ...extras.lineAnchors,
         ...reactionLines.map((line) => `msg:${message.id}:reactions:${line.visualIndex}`),
       ],
       lineBackgrounds: messageLineBackgrounds(lines, messageBackground),
-      wrapContinuation: [...replyPreview.map((line) => line.wrapContinuation), ...headerWrapContinuation, false, ...reactionLines.map((line) => line.wrapContinuation)],
+      wrapContinuation: [
+        ...replyPreview.map((line) => line.wrapContinuation),
+        ...headerWrapContinuation,
+        false,
+        ...extras.wrapContinuation,
+        ...reactionLines.map((line) => line.wrapContinuation),
+      ],
+      inlineImages: extras.inlineImages,
     };
   }
 
   const contentRestoreStyle = `${messageBackground}${contentColor}`;
   const wrappedContent = wrapMarkdownText(content, width, contentRestoreStyle);
+  const extras = renderInlineImageExtras(
+    message.id,
+    inlineImages,
+    width,
+    loadingFrameIndex,
+    terminalCellWidthPixels,
+    terminalCellHeightPixels,
+    replyPreview.length + headerLines.length + wrappedContent.length,
+  );
   const failureLines = wrapFailureMessage(message, width);
   const lines = [
     ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ...headerLines,
     ...wrappedContent.map((line) => `${contentColor}${line.text}${theme.reset}`),
+    ...extras.lines,
     ...reactionLines.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
   ];
@@ -832,6 +1049,7 @@ function renderMessage(
       ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
       ...headerAnchors,
       ...wrappedContent.map((line) => `msg:${message.id}:content:${line.visualIndex}`),
+      ...extras.lineAnchors,
       ...reactionLines.map((line) => `msg:${message.id}:reactions:${line.visualIndex}`),
       ...failureLines.map((line) => `msg:${message.id}:failure:${line.visualIndex}`),
     ],
@@ -840,9 +1058,11 @@ function renderMessage(
       ...replyPreview.map((line) => line.wrapContinuation),
       ...headerWrapContinuation,
       ...wrappedContent.map((line) => line.wrapContinuation),
+      ...extras.wrapContinuation,
       ...reactionLines.map((line) => line.wrapContinuation),
       ...failureLines.map((line) => line.wrapContinuation),
     ],
+    inlineImages: extras.inlineImages,
   };
 }
 
@@ -1425,8 +1645,9 @@ function resetTimelineRenderCaches(timeline: TimelineState): void {
 }
 
 function timelineLiveRenderKey(timeline: TimelineState, loadingFrameIndex: number, nowMs: number): string {
-  if (!hasActiveTimelineCall(timeline)) return "";
-  return `${loadingFrameIndex}:${Math.floor(nowMs / 1000)}`;
+  const loadingImage = hasLoadingInlineTimelineImage(timeline);
+  if (!hasActiveTimelineCall(timeline) && !loadingImage) return "";
+  return `${loadingImage ? loadingFrameIndex : ""}:${hasActiveTimelineCall(timeline) ? Math.floor(nowMs / 1000) : ""}`;
 }
 
 function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, nowMs: number): string {
@@ -1453,6 +1674,7 @@ function messageRenderFingerprint(
   rolesByGuildId: Record<string, DiscordRole[]>,
   activeGuildId: string | null,
   groupedWithPrevious = false,
+  inlineImages: readonly InlineChatImageState[] = [],
 ): string {
   const attachmentKey = message.attachments.map((attachment) => [attachment.filename, attachment.contentType ?? "", String(attachment.size)].join("\u0002")).join("\u0000");
   const mentionKey = (message.mentionUsers ?? [])
@@ -1496,6 +1718,12 @@ function messageRenderFingerprint(
       callLiveRenderKey(message, loadingFrameIndex, nowMs),
     ].join("\u0000")
     : "";
+  const inlineImageKey = inlineImages.map((image) => image.phase === "ready"
+    ? [image.attachmentId, image.phase, String(image.imageId), String(image.pixelWidth), String(image.pixelHeight)].join("\u0002")
+    : image.phase === "loading"
+      ? [image.attachmentId, image.phase, String(image.requestId), String(loadingFrameIndex)].join("\u0002")
+      : [image.attachmentId, image.phase, String(image.requestId), image.error].join("\u0002"))
+    .join("\u0000");
   return [
     String(message.timestamp),
     String(message.editedTimestamp ?? ""),
@@ -1515,6 +1743,7 @@ function messageRenderFingerprint(
     String(message.embedsCount),
     embedKey,
     forwardedKey,
+    inlineImageKey,
     reactionKey,
     message.localStatus ?? "",
     message.localError ?? "",

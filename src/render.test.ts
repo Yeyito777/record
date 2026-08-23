@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { render } from "./render";
 import { createInitialState, focusHistory } from "./state";
-import { setTimelineMessages } from "./timeline";
+import { setTimelineInlineImageState, setTimelineMessages } from "./timeline";
 import { theme } from "./theme";
 import type { DiscordMessage } from "./discord";
 import { recordTypingStart } from "./typing";
@@ -166,6 +166,41 @@ describe("render", () => {
 
     expect(output).toContain("📎 Image pasted (PNG, 1.5 KB)");
     expect(output.indexOf("📎 Image pasted")).toBeLessThan(output.indexOf("I\x1b["));
+  });
+
+  test("places expanded attachment PNGs inside their reserved chat rows", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 100;
+    state.rows = 24;
+    const withImage = message("1", "look");
+    withImage.attachments = [{
+      id: "a1",
+      filename: "cat.png",
+      contentType: "image/png",
+      size: 68,
+      url: "https://cdn.example/cat.png",
+    }];
+    setTimelineMessages(state.timeline, "channel-1", [withImage]);
+    setTimelineInlineImageState(state.timeline, {
+      phase: "ready",
+      attachmentId: "a1",
+      filename: "cat.png",
+      sourceUrl: "https://cdn.example/cat.png",
+      requestId: 1,
+      imageId: 0x40000001,
+      pngBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==",
+      pixelWidth: 1,
+      pixelHeight: 1,
+    });
+
+    const first = captureRender(state);
+    expect(first).toContain("\x1b_Ga=t,t=d,f=100,i=1073741825,q=2;");
+    expect(first).toContain("\x1b_Ga=p,i=1073741825");
+    expect(first).toContain(",c=1,r=1,C=1,z=1,q=2;");
+
+    const second = captureRender(state);
+    expect(second).not.toContain("\x1b_Ga=t");
+    expect(second).not.toContain("\x1b_Ga=p");
   });
 
   test("renders voice-message listening prompt in the theme accent color", () => {

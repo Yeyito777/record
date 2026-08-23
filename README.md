@@ -34,6 +34,7 @@ Controls:
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
 - `Enter` on a thread (shown with `↳`): open its timeline; posting automatically joins the thread when needed
 - `Enter` on an authored “Started a thread” message in history: open and focus that thread
+- `Enter` on an image attachment in history: download and expand it inline; press `Enter` again on its filename or image rows to collapse it
 - `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
 - `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history
 - `/thread <name>` in the prompt: create and open a public thread; if a reply is active, anchor it to that replied-to message, otherwise create a standalone thread
@@ -80,6 +81,7 @@ That installs `discord-voice-engine` to `~/.local/bin` by default, so Record and
 
 Notes:
 - tokens are stored as plaintext for now, just with strict file permissions
+- expanded chat images use the Kitty direct-stream graphics protocol; PNGs are sent directly and other image formats use `ffmpeg` to produce a bounded first-frame PNG
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`
