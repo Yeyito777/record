@@ -5,6 +5,7 @@
  */
 
 import { copyToClipboard } from "./editor-clipboard";
+import { decodeCustomEmojiMarkers } from "./customemoji";
 import { nextGraphemeEnd } from "./editor-buffer";
 import { isBufferSpace, isWORDChar, isWordChar } from "./editor-chars";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
@@ -524,12 +525,12 @@ export function getHistoryVisualSelection(state: AppState): string {
         parts[parts.length - 1] += ` ${text.trimStart()}`;
       }
     }
-    return parts.join("\n");
+    return decodeCustomEmojiMarkers(parts.join("\n"));
   }
 
   if (start.row === end.row) {
     const plain = stripAnsi(lines[start.row] ?? "");
-    return plain.slice(start.col, nextGraphemeEnd(plain, end.col));
+    return decodeCustomEmojiMarkers(plain.slice(start.col, nextGraphemeEnd(plain, end.col)));
   }
 
   const parts: string[] = [];
@@ -548,7 +549,7 @@ export function getHistoryVisualSelection(state: AppState): string {
     }
   }
 
-  return parts.join("\n");
+  return decodeCustomEmojiMarkers(parts.join("\n"));
 }
 
 function copyHistorySelection(state: AppState): void {
@@ -920,7 +921,7 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
       }
       if (key.char === "y") {
         const plain = stripAnsi(lines[state.historyCursor.row] ?? "").trimEnd();
-        if (plain) copyToClipboard(plain);
+        if (plain) copyToClipboard(decodeCustomEmojiMarkers(plain));
         resetHistoryPending(state);
         return true;
       }

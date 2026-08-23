@@ -13,6 +13,7 @@ What it does right now:
 - persist the saved token to `~/.config/record/config.json` (or `$XDG_CONFIG_HOME/record/config.json`)
 - keep the config directory/file locked down to `0700` / `0600` permissions when possible
 - load servers, categories, channels, and recent messages
+- render Discord custom emoji inline as one-cell images when the terminal reports Kitty graphics support
 - render the server tree as a collapsible sidebar
 - show active announcement/public/private threads beneath their text or forum parent, with live updates and full read/send support
 - show server voice/stage channels in the sidebar and join them from the terminal
@@ -79,6 +80,7 @@ bun run install:voice-engine
 That installs `discord-voice-engine` to `~/.local/bin` by default, so Record and other local tools such as `discord-cli` can continue to discover it through `DISCORD_VOICE_ENGINE` or ordinary `PATH` lookup. Override the install prefix the same way as the helper Makefile, e.g. `bun run install:voice-engine -- PREFIX=/usr/local`.
 
 Notes:
+- custom emoji support uses direct-stream Kitty graphics, so it works over SSH without exposing local file paths; animated emoji use Discord's PNG first frame
 - tokens are stored as plaintext for now, just with strict file permissions
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`

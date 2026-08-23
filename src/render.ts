@@ -14,6 +14,7 @@ import {
   wrappedLineOffsets,
 } from "./editor";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
+import { customEmojiImages } from "./customemoji";
 import { renderBodyLines } from "./bodypanel";
 import { appendPositionedPayload, appendRowWrite, createFrameRows, flushFrame } from "./frame";
 import {
@@ -427,6 +428,7 @@ export function render(state: AppState): void {
   const fallbackBody = renderBodyLines(state, bodyInnerWidth);
   const useTimeline = timeline.allLines.length > 0;
   const timelineLines = useTimeline ? timeline.lines : fallbackBody;
+  const customEmojiFrame = customEmojiImages.beginFrame();
 
   for (let i = 0; i < bodyRows; i++) {
     const row = bodyTop + i;
@@ -448,7 +450,12 @@ export function render(state: AppState): void {
         ? applyLineBg(` ${line}`, lineBackground)
         : bgLine(` ${line}`);
 
-    appendRowWrite(frameRows, row, mainCol, renderedLine);
+    appendRowWrite(
+      frameRows,
+      row,
+      mainCol,
+      customEmojiImages.renderLine(renderedLine, row, mainCol, customEmojiFrame),
+    );
     emitMemberListCol(row);
   }
 
@@ -589,5 +596,6 @@ export function render(state: AppState): void {
     cursor: cursorPayload.join(""),
     scrollRegion: canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null,
     viewStart: state.timeline.scrollOffset,
+    graphics: customEmojiImages.finishFrame(customEmojiFrame),
   });
 }

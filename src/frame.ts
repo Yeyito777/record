@@ -22,6 +22,7 @@ export interface RenderFrame {
   cursor: string;
   scrollRegion: ScrollRegion | null;
   viewStart: number;
+  graphics?: { key: string; payload: string };
 }
 
 const lastRenderedFrames = new WeakMap<object, RenderFrame>();
@@ -127,6 +128,13 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     }
 
     if (!unchanged) out.push(nextRow);
+  }
+
+  const graphicsChanged = prevFrame?.graphics?.key !== nextFrame.graphics?.key;
+  if (graphicsChanged && nextFrame.graphics?.payload) {
+    // Row writes happen first. Graphics are then replaced as one retained layer,
+    // and the regular cursor payload below restores the application cursor.
+    out.push(nextFrame.graphics.payload);
   }
 
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {

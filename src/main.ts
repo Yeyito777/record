@@ -4,6 +4,7 @@
 
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { flushDataCacheSync } from "./datacache";
+import { customEmojiImages } from "./customemoji";
 import { configPath, loadConfig, loadSavedLogins } from "./config";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
@@ -35,6 +36,7 @@ import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTarg
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { handleMouseEvent } from "./mouse";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
+import { TerminalGraphicsClient } from "./terminalgraphics";
 import { resolveAction, resolveNavigationAction } from "./keybinds";
 import {
   jumpMemberListSelectionToEdge,
@@ -229,6 +231,7 @@ let loadingTimer: ReturnType<typeof setInterval> | null = null;
 let terminalGraphicsCells = false;
 let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
+let terminalGraphicsClient: TerminalGraphicsClient | null = null;
 
 function syncTerminalGraphicsCells(): void {
   const modal = state.whatsapp.loginModal;
@@ -2079,7 +2082,8 @@ function restoreTerminal(): void {
   if (!terminalReady) return;
   process.stdin.setRawMode(false);
   process.stdout.write(
-    (terminalGraphicsCells ? setStGraphicsCells(false) : "")
+    (terminalGraphicsClient?.isSupported() ? customEmojiImages.cleanupSequence() : "")
+      + (terminalGraphicsCells ? setStGraphicsCells(false) : "")
       + disableMouse
       + disableKittyKeyboard
       + disableClipboardPasteEvents
@@ -2106,6 +2110,7 @@ function cleanup(): void {
   terminalControlBuffer = null;
   terminalClipboardClient?.dispose();
   terminalClipboardClient = null;
+  terminalGraphicsClient?.dispose();
   disconnectMemberListGateway();
   disconnectAppGateway();
   flushDataCacheSync();
@@ -2158,14 +2163,32 @@ async function main(): Promise<void> {
     onText: (text) => handleKey({ type: "paste", text }),
     onError: (message) => debugLog("terminal.clipboard.error", { message }),
   });
+  customEmojiImages.configure({
+    onUpdate: () => {
+      if (!running) return;
+      scheduleRender();
+    },
+  });
+  terminalGraphicsClient = new TerminalGraphicsClient({
+    write: (sequence) => process.stdout.write(sequence),
+    onSupportChanged: (supported) => {
+      customEmojiImages.setEnabled(supported);
+      invalidateFrame(state);
+      scheduleRender();
+    },
+  });
   terminalControlBuffer = new TerminalControlBuffer(
     (data) => {
       const ready = pasteBuffer.feed(Buffer.from(data));
       if (ready !== null) processInput(ready);
     },
-    (sequence) => terminalClipboardClient?.handleControlSequence(sequence),
+    (sequence) => {
+      if (terminalGraphicsClient?.handleControlSequence(sequence)) return;
+      terminalClipboardClient?.handleControlSequence(sequence);
+    },
   );
   process.stdin.on("data", (data: Buffer) => terminalControlBuffer?.feed(data));
+  terminalGraphicsClient.query();
 
   process.stdout.on("resize", () => {
     state.cols = process.stdout.columns || 80;

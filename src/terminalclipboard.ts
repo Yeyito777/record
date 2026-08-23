@@ -15,10 +15,12 @@ export {
 
 const ESC = "\x1b";
 const OSC_5522_PREFIX = `${ESC}]5522;`;
+const APC_PREFIX = `${ESC}_G`;
 const ST = `${ESC}\\`;
 const PASTE_START = `${ESC}[200~`;
 const PASTE_END = `${ESC}[201~`;
 const MAX_OSC_FRAME_CHARS = 16 * 1024;
+const MAX_APC_FRAME_CHARS = 16 * 1024;
 const MAX_CLIPBOARD_BYTES = 50 * 1024 * 1024;
 const MAX_PROTOCOL_CHUNK_BYTES = 4096;
 const MAX_MIME_LIST_BYTES = 64 * 1024;
@@ -395,6 +397,29 @@ export class TerminalControlBuffer {
         const sequence = this.buffer.slice(0, end);
         this.buffer = this.buffer.slice(end);
         if (sequence.startsWith(OSC_5522_PREFIX)) this.onControlSequence(sequence);
+        continue;
+      }
+
+      if (APC_PREFIX.startsWith(this.buffer) && this.buffer.length < APC_PREFIX.length) {
+        this.armTimer(100, false);
+        return;
+      }
+
+      if (this.buffer.startsWith(APC_PREFIX)) {
+        const stIndex = this.buffer.indexOf(ST, APC_PREFIX.length);
+        if (stIndex === -1) {
+          if (this.buffer.length > MAX_APC_FRAME_CHARS) {
+            this.buffer = "";
+            return;
+          }
+          this.armTimer(1000, true);
+          return;
+        }
+
+        const end = stIndex + ST.length;
+        const sequence = this.buffer.slice(0, end);
+        this.buffer = this.buffer.slice(end);
+        this.onControlSequence(sequence);
         continue;
       }
 

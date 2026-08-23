@@ -15,6 +15,7 @@ import {
 } from "./timeline";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { termWidth } from "./textwidth";
+import { decodeCustomEmojiMarkers } from "./customemoji";
 import type { DiscordMessage } from "./discord";
 
 function message(
@@ -252,7 +253,7 @@ describe("timeline rendering", () => {
     setTimelineMessages(timeline, "channel-1", [message("message-1", "reactable", {
       reactions: [
         { count: 2, me: true, emoji: { id: null, name: "👍", animated: false } },
-        { count: 1, me: false, emoji: { id: "emoji-1", name: "blobcat", animated: false } },
+        { count: 1, me: false, emoji: { id: "1478284001298087936", name: "blobcat", animated: false } },
       ],
     })]);
 
@@ -266,7 +267,24 @@ describe("timeline rendering", () => {
 
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines).toContain("reactable");
-    expect(plainLines).toContain("╰─ 👍 2 :blobcat: 1");
+    const reactionLine = plainLines.find((line) => line.startsWith("╰─")) ?? "";
+    expect(decodeCustomEmojiMarkers(reactionLine)).toBe("╰─ 👍 2 <:blobcat:1478284001298087936> 1");
+    expect(termWidth(reactionLine)).toBe(termWidth("╰─ 👍 2 x 1"));
+  });
+
+  test("lays out custom emoji in message content as one terminal cell", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message(
+      "message-1",
+      "before <:aliencat_stare_2:1478284001298087936> after <a:dance:1478284001298087937>",
+    )]);
+
+    const rendered = renderTimelineLines(timeline, 80, 10, { text: "", tone: "muted" });
+    const content = stripAnsi(rendered.lines[1] ?? "");
+    expect(decodeCustomEmojiMarkers(content)).toBe(
+      "before <:aliencat_stare_2:1478284001298087936> after <a:dance:1478284001298087937>",
+    );
+    expect(termWidth(content)).toBe(termWidth("before x after x"));
   });
 
   test("shows a top loader while fetching older messages", () => {

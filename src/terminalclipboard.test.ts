@@ -150,6 +150,17 @@ describe("terminal control stream framing", () => {
     buffer.dispose();
   });
 
+  test("extracts fragmented Kitty graphics APC replies without treating them as keys", () => {
+    const input: string[] = [];
+    const controls: string[] = [];
+    const buffer = new TerminalControlBuffer((data) => input.push(data), (sequence) => controls.push(sequence));
+    const apc = `\x1b_Gi=1879048190;OK${ST}`;
+    for (const byte of Buffer.from(`x${apc}y`)) buffer.feed(Buffer.from([byte]));
+    expect(input.join("")).toBe("xy");
+    expect(controls).toEqual([apc]);
+    buffer.dispose();
+  });
+
   test("does not interpret control-looking text inside bracketed paste", () => {
     const input: string[] = [];
     const controls: string[] = [];

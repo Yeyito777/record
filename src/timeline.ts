@@ -3,6 +3,7 @@
  */
 
 import { applyDiscordMessagePatch, isCompactSystemMessageType, isPendingLocalMessageEcho, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
+import { customEmojiMarker, replaceCustomEmojiTokens } from "./customemoji";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { summarizeDisplayMessageParts } from "./messageparts";
@@ -937,7 +938,11 @@ function wrapReactionSummary(message: DiscordMessage, width: number): WrappedLin
 
 function formatReactionChip(reaction: NonNullable<DiscordMessage["reactions"]>[number]): string {
   const emoji = reaction.emoji.id
-    ? `:${reaction.emoji.name}:`
+    ? customEmojiMarker({
+      id: reaction.emoji.id,
+      name: reaction.emoji.name,
+      animated: reaction.emoji.animated,
+    })
     : reaction.emoji.name;
   return `${emoji} ${reaction.count}`;
 }
@@ -970,7 +975,7 @@ function summarizeMessage(
   }
 
   const mentionsRendered = renderUserMentions(
-    message.content,
+    replaceCustomEmojiTokens(message.content),
     message,
     viewerId,
     accentViewerInDirectMessages,
@@ -1015,7 +1020,7 @@ function summarizeForwardedMessage(
     forwarded: null,
   };
   const mentionsRendered = renderUserMentions(
-    forwarded.content,
+    replaceCustomEmojiTokens(forwarded.content),
     forwardedContext,
     viewerId,
     accentViewerInDirectMessages,
@@ -1258,7 +1263,7 @@ function formatReplyPreview(
     ...reply,
     summary: formatReplySummaryRoleMentions(reply, rolesByGuildId, guildId),
   }));
-  return parts.join(" · ");
+  return replaceCustomEmojiTokens(parts.join(" · "));
 }
 
 function formatReplySummaryMentions(reply: NonNullable<DiscordMessage["reply"]>): string {
