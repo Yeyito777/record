@@ -25,6 +25,7 @@ import {
   stripAnsi,
 } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
+import { renderImageModal } from "./imagemodal";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { highlightPromptViewport } from "./prompthighlight";
@@ -248,8 +249,10 @@ function renderHistoryViewportLine(
 }
 
 function readyInlineImages(state: AppState): InlineChatImageReady[] {
-  return Object.values(state.timeline.inlineImages)
+  const images = Object.values(state.timeline.inlineImages)
     .filter((image): image is InlineChatImageReady => image.phase === "ready");
+  if (state.imageModal) images.push(state.imageModal.image);
+  return images;
 }
 
 function visibleInlineImagePlacements(
@@ -584,8 +587,19 @@ export function render(state: AppState): void {
     appendPositionedPayload(frameRows, renderLoginModal(state.whatsapp.loginModal, rows, cols));
   }
 
+  const imageModal = state.imageModal
+    ? renderImageModal(
+      state.imageModal,
+      rows,
+      cols,
+      state.timeline.terminalCellWidthPixels,
+      state.timeline.terminalCellHeightPixels,
+    )
+    : null;
+  if (imageModal) appendPositionedPayload(frameRows, imageModal.payload);
+
   const cursorPayload: string[] = [];
-  if (state.whatsapp.loginModal) {
+  if (state.whatsapp.loginModal || state.imageModal) {
     cursorPayload.push(hideCursor);
   } else if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
     const { cursorCol } = getSidebarSearchBarViewport(state.sidebar.search, SIDEBAR_WIDTH - 1);
@@ -629,6 +643,7 @@ export function render(state: AppState): void {
     && !memberListOpen
     && !state.autocomplete
     && !state.whatsapp.loginModal
+    && !state.imageModal
     && bodyRows > 0;
 
   flushFrame(state, {
@@ -638,14 +653,16 @@ export function render(state: AppState): void {
     viewStart: state.timeline.scrollOffset,
   });
 
-  const inlinePlacements = state.autocomplete || state.whatsapp.loginModal
-    ? []
-    : visibleInlineImagePlacements(
-      timeline,
-      state.timeline.scrollOffset,
-      bodyTop,
-      bodyRows,
-      mainCol + 1,
-    );
+  const inlinePlacements = state.imageModal
+    ? imageModal?.placement ? [imageModal.placement] : []
+    : state.autocomplete || state.whatsapp.loginModal
+      ? []
+      : visibleInlineImagePlacements(
+        timeline,
+        state.timeline.scrollOffset,
+        bodyTop,
+        bodyRows,
+        mainCol + 1,
+      );
   syncInlineTerminalImages(state, readyInlineImages(state), inlinePlacements);
 }

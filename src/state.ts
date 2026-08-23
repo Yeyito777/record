@@ -17,6 +17,7 @@ import { createTimelineState, type TimelineMessageBound, type TimelineState } fr
 import { createTypingState, type TypingState } from "./typing";
 import { normalizeToken } from "./token";
 import type { ClipboardImageAttachment } from "./imageclipboard";
+import type { ImageModalState } from "./imagemodal";
 import type { NoticeTone } from "./theme";
 import { createServerCommandsState, type ServerCommandsState } from "./servercommands";
 import type { VoiceConnectionState } from "./voice";
@@ -120,6 +121,7 @@ export interface AppState {
   inlineImageHiddenAttachmentIds: Set<string>;
   /** Outgoing upload bytes retained only until their optimistic message resolves. */
   localAttachmentImages: Record<string, LocalAttachmentImageSource>;
+  imageModal: ImageModalState | null;
   sidebar: SidebarState;
   memberList: MemberListState;
   channelList: ChannelListState;
@@ -181,6 +183,7 @@ export function createInitialState(
     imageDisplayMode: options.imageDisplayMode ?? "show",
     inlineImageHiddenAttachmentIds: new Set(),
     localAttachmentImages: {},
+    imageModal: null,
     sidebar: createSidebarState(),
     memberList: createMemberListState(),
     channelList: createChannelListState(),

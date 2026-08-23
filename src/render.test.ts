@@ -58,6 +58,33 @@ describe("render", () => {
     expect(output).not.toContain("private-test-qr-payload");
   });
 
+  test("composes a centered source-resolution image modal and terminal placement", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 120;
+    state.rows = 48;
+    state.imageModal = {
+      filename: "desktop.png",
+      image: {
+        phase: "ready",
+        attachmentId: "modal:a1",
+        filename: "desktop.png",
+        sourceUrl: "https://cdn.example/desktop.png",
+        requestId: 1,
+        imageId: 0x40000002,
+        pngBase64: "cG5n",
+        pixelWidth: 1920,
+        pixelHeight: 1080,
+      },
+    };
+
+    const output = captureRender(state);
+
+    expect(output).toContain("desktop.png · 1920×1080");
+    expect(output).toContain("Enter or Esc to close");
+    expect(output).toContain("\x1b_Ga=t,t=d,f=100,i=1073741826");
+    expect(output).toContain("\x1b_Ga=p,i=1073741826");
+  });
+
   test("opening a new channel stays pinned to the bottom even with old history anchors", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.cols = 80;

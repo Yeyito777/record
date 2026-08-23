@@ -31,7 +31,8 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
-import { collapseInlineImageToPreview, inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { handleImageModalKey } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
@@ -237,7 +238,7 @@ let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
 let nextInlineImageRequestId = 0;
 const inlineImageLoadQueue = new AsyncWorkQueue(INLINE_IMAGE_LOAD_CONCURRENCY);
-const inlineImageFullResolutionRequests = new Map<string, number>();
+const inlineImageModalRequests = new Map<string, number>();
 
 function syncTerminalGraphicsCells(): void {
   const modal = state.whatsapp.loginModal;
@@ -449,30 +450,22 @@ function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): bool
   return true;
 }
 
-function toggleInlineAttachmentResolution(attachment: DiscordMessageAttachment): boolean {
+function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   if (!isImageAttachment(attachment)) return false;
   const existing = state.timeline.inlineImages[attachment.id];
   if (existing?.phase !== "ready") return false;
-  if (existing.fullResolution) {
-    const preview = collapseInlineImageToPreview(existing);
-    if (preview) {
-      setTimelineInlineImageState(state.timeline, preview);
-      scheduleRender();
-    }
-    return true;
-  }
-  if (inlineImageFullResolutionRequests.has(attachment.id)) return true;
+  if (inlineImageModalRequests.has(attachment.id)) return true;
 
   const requestId = ++nextInlineImageRequestId;
   const channelId = state.timeline.channelId;
   const sourceUrl = attachment.url;
-  inlineImageFullResolutionRequests.set(attachment.id, requestId);
+  inlineImageModalRequests.set(attachment.id, requestId);
   void inlineImageLoadQueue.enqueue(async () => {
     try {
       const before = state.timeline.inlineImages[attachment.id];
       if (!running
         || state.timeline.channelId !== channelId
-        || inlineImageFullResolutionRequests.get(attachment.id) !== requestId
+        || inlineImageModalRequests.get(attachment.id) !== requestId
         || before?.phase !== "ready"
         || before.sourceUrl !== sourceUrl) return;
 
@@ -491,30 +484,35 @@ function toggleInlineAttachmentResolution(attachment: DiscordMessageAttachment):
       const current = state.timeline.inlineImages[attachment.id];
       if (!running
         || state.timeline.channelId !== channelId
-        || inlineImageFullResolutionRequests.get(attachment.id) !== requestId
+        || inlineImageModalRequests.get(attachment.id) !== requestId
         || current?.phase !== "ready"
         || current.sourceUrl !== sourceUrl) return;
-      setTimelineInlineImageState(state.timeline, {
-        ...current,
-        ...prepared,
-        requestId,
-        fullResolution: true,
-        displayMaxColumns: timelineContentWidth(),
-        displayMaxRows: timelinePageSize(),
-        previewPngBase64: current.pngBase64,
-        previewPixelWidth: current.pixelWidth,
-        previewPixelHeight: current.pixelHeight,
-      });
+      const modalAttachmentId = `modal:${attachment.id}`;
+      state.imageModal = {
+        filename: attachment.filename,
+        image: {
+          phase: "ready",
+          attachmentId: modalAttachmentId,
+          filename: attachment.filename,
+          sourceUrl,
+          requestId,
+          imageId: availableInlineImageId(
+            modalAttachmentId,
+            inlineImageId({ id: modalAttachmentId, url: sourceUrl }),
+          ),
+          ...prepared,
+        },
+      };
       scheduleRender();
     } catch (error) {
-      debugLog("inline_image.full_resolution_failed", {
+      debugLog("inline_image.modal_failed", {
         attachmentId: attachment.id,
         filename: attachment.filename,
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      if (inlineImageFullResolutionRequests.get(attachment.id) === requestId) {
-        inlineImageFullResolutionRequests.delete(attachment.id);
+      if (inlineImageModalRequests.get(attachment.id) === requestId) {
+        inlineImageModalRequests.delete(attachment.id);
       }
     }
   });
@@ -2017,7 +2015,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       return true;
     case "nav_select": {
       const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
-      if (imageBodyAttachment && toggleInlineAttachmentResolution(imageBodyAttachment)) return true;
+      if (imageBodyAttachment && openInlineImageModal(imageBodyAttachment)) return true;
 
       const attachment = attachmentAtHistoryCursor(state);
       if (attachment && toggleInlineAttachmentImage(attachment)) return true;
@@ -2201,6 +2199,13 @@ function handleKey(key: KeyEvent): void {
 
   if (key.event === "release") return;
 
+  if (state.imageModal) {
+    const result = handleImageModalKey(key);
+    if (result.type === "close") state.imageModal = null;
+    scheduleRender();
+    return;
+  }
+
   if (state.whatsapp.loginModal) {
     const result = handleLoginModalKey(state.whatsapp.loginModal, key);
     if (result.type === "cancel") whatsAppController.cancelLogin();
@@ -2251,7 +2256,7 @@ function handleKey(key: KeyEvent): void {
 }
 
 function handleMouse(event: MouseEvent): void {
-  if (voiceMessageController?.isRecording() || state.voiceMessagePrompt) return;
+  if (state.imageModal || voiceMessageController?.isRecording() || state.voiceMessagePrompt) return;
 
   const previousFocus = state.panelFocus;
   const previousIndex = state.sidebar.selectedIndex;

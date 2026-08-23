@@ -50,14 +50,6 @@ export interface InlineChatImageReady extends InlineChatImageBase {
   pngBase64: string;
   pixelWidth: number;
   pixelHeight: number;
-  /** Explicit body activation replaces the preview with source-resolution data. */
-  fullResolution?: boolean;
-  displayMaxColumns?: number;
-  displayMaxRows?: number;
-  /** Retain the cheap default preview so full-resolution mode can collapse instantly. */
-  previewPngBase64?: string;
-  previewPixelWidth?: number;
-  previewPixelHeight?: number;
 }
 
 export type InlineChatImageState = InlineChatImageLoading | InlineChatImageError | InlineChatImageReady;
@@ -262,34 +254,12 @@ export function inlineImagePreviewPixelBounds(cellWidthPixels = 8, cellHeightPix
   };
 }
 
-export function collapseInlineImageToPreview(image: InlineChatImageReady): InlineChatImageReady | null {
-  if (!image.fullResolution
-    || image.previewPngBase64 === undefined
-    || image.previewPixelWidth === undefined
-    || image.previewPixelHeight === undefined) return null;
-  const {
-    fullResolution: _fullResolution,
-    displayMaxColumns: _displayMaxColumns,
-    displayMaxRows: _displayMaxRows,
-    previewPngBase64,
-    previewPixelWidth,
-    previewPixelHeight,
-    ...base
-  } = image;
-  return {
-    ...base,
-    pngBase64: previewPngBase64,
-    pixelWidth: previewPixelWidth,
-    pixelHeight: previewPixelHeight,
-  };
-}
-
 /**
  * Fit an image into chat while preserving its pixel aspect ratio. The terminal
  * cell dimensions come from CSI 16 t; 8x16 is used until that reply arrives.
  */
 export function inlineImageCellLayout(
-  image: Pick<InlineChatImageReady, "pixelWidth" | "pixelHeight" | "displayMaxColumns" | "displayMaxRows">,
+  image: Pick<InlineChatImageReady, "pixelWidth" | "pixelHeight">,
   availableColumns: number,
   cellWidthPixels = 8,
   cellHeightPixels = 16,
@@ -298,11 +268,8 @@ export function inlineImageCellLayout(
   const pixelHeight = Math.max(1, image.pixelHeight);
   const cellWidth = Math.max(1, cellWidthPixels);
   const cellHeight = Math.max(1, cellHeightPixels);
-  const maxColumns = Math.max(1, Math.min(
-    Math.max(1, Math.floor(image.displayMaxColumns ?? INLINE_IMAGE_MAX_COLUMNS)),
-    Math.floor(availableColumns),
-  ));
-  const maxRows = Math.max(1, Math.floor(image.displayMaxRows ?? INLINE_IMAGE_MAX_ROWS));
+  const maxColumns = Math.max(1, Math.min(INLINE_IMAGE_MAX_COLUMNS, Math.floor(availableColumns)));
+  const maxRows = INLINE_IMAGE_MAX_ROWS;
   const scale = Math.min(
     1,
     (maxColumns * cellWidth) / pixelWidth,

@@ -1766,16 +1766,7 @@ function messageRenderFingerprint(
     ].join("\u0000")
     : "";
   const inlineImageKey = inlineImages.map((image) => image.phase === "ready"
-    ? [
-      image.attachmentId,
-      image.phase,
-      String(image.imageId),
-      String(image.pixelWidth),
-      String(image.pixelHeight),
-      image.fullResolution ? "full" : "preview",
-      String(image.displayMaxColumns ?? ""),
-      String(image.displayMaxRows ?? ""),
-    ].join("\u0002")
+    ? [image.attachmentId, image.phase, String(image.imageId), String(image.pixelWidth), String(image.pixelHeight)].join("\u0002")
     : image.phase === "loading"
       ? [image.attachmentId, image.phase, String(image.requestId), String(loadingFrameIndex)].join("\u0002")
       : [image.attachmentId, image.phase, String(image.requestId), image.error].join("\u0002"))
