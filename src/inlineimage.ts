@@ -50,6 +50,10 @@ export interface InlineChatImageReady extends InlineChatImageBase {
   pngBase64: string;
   pixelWidth: number;
   pixelHeight: number;
+  /** Explicit body activation replaces the preview with source-resolution data. */
+  fullResolution?: boolean;
+  displayMaxColumns?: number;
+  displayMaxRows?: number;
 }
 
 export type InlineChatImageState = InlineChatImageLoading | InlineChatImageError | InlineChatImageReady;
@@ -69,6 +73,8 @@ export interface InlineImagePrepareOptions {
   /** Bound the encoded preview to the largest size it can occupy in chat. */
   maxPixelWidth?: number;
   maxPixelHeight?: number;
+  /** Preserve source pixels up to the terminal protocol's safety limits. */
+  preserveSourceResolution?: boolean;
 }
 
 export function isImageAttachment(attachment: DiscordMessageAttachment): boolean {
@@ -128,9 +134,12 @@ function ffmpegError(stderr: string, code: number | null, signal: NodeJS.Signals
 }
 
 function normalizedPreviewBounds(options: InlineImagePrepareOptions): { width: number; height: number } {
-  const normalize = (value: number | undefined): number => Number.isFinite(value)
-    ? Math.max(1, Math.min(CONVERTED_IMAGE_MAX_DIMENSION, Math.floor(value!)))
+  const maximum = options.preserveSourceResolution
+    ? MAX_TERMINAL_IMAGE_DIMENSION
     : CONVERTED_IMAGE_MAX_DIMENSION;
+  const normalize = (value: number | undefined): number => Number.isFinite(value)
+    ? Math.max(1, Math.min(maximum, Math.floor(value!)))
+    : maximum;
   return { width: normalize(options.maxPixelWidth), height: normalize(options.maxPixelHeight) };
 }
 
@@ -216,6 +225,7 @@ function preparedPng(png: Buffer, dimensions: { width: number; height: number } 
 }
 
 function exceedsPreviewBounds(dimensions: { width: number; height: number }, options: InlineImagePrepareOptions): boolean {
+  if (options.preserveSourceResolution) return false;
   const bounds = normalizedPreviewBounds(options);
   return dimensions.width > bounds.width || dimensions.height > bounds.height;
 }
@@ -253,7 +263,7 @@ export function inlineImagePreviewPixelBounds(cellWidthPixels = 8, cellHeightPix
  * cell dimensions come from CSI 16 t; 8x16 is used until that reply arrives.
  */
 export function inlineImageCellLayout(
-  image: Pick<InlineChatImageReady, "pixelWidth" | "pixelHeight">,
+  image: Pick<InlineChatImageReady, "pixelWidth" | "pixelHeight" | "displayMaxColumns" | "displayMaxRows">,
   availableColumns: number,
   cellWidthPixels = 8,
   cellHeightPixels = 16,
@@ -262,8 +272,11 @@ export function inlineImageCellLayout(
   const pixelHeight = Math.max(1, image.pixelHeight);
   const cellWidth = Math.max(1, cellWidthPixels);
   const cellHeight = Math.max(1, cellHeightPixels);
-  const maxColumns = Math.max(1, Math.min(INLINE_IMAGE_MAX_COLUMNS, Math.floor(availableColumns)));
-  const maxRows = INLINE_IMAGE_MAX_ROWS;
+  const maxColumns = Math.max(1, Math.min(
+    Math.max(1, Math.floor(image.displayMaxColumns ?? INLINE_IMAGE_MAX_COLUMNS)),
+    Math.floor(availableColumns),
+  ));
+  const maxRows = Math.max(1, Math.floor(image.displayMaxRows ?? INLINE_IMAGE_MAX_ROWS));
   const scale = Math.min(
     1,
     (maxColumns * cellWidth) / pixelWidth,

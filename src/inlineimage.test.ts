@@ -57,6 +57,15 @@ describe("inline chat images", () => {
       columns: 13,
       rows: 7,
     });
+    expect(inlineImageCellLayout({
+      pixelWidth: 1920,
+      pixelHeight: 1080,
+      displayMaxColumns: 120,
+      displayMaxRows: 40,
+    }, 150, 8, 16)).toEqual({
+      columns: 120,
+      rows: 34,
+    });
     expect(inlineImagePreviewPixelBounds(9, 18)).toEqual({
       maxPixelWidth: 648,
       maxPixelHeight: 288,

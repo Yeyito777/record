@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { defaultOpenersConfig, saveConfig } from "./config";
 import type { DiscordMessage } from "./discord";
-import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { createInitialState } from "./state";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
@@ -90,6 +90,22 @@ describe("history openable target lookup", () => {
     state.timeline.messages = [baseMessage({ attachments: [attachment] })];
 
     expect(attachmentAtHistoryCursor(state)).toEqual(attachment);
+    expect(inlineImageBodyAttachmentAtHistoryCursor(state)).toEqual(attachment);
+  });
+
+  test("does not treat the attachment row or loading status as image body", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    const attachment = { id: "a1", filename: "cat.png", contentType: "image/png", size: 10, url: "https://cdn.example/cat.png" };
+    state.historyLines = ["📎 cat.png • 10 B", "Loading cat.png…"];
+    state.historyLineAnchors = ["msg:m1:attachment:0", "msg:m1:image-status:a1:0"];
+    state.historyMessageBounds = [{ messageId: "m1", start: 0, end: 2, contentStart: 0, contentEnd: 2 }];
+    state.timeline.messages = [baseMessage({ attachments: [attachment] })];
+
+    state.historyCursor = { row: 0, col: 3 };
+    expect(attachmentAtHistoryCursor(state)).toEqual(attachment);
+    expect(inlineImageBodyAttachmentAtHistoryCursor(state)).toBeNull();
+    state.historyCursor = { row: 1, col: 0 };
+    expect(inlineImageBodyAttachmentAtHistoryCursor(state)).toBeNull();
   });
 
   test("finds forwarded message origins under the history cursor", () => {

@@ -33,7 +33,7 @@ import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./ch
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
 import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { copyToClipboard } from "./editor-clipboard";
-import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { handleMouseEvent } from "./mouse";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
@@ -237,6 +237,7 @@ let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
 let nextInlineImageRequestId = 0;
 const inlineImageLoadQueue = new AsyncWorkQueue(INLINE_IMAGE_LOAD_CONCURRENCY);
+const inlineImageFullResolutionRequests = new Map<string, number>();
 
 function syncTerminalGraphicsCells(): void {
   const modal = state.whatsapp.loginModal;
@@ -445,6 +446,67 @@ function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): bool
   if (existing) removeTimelineInlineImageState(state.timeline, attachment.id);
   state.inlineImageHiddenAttachmentIds.delete(attachment.id);
   startInlineAttachmentImage(attachment);
+  return true;
+}
+
+function expandInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
+  if (!isImageAttachment(attachment)) return false;
+  const existing = state.timeline.inlineImages[attachment.id];
+  if (existing?.phase !== "ready") return false;
+  if (existing.fullResolution || inlineImageFullResolutionRequests.has(attachment.id)) return true;
+
+  const requestId = ++nextInlineImageRequestId;
+  const channelId = state.timeline.channelId;
+  const sourceUrl = attachment.url;
+  inlineImageFullResolutionRequests.set(attachment.id, requestId);
+  void inlineImageLoadQueue.enqueue(async () => {
+    try {
+      const before = state.timeline.inlineImages[attachment.id];
+      if (!running
+        || state.timeline.channelId !== channelId
+        || inlineImageFullResolutionRequests.get(attachment.id) !== requestId
+        || before?.phase !== "ready"
+        || before.sourceUrl !== sourceUrl) return;
+
+      const local = state.localAttachmentImages[attachment.id];
+      let prepared: Awaited<ReturnType<typeof prepareInlineImage>>;
+      if (local) {
+        prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), { preserveSourceResolution: true });
+      } else {
+        const downloaded = isWhatsAppChannelId(channelId)
+          ? await whatsAppController.downloadAttachment(attachment)
+          : await downloadAttachment(attachment);
+        if (!downloaded.ok || !downloaded.path) throw new Error(downloaded.error ?? "unknown download error");
+        prepared = await prepareInlineImage(downloaded.path, { preserveSourceResolution: true });
+      }
+
+      const current = state.timeline.inlineImages[attachment.id];
+      if (!running
+        || state.timeline.channelId !== channelId
+        || inlineImageFullResolutionRequests.get(attachment.id) !== requestId
+        || current?.phase !== "ready"
+        || current.sourceUrl !== sourceUrl) return;
+      setTimelineInlineImageState(state.timeline, {
+        ...current,
+        ...prepared,
+        requestId,
+        fullResolution: true,
+        displayMaxColumns: timelineContentWidth(),
+        displayMaxRows: timelinePageSize(),
+      });
+      scheduleRender();
+    } catch (error) {
+      debugLog("inline_image.full_resolution_failed", {
+        attachmentId: attachment.id,
+        filename: attachment.filename,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      if (inlineImageFullResolutionRequests.get(attachment.id) === requestId) {
+        inlineImageFullResolutionRequests.delete(attachment.id);
+      }
+    }
+  });
   return true;
 }
 
@@ -1943,6 +2005,9 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_select": {
+      const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
+      if (imageBodyAttachment && expandInlineAttachmentImage(imageBodyAttachment)) return true;
+
       const attachment = attachmentAtHistoryCursor(state);
       if (attachment && toggleInlineAttachmentImage(attachment)) return true;
 
