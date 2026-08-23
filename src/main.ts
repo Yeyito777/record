@@ -31,7 +31,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleImageAttachments, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
@@ -386,9 +386,13 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
       const queued = currentInlineImageRequest(requestId);
       if (!running || state.timeline.channelId !== channelId || !queued) return;
       const local = state.localAttachmentImages[attachment.id];
+      const previewBounds = inlineImagePreviewPixelBounds(
+        state.timeline.terminalCellWidthPixels,
+        state.timeline.terminalCellHeightPixels,
+      );
       let prepared: Awaited<ReturnType<typeof prepareInlineImage>>;
       if (local) {
-        prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"));
+        prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), previewBounds);
       } else {
         const downloaded = isWhatsAppChannelId(channelId)
           ? await whatsAppController.downloadAttachment(attachment)
@@ -399,7 +403,7 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
           setInlineImageError(current, downloaded.error ?? "unknown download error");
           return;
         }
-        prepared = await prepareInlineImage(downloaded.path);
+        prepared = await prepareInlineImage(downloaded.path, previewBounds);
       }
 
       const current = currentInlineImageRequest(requestId);

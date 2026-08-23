@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   inlineImageCellLayout,
   inlineImageId,
+  inlineImagePreviewPixelBounds,
   isImageAttachment,
   pngDimensions,
   prepareInlineImage,
@@ -55,6 +56,10 @@ describe("inline chat images", () => {
     expect(inlineImageCellLayout({ pixelWidth: 100, pixelHeight: 100 }, 80, 8, 16)).toEqual({
       columns: 13,
       rows: 7,
+    });
+    expect(inlineImagePreviewPixelBounds(9, 18)).toEqual({
+      maxPixelWidth: 648,
+      maxPixelHeight: 288,
     });
   });
 

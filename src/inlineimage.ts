@@ -65,6 +65,12 @@ export interface PreparedInlineImage {
   pixelHeight: number;
 }
 
+export interface InlineImagePrepareOptions {
+  /** Bound the encoded preview to the largest size it can occupy in chat. */
+  maxPixelWidth?: number;
+  maxPixelHeight?: number;
+}
+
 export function isImageAttachment(attachment: DiscordMessageAttachment): boolean {
   if (attachment.contentType?.toLowerCase().startsWith("image/")) return true;
   return IMAGE_EXTENSIONS.has(extname(attachment.filename).slice(1).toLowerCase());
@@ -116,10 +122,17 @@ function ffmpegError(stderr: string, code: number | null, signal: NodeJS.Signals
   return new Error(`Image conversion failed${code === null ? "" : ` (ffmpeg exit ${code})`}.`);
 }
 
-function convertImageInputToPng(inputArgs: string[], input?: Buffer): Promise<Buffer> {
+function normalizedPreviewBounds(options: InlineImagePrepareOptions): { width: number; height: number } {
+  const normalize = (value: number | undefined): number => Number.isFinite(value)
+    ? Math.max(1, Math.min(CONVERTED_IMAGE_MAX_DIMENSION, Math.floor(value!)))
+    : CONVERTED_IMAGE_MAX_DIMENSION;
+  return { width: normalize(options.maxPixelWidth), height: normalize(options.maxPixelHeight) };
+}
+
+function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: InlineImagePrepareOptions = {}): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const max = CONVERTED_IMAGE_MAX_DIMENSION;
-    const scale = `scale='if(gt(iw,ih),min(iw,${max}),-2)':'if(gt(iw,ih),-2,min(ih,${max}))'`;
+    const bounds = normalizedPreviewBounds(options);
+    const scale = `scale='min(iw,${bounds.width})':'min(ih,${bounds.height})':force_original_aspect_ratio=decrease`;
     const child = spawn("ffmpeg", [
       "-v", "error",
       "-nostdin",
@@ -178,12 +191,12 @@ function convertImageInputToPng(inputArgs: string[], input?: Buffer): Promise<Bu
 }
 
 /** Convert the first frame of any ffmpeg-supported image to a bounded PNG. */
-export function convertImageToPng(path: string): Promise<Buffer> {
-  return convertImageInputToPng(["-i", path]);
+export function convertImageToPng(path: string, options: InlineImagePrepareOptions = {}): Promise<Buffer> {
+  return convertImageInputToPng(["-i", path], undefined, options);
 }
 
-export function convertImageBytesToPng(data: Buffer): Promise<Buffer> {
-  return convertImageInputToPng(["-i", "pipe:0"], data);
+export function convertImageBytesToPng(data: Buffer, options: InlineImagePrepareOptions = {}): Promise<Buffer> {
+  return convertImageInputToPng(["-i", "pipe:0"], data, options);
 }
 
 function preparedPng(png: Buffer, dimensions: { width: number; height: number } | null): PreparedInlineImage {
@@ -197,25 +210,37 @@ function preparedPng(png: Buffer, dimensions: { width: number; height: number } 
   };
 }
 
-export async function prepareInlineImage(path: string): Promise<PreparedInlineImage> {
+function exceedsPreviewBounds(dimensions: { width: number; height: number }, options: InlineImagePrepareOptions): boolean {
+  const bounds = normalizedPreviewBounds(options);
+  return dimensions.width > bounds.width || dimensions.height > bounds.height;
+}
+
+export async function prepareInlineImage(path: string, options: InlineImagePrepareOptions = {}): Promise<PreparedInlineImage> {
   let png: Buffer = Buffer.from(await readFile(path));
   let dimensions = pngDimensions(png);
-  if (!dimensions || !pngFitsTerminal(png, dimensions)) {
-    png = await convertImageToPng(path);
+  if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
+    png = await convertImageToPng(path, options);
     dimensions = pngDimensions(png);
   }
 
   return preparedPng(png, dimensions);
 }
 
-export async function prepareInlineImageBytes(data: Buffer): Promise<PreparedInlineImage> {
+export async function prepareInlineImageBytes(data: Buffer, options: InlineImagePrepareOptions = {}): Promise<PreparedInlineImage> {
   let png = data;
   let dimensions = pngDimensions(png);
-  if (!dimensions || !pngFitsTerminal(png, dimensions)) {
-    png = await convertImageBytesToPng(data);
+  if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
+    png = await convertImageBytesToPng(data, options);
     dimensions = pngDimensions(png);
   }
   return preparedPng(png, dimensions);
+}
+
+export function inlineImagePreviewPixelBounds(cellWidthPixels = 8, cellHeightPixels = 16): InlineImagePrepareOptions {
+  return {
+    maxPixelWidth: INLINE_IMAGE_MAX_COLUMNS * Math.max(1, Math.floor(cellWidthPixels)),
+    maxPixelHeight: INLINE_IMAGE_MAX_ROWS * Math.max(1, Math.floor(cellHeightPixels)),
+  };
 }
 
 /**
