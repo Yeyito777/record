@@ -173,28 +173,18 @@ export class CustomEmojiImageRenderer {
       const emoji = placements.find((placement) => placement.emoji.imageId === imageId)?.emoji;
       if (emoji?.pngBase64) payload += kittyGraphicsTransmitPng(imageId, emoji.pngBase64);
     }
-    let repaintPayload = kittyGraphicsDeleteZ(EMOJI_Z_INDEX);
+    payload += kittyGraphicsDeleteZ(EMOJI_Z_INDEX);
     for (const placement of placements) {
-      repaintPayload += moveTo(placement.row, placement.col);
-      repaintPayload += kittyGraphicsPlace(placement.emoji.imageId, {
+      payload += moveTo(placement.row, placement.col);
+      payload += kittyGraphicsPlace(placement.emoji.imageId, {
         columns: EMOJI_COLUMNS,
         rows: EMOJI_ROWS,
         z: EMOJI_Z_INDEX,
       });
     }
-    payload += repaintPayload;
 
     this.lastVisibleImageIds = visibleImageIds;
-    return {
-      key,
-      payload,
-      repaintPayload,
-      cells: placements.map((placement) => ({
-        row: placement.row,
-        startCol: placement.col,
-        endCol: placement.col + EMOJI_COLUMNS - 1,
-      })),
-    };
+    return { key, payload };
   }
 
   cleanupSequence(): string {

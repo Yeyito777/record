@@ -191,15 +191,6 @@ function sameLineAnchors(left: string[], right: string[]): boolean {
   return true;
 }
 
-function lastTerminalCursorPosition(payload: string): { row: number; col: number } | null {
-  const moveRe = /\x1b\[(\d+);(\d+)H/g;
-  let position: { row: number; col: number } | null = null;
-  for (let match = moveRe.exec(payload); match; match = moveRe.exec(payload)) {
-    position = { row: Number(match[1]), col: Number(match[2]) };
-  }
-  return position;
-}
-
 function renderHistoryViewportLine(
   state: AppState,
   rawLine: string,
@@ -555,7 +546,6 @@ export function render(state: AppState): void {
 
   const cursorPayload: string[] = [];
   if (state.whatsapp.loginModal) {
-    cursorPayload.push(moveTo(rows, cols));
     cursorPayload.push(hideCursor);
   } else if (state.panelFocus === "sidebar" && state.sidebar.search?.barOpen) {
     const { cursorCol } = getSidebarSearchBarViewport(state.sidebar.search, SIDEBAR_WIDTH - 1);
@@ -577,7 +567,6 @@ export function render(state: AppState): void {
       );
       cursorPayload.push(showCursor);
     } else {
-      cursorPayload.push(moveTo(rows, cols));
       cursorPayload.push(hideCursor);
     }
   } else {
@@ -604,11 +593,9 @@ export function render(state: AppState): void {
     && !state.whatsapp.loginModal
     && bodyRows > 0;
 
-  const cursor = cursorPayload.join("");
   flushFrame(state, {
     rows: frameRows,
-    cursor,
-    terminalCursor: lastTerminalCursorPosition(cursor),
+    cursor: cursorPayload.join(""),
     scrollRegion: canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null,
     viewStart: state.timeline.scrollOffset,
     graphics: customEmojiImages.finishFrame(customEmojiFrame),

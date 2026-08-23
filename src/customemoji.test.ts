@@ -50,7 +50,6 @@ describe("Discord custom emoji images", () => {
     expect(frame.payload).toContain("\x1b_Ga=t,t=d,f=100");
     expect(frame.payload).toContain("\x1b[5;5H\x1b_Ga=p");
     expect(frame.payload).toContain("c=2,r=1,C=1,z=1478");
-    expect(frame.cells).toEqual([{ row: 5, startCol: 5, endCol: 6 }]);
   });
 
   test("always requests a PNG first frame for animated CDN emoji", () => {

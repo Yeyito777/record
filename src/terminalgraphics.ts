@@ -16,10 +16,6 @@ export interface KittyGraphicsFrame {
   key: string;
   /** Commands needed to transition to this set of placements. */
   payload: string;
-  /** Placement-only redraw used to repair terminal cursor overlay damage. */
-  repaintPayload?: string;
-  /** Absolute terminal cells occupied by this frame's placements. */
-  cells?: Array<{ row: number; startCol: number; endCol: number }>;
 }
 
 export interface TerminalGraphicsClientOptions {
