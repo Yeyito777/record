@@ -375,6 +375,15 @@ export function whatsAppChannels(state: WhatsAppUiState): DiscordChannel[] {
     }));
 }
 
+// Timeline entries can outlive the bounded provider cache. Retain their media
+// source for exactly as long as the attachment is alive, without serializing
+// encryption keys into generic timeline caches or keeping an unbounded ID map.
+const mediaMessagesByAttachment = new WeakMap<DiscordMessageAttachment, WhatsAppMessage>();
+
+export function whatsAppAttachmentMessage(attachment: DiscordMessageAttachment): WhatsAppMessage | undefined {
+  return mediaMessagesByAttachment.get(attachment);
+}
+
 function mediaAttachment(message: WhatsAppMessage): DiscordMessageAttachment[] {
   if (message.content.kind !== "media" || message.content.mediaKind === "sticker") return [];
   const media = message.content;
@@ -385,14 +394,16 @@ function mediaAttachment(message: WhatsAppMessage): DiscordMessageAttachment[] {
     document: "bin",
     sticker: "webp",
   };
-  return [{
+  const attachment: DiscordMessageAttachment = {
     id: `wa-media:${message.id}`,
     filename: sanitizeTerminalLabel(media.fileName ?? "") || `whatsapp-${media.mediaKind}-${message.id}.${defaultExtension[media.mediaKind]}`,
     contentType: media.mimeType ? sanitizeTerminalLabel(media.mimeType) : null,
     size: media.sizeBytes ?? 0,
     url: "",
     ...(media.durationSeconds !== undefined ? { durationSecs: media.durationSeconds } : {}),
-  }];
+  };
+  mediaMessagesByAttachment.set(attachment, message);
+  return [attachment];
 }
 
 function messageText(message: WhatsAppMessage): string {

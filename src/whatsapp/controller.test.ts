@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { createInitialState } from "../state";
 import { WhatsAppController, type WhatsAppBackendHandle } from "./controller";
+import { MAX_WHATSAPP_MESSAGES_PER_CHAT } from "./integration";
 import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 import type {
   WhatsAppBackendEventListener,
@@ -463,6 +464,61 @@ describe("WhatsApp controller", () => {
           timestampMs: 20,
         },
       }]);
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+      rmSync(xdg, { recursive: true, force: true });
+    }
+  });
+
+  test("downloads visible media after its provider-cache entry is evicted or the chat changes", async () => {
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    const xdg = mkdtempSync(join(tmpdir(), "record-wa-retained-media-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    try {
+      for (const scenario of ["evicted", "chat-changed"] as const) {
+        const { state, backend, controller } = fixture();
+        const jid = "15551234567@s.whatsapp.net";
+        const imageId = `retained-image-${scenario}`;
+        backend.mediaDownloadBytes = new Uint8Array([1, 2, 3, 4]);
+        backend.emit("state", {
+          status: "connected", resumed: true, connectedAtMs: 1,
+          account: { id: "self@s.whatsapp.net" },
+        });
+        backend.emit("history", {
+          chats: [{ id: jid, kind: "direct" }], contacts: [], skippedMessages: 0, syncKind: "recent",
+          messages: [{
+            key: { id: imageId, chatId: jid }, id: imageId, chatId: jid,
+            senderId: jid, fromMe: false, timestampMs: 10,
+            content: { kind: "media", mediaKind: "image", mimeType: "image/jpeg", sizeBytes: 4 },
+          }],
+        });
+        controller.openRoot();
+        controller.openChannel(whatsappChannelId(jid));
+        const attachment = state.timeline.messages[0]!.attachments[0]!;
+
+        if (scenario === "evicted") {
+          backend.emit("messages", {
+            kind: "upsert", upsertType: "append", skippedMessages: 0,
+            messages: Array.from({ length: MAX_WHATSAPP_MESSAGES_PER_CHAT }, (_, i) => ({
+              key: { id: `newer-${i}`, chatId: jid }, id: `newer-${i}`, chatId: jid,
+              senderId: jid, fromMe: false, timestampMs: 20 + i,
+              content: { kind: "text" as const, text: "newer" },
+            })),
+          });
+          expect(state.whatsapp.messagesByChatId[jid]?.some((entry) => entry.id === imageId)).toBe(false);
+          expect(state.timeline.messages.some((entry) => entry.id === imageId)).toBe(true);
+        } else {
+          state.timeline.channelId = "discord-channel";
+        }
+
+        expect(await controller.downloadAttachment(attachment)).toMatchObject({ ok: true, cached: false });
+        expect(backend.mediaDownloads[0]?.messageId).toBe(imageId);
+        if (scenario === "evicted") {
+          expect(backend.mediaDownloads[0]?.recoveryAnchor?.key.id).toBe("newer-0");
+        }
+        await controller.shutdown();
+      }
     } finally {
       if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = previousXdg;

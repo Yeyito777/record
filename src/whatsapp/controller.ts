@@ -26,6 +26,7 @@ import {
   upsertWhatsAppChats,
   upsertWhatsAppContacts,
   upsertWhatsAppMessages,
+  whatsAppAttachmentMessage,
   updateWhatsAppChats,
   whatsAppChannels,
   whatsAppDisplayName,
@@ -459,9 +460,12 @@ export class WhatsAppController {
     const messageId = attachment.id.startsWith("wa-media:")
       ? attachment.id.slice("wa-media:".length)
       : null;
-    const jid = this.activeWhatsAppJid();
+    const source = whatsAppAttachmentMessage(attachment);
+    const jid = source
+      ? canonicalWhatsAppJid(this.state.whatsapp, source.chatId)
+      : this.activeWhatsAppJid();
     const message = messageId && jid
-      ? (this.state.whatsapp.messagesByChatId[jid] ?? []).find((candidate) => candidate.id === messageId)
+      ? (this.state.whatsapp.messagesByChatId[jid] ?? []).find((candidate) => candidate.id === messageId) ?? source
       : null;
     if (!jid || !message || message.content.kind !== "media") {
       return { ok: false, error: "WhatsApp media message is unavailable." };
@@ -473,12 +477,14 @@ export class WhatsAppController {
     try {
       const messages = this.state.whatsapp.messagesByChatId[jid] ?? [];
       const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
-      const newerAnchor = messageIndex >= 0
-        ? messages.slice(messageIndex + 1).find((candidate) => (
-          candidate.timestampMs !== null && candidate.timestampMs > 0
-          && Boolean(candidate.key.id && candidate.key.chatId)
-        ))
-        : undefined;
+      const newerMessages = messageIndex >= 0
+        ? messages.slice(messageIndex + 1)
+        : messages.filter((candidate) => message.timestampMs !== null
+          && candidate.timestampMs !== null && candidate.timestampMs > message.timestampMs);
+      const newerAnchor = newerMessages.find((candidate) => (
+        candidate.timestampMs !== null && candidate.timestampMs > 0
+        && Boolean(candidate.key.id && candidate.key.chatId)
+      ));
       const recoveryAnchor = newerAnchor?.timestampMs
         ? { key: newerAnchor.key, timestampMs: newerAnchor.timestampMs }
         : undefined;
