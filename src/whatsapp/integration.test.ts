@@ -85,6 +85,89 @@ describe("WhatsApp UI integration", () => {
     expect(timeline[1]?.reply?.summary).toBe("updated");
   });
 
+  test("reply previews use the same self name and identity as the original message", () => {
+    for (const chatId of ["group@g.us", "15551234567@s.whatsapp.net"]) {
+      for (const senderId of ["15559876543@s.whatsapp.net", undefined]) {
+        const state = createWhatsAppUiState();
+        state.account = { id: "15559876543@s.whatsapp.net", name: "My name" };
+        upsertWhatsAppMessages(state, [{
+          ...message("original", chatId, 10, "hello"),
+          fromMe: true,
+          senderId,
+          senderName: undefined,
+        }, {
+          ...message("reply", chatId, 20, "hi"),
+          replyTo: { id: "original", chatId, participantId: state.account.id },
+        }]);
+
+        const [original, reply] = whatsAppTimelineMessages(state, whatsappChannelId(chatId));
+        expect(original?.author.displayName).toBe("My name");
+        expect(reply?.reply).toMatchObject({
+          authorDisplayName: original!.author.displayName,
+          authorId: original!.author.id,
+          messageId: original!.id,
+          channelId: original!.channelId,
+          summary: "hello",
+        });
+      }
+    }
+  });
+
+  test("self reply previews sanitize the account name and fall back to Me", () => {
+    for (const name of ["My\x1b[31m name", undefined]) {
+      const state = createWhatsAppUiState();
+      const chatId = "group@g.us";
+      state.account = { id: "15559876543@s.whatsapp.net", name };
+      upsertWhatsAppMessages(state, [{
+        ...message("original", chatId, 10, "hello", state.account.id),
+        fromMe: true,
+      }, {
+        ...message("reply", chatId, 20, "hi"),
+        replyTo: { id: "original", chatId },
+      }]);
+
+      const [original, reply] = whatsAppTimelineMessages(state, whatsappChannelId(chatId));
+      expect(reply?.reply?.authorDisplayName).toBe(original!.author.displayName);
+      expect(reply?.reply?.authorDisplayName).not.toContain("\x1b");
+      if (!name) expect(reply?.reply?.authorDisplayName).toBe("Me");
+    }
+  });
+
+  test("reply previews preserve contact and push names for other senders", () => {
+    for (const savedName of ["Saved name", undefined]) {
+      const state = createWhatsAppUiState();
+      const chatId = "group@g.us";
+      const senderId = "15551234567@s.whatsapp.net";
+      upsertWhatsAppContacts(state, [{ id: senderId, name: savedName }]);
+      upsertWhatsAppMessages(state, [message("original", chatId, 10, "hello", senderId), {
+        ...message("reply", chatId, 20, "hi"),
+        replyTo: { id: "original", chatId, participantId: senderId },
+      }]);
+
+      const [original, reply] = whatsAppTimelineMessages(state, whatsappChannelId(chatId));
+      expect(reply?.reply?.authorDisplayName).toBe(savedName ?? "Push name");
+      expect(reply?.reply?.authorDisplayName).toBe(original!.author.displayName);
+    }
+  });
+
+  test("keeps jump-to-original references when the quoted message is not cached", () => {
+    const state = createWhatsAppUiState();
+    const chatId = "group@g.us";
+    const participantId = "15551234567@s.whatsapp.net";
+    upsertWhatsAppMessages(state, [{
+      ...message("reply", chatId, 20, "hi"),
+      replyTo: { id: "uncached-original", chatId, participantId },
+    }]);
+    expect(whatsAppTimelineMessages(state, whatsappChannelId(chatId))[0]?.reply).toEqual({
+      messageId: "uncached-original",
+      channelId: whatsappChannelId(chatId),
+      authorId: participantId,
+      authorDisplayName: null,
+      timestamp: null,
+      summary: "(quoted message)",
+    });
+  });
+
   test("replaces edited content without losing the original timestamp", () => {
     const state = createWhatsAppUiState();
     const chatId = "15551234567@s.whatsapp.net";

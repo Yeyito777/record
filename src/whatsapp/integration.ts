@@ -413,17 +413,25 @@ function messageText(message: WhatsAppMessage): string {
     ?? `[Unsupported WhatsApp message: ${sanitizeTerminalLabel(message.content.sourceType ?? "unknown")}]`;
 }
 
+/** Keep quoted authors identical to their original timeline message, including self messages. */
+function messageAuthor(state: WhatsAppUiState, message: WhatsAppMessage): DiscordMessage["author"] {
+  const senderId = message.senderId ?? (message.fromMe ? state.account?.id : message.chatId) ?? "unknown";
+  const displayName = message.fromMe
+    ? sanitizeTerminalLabel(state.account?.name ?? "") || "Me"
+    : whatsAppDisplayName(state, senderId, message.senderName);
+  return { id: senderId, username: displayName, displayName, bot: false };
+}
+
 function replyPreview(state: WhatsAppUiState, message: WhatsAppMessage): DiscordMessageReply | null {
   if (!message.replyTo) return null;
   const target = (state.messagesByChatId[message.replyTo.chatId] ?? [])
     .find((candidate) => candidate.id === message.replyTo?.id);
+  const author = target ? messageAuthor(state, target) : null;
   return {
     messageId: message.replyTo.id,
     channelId: whatsappChannelId(message.replyTo.chatId),
-    authorId: target?.senderId ?? message.replyTo.participantId ?? null,
-    authorDisplayName: target
-      ? whatsAppDisplayName(state, target.senderId ?? target.chatId, target.senderName)
-      : null,
+    authorId: author?.id ?? message.replyTo.participantId ?? null,
+    authorDisplayName: author?.displayName ?? null,
     timestamp: target?.timestampMs ?? null,
     summary: target ? messageText(target).replace(/\s+/g, " ").trim().slice(0, 160) || "(attachment)" : "(quoted message)",
   };
@@ -431,10 +439,6 @@ function replyPreview(state: WhatsAppUiState, message: WhatsAppMessage): Discord
 
 export function whatsAppMessageToTimeline(state: WhatsAppUiState, message: WhatsAppMessage): DiscordMessage {
   message = canonicalizeWhatsAppMessage(state, message);
-  const senderId = message.senderId ?? (message.fromMe ? state.account?.id : message.chatId) ?? "unknown";
-  const displayName = message.fromMe
-    ? sanitizeTerminalLabel(state.account?.name ?? "") || "Me"
-    : whatsAppDisplayName(state, senderId, message.senderName);
   const stickerNames = message.content.kind === "media" && message.content.mediaKind === "sticker"
     ? ["WhatsApp sticker"]
     : [];
@@ -458,12 +462,7 @@ export function whatsAppMessageToTimeline(state: WhatsAppUiState, message: Whats
     mentionUsers: [],
     timestamp: message.timestampMs ?? Date.now(),
     editedTimestamp: message.editedTimestampMs ?? null,
-    author: {
-      id: senderId,
-      username: displayName,
-      displayName,
-      bot: false,
-    },
+    author: messageAuthor(state, message),
     reply: replyPreview(state, message),
     call: null,
     attachments: mediaAttachment(message),
