@@ -371,6 +371,12 @@ export class WhatsAppController {
       localStatus: "pending" as const,
     };
 
+    // Optimistic attachments have no WhatsApp message ID yet. Render the
+    // original upload bytes instead of trying to download a temporary ID.
+    for (const [index, attachment] of localMessage.attachments.entries()) {
+      const image = pendingImages[index]!;
+      this.state.localAttachmentImages[attachment.id] = { mediaType: image.mediaType, base64: image.base64 };
+    }
     clearPrompt(this.state);
     this.state.pendingImages = [];
     this.state.replyTarget = null;
@@ -389,6 +395,7 @@ export class WhatsAppController {
       const mapped = sentMessages.map((sent) => whatsAppMessageToTimeline(this.state.whatsapp, sent));
       replaceTimelineMessage(this.state.timeline, localMessageId, mapped[0]);
       for (const message of mapped.slice(1)) appendTimelineMessage(this.state.timeline, message);
+      for (const attachment of localMessage.attachments) delete this.state.localAttachmentImages[attachment.id];
       this.queueCacheSave();
       this.syncProviderState();
     }).catch((error) => {

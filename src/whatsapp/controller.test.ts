@@ -397,7 +397,19 @@ describe("WhatsApp controller", () => {
         { filename: "two.png", contentType: "image/png", size: 3 },
       ],
     });
+    // The inline loader runs while the send is pending. These temporary IDs
+    // cannot be downloaded from WhatsApp; preview bytes must already be local.
+    const localAttachments = state.timeline.messages.at(-1)!.attachments;
+    for (const [index, attachment] of localAttachments.entries()) {
+      expect(state.localAttachmentImages[attachment.id]).toEqual({
+        mediaType: "image/png",
+        base64: Buffer.from(index === 0 ? "one" : "two").toString("base64"),
+      });
+    }
     await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const attachment of localAttachments) {
+      expect(state.localAttachmentImages[attachment.id]).toBeUndefined();
+    }
 
     expect(backend.sentImageBatches).toEqual([{ caption: "it's finished......", count: 2 }]);
     expect(state.timeline.messages.slice(-2).map((message) => [message.id, message.content])).toEqual([

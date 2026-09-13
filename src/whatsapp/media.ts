@@ -5,13 +5,10 @@ import { basename, dirname, join } from "node:path";
 import { type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import { downloadMediaMessage, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
-import pino from "pino";
+import { downloadMediaMessage, getUrlFromDirectPath, type WAMessage, type WASocket } from "@whiskeysockets/baileys";
 
 import type { WhatsAppMessage } from "./types";
 import type { WhatsAppDownloadMediaResult } from "./worker-protocol";
-
-const silentBaileysLogger = pino({ level: "silent" });
 
 export type WhatsAppMediaDownloader = (message: WAMessage) => Promise<Readable>;
 
@@ -42,7 +39,9 @@ export function downloadableWhatsAppMessage(message: WhatsAppMessage): WAMessage
   const media = {
     mediaKey: decodeMediaKey(download.mediaKeyBase64),
     ...(download.directPath ? { directPath: download.directPath } : {}),
-    ...(download.url ? { url: download.url } : {}),
+    // Baileys' message-level downloader requires a URL property even though
+    // its stream downloader can use directPath alone.
+    url: download.url || getUrlFromDirectPath(download.directPath!),
     ...(message.content.mimeType ? { mimetype: message.content.mimeType } : {}),
     ...(message.content.sizeBytes !== undefined ? { fileLength: message.content.sizeBytes } : {}),
   };
@@ -67,6 +66,12 @@ export function downloadableWhatsAppMessage(message: WhatsAppMessage): WAMessage
   };
 }
 
+function mediaHttpStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const failure = error as { output?: { statusCode?: number }; status?: number; statusCode?: number };
+  return failure.output?.statusCode ?? failure.status ?? failure.statusCode;
+}
+
 /** Stream and atomically cache decrypted WhatsApp media without base64 IPC copies. */
 export async function downloadWhatsAppMediaToFile(
   socket: Pick<WASocket, "updateMediaMessage">,
@@ -75,12 +80,22 @@ export async function downloadWhatsAppMediaToFile(
   options: DownloadWhatsAppMediaOptions = {},
 ): Promise<WhatsAppDownloadMediaResult> {
   const baileysMessage = downloadableWhatsAppMessage(message);
-  const stream = options.downloader
-    ? await options.downloader(baileysMessage)
-    : await downloadMediaMessage(baileysMessage, "stream", {}, {
-      logger: silentBaileysLogger,
-      reuploadRequest: (staleMessage) => socket.updateMediaMessage(staleMessage),
-    });
+  const download = options.downloader ?? ((source: WAMessage) => downloadMediaMessage(source, "stream", {}));
+  let stream: Readable;
+  try {
+    stream = await download(baileysMessage);
+  } catch (error) {
+    // Baileys rc14 checks error.status, but its fetch helper throws Boom with
+    // output.statusCode. Signed CDN URLs also expire with 403, not just 404/410.
+    // Own the single refresh here rather than nesting Baileys' retry mechanism.
+    if (![403, 404, 410].includes(mediaHttpStatus(error) ?? 0)) throw error;
+    try {
+      const refreshed = await socket.updateMediaMessage(baileysMessage);
+      stream = await download(refreshed);
+    } catch (cause) {
+      throw new Error("WhatsApp could not recover this expired media. Open WhatsApp on your phone and retry; the original file may no longer be available.", { cause });
+    }
+  }
 
   const directory = dirname(destinationPath);
   await mkdir(directory, { recursive: true, mode: 0o700 });

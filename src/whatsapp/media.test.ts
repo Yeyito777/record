@@ -1,10 +1,12 @@
+import { createCipheriv, createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 
-import { describe, expect, test } from "bun:test";
-import type { WAMessage } from "@whiskeysockets/baileys";
+import { describe, expect, spyOn, test } from "bun:test";
+import { getMediaKeys, type WAMessage } from "@whiskeysockets/baileys";
+import { Boom } from "@hapi/boom";
 
 import { downloadableWhatsAppMessage, downloadWhatsAppMediaToFile } from "./media";
 import type { WhatsAppMessage } from "./types";
@@ -47,6 +49,7 @@ describe("WhatsApp media downloads", () => {
     });
     expect(rebuilt.message?.imageMessage).toMatchObject({
       directPath: "/v/t62.7118-24/example.enc",
+      url: "https://mmg.whatsapp.net/v/t62.7118-24/example.enc",
       mimetype: "image/jpeg",
       fileLength: 4,
     });
@@ -74,6 +77,89 @@ describe("WhatsApp media downloads", () => {
     expect(result).toEqual({ path: destinationPath, sizeBytes: 4 });
     expect(readFileSync(destinationPath)).toEqual(Buffer.from([1, 2, 3, 4]));
     expect(readdirSync(join(directory, "attachments"))).toEqual(["photo.jpg"]);
+  });
+
+  for (const status of [403, 404, 410]) {
+    test(`refreshes expired media after a Baileys Boom HTTP ${status}`, async () => {
+      const directory = mkdtempSync(join(tmpdir(), "record-whatsapp-media-retry-"));
+      let attempts = 0;
+      let refreshes = 0;
+      const result = await downloadWhatsAppMediaToFile({
+        updateMediaMessage: async (message) => {
+          refreshes++;
+          return { ...message, message: { imageMessage: { ...message.message!.imageMessage, url: "https://mmg.whatsapp.net/fresh" } } };
+        },
+      }, mediaMessage(), join(directory, "photo.jpg"), {
+        downloader: async (message) => {
+          if (++attempts === 1) throw new Boom("Failed to fetch stream", { statusCode: status });
+          expect(message.message?.imageMessage?.url).toBe("https://mmg.whatsapp.net/fresh");
+          return Readable.from([Buffer.from([1, 2, 3, 4])]);
+        },
+      });
+      expect(readFileSync(result.path)).toEqual(Buffer.from([1, 2, 3, 4]));
+      expect(attempts).toBe(2);
+      expect(refreshes).toBe(1);
+    });
+  }
+
+  test("recovers and decrypts through the real Baileys HTTP downloader", async () => {
+    const message = mediaMessage();
+    const keys = await getMediaKeys(Buffer.from([1, 2, 3, 4]), "image");
+    const plain = Buffer.from([1, 2, 3, 4]);
+    const cipher = createCipheriv("aes-256-cbc", keys.cipherKey, keys.iv);
+    const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+    const mac = createHmac("sha256", keys.macKey!).update(Buffer.concat([keys.iv, encrypted])).digest().subarray(0, 10);
+    const directory = mkdtempSync(join(tmpdir(), "record-whatsapp-real-download-"));
+    const urls: string[] = [];
+    const fetchMock = spyOn(globalThis, "fetch").mockImplementation((async (url: Parameters<typeof fetch>[0]) => {
+      urls.push(String(url));
+      return urls.length === 1
+        ? new Response(null, { status: 403 })
+        : new Response(Buffer.concat([encrypted, mac]));
+    }) as typeof fetch);
+    try {
+      let refreshes = 0;
+      const result = await downloadWhatsAppMediaToFile({
+        updateMediaMessage: async (source) => {
+          refreshes++;
+          source.message!.imageMessage!.directPath = "/fresh.enc";
+          source.message!.imageMessage!.url = "https://mmg.whatsapp.net/fresh.enc";
+          return source;
+        },
+      }, message, join(directory, "photo.jpg"));
+      expect(readFileSync(result.path)).toEqual(plain);
+      expect(refreshes).toBe(1);
+      expect(urls).toEqual([
+        "https://mmg.whatsapp.net/v/t62.7118-24/example.enc",
+        "https://mmg.whatsapp.net/fresh.enc",
+      ]);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test("does not request reupload for unrelated network/server failures", async () => {
+    for (const error of [new Error("offline"), new Boom("server error", { statusCode: 500 })]) {
+      let refreshes = 0;
+      await expect(downloadWhatsAppMediaToFile({
+        updateMediaMessage: async (message) => { refreshes++; return message; },
+      }, mediaMessage(), join(tmpdir(), "unused-media.jpg"), {
+        downloader: async () => { throw error; },
+      })).rejects.toThrow(error.message);
+      expect(refreshes).toBe(0);
+    }
+  });
+
+  test("bounds expired-media recovery to one refresh and reports an actionable error", async () => {
+    let attempts = 0;
+    let refreshes = 0;
+    await expect(downloadWhatsAppMediaToFile({
+      updateMediaMessage: async (message) => { refreshes++; return message; },
+    }, mediaMessage(), join(tmpdir(), "unused-media.jpg"), {
+      downloader: async () => { attempts++; throw new Boom("Failed to fetch stream", { statusCode: 403 }); },
+    })).rejects.toThrow("expired media");
+    expect(attempts).toBe(2);
+    expect(refreshes).toBe(1);
   });
 
   test("rejects cached messages that predate media download metadata", () => {

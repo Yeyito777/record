@@ -386,11 +386,13 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
   });
   scheduleRender();
 
+  // A successful send removes temporary upload entries before a busy queue
+  // necessarily starts this job. Retain the bytes with the queued request.
+  const local = state.localAttachmentImages[attachment.id];
   void inlineImageLoadQueue.enqueue(async () => {
     try {
       const queued = currentInlineImageRequest(requestId);
       if (!running || state.timeline.channelId !== channelId || !queued) return;
-      const local = state.localAttachmentImages[attachment.id];
       const previewBounds = inlineImagePreviewPixelBounds(
         state.timeline.terminalCellWidthPixels,
         state.timeline.terminalCellHeightPixels,
