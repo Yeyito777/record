@@ -27,9 +27,10 @@ describe("promptbar", () => {
     const line = renderPromptSeparator(state, 120, theme.accent);
     const plain = stripAnsi(line);
 
-    expect(plain).toContain("────↩ Replying: PING Other: original message that is definitely lon…");
+    expect(plain).toContain("────↩ Replying: Other: original message that is definitely lon…");
+    expect(plain).not.toContain("PING");
     expect(plain.endsWith("─")).toBe(true);
-    expect(line).toContain(`${theme.accent}PING \x1b[38;2;1;2;3mOther: ${theme.text}original message that is definitely lon…${theme.reset}`);
+    expect(line).toContain(`\x1b[38;2;1;2;3mOther: ${theme.text}original message that is definitely lon…${theme.reset}`);
   });
 
   test("embeds active edit target in the prompt separator", () => {
@@ -52,7 +53,7 @@ describe("promptbar", () => {
     expect(line).toContain(`\x1b[38;2;1;2;3mSelf: ${theme.text}original message that is definitely lon…${theme.reset}`);
   });
 
-  test("omits PING for non-pinging replies", () => {
+  test("marks non-pinging replies with NO-PING", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.replyTarget = {
       messageId: "message-1",
@@ -66,10 +67,12 @@ describe("promptbar", () => {
       mention: false,
     };
 
-    const plain = stripAnsi(renderPromptSeparator(state, 80, theme.accent));
+    const line = renderPromptSeparator(state, 80, theme.accent);
+    const plain = stripAnsi(line);
 
-    expect(plain).toContain("────↩ Replying: Other: original message");
-    expect(plain).not.toContain("PING");
+    expect(plain).toContain("────↩ Replying: NO-PING Other: original message");
+    expect(line).toContain(`${theme.accent}NO-PING `);
+    expect(termWidth(line)).toBe(80);
   });
 
   test("renders user mentions as display names in reply summaries", () => {

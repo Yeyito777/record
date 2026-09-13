@@ -69,11 +69,11 @@ function replySegment(state: AppState): PromptContextSegment | null {
 
   const icon = "↩";
   const label = " Replying: ";
-  const ping = target.mention ? "PING " : "";
+  const ping = target.mention ? "" : `${theme.accent}NO-PING `;
   const name = `${target.authorDisplayName}: `;
   const summary = truncate(renderReplySummary(state, target), MAX_REPLY_SUMMARY_WIDTH);
   const nameColor = target.authorColor || theme.accent;
-  const text = `${theme.muted}${icon}${label}${target.mention ? `${theme.accent}${ping}` : ""}${nameColor}${name}${theme.text}${summary}${theme.reset}`;
+  const text = `${theme.muted}${icon}${label}${ping}${nameColor}${name}${theme.text}${summary}${theme.reset}`;
 
   return { text, width: termWidth(text) };
 }

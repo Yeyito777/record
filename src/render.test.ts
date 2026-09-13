@@ -392,7 +392,7 @@ describe("render", () => {
     const output = captureRender(state);
 
     expect(output).toContain("↩ Replying: ");
-    expect(output).toContain("PING ");
+    expect(output).not.toContain("PING ");
   });
 
   test("keeps status notices out of populated chat history", () => {

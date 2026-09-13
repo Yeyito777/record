@@ -1283,7 +1283,7 @@ function startEditSelectedHistoryMessage(): void {
   scheduleRender();
 }
 
-function startReplyToSelectedHistoryMessage(mention = false): void {
+function startReplyToSelectedHistoryMessage(mention = true): void {
   if (state.panelFocus !== "chat" || state.chatFocus !== "history") {
     setNotice(state, "Focus history and select a message to reply.", "muted");
     scheduleRender();
@@ -1417,7 +1417,7 @@ function handleGlobalAction(key: KeyEvent): boolean {
       pasteImageFromClipboard();
       return true;
     case "reply_toggle":
-      startReplyToSelectedHistoryMessage(false);
+      startReplyToSelectedHistoryMessage();
       return true;
     case "sidebar_next":
     case "sidebar_prev": {
@@ -1972,7 +1972,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
   }
 
   if (state.editor.mode === "normal" && key.type === "char" && (key.char === "r" || key.char === "R")) {
-    startReplyToSelectedHistoryMessage(key.char === "R");
+    startReplyToSelectedHistoryMessage(key.char === "r");
     return true;
   }
 
