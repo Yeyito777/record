@@ -150,6 +150,42 @@ describe("editor", () => {
     expect(copiedTexts).toEqual(["hello", "one\ntwo\n"]);
   });
 
+  test("visual emoji yanks and edits preserve complete graphemes", () => {
+    const copiedTexts: string[] = [];
+    const which = spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null);
+    const spawn = spyOn(Bun, "spawn").mockImplementation((() => ({
+      stdin: {
+        write(text: string) { copiedTexts.push(text); },
+        end() {},
+      },
+    })) as unknown as typeof Bun.spawn);
+
+    try {
+      for (const emoji of ["😭", "❤️", "👍🏽", "👩‍💻", "🇨🇦"]) {
+        for (const keys of ["vy", "vly", "vhy", "vey", "viwy", "vD", "vd", "vc"]) {
+          const single = ["vy", "vD", "vd", "vc"].includes(keys);
+          const editor = createEditorState(single ? `a${emoji}b` : `${emoji}${emoji}`, "normal");
+          editor.cursor = single ? 1 : keys === "vhy" ? emoji.length : 0;
+          for (const char of keys) handleEditorKey(editor, { type: "char", char });
+
+          if (keys.endsWith("y") || keys.endsWith("D")) {
+            const expected = single ? emoji : emoji + emoji;
+            expect(copiedTexts.at(-1)).toBe(expected);
+            // The actual clipboard receives UTF-8, where split surrogates are lost.
+            expect(Buffer.from(copiedTexts.at(-1)!, "utf8").toString("utf8")).toBe(expected);
+          }
+          expect(editor.buffer).toBe(
+            ["vD", "vd", "vc"].includes(keys) ? "ab" : single ? `a${emoji}b` : emoji + emoji,
+          );
+          expect(editor.mode).toBe(keys === "vc" ? "insert" : "normal");
+        }
+      }
+    } finally {
+      spawn.mockRestore();
+      which.mockRestore();
+    }
+  });
+
   test("enter submits from insert mode", () => {
     const editor = createEditorState("/theme whale", "insert");
 
