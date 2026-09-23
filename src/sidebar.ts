@@ -5,7 +5,7 @@
 import { randomUUID } from "crypto";
 
 import type { CompletionItem } from "./commands";
-import { isFixedTopLevelGuildId, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { isFixedTopLevelGuildId, INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID, compareSnowflakesDesc, isThreadChannel, type DiscordChannel, type DiscordGuild } from "./discord";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import type { KeyEvent } from "./input";
@@ -460,7 +460,7 @@ export function sidebarChannelsForGuild(sidebar: SidebarState, activeChannels: D
       // WhatsApp's provider cache is rebuilt from its persisted chat state, while
       // the active channel list can briefly retain the pre-hydration snapshot.
       // Prefer the provider value so stale false/true flags cannot hide or retain a mute.
-      const muted = guildId === WHATSAPP_GUILD_ID
+      const muted = guildId === WHATSAPP_GUILD_ID || guildId === INSTAGRAM_GUILD_ID
         ? cached?.muted ?? channel.muted
         : channel.muted ?? cached?.muted;
       byId.set(channel.id, { ...channel, muted });
@@ -768,7 +768,7 @@ export function moveSelectedSidebarItem(
     const rank = new Map(orderedSiblingGuildIds.map((id, index) => [id, index]));
     sidebar.guilds = sidebar.guilds.slice().sort((a, b) => {
       if (isFixedTopLevelGuildId(a.id) || isFixedTopLevelGuildId(b.id)) {
-        const fixedOrder = (id: string): number => id === DIRECT_MESSAGES_GUILD_ID ? 0 : id === WHATSAPP_GUILD_ID ? 1 : 2;
+        const fixedOrder = (id: string): number => id === DIRECT_MESSAGES_GUILD_ID ? 0 : id === WHATSAPP_GUILD_ID ? 1 : id === INSTAGRAM_GUILD_ID ? 2 : 3;
         const order = fixedOrder(a.id) - fixedOrder(b.id);
         if (order !== 0) return order;
       }
@@ -1527,7 +1527,7 @@ function folderVisibleItems(sidebar: SidebarState): Array<{ item: SidebarItemRef
         ? Number.MIN_SAFE_INTEGER
         : guild.id === WHATSAPP_GUILD_ID
           ? Number.MIN_SAFE_INTEGER + 1
-          : placement.sortOrder;
+          : guild.id === INSTAGRAM_GUILD_ID ? Number.MIN_SAFE_INTEGER + 2 : placement.sortOrder;
       return { item: { type: "guild" as const, id: guild.id }, pinned: isFixedTopLevelGuildId(guild.id) ? false : placement.pinned, sortOrder: fixedSortOrder, name: guild.name };
     });
   return [...folders, ...guilds].sort(compareSidebarOrder);

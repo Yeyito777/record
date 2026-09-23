@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { loadCachedDirectMessages, loadCachedGuildOrder, loadCachedSidebarChannelLayout, loadCachedSidebarFolders, saveCachedChannelMessages, saveCachedDirectMessages, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarFolders } from "./datacache";
 import { loadConfig } from "./config";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage } from "./discord";
-import { whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
+import { instagramGuild, INSTAGRAM_GUILD_ID, whatsappChannelId, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { guildNotificationCounts } from "./notifications";
 import { activeCallMessageParticipantIds, adjustVoiceMemberVolume, applyDiscordChannelMuteSettings, bootstrapReadOnlyClient, canDeleteGuildChannel, clearReadOnlyClient, deleteMessage, editCurrentMessage, ensureCurrentServerCommands, focusThreadChannel, handleGatewayChannelCreateOrUpdate, handleGatewayMessageCreate, handleGatewayThreadListSync, handleGuildMembersChunk, handleVoiceStateUpdate, loadChannelMessages, loadChannelMessagesAround, loadCurrentChannelPinnedMessages, loadGuildChannels, loadGuildRolesInBackground, loadLatestChannelMessages, moveSelectedGuildOrder, newRemoteCallParticipantIds, persistPresenceStatusWithRetries, rememberPresentCallParticipants, removeSessionChannel, resolveRemoteCallParticipantIds, restoreCachedSessionPreview, restoreCachedSidebarPreview, sendCurrentChannelMessage, setTrackedVoiceMemberServerDeafened, setTrackedVoiceMemberServerMuted, shouldRetainTrackedCallParticipant, toggleSelectedGuildMute, toggleSelectedPrivateConversationPin, uploadCurrentChannelFile, voiceMemberModerationContext, voiceMemberVolume } from "./session";
 import { renderSidebar } from "./sidebar";
@@ -73,6 +73,43 @@ afterEach(() => {
 });
 
 describe("session", () => {
+  test("Instagram pin/reorder is local and scoped to the Instagram account", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+    state.instagram.account = { id: "ig-self", username: "self", name: "Self" };
+    state.sidebar.open = true;
+    state.sidebar.guilds = [instagramGuild()];
+    state.sidebar.expandedGuildId = INSTAGRAM_GUILD_ID;
+    state.channelList.guildId = INSTAGRAM_GUILD_ID;
+    state.channelList.channels = [
+      { id: "ig:1", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false },
+      { id: "ig:2", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "Bob", topic: null, position: 1, type: 1, nsfw: false },
+    ];
+    state.sidebar.selectedIndex = 2;
+    moveSelectedGuildOrder(state, { scheduleRender: () => {} }, "up");
+    toggleSelectedPrivateConversationPin(state, { scheduleRender: () => {} });
+    expect(loadCachedSidebarChannelLayout("instagram:ig-self")?.[INSTAGRAM_GUILD_ID]).toEqual({
+      "ig:1": { pinned: false, sortOrder: 1 },
+      "ig:2": { pinned: true, sortOrder: 0 },
+    });
+    state.notifications.byChannelId["ig:2"] = 3;
+    clearReadOnlyClient(state);
+    expect(state.instagram.account?.id).toBe("ig-self");
+    expect(state.notifications.channelGuildIds["ig:2"]).toBe(INSTAGRAM_GUILD_ID);
+    expect(state.notifications.byChannelId["ig:2"]).toBe(3);
+    expect(state.sidebar.channelPlacementsByGuildId[INSTAGRAM_GUILD_ID]?.["ig:2"]?.pinned).toBe(true);
+  });
+
+  test("Discord loaders ignore Instagram identifiers even with a Discord token", async () => {
+    const state = createInitialState("discord-token", "/tmp/config.json");
+    let calls = 0;
+    globalThis.fetch = (() => { calls++; throw new Error("Unexpected Discord request"); }) as unknown as typeof fetch;
+    const effects = { scheduleRender: () => {} };
+    await loadGuildChannels(state, "token", INSTAGRAM_GUILD_ID, effects);
+    await loadChannelMessages(state, "token", "ig:1", effects);
+    expect(await loadChannelMessagesAround(state, "token", "ig:1", "123", effects)).toBe(false);
+    expect(await loadLatestChannelMessages(state, "token", "ig:1", effects)).toBe(false);
+    expect(calls).toBe(0);
+  });
   test("lazily fetches and caches the active guild's application commands", async () => {
     const requests: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -227,7 +264,7 @@ describe("session", () => {
 
     expect(state.panelFocus === "chat").toBe(true);
     expect(state.chatFocus === "prompt").toBe(true);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, INSTAGRAM_GUILD_ID]);
     expect(state.channelList.channels).toEqual([]);
     expect(state.timeline.messages).toEqual([]);
     expect(state.memberList.members).toEqual([]);
@@ -279,6 +316,7 @@ describe("session", () => {
     expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([
       DIRECT_MESSAGES_GUILD_ID,
       WHATSAPP_GUILD_ID,
+      INSTAGRAM_GUILD_ID,
       "guild-keep",
       "guild-stale",
     ]);
@@ -307,6 +345,7 @@ describe("session", () => {
     expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([
       DIRECT_MESSAGES_GUILD_ID,
       WHATSAPP_GUILD_ID,
+      INSTAGRAM_GUILD_ID,
       "guild-keep",
       "guild-new",
     ]);
@@ -346,6 +385,7 @@ describe("session", () => {
     expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([
       DIRECT_MESSAGES_GUILD_ID,
       WHATSAPP_GUILD_ID,
+      INSTAGRAM_GUILD_ID,
       "guild-1",
     ]);
     expect(state.channelList.guildId).toBe("guild-1");
@@ -469,13 +509,13 @@ describe("session", () => {
     await flushTimers();
 
     expect(state.sidebar.loading).toBe(true);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, INSTAGRAM_GUILD_ID]);
 
     resolveDms(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
     await bootstrap;
 
     expect(state.sidebar.loading).toBe(false);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, INSTAGRAM_GUILD_ID]);
   });
 
   test("bootstrap revalidation preserves a channel list opened while REST is in flight", async () => {
@@ -589,8 +629,8 @@ describe("session", () => {
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
 
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, "guild-1", "guild-2", "guild-new"]);
-    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual([DIRECT_MESSAGES_GUILD_NAME, WHATSAPP_GUILD_NAME, "One Fresh", "Two Fresh", "New"]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, INSTAGRAM_GUILD_ID, "guild-1", "guild-2", "guild-new"]);
+    expect(state.sidebar.guilds.map((guild) => guild.name)).toEqual([DIRECT_MESSAGES_GUILD_NAME, WHATSAPP_GUILD_NAME, "Instagram", "One Fresh", "Two Fresh", "New"]);
   });
 
   test("bootstrap warms persisted member lists for voice participant name fallback", async () => {
@@ -643,7 +683,7 @@ describe("session", () => {
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
 
     expect(requests.some((url) => url.endsWith("/users/@me/settings"))).toBe(false);
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, "guild-2", "guild-1", "guild-3"]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, INSTAGRAM_GUILD_ID, "guild-2", "guild-1", "guild-3"]);
   });
 
   test("bootstrap preserves local folders when the guild cache is cold", async () => {
@@ -1724,10 +1764,10 @@ describe("session", () => {
 
     await bootstrapReadOnlyClient(state, "token-1", { scheduleRender: () => {} });
     try {
-      expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, "guild-1", "guild-2"]);
+      expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, INSTAGRAM_GUILD_ID, "guild-1", "guild-2"]);
 
       saveCachedGuildOrder("self", ["guild-2", "guild-1"]);
-      await waitForCondition(() => state.sidebar.guilds.map((guild) => guild.id).join(",") === `${DIRECT_MESSAGES_GUILD_ID},${WHATSAPP_GUILD_ID},guild-2,guild-1`);
+      await waitForCondition(() => state.sidebar.guilds.map((guild) => guild.id).join(",") === `${DIRECT_MESSAGES_GUILD_ID},${WHATSAPP_GUILD_ID},${INSTAGRAM_GUILD_ID},guild-2,guild-1`);
     } finally {
       clearReadOnlyClient(state);
     }

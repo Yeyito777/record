@@ -69,7 +69,8 @@ import {
   type DiscordCustomStatus,
   type DiscordPresenceStatus,
 } from "./discord";
-import { isFixedTopLevelGuildId, isWhatsAppChannel, isWhatsAppChannelId, whatsappGuild, whatsappSidebarLayoutScope, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { isFixedTopLevelGuildId, isExternalChannel, isExternalChannelId, isInstagramChannelId, instagramGuild, INSTAGRAM_GUILD_ID, whatsappGuild, whatsappSidebarLayoutScope, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { instagramChannels, instagramTimelineMessages } from "./instagram/integration";
 import { whatsAppChannels, whatsAppTimelineMessages } from "./whatsapp/integration";
 import {
   loadCachedChannelMessages,
@@ -452,13 +453,15 @@ function withDirectMessagesGuild(guilds: DiscordGuild[]): DiscordGuild[] {
   return [
     directMessagesGuild(),
     whatsappGuild(),
+    instagramGuild(),
     ...guilds.filter((guild) => !isFixedTopLevelGuildId(guild.id)),
   ];
 }
 
 function ensureDirectMessagesGuild(state: AppState): void {
   if (state.sidebar.guilds.some((guild) => guild.id === DIRECT_MESSAGES_GUILD_ID)
-    && state.sidebar.guilds.some((guild) => guild.id === WHATSAPP_GUILD_ID)) return;
+    && state.sidebar.guilds.some((guild) => guild.id === WHATSAPP_GUILD_ID)
+    && state.sidebar.guilds.some((guild) => guild.id === INSTAGRAM_GUILD_ID)) return;
   state.sidebar.guilds = withDirectMessagesGuild(state.sidebar.guilds);
 }
 
@@ -683,20 +686,20 @@ function withChannelMuteSettings(state: AppState, channels: DiscordChannel[]): D
 
 export function applyDiscordChannelMuteSettings(state: AppState, mutedByChannelId: Record<string, boolean>, options: { reset?: boolean } = {}): void {
   const nextMutedByChannelId = Object.fromEntries(
-    Object.entries(mutedByChannelId).filter(([channelId]) => !isWhatsAppChannelId(channelId)),
+    Object.entries(mutedByChannelId).filter(([channelId]) => !isExternalChannelId(channelId)),
   );
   if (options.reset) {
     const knownChannels = [
       ...state.channelList.channels,
       ...Object.values(state.sidebar.cachedChannelsByGuildId).flat(),
-    ].filter((channel) => !isWhatsAppChannel(channel));
+    ].filter((channel) => !isExternalChannel(channel));
     for (const channel of knownChannels) {
       if (!Object.prototype.hasOwnProperty.call(nextMutedByChannelId, channel.id)) nextMutedByChannelId[channel.id] = false;
     }
   }
 
   const currentDiscordSettings = Object.fromEntries(
-    Object.entries(state.channelMuteSettings).filter(([channelId]) => !isWhatsAppChannelId(channelId)),
+    Object.entries(state.channelMuteSettings).filter(([channelId]) => !isExternalChannelId(channelId)),
   );
   state.channelMuteSettings = options.reset ? { ...nextMutedByChannelId } : { ...currentDiscordSettings, ...nextMutedByChannelId };
   applySidebarChannelMuteSettings(state.sidebar, nextMutedByChannelId);
@@ -709,7 +712,7 @@ export function applyDiscordChannelMuteSettings(state: AppState, mutedByChannelI
   if (accountId && directMessages) saveCachedDirectMessages(accountId, directMessages);
   if (accountId) {
     for (const [guildId, channels] of Object.entries(state.sidebar.cachedChannelsByGuildId)) {
-      if (guildId !== DIRECT_MESSAGES_GUILD_ID && guildId !== WHATSAPP_GUILD_ID) saveCachedGuildChannels(accountId, guildId, channels);
+      if (!isFixedTopLevelGuildId(guildId)) saveCachedGuildChannels(accountId, guildId, channels);
     }
   }
   persistNotifications(state);
@@ -1844,7 +1847,7 @@ export function removeSessionChannel(
   const removedGuildId = eventGuildId
     ?? deletedChannel?.guildId
     ?? state.channelList.guildId;
-  if (removedGuildId && removedGuildId !== DIRECT_MESSAGES_GUILD_ID && removedGuildId !== WHATSAPP_GUILD_ID) {
+  if (removedGuildId && !isFixedTopLevelGuildId(removedGuildId)) {
     const deletedIds = deletedGuildChannelIdsFor(state);
     for (const removedChannelId of removedChannelIds) deletedIds.add(removedChannelId);
   }
@@ -2023,7 +2026,7 @@ export function restoreCachedSessionPreview(
   restoreCachedAccountData(state, accountId);
 
   const target = startingState?.focusedChannel;
-  if (!target || target.guildId === WHATSAPP_GUILD_ID) return true;
+  if (!target || target.guildId === WHATSAPP_GUILD_ID || target.guildId === INSTAGRAM_GUILD_ID) return true;
   if (!state.sidebar.guilds.some((guild) => guild.id === target.guildId)) return true;
 
   const channels = state.sidebar.cachedChannelsByGuildId[target.guildId] ?? [];
@@ -2087,7 +2090,7 @@ function persistNotifications(state: AppState): void {
     const channelGuildIds: Record<string, string> = {};
     for (const [channelId, count] of Object.entries(state.notifications.byChannelId)) {
       const guildId = state.notifications.channelGuildIds[channelId];
-      if (guildId === WHATSAPP_GUILD_ID || isWhatsAppChannelId(channelId)) continue;
+      if (guildId === WHATSAPP_GUILD_ID || guildId === INSTAGRAM_GUILD_ID || isExternalChannelId(channelId)) continue;
       byChannelId[channelId] = count;
       if (guildId) channelGuildIds[channelId] = guildId;
     }
@@ -2254,7 +2257,7 @@ export function loadGuildRolesInBackground(
   options: { revalidate?: boolean } = {},
 ): void {
   const fetchState = roleFetchStateFor(state);
-  if (guildId === DIRECT_MESSAGES_GUILD_ID || fetchState.pending.has(guildId) || fetchState.fresh.has(guildId)) return;
+  if (isFixedTopLevelGuildId(guildId) || fetchState.pending.has(guildId) || fetchState.fresh.has(guildId)) return;
   if (!options.revalidate && guildRolesIncludeNamesAndPermissions(state.guildRolesByGuildId[guildId])) return;
   fetchState.pending.add(guildId);
   const revision = fetchState.revisions.get(guildId) ?? 0;
@@ -2340,6 +2343,7 @@ export function persistSidebarFolders(state: AppState): void {
 }
 
 function privateConversationLayoutScope(state: AppState, guildId: string): string | null {
+  if (guildId === INSTAGRAM_GUILD_ID && state.instagram.account?.id) return `instagram:${state.instagram.account.id}`;
   if (guildId === DIRECT_MESSAGES_GUILD_ID) return currentAccountId(state);
   if (guildId === WHATSAPP_GUILD_ID && state.whatsapp.account?.id) {
     return whatsappSidebarLayoutScope(state.whatsapp.account.id, state.whatsapp.account.phoneId);
@@ -2446,7 +2450,7 @@ function currentUserChannelPermissionBits(
 
 /** Whether the authenticated user may delete this guild channel or thread. */
 export function canDeleteGuildChannel(state: AppState, guildId: string, channelId: string): boolean {
-  if (guildId === DIRECT_MESSAGES_GUILD_ID || guildId === WHATSAPP_GUILD_ID) return false;
+  if (isFixedTopLevelGuildId(guildId)) return false;
   const channel = channelById(state, channelId);
   const currentUserId = state.auth.user?.id;
   if (!channel || channel.guildId !== guildId || !currentUserId) return false;
@@ -2596,7 +2600,7 @@ function canViewGuildChannel(
 }
 
 function refreshHiddenChannelFlags(state: AppState, guildId: string | null | undefined): void {
-  if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID) return;
+  if (!guildId || isFixedTopLevelGuildId(guildId)) return;
   const roles = state.guildRolesByGuildId[guildId];
   const currentUserId = state.auth.user?.id ?? null;
   const currentUserRoleIds = state.roleIdsByGuildId[guildId]
@@ -2741,7 +2745,7 @@ function applyCachedNotifications(state: AppState, cachedAccountId?: string | nu
       ...whatsAppNotifications,
       ...Object.entries(cachedNotifications.byChannelId)
       .filter(([channelId, count]) => count > 0
-        && !isWhatsAppChannelId(channelId)
+        && !isExternalChannelId(channelId)
         && cachedNotifications.channelGuildIds[channelId] !== WHATSAPP_GUILD_ID
         && !isSidebarGuildMuted(state.sidebar, cachedNotifications.channelGuildIds[channelId])
         && !isChannelMuted(state, channelId))
@@ -2757,8 +2761,8 @@ function applyCachedNotifications(state: AppState, cachedAccountId?: string | nu
 function currentWhatsAppNotifications(state: AppState): Array<{ channelId: string; guildId: string; count: number }> {
   return Object.entries(state.notifications.byChannelId)
     .filter(([channelId]) => state.notifications.channelGuildIds[channelId] === WHATSAPP_GUILD_ID
-      || isWhatsAppChannelId(channelId))
-    .map(([channelId, count]) => ({ channelId, guildId: WHATSAPP_GUILD_ID, count }));
+      || state.notifications.channelGuildIds[channelId] === INSTAGRAM_GUILD_ID || isExternalChannelId(channelId))
+    .map(([channelId, count]) => ({ channelId, guildId: isInstagramChannelId(channelId) ? INSTAGRAM_GUILD_ID : WHATSAPP_GUILD_ID, count }));
 }
 
 function clearNotificationsForChannel(state: AppState, channelId: string): void {
@@ -2768,7 +2772,7 @@ function clearNotificationsForChannel(state: AppState, channelId: string): void 
 
 function markChannelRead(state: AppState, token: string | null, channelId: string, messageId: string): void {
   clearNotificationsForChannel(state, channelId);
-  if (!token || isWhatsAppChannelId(channelId)) return;
+  if (!token || isExternalChannelId(channelId)) return;
 
   void ackChannelMessage(token, channelId, messageId).catch(() => {
     // Keep read acknowledgements best-effort; failing to ack should not disrupt chat.
@@ -2826,11 +2830,12 @@ function latestTimelineMessageId(state: AppState, channelId: string): string | n
 
 function subscribeAppGatewayToActiveChannel(state: AppState): void {
   const channel = state.channelList.activeChannel;
-  if (isWhatsAppChannel(channel)) return;
+  if (isExternalChannel(channel)) return;
   appGateway?.subscribeToGuildChannel(channel?.guildId, channel?.id);
 }
 
 function subscribeAppGatewayToGuild(guildId: string | null | undefined): void {
+  if (guildId === INSTAGRAM_GUILD_ID) return;
   if (guildId === WHATSAPP_GUILD_ID) return;
   appGateway?.subscribeToGuild(guildId);
 }
@@ -3090,7 +3095,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
         state.notifications,
         [
           ...whatsAppNotifications,
-          ...notifications.filter((notification) => !isWhatsAppChannelId(notification.channelId)
+          ...notifications.filter((notification) => !isExternalChannelId(notification.channelId)
             && notification.guildId !== WHATSAPP_GUILD_ID
             && notification.channelId !== state.timeline.channelId
             && !isSidebarGuildMuted(state.sidebar, notification.guildId)
@@ -3101,7 +3106,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       const latestMessageId = state.timeline.channelId
         ? channelAckMessageId(state, state.timeline.channelId, latestTimelineMessageId(state, state.timeline.channelId))
         : null;
-      if (state.timeline.channelId && !isWhatsAppChannelId(state.timeline.channelId)
+      if (state.timeline.channelId && !isExternalChannelId(state.timeline.channelId)
         && latestMessageId && isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) {
         markChannelRead(state, state.auth.savedToken, state.timeline.channelId, latestMessageId);
       }
@@ -3242,7 +3247,7 @@ export function ensureCurrentServerCommands(state: AppState, effects: SessionEff
   const token = state.auth.savedToken;
   const channel = state.channelList.activeChannel;
   const guildId = channel?.guildId ?? state.channelList.guildId;
-  if (!token || !channel || !guildId || guildId === DIRECT_MESSAGES_GUILD_ID || guildId === WHATSAPP_GUILD_ID) return;
+  if (!token || !channel || !guildId || isFixedTopLevelGuildId(guildId)) return;
 
   const existing = state.serverCommands.guilds[guildId] ?? createServerCommandGuildState();
   if (existing.loading || existing.loaded) return;
@@ -3339,6 +3344,7 @@ export function executeCurrentServerCommand(
 ): void {
   const sessionId = currentAppGatewaySessionId(token);
   const activeChannelId = state.channelList.activeChannelId ?? state.timeline.channelId;
+  if (isExternalChannelId(activeChannelId) || isExternalChannelId(request.channelId)) return;
   if (!token) {
     setServerCommandWarning(state, "Login before running a server command.");
     effects.scheduleRender();
@@ -3376,6 +3382,10 @@ export function executeCurrentServerCommand(
 }
 
 export function clearReadOnlyClient(state: AppState): void {
+  const igChannels = instagramChannels(state.instagram);
+  const igLayout = sidebarChannelLayoutForGuild(state.sidebar, INSTAGRAM_GUILD_ID);
+  const igActive = state.channelList.guildId === INSTAGRAM_GUILD_ID ? state.channelList.activeChannelId : null;
+  const igHasOlder = state.timeline.hasOlder;
   guildRoleFetchState.delete(state);
   deletedGuildChannelIds.delete(state);
   const whatsAppChannelsBeforeClear = whatsAppChannels(state.whatsapp);
@@ -3410,6 +3420,8 @@ export function clearReadOnlyClient(state: AppState): void {
   state.auth.cachedSidebarPreviewAccountId = null;
   state.memberRoleCacheVersion += 1;
   setSidebarGuilds(state.sidebar, withDirectMessagesGuild([]));
+  applySidebarChannelLayoutForGuild(state.sidebar, INSTAGRAM_GUILD_ID, igLayout);
+  setSidebarCachedChannels(state.sidebar, INSTAGRAM_GUILD_ID, igChannels);
   applySidebarChannelLayoutForGuild(state.sidebar, WHATSAPP_GUILD_ID, whatsAppChannelLayoutBeforeClear);
   setSidebarCachedChannels(state.sidebar, WHATSAPP_GUILD_ID, whatsAppChannelsBeforeClear);
   replaceNotifications(state.notifications, whatsAppNotifications);
@@ -3423,10 +3435,25 @@ export function clearReadOnlyClient(state: AppState): void {
       setTimelineMessages(state.timeline, activeWhatsAppChannelId, whatsAppTimelineMessages(state.whatsapp, activeWhatsAppChannelId), { hasOlder: false });
     }
   }
+  if (igActive) {
+    const channel = igChannels.find((entry) => entry.id === igActive);
+    if (channel) {
+      setChannelList(state.channelList, INSTAGRAM_GUILD_ID, igChannels);
+      setActiveChannelEntry(state.channelList, channel);
+      state.sidebar.focusedGuildId = INSTAGRAM_GUILD_ID;
+      state.sidebar.activeGuildId = INSTAGRAM_GUILD_ID;
+      state.sidebar.expandedGuildId = INSTAGRAM_GUILD_ID;
+      setTimelineMessages(state.timeline, igActive, instagramTimelineMessages(state.instagram, igActive), { hasOlder: igHasOlder });
+    }
+  }
   focusPrompt(state);
 }
 
 function loadMemberListPlaceholder(state: AppState, guildId: string | null, channelId: string | null): void {
+  if (guildId === INSTAGRAM_GUILD_ID) {
+    setMemberListMessage(state.memberList, guildId, channelId, "Instagram members are not available.");
+    return;
+  }
   if (!state.memberList.open) {
     debugLog("member_list.placeholder_skipped", { guildId, channelId, reason: "sidebar_closed" });
     return;
@@ -3482,10 +3509,10 @@ export function syncMemberListForCurrentChannel(state: AppState, effects: Sessio
   loadMemberListPlaceholder(state, guildId, channelId);
   if (state.memberList.open) effects.scheduleRender();
 
-  if (guildId === WHATSAPP_GUILD_ID) {
+  if (guildId === WHATSAPP_GUILD_ID || guildId === INSTAGRAM_GUILD_ID) {
     disconnectMemberListGateway();
     if (state.memberList.open) {
-      setMemberListMessage(state.memberList, guildId, channelId, "WhatsApp group members are not loaded yet.");
+      setMemberListMessage(state.memberList, guildId, channelId, "External chat members are not available.");
       effects.scheduleRender();
     }
     return;
@@ -3739,6 +3766,7 @@ export async function loadGuildChannels(
   effects: SessionEffects,
   options: LoadGuildChannelsOptions = {},
 ): Promise<void> {
+  if (guildId === INSTAGRAM_GUILD_ID || guildId === WHATSAPP_GUILD_ID) return;
   const requestId = ++state.channelList.requestId;
   const accountId = currentAccountId(state);
   if (options.focusGuild !== false) {
@@ -3903,6 +3931,7 @@ export function createCurrentChannelThread(
   name: string,
   effects: SessionEffects,
 ): void {
+  if (isExternalChannelId(state.timeline.channelId)) return;
   if (!token) {
     showThreadCommandError(state, effects, "Login first with /login <token|username> to create a thread.");
     return;
@@ -4035,7 +4064,7 @@ export async function loadCurrentChannelPinnedMessages(
   }
 
   const channelId = state.timeline.channelId;
-  if (!channelId || isWhatsAppChannelId(channelId)) {
+  if (!channelId || isExternalChannelId(channelId)) {
     showPinnedCommandError(state, effects, "Open a Discord message channel before using /pinned.");
     return false;
   }
@@ -4120,6 +4149,7 @@ export async function loadChannelMessages(
   channelId: string,
   effects: SessionEffects,
 ): Promise<void> {
+  if (isExternalChannelId(channelId)) return;
   const channel = findTimelineChannel(state.channelList.channels, channelId);
   if (!channel) {
     setNotice(state, "That channel is not loaded yet.", "warning");
@@ -4220,8 +4250,7 @@ async function refreshLatestChannelMessages(
     if (requestId !== state.timeline.requestId || state.timeline.channelId !== channelId) return;
     if (error instanceof DiscordResourceNotFoundError
       && guildId
-      && guildId !== DIRECT_MESSAGES_GUILD_ID
-      && guildId !== WHATSAPP_GUILD_ID) {
+      && !isFixedTopLevelGuildId(guildId)) {
       // A stale cached channel/thread should self-heal instead of remaining in
       // the sidebar as an entry that can only produce repeated 404s.
       removeSessionChannel(state, effects, channelId, guildId);
@@ -4243,6 +4272,7 @@ export async function loadOlderChannelMessages(
   width: number,
   effects: SessionEffects,
 ): Promise<void> {
+  if (isExternalChannelId(channelId)) return;
   const oldestMessageId = state.timeline.messages[0]?.id;
   if (!oldestMessageId || state.timeline.channelId !== channelId) {
     finishLoadingOlderMessages(state.timeline, false);
@@ -4283,6 +4313,7 @@ export async function loadNewerChannelMessages(
   channelId: string,
   effects: SessionEffects,
 ): Promise<void> {
+  if (isExternalChannelId(channelId)) return;
   const newestMessageId = state.timeline.messages.at(-1)?.id;
   if (!newestMessageId || state.timeline.channelId !== channelId) {
     finishLoadingNewerMessages(state.timeline, false);
@@ -4323,6 +4354,7 @@ export async function loadLatestChannelMessages(
   channelId: string,
   effects: SessionEffects,
 ): Promise<boolean> {
+  if (isExternalChannelId(channelId)) return false;
   if (state.timeline.channelId !== channelId) return false;
 
   const requestId = ++state.timeline.requestId;
@@ -4369,6 +4401,7 @@ export async function loadChannelMessagesAround(
   messageId: string,
   effects: SessionEffects,
 ): Promise<boolean> {
+  if (isExternalChannelId(channelId)) return false;
   if (state.timeline.channelId !== channelId) return false;
 
   const requestId = ++state.timeline.requestId;
@@ -4420,6 +4453,7 @@ export async function loadChannelMessageLocation(
   target: ChannelMessageLocationTarget,
   effects: SessionEffects,
 ): Promise<boolean> {
+  if (isExternalChannelId(target.channelId)) return false;
   let channel = accessibleTimelineChannel(state, target.channelId);
   const guildId = target.guildId ?? channel?.guildId ?? cachedGuildIdForChannel(state, target.channelId);
 
@@ -4520,8 +4554,8 @@ export function editCurrentMessage(
 ): void {
   const target = state.editTarget;
   if (!target) return;
-  if (isWhatsAppChannelId(target.channelId)) {
-    setNotice(state, "Editing WhatsApp messages is not supported yet.", "warning", { statusLine: false, chat: true });
+  if (isExternalChannelId(target.channelId)) {
+    setNotice(state, "Editing external messages is not supported yet.", "warning", { statusLine: false, chat: true });
     effects.scheduleRender();
     return;
   }
@@ -4627,9 +4661,9 @@ export function deleteMessage(
 ): void {
   const channelId = message.channelId;
   const messageId = message.id;
-  if (isWhatsAppChannelId(channelId)) {
+  if (isExternalChannelId(channelId)) {
     state.messageDeletePending = null;
-    setNotice(state, "Deleting WhatsApp messages is not supported yet.", "warning", { statusLine: false, chat: true });
+    setNotice(state, "Deleting external messages is not supported yet.", "warning", { statusLine: false, chat: true });
     effects.scheduleRender();
     return;
   }
@@ -4707,8 +4741,8 @@ export function sendCurrentChannelMessage(
   options: { sendContent?: string; localMentionUsers?: DiscordGuildMember[]; uploads?: LocalMessageUpload[]; failureBuffer?: string; loadingNotice?: string; failureNoticePrefix?: string; messageFlags?: number } = {},
 ): void {
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
-  if (isWhatsAppChannelId(channelId)) {
-    setNotice(state, "WhatsApp messages must be sent through the WhatsApp provider.", "warning", { statusLine: false, chat: true });
+  if (isExternalChannelId(channelId)) {
+    setNotice(state, "External messages must be sent through their provider.", "warning", { statusLine: false, chat: true });
     effects.scheduleRender();
     return;
   }
@@ -4864,8 +4898,8 @@ export function uploadCurrentChannelFile(
   effects: SessionEffects,
 ): void {
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
-  if (isWhatsAppChannelId(channelId)) {
-    setUploadFailureNotice(state, effects, "WhatsApp file uploads are not supported yet.");
+  if (isExternalChannelId(channelId)) {
+    setUploadFailureNotice(state, effects, "External file uploads are not supported yet.");
     return;
   }
   if (!token) {
@@ -5024,8 +5058,8 @@ export function startCurrentVoiceCall(
   effects: SessionEffects,
   options: { voiceChannel?: DiscordChannel | null } = {},
 ): void {
-  if (isWhatsAppChannel(options.voiceChannel ?? state.channelList.activeChannel)) {
-    setNotice(state, "WhatsApp calls are not supported in Record.", "warning", { statusLine: false, chat: true });
+  if (isExternalChannel(options.voiceChannel ?? state.channelList.activeChannel)) {
+    setNotice(state, "External calls are not supported in Record.", "warning", { statusLine: false, chat: true });
     effects.scheduleRender();
     return;
   }
@@ -5378,6 +5412,7 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
     showHiddenChannels: state.showHiddenChannels,
     currentUserId: state.auth.user?.id ?? null,
   });
+  if (entry.guildId === INSTAGRAM_GUILD_ID || entry.guildId === WHATSAPP_GUILD_ID) return;
   if (toggleSelectedVoiceMemberMute(state, effects, entry)) return;
 
   const token = state.auth.savedToken;
@@ -5571,7 +5606,7 @@ export function ackCurrentChannelIfAtBottom(state: AppState): void {
   const channelId = state.timeline.channelId;
   if (state.timeline.view !== "channel"
     || !channelId
-    || isWhatsAppChannelId(channelId)
+    || isExternalChannelId(channelId)
     || !isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) return;
   const latestMessageId = channelAckMessageId(state, channelId, latestTimelineMessageId(state, channelId));
   if (!latestMessageId) return;

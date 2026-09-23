@@ -9,10 +9,11 @@ import { theme } from "./theme";
 export function renderBodyLines(state: AppState, width: number): string[] {
   const discordConnected = state.auth.status === "authenticated";
   const whatsappConnected = state.whatsapp.connection.status === "connected";
-  if (!discordConnected && !whatsappConnected) {
+  if (!discordConnected && !whatsappConnected && state.instagram.connection.status !== "connected") {
     return [
       `${theme.text}${truncate("Login with /login <token|username> to load your Discord servers.", width)}${theme.reset}`,
       `${theme.text}${truncate("Link WhatsApp with /login whatsapp.", width)}${theme.reset}`,
+      `${theme.text}${truncate("Import Instagram from vimbrowser with /login instagram [tab ID].", width)}${theme.reset}`,
       `${theme.muted}${truncate("Use Ctrl+S or Ctrl+M to toggle the servers sidebar.", width)}${theme.reset}`,
     ];
   }

@@ -16,7 +16,7 @@ import { tryServerCommand } from "./servercommands";
 import type { AppState } from "./state";
 import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } from "./state";
 import { normalizeToken } from "./token";
-import { isWhatsAppChannelId } from "./chatproviders";
+import { INSTAGRAM_GUILD_ID, isWhatsAppChannelId, isInstagramChannelId } from "./chatproviders";
 import { pushTimelineSystemMessage } from "./timeline";
 
 export interface AppEffects extends SessionEffects {
@@ -24,6 +24,10 @@ export interface AppEffects extends SessionEffects {
   applyThemeCursor: () => void;
   bootstrapSession: (token: string) => void;
   loginWhatsApp: () => void;
+  loginInstagram?: (tabId?: string) => void;
+  logoutInstagram?: () => void;
+  sendInstagramMessage?: (content: string) => boolean;
+  refreshInstagram?: () => void;
   logoutWhatsApp: () => void;
   sendWhatsAppMessage: (content: string) => boolean;
 }
@@ -171,6 +175,12 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
     case "login_whatsapp":
       effects.loginWhatsApp();
       return true;
+    case "login_instagram":
+      effects.loginInstagram?.(result.tabId);
+      return true;
+    case "logout_instagram":
+      effects.logoutInstagram?.();
+      return true;
     case "logout":
       logout(state, effects);
       return true;
@@ -182,6 +192,10 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       effects.scheduleRender();
       return true;
     case "refresh":
+      if (isInstagramChannelId(state.channelList.activeChannelId ?? state.timeline.channelId) || state.sidebar.focusedGuildId === INSTAGRAM_GUILD_ID) {
+        effects.refreshInstagram?.();
+        return true;
+      }
       refreshReadOnlyClient(state, effects);
       return true;
     case "pinned":
@@ -271,6 +285,11 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   }
 
   const activeChannelId = state.channelList.activeChannelId ?? state.timeline.channelId;
+  if (isInstagramChannelId(activeChannelId)) {
+    if (hasImages) setNotice(state, "Instagram uploads are not supported.", "warning");
+    else effects.sendInstagramMessage?.(expandedText);
+    return;
+  }
   if (isWhatsAppChannelId(activeChannelId) && effects.sendWhatsAppMessage(expandedText)) return;
 
   sendCurrentChannelMessage(state, state.auth.savedToken, expandedText, effects, {

@@ -1,6 +1,6 @@
 # record
 
-A super-lean Discord terminal client bootstrap, inspired by Endcord and the Exocortex TUI stack.
+A lean Discord, WhatsApp, and Instagram terminal client, inspired by Endcord and the Exocortex TUI stack.
 
 Current scope:
 - Bun + TypeScript
@@ -94,3 +94,31 @@ Notes:
 - default theme is `whale`
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`
 - this is intentionally small and modular so real Discord features can be layered on later
+
+### Instagram Direct
+
+Sign into Instagram in **vimbrowser**, then run `/login instagram` in Record.
+For an isolated browser context, use `/login instagram <tab ID>` with that
+signed-in Instagram tab. Importing auth does not navigate or focus the browser.
+The imported session reconnects automatically on subsequent launches.
+
+Instagram has its own sidebar section, independent of Discord and WhatsApp.
+Open existing individual or group conversations, read/paginate history, send
+text and replies, view ordinary photo/video/voice attachments and shared posts,
+and locally pin/reorder chats with the usual sidebar keys. Opening a chat marks
+it read. The inbox is paginated at startup; new messages are polled every 30
+seconds. `/refresh` in an Instagram chat updates it immediately.
+
+`/logout instagram` removes Record's saved session without signing out the
+browser. Credentials are plaintext in
+`$XDG_CONFIG_HOME/record/instagram/session.json` (default
+`~/.config/record/instagram/session.json`), with `0700` directory / `0600` file
+permissions. Worktree test sessions have their own config copy.
+
+This uses Instagram's **unofficial web API**, which can change or be rate-limited.
+If Instagram requests verification, complete it in vimbrowser and import again.
+Uploads, calls, starting new chats, message requests, editing/deleting messages,
+and changing server-side mute settings are not supported yet. Disappearing
+media and unsupported/encrypted items show an “open in Instagram” placeholder
+rather than being downloaded. Text-send tests are mocked; testing never sends
+messages to your contacts automatically.

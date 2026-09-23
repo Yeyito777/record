@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
+import { INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { createInitialState } from "../state";
 import { WhatsAppController, type WhatsAppBackendHandle } from "./controller";
 import { MAX_WHATSAPP_MESSAGES_PER_CHAT } from "./integration";
@@ -595,6 +595,8 @@ describe("WhatsApp controller", () => {
 
   test("keeps WhatsApp as a top-level root and maps synchronized chats", () => {
     const { state, backend, controller } = fixture();
+    state.sidebar.focusedGuildId = INSTAGRAM_GUILD_ID;
+    state.sidebar.expandedGuildId = INSTAGRAM_GUILD_ID;
     backend.emit("history", {
       chats: [{ id: "15551234567@s.whatsapp.net", kind: "direct", name: "Mom", lastMessageAtMs: 10 }],
       contacts: [],
@@ -613,6 +615,9 @@ describe("WhatsApp controller", () => {
     });
 
     expect(state.sidebar.guilds.some((guild) => guild.id === WHATSAPP_GUILD_ID)).toBe(true);
+    expect(state.sidebar.guilds.some((guild) => guild.id === INSTAGRAM_GUILD_ID)).toBe(true);
+    expect(state.sidebar.focusedGuildId).toBe(INSTAGRAM_GUILD_ID);
+    expect(state.sidebar.expandedGuildId).toBe(INSTAGRAM_GUILD_ID);
     controller.openRoot();
     expect(state.channelList.guildId).toBe(WHATSAPP_GUILD_ID);
     expect(state.channelList.channels.map((channel) => channel.name)).toEqual(["Mom"]);
@@ -1425,7 +1430,11 @@ describe("WhatsApp controller", () => {
     expect(replacement.started).toBe(0);
 
     previous.releaseShutdown();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Auth cleanup uses async filesystem work and may take more than one turn.
+    const deadline = Date.now() + 1_000;
+    while (replacement.started === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     expect(replacement.started).toBe(1);
   });
 

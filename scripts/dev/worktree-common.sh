@@ -71,6 +71,13 @@ sync_shared_config() {
       chmod 600 "$dest_config/$file" 2>/dev/null || true
     fi
   done
+
+  if [[ -f "$src_config/instagram/session.json" && ! -e "$dest_config/instagram/session.json" ]]; then
+    mkdir -p "$dest_config/instagram"
+    chmod 700 "$dest_config/instagram"
+    cp "$src_config/instagram/session.json" "$dest_config/instagram/session.json"
+    chmod 600 "$dest_config/instagram/session.json"
+  fi
 }
 
 cleanup_worktree_config() {

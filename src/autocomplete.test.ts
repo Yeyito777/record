@@ -6,10 +6,24 @@ import { join } from "path";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { decodeCustomEmojiMarkers } from "./customemoji";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
+import { INSTAGRAM_GUILD_ID } from "./chatproviders";
 import { emojiCompletions } from "./emojis";
 import { createInitialState } from "./state";
 
 describe("autocomplete", () => {
+  test("does not offer Discord custom emoji in Instagram even with Nitro", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+    state.auth.premiumType = 2;
+    state.channelList.guildId = INSTAGRAM_GUILD_ID;
+    state.sidebar.guilds = [{
+      id: "discord-guild", name: "Discord", icon: null,
+      emojis: [{ id: "200", name: "party_blob", animated: true, roleIds: [] }],
+    }];
+    state.editor.buffer = ":party_bl";
+    state.editor.cursor = state.editor.buffer.length;
+    updateAutocomplete(state);
+    expect(state.autocomplete?.matches.some((match) => match.customEmoji?.id === "200") ?? false).toBe(false);
+  });
   test("suggests saved usernames for /login", () => {
     const state = createInitialState(null, "/tmp/record-config.json", {
       alice: "token-1",
@@ -37,6 +51,7 @@ describe("autocomplete", () => {
 
     expect(state.autocomplete?.matches).toEqual([
       { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
+      { name: "instagram", desc: "Import Instagram from vimbrowser (optional tab ID)" },
       { name: "discord", desc: "Log in to Discord explicitly" },
       { name: "alice", desc: "saved login" },
       { name: "bob", desc: "saved login" },

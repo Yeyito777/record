@@ -2,6 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import {
   WHATSAPP_GUILD_ID,
+  INSTAGRAM_GUILD_ID,
+  instagramChannelId,
+  instagramThreadIdFromChannelId,
+  instagramGuild,
+  isInstagramChannel,
+  isInstagramChannelId,
+  isExternalChannelId,
   isFixedTopLevelGuildId,
   isWhatsAppChannelId,
   whatsappChannelId,
@@ -11,6 +18,20 @@ import {
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("chat provider identifiers", () => {
+  test("Instagram has an independent fixed root and lossless numeric thread IDs", () => {
+    const threadId = "340282366841710300949128000000000000001";
+    expect(instagramGuild().id).toBe(INSTAGRAM_GUILD_ID);
+    expect(isFixedTopLevelGuildId(INSTAGRAM_GUILD_ID)).toBe(true);
+    expect(instagramThreadIdFromChannelId(instagramChannelId(threadId))).toBe(threadId);
+    expect(isInstagramChannelId("ig:abc")).toBe(false);
+    expect(isInstagramChannelId("ig:")).toBe(false);
+    expect(instagramThreadIdFromChannelId("123")).toBeNull();
+    expect(() => instagramChannelId("abc")).toThrow();
+    expect(isInstagramChannel({ id: "ig:123", guildId: INSTAGRAM_GUILD_ID })).toBe(true);
+    expect(isExternalChannelId("ig:123")).toBe(true);
+    expect(isExternalChannelId(whatsappChannelId("test@s.whatsapp.net"))).toBe(true);
+    expect(isExternalChannelId("123")).toBe(false);
+  });
   test("round-trips WhatsApp JIDs through namespaced UI channel ids", () => {
     const jid = "120363012345678901@g.us";
     const channelId = whatsappChannelId(jid);

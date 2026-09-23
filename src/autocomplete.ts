@@ -8,7 +8,7 @@
 
 import type { AppState } from "./state";
 import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
-import { WHATSAPP_GUILD_ID } from "./chatproviders";
+import { INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { customEmojiMarker } from "./customemoji";
 import { emojiCompletions, emojiQueryAtCursor, type CustomEmojiCandidate } from "./emojis";
 import { MACRO_LIST, getMacroArgs } from "./macros";
@@ -126,8 +126,8 @@ function customEmojiCandidates(state: AppState): CustomEmojiCandidate[] {
   const activeGuildId = state.channelList.activeChannel?.guildId
     ?? state.channelList.guildId
     ?? state.sidebar.activeGuildId;
-  // Discord custom emoji tokens have no meaning on the WhatsApp transport.
-  if (activeGuildId === WHATSAPP_GUILD_ID) return [];
+  // Discord custom emoji tokens have no meaning on external transports.
+  if (activeGuildId === WHATSAPP_GUILD_ID || activeGuildId === INSTAGRAM_GUILD_ID) return [];
 
   const guilds = state.auth.premiumType > 0
     ? state.sidebar.guilds

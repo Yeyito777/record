@@ -29,6 +29,8 @@ export type CommandResult =
   | { type: "quit" }
   | { type: "login"; credential: string }
   | { type: "login_whatsapp" }
+  | { type: "login_instagram"; tabId?: string }
+  | { type: "logout_instagram" }
   | { type: "logout" }
   | { type: "logout_whatsapp" }
   | { type: "refresh" }
@@ -101,11 +103,13 @@ const STATUS_ARGS: CompletionItem[] = [
 
 const LOGIN_PROVIDER_ARGS: CompletionItem[] = [
   { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
+  { name: "instagram", desc: "Import Instagram from vimbrowser (optional tab ID)" },
   { name: "discord", desc: "Log in to Discord explicitly" },
 ];
 
 const LOGOUT_PROVIDER_ARGS: CompletionItem[] = [
   { name: "whatsapp", desc: "Disconnect the saved WhatsApp account" },
+  { name: "instagram", desc: "Disconnect the saved Instagram account" },
 ];
 
 function parseOnOff(value: string | undefined): boolean | null {
@@ -244,7 +248,7 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/login",
-    description: "Log in to Discord or link WhatsApp",
+    description: "Log in to Discord, WhatsApp or Instagram",
     handler: (text, state) => {
       const match = text.match(/^\/login\s+(.+)$/);
       if (!match) return usage(state, "Usage: /login <token|username> | /login whatsapp");
@@ -252,6 +256,11 @@ const commands: SlashCommand[] = [
       if (!credential) return usage(state, "Usage: /login <token|username> | /login whatsapp");
       clearPrompt(state);
       if (credential.toLowerCase() === "whatsapp") return { type: "login_whatsapp" };
+      if (/^instagram(?:\s|$)/i.test(credential)) {
+        const parts = credential.split(/\s+/);
+        if (parts.length > 2) return usage(state, "Usage: /login instagram [tab ID]");
+        return { type: "login_instagram", ...(parts[1] ? { tabId: parts[1] } : {}) };
+      }
       const explicitDiscord = credential.match(/^discord\s+(.+)$/i)?.[1]?.trim();
       if (/^discord(?:\s|$)/i.test(credential)) {
         if (!explicitDiscord) return usage(state, "Usage: /login discord <token|username>");
@@ -262,14 +271,18 @@ const commands: SlashCommand[] = [
   },
   {
     name: "/logout",
-    description: "Log out of Discord or WhatsApp",
+    description: "Log out of Discord, WhatsApp or Instagram",
     handler: (text, state) => {
       const parts = text.trim().split(/\s+/).filter(Boolean);
+      if (parts.length === 2 && parts[1]?.toLowerCase() === "instagram") {
+        clearPrompt(state);
+        return { type: "logout_instagram" };
+      }
       if (parts.length === 2 && parts[1]?.toLowerCase() === "whatsapp") {
         clearPrompt(state);
         return { type: "logout_whatsapp" };
       }
-      if (parts.length !== 1) return usage(state, "Usage: /logout [whatsapp]");
+      if (parts.length !== 1) return usage(state, "Usage: /logout [whatsapp|instagram]");
       clearPrompt(state);
       return { type: "logout" };
     },

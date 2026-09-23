@@ -4,6 +4,29 @@ import { DIRECT_MESSAGES_GUILD_ID, type DiscordChannel, type DiscordGuild } from
 export const WHATSAPP_GUILD_ID = "@me::whatsapp";
 export const WHATSAPP_GUILD_NAME = "WhatsApp";
 export const WHATSAPP_CHANNEL_ID_PREFIX = "wa:";
+export const INSTAGRAM_GUILD_ID = "@me::instagram";
+export function instagramGuild(): DiscordGuild {
+  return { id: INSTAGRAM_GUILD_ID, name: "Instagram", icon: null };
+}
+export function instagramChannelId(threadId: string): string {
+  if (!/^\d+$/.test(threadId)) throw new Error("Invalid Instagram thread ID");
+  return `ig:${threadId}`;
+}
+export function isInstagramChannelId(channelId: string | null | undefined): boolean {
+  return Boolean(channelId && /^ig:\d+$/.test(channelId));
+}
+export function instagramThreadIdFromChannelId(channelId: string): string | null {
+  return isInstagramChannelId(channelId) ? channelId.slice(3) : null;
+}
+export function isInstagramChannel(channel: Pick<DiscordChannel, "id" | "guildId"> | null | undefined): boolean {
+  return channel?.guildId === INSTAGRAM_GUILD_ID || isInstagramChannelId(channel?.id);
+}
+export function isExternalChannelId(channelId: string | null | undefined): boolean {
+  return isWhatsAppChannelId(channelId) || isInstagramChannelId(channelId);
+}
+export function isExternalChannel(channel: Pick<DiscordChannel, "id" | "guildId"> | null | undefined): boolean {
+  return isWhatsAppChannel(channel) || isInstagramChannel(channel);
+}
 
 export function whatsappSidebarLayoutScope(accountId: string, phoneId?: string | null): string {
   const jid = phoneId || accountId;
@@ -19,7 +42,7 @@ export function whatsappGuild(): DiscordGuild {
 }
 
 export function isFixedTopLevelGuildId(guildId: string | null | undefined): boolean {
-  return guildId === DIRECT_MESSAGES_GUILD_ID || guildId === WHATSAPP_GUILD_ID;
+  return guildId === DIRECT_MESSAGES_GUILD_ID || guildId === WHATSAPP_GUILD_ID || guildId === INSTAGRAM_GUILD_ID;
 }
 
 export function isWhatsAppChannelId(channelId: string | null | undefined): boolean {

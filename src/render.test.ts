@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { render } from "./render";
 import { createInitialState, focusHistory } from "./state";
+import { INSTAGRAM_GUILD_ID } from "./chatproviders";
 import { setTimelineInlineImageState, setTimelineMessages } from "./timeline";
 import { theme } from "./theme";
 import type { DiscordMessage } from "./discord";
@@ -75,6 +76,25 @@ function stateWithReadyInlineImage(): ReturnType<typeof createInitialState> {
 }
 
 describe("render", () => {
+  test("Instagram group timelines use the Instagram viewer and DM coloring", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+    state.cols = 100;
+    state.rows = 24;
+    state.instagram.account = { id: "ig-self", username: "self", name: "Self" };
+    state.channelList.activeChannel = {
+      id: "ig:123", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "Group",
+      topic: null, position: 0, type: 3, nsfw: false,
+    };
+    state.channelList.activeChannelId = "ig:123";
+    const ownMessage = message("1", "hello");
+    ownMessage.channelId = "ig:123";
+    ownMessage.guildId = INSTAGRAM_GUILD_ID;
+    ownMessage.author.id = "ig-self";
+    setTimelineMessages(state.timeline, "ig:123", [ownMessage]);
+    captureRender(state);
+    expect(state.timeline.viewerId).toBe("ig-self");
+    expect(state.timeline.accentViewerInDirectMessages).toBe(true);
+  });
   test("composes the centered WhatsApp QR modal over the retained frame", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.cols = 120;

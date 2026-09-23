@@ -7,7 +7,7 @@ import { resolveLoginCredential, submitCurrentBuffer, validateAndMaybeSave, type
 import { loadConfig } from "./config";
 import { customEmojiMarker } from "./customemoji";
 import { createInitialState } from "./state";
-import { whatsappChannelId, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { INSTAGRAM_GUILD_ID, whatsappChannelId, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 const originalFetch = globalThis.fetch;
@@ -62,7 +62,7 @@ describe("submitCurrentBuffer", () => {
 
     expect(state.auth.status).toBe("error");
     expect(state.auth.cachedSidebarPreviewAccountId).toBeNull();
-    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID]);
+    expect(state.sidebar.guilds.map((guild) => guild.id)).toEqual([DIRECT_MESSAGES_GUILD_ID, WHATSAPP_GUILD_ID, INSTAGRAM_GUILD_ID]);
   });
 
   test("non-command prompt text requires a login before sending", () => {
@@ -93,6 +93,31 @@ describe("submitCurrentBuffer", () => {
     });
 
     expect(sent).toBe("hello WhatsApp");
+    expect(state.notice.text).toBe("");
+  });
+
+  test("Instagram send failures never fall through to Discord", () => {
+    const state = createInitialState("discord-token", "/tmp/config.json");
+    state.channelList.activeChannelId = "ig:123";
+    state.editor.buffer = "hello Instagram";
+    let sent = "";
+    globalThis.fetch = (() => { throw new Error("Must not call Discord"); }) as unknown as typeof fetch;
+    submitCurrentBuffer(state, {
+      ...effects,
+      sendInstagramMessage: (content) => { sent = content; return false; },
+    });
+    expect(sent).toBe("hello Instagram");
+    expect(state.editor.buffer).toBe("hello Instagram");
+  });
+
+  test("refresh on the Instagram root works without a Discord session", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+    state.sidebar.focusedGuildId = INSTAGRAM_GUILD_ID;
+    state.editor.buffer = "/refresh";
+    let refreshes = 0;
+    submitCurrentBuffer(state, { ...effects, refreshInstagram: () => { refreshes++; } });
+    expect(refreshes).toBe(1);
+    expect(state.auth.status).toBe("idle");
     expect(state.notice.text).toBe("");
   });
 

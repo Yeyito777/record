@@ -21,6 +21,13 @@ function withTempConfigHome(run: () => void): void {
 }
 
 describe("commands", () => {
+  test("parses Instagram vimbrowser import and provider logout", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+    expect(tryCommand("/login instagram", state)).toEqual({ type: "login_instagram" });
+    expect(tryCommand("/login instagram tab-42", state)).toEqual({ type: "login_instagram", tabId: "tab-42" });
+    expect(tryCommand("/logout instagram", state)).toEqual({ type: "logout_instagram" });
+    expect(tryCommand("/login instagram a b", state)).not.toEqual({ type: "login", credential: "instagram a b" });
+  });
   test("parses /login <token or username>", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     const result = tryCommand("/login abc123", state);
@@ -330,6 +337,7 @@ describe("commands", () => {
 
     expect(getCommandArgs(state)["/login"]).toEqual([
       { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
+      { name: "instagram", desc: "Import Instagram from vimbrowser (optional tab ID)" },
       { name: "discord", desc: "Log in to Discord explicitly" },
       { name: "alice", desc: "saved login" },
       { name: "zed", desc: "saved login" },

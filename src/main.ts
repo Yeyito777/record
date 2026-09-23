@@ -174,6 +174,9 @@ import {
 } from "./openable";
 import { createVoiceMessageController } from "./voice-message-controller";
 import { WhatsAppController } from "./whatsapp/controller";
+import { InstagramController } from "./instagram/controller";
+import { isTimelineNearBottom } from "./timeline";
+import { INSTAGRAM_GUILD_ID, instagramGuild, isInstagramChannelId, isExternalChannelId } from "./chatproviders";
 import { handleLoginModalKey } from "./whatsapp/loginmodal";
 import { applyTuiStartingState, availableStartingChannel, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
 
@@ -221,6 +224,7 @@ let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
   whatsappGuild(),
+  instagramGuild(),
 ]);
 if (startupWarnings.length > 0) {
   setNotice(state, startupWarnings.join("\n"), "warning");
@@ -719,6 +723,10 @@ function timelinePageSize(): number {
 }
 
 function maybeLoadOlderHistory(): void {
+  if (isInstagramChannelId(state.timeline.channelId)) {
+    if (shouldLoadOlderMessages(state.timeline)) instagramController.loadOlder();
+    return;
+  }
   const token = state.auth.savedToken;
   const channelId = state.timeline.channelId;
   if (isWhatsAppChannelId(channelId)) {
@@ -733,6 +741,7 @@ function maybeLoadOlderHistory(): void {
 }
 
 function maybeLoadNewerHistory(): void {
+  if (isExternalChannelId(state.timeline.channelId)) return;
   const token = state.auth.savedToken;
   const channelId = state.timeline.channelId;
   if (!token || !channelId || !shouldLoadNewerMessages(state.timeline)) return;
@@ -749,7 +758,10 @@ function scrollTimeline(delta: number): void {
   } else {
     maybeLoadNewerHistory();
   }
-  ackCurrentChannelIfAtBottom(state);
+  if (isInstagramChannelId(state.timeline.channelId)) {
+    if (isTimelineNearBottom(state.timeline.scrollOffset, state.timeline.maxScroll)) instagramController.markActiveRead();
+  }
+  else ackCurrentChannelIfAtBottom(state);
   scheduleRender();
 }
 
@@ -768,6 +780,14 @@ async function restorePendingStartingState(
   if (!startingState) return;
 
   const savedChannel = startingState.focusedChannel;
+  if (savedChannel?.guildId === INSTAGRAM_GUILD_ID) {
+    if (!instagramController.isConnected) return;
+    pendingStartingState = null;
+    const restored = await instagramController.restoreChannel(savedChannel.channelId).catch(() => false);
+    applyTuiStartingState(state, restored ? startingState : { ...startingState, focusedChannel: null });
+    scheduleRender();
+    return;
+  }
   if (savedChannel?.guildId === WHATSAPP_GUILD_ID) {
     pendingStartingState = null;
     const restored = await whatsAppController.restoreCachedChannel(savedChannel.channelId);
@@ -930,6 +950,11 @@ function switchToNextNotification(): void {
     return;
   }
 
+  if (guildId === INSTAGRAM_GUILD_ID) {
+    revealSidebarChannel(state.sidebar, state.channelList.channels, guildId, target.channelId, sidebarVisibilityOptions());
+    instagramController.openChannel(target.channelId);
+    return;
+  }
   if (guildId === WHATSAPP_GUILD_ID) {
     revealSidebarChannel(state.sidebar, state.channelList.channels, guildId, target.channelId, sidebarVisibilityOptions());
     whatsAppController.openChannel(target.channelId);
@@ -1034,10 +1059,13 @@ function returnToPinnedMessageInChannelHistory(): boolean {
 }
 
 function refreshHistorySnapshot(): void {
+  const guildId = state.channelList.activeChannel?.guildId ?? null;
+  const viewerId = guildId === INSTAGRAM_GUILD_ID ? state.instagram.account?.id
+    : guildId === WHATSAPP_GUILD_ID ? state.whatsapp.account?.id : state.auth.user?.id;
   setTimelineRenderContext(
     state.timeline,
-    state.auth.user?.id ?? null,
-    state.channelList.activeChannel?.guildId === DIRECT_MESSAGES_GUILD_ID,
+    viewerId ?? null,
+    isFixedTopLevelGuildId(guildId),
     state.guildRolesByGuildId,
     state.memberRoleIdsByGuildId,
     state.memberRoleCacheVersion,
@@ -1071,8 +1099,8 @@ function jumpToReplyTargetAtHistoryCursor(): boolean {
 
   // WhatsApp history currently lives in the provider's local sync buffer. A
   // missing quoted message must never fall through to Discord's REST loader.
-  if (isWhatsAppChannelId(state.timeline.channelId)) {
-    setNotice(state, "That quoted WhatsApp message is not in the loaded history.", "muted", { statusLine: false, chat: true });
+  if (isExternalChannelId(state.timeline.channelId)) {
+    setNotice(state, "That quoted message is not in the loaded history.", "muted", { statusLine: false, chat: true });
     scheduleRender();
     return true;
   }
@@ -1158,6 +1186,11 @@ function summarizeReplyMessage(message: DiscordMessage): string {
 }
 
 function attachClipboardImage(image: ClipboardImageAttachment): void {
+  if (isInstagramChannelId(state.channelList.activeChannelId ?? state.timeline.channelId)) {
+    setNotice(state, "Instagram uploads are not supported.", "warning");
+    scheduleRender();
+    return;
+  }
   const index = state.pendingImages.length + 1;
   const filename = `image-${index}.${imageExtension(image.mediaType)}`;
   state.pendingImages.push({ ...image, filename });
@@ -1219,14 +1252,15 @@ function replyGuildIdForMessage(message: DiscordMessage): string | null {
 
 function replyAuthorColor(message: DiscordMessage): string {
   const guildId = state.channelList.activeChannel?.guildId;
-  if (guildId !== DIRECT_MESSAGES_GUILD_ID && guildId !== WHATSAPP_GUILD_ID) return "";
-  const viewerId = guildId === WHATSAPP_GUILD_ID ? state.whatsapp.account?.id : state.auth.user?.id;
+  if (!isFixedTopLevelGuildId(guildId)) return "";
+  const viewerId = guildId === INSTAGRAM_GUILD_ID ? state.instagram.account?.id
+    : guildId === WHATSAPP_GUILD_ID ? state.whatsapp.account?.id : state.auth.user?.id;
   return message.author.id === viewerId ? theme.accent : dmAuthorColor(message.author.id);
 }
 
 function selectedMessageCanBeEdited(message: DiscordMessage | null): message is DiscordMessage {
   if (!message) return false;
-  if (message.guildId === WHATSAPP_GUILD_ID) return false;
+  if (isExternalChannelId(message.channelId)) return false;
   if (!state.auth.user || message.author.id !== state.auth.user.id) return false;
   if (message.localStatus === "pending" || message.id.startsWith("local:")) return false;
   return true;
@@ -1254,9 +1288,9 @@ function deleteSelectedHistoryMessage(): void {
     scheduleRender();
     return;
   }
-  if (message.guildId === WHATSAPP_GUILD_ID) {
+  if (isExternalChannelId(message.channelId)) {
     state.messageDeletePending = null;
-    setNotice(state, "Deleting WhatsApp messages is not supported yet.", "warning", { statusLine: false, chat: true });
+    setNotice(state, "Deleting external messages is not supported yet.", "warning", { statusLine: false, chat: true });
     scheduleRender();
     return;
   }
@@ -1452,6 +1486,7 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
 
 function openSelectedServerActionModal(): boolean {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+  if (selected.guildId === INSTAGRAM_GUILD_ID) return false;
   if (selected.kind !== "guild" && selected.kind !== "category" && selected.kind !== "channel" && selected.kind !== "voice-member") return false;
   if (selected.guildId === WHATSAPP_GUILD_ID && selected.kind !== "channel") return false;
   state.navigationPendingKeys = "";
@@ -1503,6 +1538,11 @@ function openSelectedServerActionModal(): boolean {
 
 function toggleSelectedMute(): void {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+  if (selected.guildId === INSTAGRAM_GUILD_ID) {
+    setNotice(state, "Instagram mute is not supported.", "warning");
+    scheduleRender();
+    return;
+  }
   if (selected.guildId === WHATSAPP_GUILD_ID) {
     if (selected.kind !== "channel" || !whatsAppController.toggleChatMute(selected.id)) {
       setNotice(state, "Select a WhatsApp chat to mute or unmute it.", "muted", { statusLine: true, chat: false });
@@ -1521,6 +1561,11 @@ function serverActionErrorMessage(error: unknown, fallback: string): string {
 function runServerModalAction(action: ServerAction): void {
   const modal = state.sidebar.serverActionModal;
   if (!modal || modal.busy) return;
+  if (modal.guildId === INSTAGRAM_GUILD_ID) {
+    state.sidebar.serverActionModal = null;
+    scheduleRender();
+    return;
+  }
 
   if (action === "toggle_mute" && modal.targetKind === "voice_member") {
     state.sidebar.serverActionModal = null;
@@ -1674,6 +1719,14 @@ function handleServerModalKey(key: KeyEvent): void {
 /** Activate the current sidebar row through the same path for Enter and clicks. */
 function activateSidebarSelection(): void {
   const selectedBefore = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+  if (selectedBefore.guildId === INSTAGRAM_GUILD_ID) {
+    if (selectedBefore.kind === "channel") instagramController.openChannel(selectedBefore.id);
+    else {
+      activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      scheduleRender();
+    }
+    return;
+  }
   if (selectedBefore.kind === "folder" || selectedBefore.kind === "up") {
     activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
     scheduleRender();
@@ -1934,6 +1987,10 @@ function handleSidebarFocused(key: KeyEvent): boolean {
         return true;
       }
 
+      if (selected.guildId === INSTAGRAM_GUILD_ID) {
+        instagramController.openChannel(channel.id);
+        return true;
+      }
       if (selected.guildId === WHATSAPP_GUILD_ID) {
         whatsAppController.openChannel(channel.id);
         return true;
@@ -2193,7 +2250,8 @@ function handlePromptFocused(key: KeyEvent): void {
 
   if (action === "scroll_bottom") {
     state.timeline.scrollOffset = state.timeline.maxScroll;
-    ackCurrentChannelIfAtBottom(state);
+    if (isInstagramChannelId(state.timeline.channelId)) instagramController.markActiveRead();
+    else ackCurrentChannelIfAtBottom(state);
     scheduleRender();
     return;
   }
@@ -2358,7 +2416,7 @@ function cleanup(): void {
   flushDataCacheSync();
   restoreTerminal();
   const forceExit = setTimeout(() => process.exit(0), 1_000);
-  void whatsAppController.shutdown().finally(() => {
+  void Promise.allSettled([whatsAppController.shutdown(), instagramController.shutdown()]).finally(() => {
     clearTimeout(forceExit);
     process.exit(0);
   });
@@ -2378,6 +2436,10 @@ const effects: AppEffects = {
   applyThemeCursor,
   bootstrapSession,
   loginWhatsApp,
+  loginInstagram: (tabId) => { void instagramController.login(tabId); },
+  logoutInstagram: () => { void instagramController.logout(); },
+  sendInstagramMessage: (content) => instagramController.sendMessage(content),
+  refreshInstagram: () => { void instagramController.refresh(); },
   logoutWhatsApp,
   sendWhatsAppMessage: (content) => whatsAppController.sendMessage(content),
 };
@@ -2387,6 +2449,7 @@ voiceMessageController = createVoiceMessageController(state, scheduleRender, {
 });
 
 const whatsAppController = new WhatsAppController(state, scheduleRender);
+const instagramController = new InstagramController(state, scheduleRender);
 if (savedStartingState) applyTuiStartingState(state, savedStartingState);
 if (initialToken) restoreCachedSessionPreview(state, savedStartingState);
 if (savedStartingState?.focusedChannel?.guildId === WHATSAPP_GUILD_ID) {
@@ -2461,6 +2524,7 @@ async function main(): Promise<void> {
   render(state);
 
   whatsAppController.restoreSavedSession();
+  void instagramController.autoConnect().then(() => restorePendingStartingState(state.auth.savedToken));
 }
 
 function processInput(input: string): void {
@@ -2498,6 +2562,7 @@ main().catch(async (error) => {
   disconnectMemberListGateway();
   disconnectAppGateway();
   await whatsAppController.shutdown().catch(() => {});
+  await instagramController.shutdown().catch(() => {});
   flushDataCacheSync();
   restoreTerminal();
   console.error(`Fatal: ${(error as Error).message}`);

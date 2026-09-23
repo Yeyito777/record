@@ -32,7 +32,9 @@ export function renderTopbar(state: AppState, width: number): string {
         ? "Connected"
         : state.whatsapp.connection.status === "connected"
           ? "WhatsApp connected"
-          : "Discord and WhatsApp terminal client";
+          : state.instagram.connection.status === "connected"
+            ? "Instagram connected"
+            : "Discord, WhatsApp and Instagram terminal client";
 
   const text = ` ${title} ${focusLabel(state)} — ${descriptor}`;
   const padded = padRight(text, width);

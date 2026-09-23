@@ -2,7 +2,7 @@ import { existsSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 
-import { WHATSAPP_GUILD_ID, whatsappChannelId, whatsappGuild, whatsappJidFromChannelId, whatsappSidebarLayoutScope } from "../chatproviders";
+import { WHATSAPP_GUILD_ID, instagramGuild, whatsappChannelId, whatsappGuild, whatsappJidFromChannelId, whatsappSidebarLayoutScope } from "../chatproviders";
 import { clearChannelList, setActiveChannelEntry, setChannelList } from "../channels";
 import { loadCachedSidebarChannelLayout, saveCachedSidebarChannelLayout } from "../datacache";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, type DiscordMessage, type DiscordMessageAttachment } from "../discord";
@@ -126,6 +126,7 @@ function ensureWhatsAppRoot(state: AppState): void {
   setSidebarGuilds(state.sidebar, [
     { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
     whatsappGuild(),
+    instagramGuild(),
     ...sidebarCachedGuilds(state.sidebar),
   ]);
 }

@@ -24,6 +24,7 @@ import type { VoiceConnectionState } from "./voice";
 import type { VoiceMessagePromptState } from "./voice-message";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, normalizeParticipantVolumes, type LocalAudioVolumes, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
 import { createWhatsAppUiState, type WhatsAppUiState } from "./whatsapp/integration";
+import { createInstagramUiState, type InstagramUiState } from "./instagram/integration";
 
 export type AuthStatus = "idle" | "loading" | "authenticated" | "error";
 export type PresenceStatus = DiscordPresenceStatus;
@@ -149,6 +150,7 @@ export interface AppState {
   showHiddenChannels: boolean;
   serverCommands: ServerCommandsState;
   whatsapp: WhatsAppUiState;
+  instagram: InstagramUiState;
   auth: AuthState;
   notice: Notice;
   loadingFrameIndex: number;
@@ -214,6 +216,7 @@ export function createInitialState(
     showHiddenChannels: options.showHiddenChannels ?? false,
     serverCommands: createServerCommandsState(),
     whatsapp: createWhatsAppUiState(),
+    instagram: createInstagramUiState(),
     auth: {
       status: "idle",
       user: null,

@@ -31,7 +31,7 @@ import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { highlightPromptViewport } from "./prompthighlight";
 import { SIDEBAR_WIDTH, getSidebarSearchBarViewport, renderSidebar } from "./sidebar";
-import { WHATSAPP_GUILD_ID } from "./chatproviders";
+import { INSTAGRAM_GUILD_ID, isFixedTopLevelGuildId, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { renderServerActionModal } from "./serveractions";
 import { renderStatusLine } from "./statusline";
 import { renderPromptSeparator } from "./promptbar";
@@ -454,13 +454,15 @@ export function render(state: AppState): void {
   }
 
   const activeGuildId = state.channelList.activeChannel?.guildId ?? null;
-  const activeViewerId = activeGuildId === WHATSAPP_GUILD_ID
+  const activeViewerId = activeGuildId === INSTAGRAM_GUILD_ID
+    ? state.instagram.account?.id ?? null
+    : activeGuildId === WHATSAPP_GUILD_ID
     ? state.whatsapp.account?.id ?? null
     : state.auth.user?.id ?? null;
   setTimelineRenderContext(
     state.timeline,
     activeViewerId,
-    activeGuildId === DIRECT_MESSAGES_GUILD_ID || activeGuildId === WHATSAPP_GUILD_ID,
+    isFixedTopLevelGuildId(activeGuildId),
     state.guildRolesByGuildId,
     state.memberRoleIdsByGuildId,
     state.memberRoleCacheVersion,
