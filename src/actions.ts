@@ -18,8 +18,9 @@ import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } 
 import { normalizeToken } from "./token";
 import { isWhatsAppChannelId } from "./chatproviders";
 import { pushTimelineSystemMessage } from "./timeline";
+import { reactToSelectedMessage, type ReactionEffects } from "./reactions";
 
-export interface AppEffects extends SessionEffects {
+export interface AppEffects extends SessionEffects, ReactionEffects {
   quit: () => void;
   applyThemeCursor: () => void;
   bootstrapSession: (token: string) => void;
@@ -153,6 +154,9 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
   if (result === null) return false;
 
   switch (result.type) {
+    case "reaction":
+      void reactToSelectedMessage(state, result.emoji, result.remove, effects);
+      return true;
     case "handled":
       effects.scheduleRender();
       return true;
@@ -259,6 +263,12 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   }
 
   if (!text && !hasImages) return;
+
+  if (hasImages && /^\/(?:un)?react(?:\s|$)/.test(text)) {
+    setNotice(state, "Remove attached images before sending a reaction.", "warning");
+    effects.scheduleRender();
+    return;
+  }
 
   const expandedText = expandMacros(text);
   if (text && expandedText === text) {

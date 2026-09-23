@@ -1180,6 +1180,13 @@ function handlePromptBackspacePrefixAction(): boolean {
 }
 
 function cancelCurrentAction(): void {
+  if (state.reactionTarget && /^\/(?:un)?react(?:\s|$)/.test(state.editor.buffer)) {
+    state.reactionTarget = null;
+    resetEditor(state.editor, "", "insert");
+    state.autocomplete = null;
+    scheduleRender();
+    return;
+  }
   if (clearPendingMessageDelete()) {
     scheduleRender();
     return;
@@ -1962,6 +1969,21 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
+  if (state.editor.mode === "normal" && key.type === "char" && key.char === "+") {
+    const message = selectedHistoryMessage();
+    if (!message || message.localStatus || message.id.startsWith("local:")) {
+      setNotice(state, "Select a sent message to react to.", "warning");
+    } else if (state.editor.buffer || state.pendingImages.length || state.editTarget) {
+      setNotice(state, "Finish or clear your draft before reacting.", "warning");
+    } else {
+      resetEditor(state.editor, "/react :", "insert");
+      focusPrompt(state);
+      syncPromptAutocomplete();
+    }
+    scheduleRender();
+    return true;
+  }
+
   if (key.type === "escape" && state.timeline.view === "pinned") {
     focusHistory(state);
     exitPinnedMessages();
@@ -2380,6 +2402,7 @@ const effects: AppEffects = {
   loginWhatsApp,
   logoutWhatsApp,
   sendWhatsAppMessage: (content) => whatsAppController.sendMessage(content),
+  reactWhatsAppMessage: (message, emoji) => whatsAppController.reactToMessage(message, emoji),
 };
 
 voiceMessageController = createVoiceMessageController(state, scheduleRender, {

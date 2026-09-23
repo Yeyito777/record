@@ -9,6 +9,7 @@ import type {
   WhatsAppDownloadMediaParams,
   WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
+  WhatsAppSendReactionParams,
   WhatsAppSetChatMutedParams,
   WhatsAppWorkerEvent,
   WhatsAppWorkerRequest,
@@ -16,7 +17,7 @@ import type {
 } from "./worker-protocol";
 import { toWhatsAppMessage } from "./converters";
 import { startWhatsAppDiagnosticsServer, WhatsAppDiagnostics } from "./diagnostics";
-import { buildWhatsAppSendOptions, resolveWhatsAppEphemeralExpiration, sendWhatsAppImages } from "./sending";
+import { buildWhatsAppSendOptions, resolveWhatsAppEphemeralExpiration, sendWhatsAppImages, sendWhatsAppReaction } from "./sending";
 import { downloadWhatsAppMediaToFile } from "./media";
 
 // Baileys creates credential/key files itself. A private process umask ensures
@@ -88,6 +89,10 @@ function quotedMessage(message: WhatsAppMessage): WAMessage {
 
 async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
   switch (request.method) {
+    case "send-reaction": {
+      const params = request.params as unknown as WhatsAppSendReactionParams;
+      return await sendWhatsAppReaction(backend.getSocket(), params?.key, params?.emoji);
+    }
     case "start-login":
       return await backend.startLogin();
     case "cancel-login":

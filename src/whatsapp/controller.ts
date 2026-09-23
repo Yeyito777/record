@@ -80,6 +80,7 @@ export interface WhatsAppBackendHandle {
     messageIds?: string[],
   ): Promise<import("./types").WhatsAppMessage[]>;
   markRead(keys: import("./types").WhatsAppMessageKey[]): Promise<void>;
+  sendReaction(key: WhatsAppMessageKey, emoji: string): Promise<WhatsAppReactionEvent>;
   fetchHistory(
     count: number,
     oldestKey: import("./types").WhatsAppMessageKey,
@@ -165,6 +166,7 @@ export class WhatsAppController {
   }>();
   // Include removals so a late history snapshot cannot resurrect a reaction.
   private readonly liveReactions = new Map<string, WhatsAppReactionEvent>();
+  private readonly reactionRequests = new Map<string, object>();
 
   constructor(
     private readonly state: AppState,
@@ -337,6 +339,49 @@ export class WhatsAppController {
   loadOlderHistory(): void {
     const jid = this.activeWhatsAppJid();
     if (jid) this.requestOlderHistory(jid);
+  }
+
+  async reactToMessage(message: DiscordMessage, emoji: string): Promise<void> {
+    if (!this.backend.isConnected || this.backendResetPromise || this.shuttingDown) {
+      throw new Error("WhatsApp is not connected.");
+    }
+    const decoded = whatsappJidFromChannelId(message.channelId);
+    if (!decoded || message.localStatus || typeof emoji !== "string") {
+      throw new Error("Invalid WhatsApp reaction target.");
+    }
+    const jid = canonicalWhatsAppJid(this.state.whatsapp, decoded);
+    const target = this.state.whatsapp.messagesByChatId[jid]?.find((candidate) => candidate.id === message.id);
+    if (!target || !target.key.id || !target.key.chatId
+      || (target.key.chatId.endsWith("@g.us") && !target.key.participantId && !target.key.fromMe)) {
+      throw new Error("WhatsApp reaction target is unavailable.");
+    }
+    const key = JSON.stringify([jid, target.id, "self"]);
+    const previous = this.liveReactions.get(key);
+    const request = {};
+    this.reactionRequests.set(key, request);
+    const generation = this.backendResetGeneration;
+    try {
+      const event = await this.backend.sendReaction({ ...target.key }, emoji);
+      if (generation !== this.backendResetGeneration || this.shuttingDown
+        || this.reactionRequests.get(key) !== request
+        || this.liveReactions.get(key) !== previous) return;
+      this.recordReactions([event]);
+    } finally {
+      if (this.reactionRequests.get(key) === request) this.reactionRequests.delete(key);
+    }
+  }
+
+  private recordReactions(events: WhatsAppReactionEvent[]): void {
+    for (const event of events) {
+      const key = JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, event.target.chatId),
+        event.target.id, event.reaction.fromMe ? "self" : event.reaction.senderId]);
+      this.liveReactions.set(key, event);
+    }
+    const changed = applyWhatsAppReactions(this.state.whatsapp, events);
+    if (changed.length === 0) return;
+    this.queueCacheSave();
+    this.refreshActiveTimeline();
+    this.scheduleRender();
   }
 
   sendMessage(content: string): boolean {
@@ -674,19 +719,7 @@ export class WhatsAppController {
         this.syncProviderState();
       }),
       this.backend.on("reactions", (events) => {
-        for (const event of events) {
-          const key = JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, event.target.chatId), event.target.id, event.reaction.senderId]);
-          this.liveReactions.set(key, event);
-        }
-        const changedChatIds = applyWhatsAppReactions(this.state.whatsapp, events);
-        if (changedChatIds.length === 0) return;
-        this.queueCacheSave();
-        const activeJid = this.activeWhatsAppJid();
-        if (activeJid && changedChatIds.includes(activeJid)) {
-          const channelId = whatsappChannelId(activeJid);
-          this.refreshTimeline(channelId);
-        }
-        this.scheduleRender();
+        this.recordReactions(events);
       }),
       this.backend.on("lid-mapping", ({ lid, phoneId }) => {
         registerWhatsAppLidMapping(this.state.whatsapp, lid, phoneId);

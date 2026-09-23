@@ -33,6 +33,7 @@ export type CommandResult =
   | { type: "logout_whatsapp" }
   | { type: "refresh" }
   | { type: "pinned" }
+  | { type: "reaction"; emoji: string; remove: boolean }
   | { type: "create_thread"; name: string }
   | { type: "upload"; path: string }
   | { type: "call" }
@@ -284,6 +285,20 @@ const commands: SlashCommand[] = [
       clearPrompt(state);
       return { type: "refresh" };
     },
+  },
+  {
+    name: "/react",
+    description: "React to the selected message with an emoji",
+    handler: (text, state) => {
+      const emoji = text.slice("/react".length).trim();
+      if (!emoji) return usage(state, "Usage: /react <emoji> (type :name then Tab)");
+      return { type: "reaction", emoji, remove: false };
+    },
+  },
+  {
+    name: "/unreact",
+    description: "Remove your emoji reaction from the selected message",
+    handler: (text) => ({ type: "reaction", emoji: text.slice("/unreact".length).trim(), remove: true }),
   },
   {
     name: "/pinned",

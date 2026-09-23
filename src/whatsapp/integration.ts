@@ -322,7 +322,9 @@ export function applyWhatsAppReactions(state: WhatsAppUiState, events: readonly 
     const chatId = canonicalWhatsAppJid(state, event.target.chatId);
     const message = (state.messagesByChatId[chatId] ?? []).find((candidate) => candidate.id === event.target.id);
     if (!message) continue;
-    const reactions = (message.reactions ?? []).filter((reaction) => reaction.senderId !== event.reaction.senderId);
+    const reactions = (message.reactions ?? []).filter((reaction) =>
+      !(reaction.fromMe && event.reaction.fromMe)
+      && reaction.senderId !== event.reaction.senderId);
     if (event.reaction.emoji) reactions.push(event.reaction);
     message.reactions = reactions;
     changedChatIds.add(chatId);

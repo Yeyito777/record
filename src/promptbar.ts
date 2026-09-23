@@ -93,6 +93,12 @@ function editSegment(state: AppState): PromptContextSegment | null {
 }
 
 function activePromptContextSegment(state: AppState): PromptContextSegment | null {
+  const target = state.reactionTarget;
+  if (target && /^\/(?:un)?react(?:\s|$)/.test(state.editor.buffer)
+    && target.channelId === state.timeline.channelId) {
+    const text = `${theme.muted} Reacting: ${theme.accent}${target.authorDisplayName}: ${theme.text}${truncate(target.summary, MAX_REPLY_SUMMARY_WIDTH)}${theme.reset}`;
+    return { text, width: termWidth(text) };
+  }
   // Editing is mutually exclusive in normal use and has historically had the
   // higher transient-block priority, so prefer it if both fields are present.
   return editSegment(state) ?? replySegment(state);

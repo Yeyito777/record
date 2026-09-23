@@ -131,6 +131,10 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
     await this.request("mark-read", params as unknown as Record<string, unknown>);
   }
 
+  async sendReaction(key: WhatsAppMessageKey, emoji: string): Promise<import("./types").WhatsAppReactionEvent> {
+    return await this.request("send-reaction", { key, emoji }) as import("./types").WhatsAppReactionEvent;
+  }
+
   async fetchHistory(count: number, oldestKey: WhatsAppMessageKey, oldestTimestampMs: number): Promise<string> {
     const params: WhatsAppFetchHistoryParams = { count, oldestKey, oldestTimestampMs };
     return await this.request("fetch-history", params as unknown as Record<string, unknown>) as string;

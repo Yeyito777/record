@@ -107,6 +107,10 @@ class FakeBackend implements WhatsAppBackendHandle {
     this.readMessageIds.push(...keys.map((key) => key.id));
   }
 
+  async sendReaction(key: import("./types").WhatsAppMessageKey, emoji: string): Promise<import("./types").WhatsAppReactionEvent> {
+    return { target: key, reaction: { senderId: "self@s.whatsapp.net", fromMe: true, emoji } };
+  }
+
   async fetchHistory(
     count: number,
     oldestKey: import("./types").WhatsAppMessageKey,
@@ -216,6 +220,55 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
 describe("WhatsApp loading races", () => {
+  test("sends original group keys, deduplicates self echoes, and preserves removal over history", async () => {
+    const { state, backend, controller, jid } = raceFixture("group@g.us");
+    try {
+      const original = state.whatsapp.messagesByChatId[jid]![0]!;
+      original.key.participantId = "sender:2@s.whatsapp.net";
+      const message = state.timeline.messages[0]!;
+      const keys: import("./types").WhatsAppMessageKey[] = [];
+      backend.sendReaction = async (key, emoji) => {
+        keys.push(key);
+        return { target: key, reaction: { senderId: "self:1@s.whatsapp.net", fromMe: true, emoji } };
+      };
+      await controller.reactToMessage(message, "👍");
+      expect(keys).toEqual([original.key]);
+      expect(state.timeline.messages[0]!.reactions).toMatchObject([{ count: 1, me: true, emoji: { name: "👍" } }]);
+      backend.emit("reactions", [{ target: original.key, reaction: { senderId: "self@lid", fromMe: true, emoji: "👍" } }]);
+      expect(state.timeline.messages[0]!.reactions![0]!.count).toBe(1);
+      await controller.reactToMessage(message, "");
+      backend.emit("history", historyPage([{ ...original, reactions: [
+        { senderId: "self@lid", fromMe: true, emoji: "👍" },
+      ] }]));
+      expect(state.timeline.messages[0]!.reactions).toEqual([]);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("reaction failures and invalid targets do not mutate state; gateway beats late response", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      const message = state.timeline.messages[0]!;
+      let calls = 0;
+      backend.sendReaction = async () => { calls++; throw new Error("send failed"); };
+      await expect(controller.reactToMessage({ ...message, localStatus: "pending" }, "👍")).rejects.toThrow();
+      await expect(controller.reactToMessage({ ...message, id: "missing" }, "👍")).rejects.toThrow();
+      await expect(controller.reactToMessage({ ...message, channelId: "discord" }, "👍")).rejects.toThrow();
+      expect(calls).toBe(0);
+      await expect(controller.reactToMessage(message, "👍")).rejects.toThrow("send failed");
+      expect(state.timeline.messages[0]!.reactions).toEqual([]);
+      const pending = deferred<import("./types").WhatsAppReactionEvent>();
+      backend.sendReaction = () => pending.promise;
+      const send = controller.reactToMessage(message, "👍");
+      const event = { target: { id: message.id, chatId: jid }, reaction: { senderId: "self@lid", fromMe: true, emoji: "❤️" } };
+      backend.emit("reactions", [event]);
+      pending.resolve({ ...event, reaction: { ...event.reaction, emoji: "👍" } });
+      await send;
+      expect(state.timeline.messages[0]!.reactions![0]!.emoji.name).toBe("❤️");
+      backend.isConnected = false;
+      await expect(controller.reactToMessage(message, "")).rejects.toThrow("not connected");
+    } finally { await controller.shutdown(); }
+  });
+
   test("defers restored-chat images until connected and still serves offline cached files", async () => {
     const previousXdg = process.env.XDG_CONFIG_HOME;
     const directory = mkdtempSync(join(tmpdir(), "record-wa-startup-image-"));

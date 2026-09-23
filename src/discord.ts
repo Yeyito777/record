@@ -2029,6 +2029,20 @@ export async function deleteChannelMessage(token: string, channelId: string, mes
   });
 }
 
+export async function setChannelMessageReaction(
+  token: string,
+  channelId: string,
+  messageId: string,
+  emoji: DiscordMessageReactionEmoji,
+  remove = false,
+): Promise<void> {
+  const identifier = emoji.id ? `${emoji.name}:${emoji.id}` : emoji.name;
+  await requestJson<unknown>(token,
+    `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(identifier)}/@me`,
+    { method: remove ? "DELETE" : "PUT" },
+  );
+}
+
 export async function createMessageThread(
   token: string,
   channelId: string,
