@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 
 import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { createInitialState } from "../state";
+import { inlineImageSourcesForMessage } from "../inlineimage";
 import { WhatsAppController, type WhatsAppBackendHandle } from "./controller";
 import { MAX_WHATSAPP_MESSAGES_PER_CHAT } from "./integration";
 import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
@@ -216,7 +217,7 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
 describe("WhatsApp loading races", () => {
-  test("defers restored-chat images until connected and still serves offline cached files", async () => {
+  test.each(["image", "sticker"] as const)("defers restored-chat %s until connected and still serves offline cached files", async (mediaKind) => {
     const previousXdg = process.env.XDG_CONFIG_HOME;
     const directory = mkdtempSync(join(tmpdir(), "record-wa-startup-image-"));
     process.env.XDG_CONFIG_HOME = directory;
@@ -225,10 +226,10 @@ describe("WhatsApp loading races", () => {
     try {
       backend.emit("history", historyPage([{
         ...raceMessage("startup-image", jid),
-        content: { kind: "media", mediaKind: "image", mimeType: "image/jpeg", sizeBytes: 4 },
+        content: { kind: "media", mediaKind, sizeBytes: 4 },
       }]));
       controller.openChannel(whatsappChannelId(jid));
-      const attachment = state.timeline.messages[0]!.attachments[0]!;
+      const attachment = inlineImageSourcesForMessage(state.timeline.messages[0]!)[0]!;
       expect(await controller.downloadAttachment(attachment)).toMatchObject({ ok: false, retryWhenConnected: true });
       expect(backend.mediaDownloads).toHaveLength(0);
 

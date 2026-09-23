@@ -428,6 +428,8 @@ export interface DiscordMessageSticker {
   name: string;
   /** Discord sticker format: 1 PNG, 2 APNG, 3 Lottie, 4 GIF. */
   formatType: number | null;
+  /** Provider-backed media source when this is not a Discord CDN sticker. */
+  attachment?: DiscordMessageAttachment;
 }
 
 export interface DiscordMessageEmbed {

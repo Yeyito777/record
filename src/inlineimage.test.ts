@@ -25,6 +25,32 @@ const PNG = Buffer.from(
 );
 const tempDirs: string[] = [];
 
+test.skipIf(!Bun.which("ffmpeg"))("previews static and animated WebP stickers from disk and bytes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "record-webp-preview-"));
+  tempDirs.push(directory);
+  const staticWebp = Buffer.from("UklGRhwAAABXRUJQVlA4TA8AAAAvD8ADAAcQ9Y/+ByKi/wEA", "base64");
+  const animatedWebp = Buffer.from("UklGRoQAAABXRUJQVlA4WAoAAAACAAAADwAADwAAQU5JTQYAAAD/////AABBTk1GKAAAAAAAAAAAAA8AAA8AAGQAAAJWUDhMDwAAAC8PwAMABxD1j/4HIqL/AQBBTk1GKAAAAAAAAAAAAA8AAA8AAGQAAABWUDhMDwAAAC8PwAMABxDR//4HIqL/AQA=", "base64");
+  // Lossy VP8 + separate ALPH chunk, rather than the VP8L frames above.
+  const alphaWebp = Buffer.from("UklGRtIAAABXRUJQVlA4WAoAAAASAAAADwAADwAAQU5JTQYAAAD/////AABBTk1GWgAAAAAAAAAAAA8AAA8AAGQAAAJBTFBICgAAAAEH0L+ICERE/wNWUDggMAAAANABAJ0BKhAAEAACADQloAJ0ugH4AAOwAP7wxAv/ILlhdcjX/yA/5Af8gP/48gAAAEFOTUZEAAAAAAAAAAAADwAADwAAZAAAAFZQOCAsAAAAlAEAnQEqEAAQAAAANCWgAnS6AAOYAP75k2//kB//kB//kB//ID/iF3sgMAA=", "base64");
+  for (const [index, data] of [staticWebp, animatedWebp, alphaWebp].entries()) {
+    const path = join(directory, `sticker-${index}.webp`);
+    writeFileSync(path, data);
+    const preview = await prepareInlineImage(path);
+    expect(preview.pixelWidth).toBe(16);
+    expect(preview.pixelHeight).toBe(16);
+    expect(await prepareInlineImageBytes(data)).toEqual(preview);
+    const bounded = await prepareInlineImageBytes(data, { maxPixelWidth: 8, maxPixelHeight: 8 });
+    expect([bounded.pixelWidth, bounded.pixelHeight]).toEqual([8, 8]);
+  }
+  const partial = Buffer.from(animatedWebp);
+  partial.writeUIntLE(19, 24, 3);
+  partial.writeUIntLE(19, 27, 3);
+  partial.writeUIntLE(1, 52, 3);
+  partial.writeUIntLE(1, 55, 3);
+  const preview = await prepareInlineImageBytes(partial);
+  expect([preview.pixelWidth, preview.pixelHeight]).toEqual([20, 20]);
+});
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });

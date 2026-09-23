@@ -406,7 +406,7 @@ export function whatsAppAttachmentMessage(attachment: DiscordMessageAttachment):
 }
 
 function mediaAttachment(message: WhatsAppMessage): DiscordMessageAttachment[] {
-  if (message.content.kind !== "media" || message.content.mediaKind === "sticker") return [];
+  if (message.content.kind !== "media") return [];
   const media = message.content;
   const defaultExtension: Record<typeof media.mediaKind, string> = {
     image: "jpg",
@@ -418,7 +418,7 @@ function mediaAttachment(message: WhatsAppMessage): DiscordMessageAttachment[] {
   const attachment: DiscordMessageAttachment = {
     id: `wa-media:${message.id}`,
     filename: sanitizeTerminalLabel(media.fileName ?? "") || `whatsapp-${media.mediaKind}-${message.id}.${defaultExtension[media.mediaKind]}`,
-    contentType: media.mimeType ? sanitizeTerminalLabel(media.mimeType) : null,
+    contentType: media.mimeType ? sanitizeTerminalLabel(media.mimeType) : media.mediaKind === "sticker" ? "image/webp" : null,
     size: media.sizeBytes ?? 0,
     url: "",
     ...(media.durationSeconds !== undefined ? { durationSecs: media.durationSeconds } : {}),
@@ -474,6 +474,7 @@ export function whatsAppMessageToTimeline(state: WhatsAppUiState, message: Whats
   const stickerNames = message.content.kind === "media" && message.content.mediaKind === "sticker"
     ? ["WhatsApp sticker"]
     : [];
+  const attachments = mediaAttachment(message);
   const reactions = new Map<string, { count: number; me: boolean }>();
   for (const reaction of message.reactions ?? []) {
     if (!reaction.emoji) continue;
@@ -497,8 +498,16 @@ export function whatsAppMessageToTimeline(state: WhatsAppUiState, message: Whats
     author: messageAuthor(state, message),
     reply: replyPreview(state, message),
     call: null,
-    attachments: mediaAttachment(message),
+    attachments: stickerNames.length ? [] : attachments,
     stickerNames,
+    ...(stickerNames.length ? {
+      stickers: [{
+        id: message.id,
+        name: stickerNames[0]!,
+        formatType: null,
+        attachment: attachments[0]!,
+      }],
+    } : {}),
     embedsCount: 0,
     reactions: [...reactions].map(([name, reaction]) => ({
       count: reaction.count,

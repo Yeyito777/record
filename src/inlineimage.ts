@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 
 import type { DiscordMessage, DiscordMessageAttachment, DiscordMessageSticker } from "./discord";
+import { firstAnimatedWebpFrame } from "./webp";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MAX_TERMINAL_IMAGE_DIMENSION = 8192;
@@ -108,6 +109,9 @@ export function stickerImageAttachment(
   sticker: DiscordMessageSticker,
   occurrenceId = sticker.id,
 ): DiscordMessageAttachment | null {
+  // Preserve object identity: providers retain private download metadata in a
+  // WeakMap keyed by the attachment, rather than serializing it into timelines.
+  if (sticker.attachment) return sticker.attachment;
   const url = discordStickerImageUrl(sticker);
   if (!url) return null;
   const gif = sticker.formatType === 4;
@@ -202,7 +206,7 @@ function normalizedPreviewBounds(options: InlineImagePrepareOptions): { width: n
   return { width: normalize(options.maxPixelWidth), height: normalize(options.maxPixelHeight) };
 }
 
-function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: InlineImagePrepareOptions = {}): Promise<Buffer> {
+function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: InlineImagePrepareOptions = {}, prefixFilter = ""): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const bounds = normalizedPreviewBounds(options);
     const scale = `scale='min(iw,${bounds.width})':'min(ih,${bounds.height})':force_original_aspect_ratio=decrease`;
@@ -211,7 +215,7 @@ function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: In
       "-nostdin",
       ...inputArgs,
       "-map", "0:v:0",
-      "-vf", scale,
+      "-vf", prefixFilter + scale,
       "-frames:v", "1",
       "-f", "image2pipe",
       "-vcodec", "png",
@@ -264,12 +268,27 @@ function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: In
 }
 
 /** Convert the first frame of any ffmpeg-supported image to a bounded PNG. */
-export function convertImageToPng(path: string, options: InlineImagePrepareOptions = {}): Promise<Buffer> {
+export async function convertImageToPng(path: string, options: InlineImagePrepareOptions = {}): Promise<Buffer> {
+  return convertLoadedImageToPng(path, await readFile(path), options);
+}
+
+function convertLoadedImageToPng(path: string, data: Buffer, options: InlineImagePrepareOptions): Promise<Buffer> {
+  const frame = firstAnimatedWebpFrame(data);
+  if (frame) return convertWebpFrameToPng(frame, options);
   return convertImageInputToPng(["-i", path], undefined, options);
 }
 
 export function convertImageBytesToPng(data: Buffer, options: InlineImagePrepareOptions = {}): Promise<Buffer> {
+  const frame = firstAnimatedWebpFrame(data);
+  if (frame) return convertWebpFrameToPng(frame, options);
   return convertImageInputToPng(["-i", "pipe:0"], data, options);
+}
+
+function convertWebpFrameToPng(frame: NonNullable<ReturnType<typeof firstAnimatedWebpFrame>>, options: InlineImagePrepareOptions): Promise<Buffer> {
+  // First frames can cover only a subrectangle. Preserve the sticker's canvas
+  // and transparent margins instead of enlarging that cropped fragment.
+  return convertImageInputToPng(["-i", "pipe:0"], frame.data, options,
+    `format=rgba,pad=${frame.width}:${frame.height}:${frame.x}:${frame.y}:color=black@0,`);
 }
 
 function preparedPng(png: Buffer, dimensions: { width: number; height: number } | null): PreparedInlineImage {
@@ -293,7 +312,7 @@ export async function prepareInlineImage(path: string, options: InlineImagePrepa
   let png: Buffer = Buffer.from(await readFile(path));
   let dimensions = pngDimensions(png);
   if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
-    png = await convertImageToPng(path, options);
+    png = await convertLoadedImageToPng(path, png, options);
     dimensions = pngDimensions(png);
   }
 
