@@ -183,4 +183,67 @@ describe("reactions", () => {
     await reactToSelectedMessage(state, "👍", false, waEffects);
     expect(sent).toEqual(["message-1"]);
   });
+
+  test("bare reaction composer sends emoji, not text, and exits after success", async () => {
+    const { state } = setup(whatsappChannelId("friend@s.whatsapp.net"));
+    const sent: string[] = [];
+    const appEffects: AppEffects = {
+      ...effects, quit() {}, applyThemeCursor() {}, bootstrapSession() {},
+      loginWhatsApp() {}, logoutWhatsApp() {},
+      sendWhatsAppMessage() { throw new Error("must not send text"); },
+      async reactWhatsAppMessage(_message, emoji) { sent.push(emoji); },
+    };
+    state.reactionComposer = true;
+    for (const invalid of [":", "hello", "/refresh"]) {
+      state.editor.buffer = invalid;
+      submitCurrentBuffer(state, appEffects);
+      await Promise.resolve();
+      expect(state.reactionComposer).toBe(true);
+      expect(sent).toEqual([]);
+    }
+    state.editor.buffer = ":heart:";
+    submitCurrentBuffer(state, appEffects);
+    await Promise.resolve();
+    expect(sent).toEqual(["❤️"]);
+    expect(state.editor.buffer).toBe("");
+    expect(state.reactionComposer).toBe(false);
+  });
+
+  test("bare composer retains its mode and buffer after transport failure", async () => {
+    const { state } = setup();
+    state.reactionComposer = true;
+    state.editor.buffer = "👍";
+    globalThis.fetch = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+    await reactToSelectedMessage(state, state.editor.buffer, false, effects);
+    expect(state.reactionComposer).toBe(true);
+    expect(state.editor.buffer).toBe("👍");
+  });
+
+  test("moving focus while composing does not replace the reaction target", () => {
+    const { state, message } = setup();
+    const target = state.reactionTarget;
+    state.reactionComposer = true;
+    state.timeline.messages.push({ ...message, id: "different" });
+    state.historyMessageBounds[0]!.messageId = "different";
+    focusHistory(state);
+    focusPrompt(state);
+    expect(state.reactionTarget).toBe(target);
+  });
+
+  test("completion does not clear a newer composer with the same emoji", async () => {
+    const { state } = setup();
+    state.reactionComposer = true;
+    state.editor.buffer = "👍";
+    let finish!: () => void;
+    globalThis.fetch = (async () => {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    const sending = reactToSelectedMessage(state, "👍", false, effects);
+    state.reactionTarget = { ...state.reactionTarget!, messageId: "new-target" };
+    finish();
+    await sending;
+    expect(state.reactionComposer).toBe(true);
+    expect(state.editor.buffer).toBe("👍");
+  });
 });

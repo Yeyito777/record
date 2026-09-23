@@ -136,6 +136,7 @@ export interface AppState {
   replyTarget: ReplyTarget | null;
   /** Stable history selection while composing a reaction command. */
   reactionTarget: Pick<ReplyTarget, "messageId" | "channelId" | "authorDisplayName" | "summary"> | null;
+  reactionComposer: boolean;
   editTarget: EditTarget | null;
   messageDeletePending: MessageDeletePending | null;
   voiceCall: VoiceCallStatus | null;
@@ -199,6 +200,7 @@ export function createInitialState(
     notifications: createNotificationState(),
     replyTarget: null,
     reactionTarget: null,
+    reactionComposer: false,
     editTarget: null,
     messageDeletePending: null,
     voiceCall: null,
@@ -266,7 +268,7 @@ export function isCurrentAuthRequest(state: AppState, requestId: number): boolea
 }
 
 export function focusPrompt(state: AppState, append = false): void {
-  if (state.chatFocus === "history") {
+  if (state.chatFocus === "history" && !state.reactionComposer) {
     const bound = state.historyMessageBounds.find(({ start, end }) =>
       state.historyCursor.row >= start && state.historyCursor.row < end);
     const message = state.timeline.messages.find((entry) => entry.id === bound?.messageId);
@@ -284,7 +286,7 @@ export function focusPrompt(state: AppState, append = false): void {
 }
 
 export function focusHistory(state: AppState): void {
-  state.reactionTarget = null;
+  if (!state.reactionComposer) state.reactionTarget = null;
   state.navigationPendingKeys = "";
   state.panelFocus = "chat";
   state.chatFocus = "history";

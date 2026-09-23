@@ -3406,6 +3406,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.replyTarget = null;
   state.editTarget = null;
   state.reactionTarget = null;
+  state.reactionComposer = false;
   state.messageDeletePending = null;
   state.voiceCall = null;
   state.auth.cachedSidebarPreviewAccountId = null;

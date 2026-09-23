@@ -9,6 +9,7 @@ import { sanitizePromptTextForInsertion } from "./prompttext";
 import { commitInsertSession, pushUndo } from "./undo";
 
 export function clearPrompt(state: AppState): void {
+  state.reactionComposer = false;
   resetEditor(state.editor, "", "insert");
   state.autocomplete = null;
 }

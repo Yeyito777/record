@@ -15,7 +15,7 @@ export function selectedReactionMessage(state: AppState): DiscordMessage | null 
   }
   // A prompt-focused row can drift as live messages change height. Require
   // the identity captured on leaving history, rather than guessing a target.
-  if (state.chatFocus !== "history") return null;
+  if (state.reactionComposer || state.chatFocus !== "history") return null;
   const bound = state.historyMessageBounds.find(({ start, end }) =>
     state.historyCursor.row >= start && state.historyCursor.row < end);
   return state.timeline.messages.find((message) =>
@@ -68,6 +68,8 @@ export async function reactToSelectedMessage(
   if (requests.has(key)) return fail("A reaction is already being sent for this message.");
   requests.add(key);
   const buffer = state.editor.buffer;
+  const target = state.reactionTarget;
+  const composer = state.reactionComposer;
   try {
     if (whatsapp) {
       if (remove && emoji && !message.reactions?.some((reaction) => reaction.me && reaction.emoji.name === emoji.name)) {
@@ -81,7 +83,8 @@ export async function reactToSelectedMessage(
       // gateway echoes arrive after their REST responses.
       if (state.auth.savedToken !== token) return;
     }
-    if (state.editor.buffer === buffer && state.timeline.channelId === message.channelId) clearPrompt(state);
+    if (state.editor.buffer === buffer && state.timeline.channelId === message.channelId
+      && state.reactionTarget === target && state.reactionComposer === composer) clearPrompt(state);
     setNotice(state, remove ? "Reaction removed." : "Reaction added.", "success");
   } catch (error) {
     fail(`Could not ${remove ? "remove" : "add"} reaction: ${error instanceof Error ? error.message : String(error)}`);

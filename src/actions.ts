@@ -253,6 +253,16 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   const hasImages = state.pendingImages.length > 0;
   state.autocomplete = null;
 
+  if (state.reactionComposer) {
+    if (hasImages) {
+      setNotice(state, "Remove attached images before sending a reaction.", "warning");
+      effects.scheduleRender();
+    } else {
+      void reactToSelectedMessage(state, text, false, effects);
+    }
+    return;
+  }
+
   if (state.editTarget) {
     const expandedRawText = expandMacros(rawText);
     editCurrentMessage(state, state.auth.savedToken, expandedRawText, effects, {

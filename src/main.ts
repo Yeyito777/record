@@ -1180,7 +1180,8 @@ function handlePromptBackspacePrefixAction(): boolean {
 }
 
 function cancelCurrentAction(): void {
-  if (state.reactionTarget && /^\/(?:un)?react(?:\s|$)/.test(state.editor.buffer)) {
+  if (state.reactionComposer || (state.reactionTarget && /^\/(?:un)?react(?:\s|$)/.test(state.editor.buffer))) {
+    state.reactionComposer = false;
     state.reactionTarget = null;
     resetEditor(state.editor, "", "insert");
     state.autocomplete = null;
@@ -1280,6 +1281,7 @@ function deleteSelectedHistoryMessage(): void {
 function startEditSelectedHistoryMessage(): void {
   const message = selectedHistoryMessage();
   if (!selectedMessageCanBeEdited(message)) return;
+  state.reactionComposer = false;
 
   state.editTarget = {
     messageId: message.id,
@@ -1319,6 +1321,10 @@ function startReplyToSelectedHistoryMessage(mention = true): void {
     return;
   }
 
+  if (state.reactionComposer) {
+    state.reactionComposer = false;
+    resetEditor(state.editor, "", "insert");
+  }
   state.replyTarget = {
     messageId: message.id,
     channelId: message.channelId,
@@ -1976,8 +1982,10 @@ function handleHistoryFocused(key: KeyEvent): boolean {
     } else if (state.editor.buffer || state.pendingImages.length || state.editTarget) {
       setNotice(state, "Finish or clear your draft before reacting.", "warning");
     } else {
-      resetEditor(state.editor, "/react :", "insert");
+      resetEditor(state.editor, ":", "insert");
+      state.reactionComposer = false;
       focusPrompt(state);
+      state.reactionComposer = true;
       syncPromptAutocomplete();
     }
     scheduleRender();

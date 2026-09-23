@@ -18,6 +18,11 @@ describe("promptbar", () => {
     expect(stripAnsi(renderPromptSeparator(state, 80, theme.accent))).toContain("Reacting: Other: hello");
     state.editor.buffer = "normal draft";
     expect(stripAnsi(renderPromptSeparator(state, 80, theme.accent))).not.toContain("Reacting:");
+    state.reactionComposer = true;
+    state.editor.buffer = ":";
+    expect(stripAnsi(renderPromptSeparator(state, 80, theme.accent))).toContain("Reacting: Other: hello");
+    state.editor.buffer = "❤️";
+    expect(stripAnsi(renderPromptSeparator(state, 80, theme.accent))).toContain("Reacting: Other: hello");
   });
 
   test("embeds active reply target in the prompt separator with existing colors", () => {
