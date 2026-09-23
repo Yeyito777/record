@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { handlePromptPrefixBackspace } from "./promptbackspace";
+import { cancelPromptReaction, handlePromptPrefixBackspace } from "./promptbackspace";
 import { createInitialState, type AppState } from "./state";
 
 function stateWithReply(): AppState {
@@ -34,6 +34,43 @@ function stateWithEdit(): AppState {
 }
 
 describe("handlePromptPrefixBackspace", () => {
+  test("cancels reactions at cursor zero, preserving the draft like a reply", () => {
+    const state = stateWithReply();
+    state.reactionTarget = { messageId: "m", channelId: "c", authorDisplayName: "A", summary: "hello" };
+    state.reactionComposer = true;
+    state.editor.buffer = ":heart";
+    state.editor.cursor = 1;
+    expect(handlePromptPrefixBackspace(state)).toBeNull();
+    expect(state.reactionComposer).toBe(true);
+    state.editor.cursor = 0;
+    expect(handlePromptPrefixBackspace(state)).toBe("reaction");
+    expect(state.reactionComposer).toBe(false);
+    expect(state.reactionTarget).toBeNull();
+    expect(state.editor.buffer).toBe(":heart");
+    expect(state.replyTarget).not.toBeNull();
+  });
+
+  test("normal-mode reaction cancellation preserves mode and text", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+    state.reactionComposer = true;
+    state.editor.mode = "normal";
+    state.editor.buffer = "👍";
+    expect(cancelPromptReaction(state)).toBe(true);
+    expect(state.editor.mode).toBe("normal");
+    expect(state.editor.buffer).toBe("👍");
+    expect(cancelPromptReaction(state)).toBe(false);
+  });
+
+  test("images are removed before the reaction context", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+    state.reactionComposer = true;
+    state.editor.cursor = 0;
+    state.pendingImages = [{ mediaType: "image/png", base64: "", sizeBytes: 1 }];
+    expect(handlePromptPrefixBackspace(state)).toBe("image");
+    expect(state.reactionComposer).toBe(true);
+    expect(handlePromptPrefixBackspace(state)).toBe("reaction");
+  });
+
   test("removes a pending image before canceling a reply", () => {
     const state = stateWithReply();
     state.pendingImages = [

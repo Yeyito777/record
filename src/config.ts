@@ -57,6 +57,8 @@ export interface RecordConfig {
   images?: ImagesConfig;
   /** Local audio capture/playback preferences. */
   audio?: AudioConfig;
+  /** Unicode emoji used by the double-Space history shortcut. */
+  quickReactionEmoji?: string;
   /** Preserve unknown future/user keys. */
   [key: string]: unknown;
 }

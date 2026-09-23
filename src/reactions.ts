@@ -16,6 +16,10 @@ export function selectedReactionMessage(state: AppState): DiscordMessage | null 
   // A prompt-focused row can drift as live messages change height. Require
   // the identity captured on leaving history, rather than guessing a target.
   if (state.reactionComposer || state.chatFocus !== "history") return null;
+  return historyReactionMessage(state);
+}
+
+export function historyReactionMessage(state: AppState): DiscordMessage | null {
   const bound = state.historyMessageBounds.find(({ start, end }) =>
     state.historyCursor.row >= start && state.historyCursor.row < end);
   return state.timeline.messages.find((message) =>
@@ -45,8 +49,9 @@ export interface ReactionEffects extends SessionEffects {
 
 export async function reactToSelectedMessage(
   state: AppState, input: string, remove: boolean, effects: ReactionEffects,
+  options: { target?: DiscordMessage; preservePrompt?: boolean } = {},
 ): Promise<void> {
-  const message = selectedReactionMessage(state);
+  const message = options.target ?? selectedReactionMessage(state);
   const fail = (text: string) => {
     setNotice(state, text, "warning");
     effects.scheduleRender();
@@ -83,7 +88,7 @@ export async function reactToSelectedMessage(
       // gateway echoes arrive after their REST responses.
       if (state.auth.savedToken !== token) return;
     }
-    if (state.editor.buffer === buffer && state.timeline.channelId === message.channelId
+    if (!options.preservePrompt && state.editor.buffer === buffer && state.timeline.channelId === message.channelId
       && state.reactionTarget === target && state.reactionComposer === composer) clearPrompt(state);
     setNotice(state, remove ? "Reaction removed." : "Reaction added.", "success");
   } catch (error) {

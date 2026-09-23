@@ -52,7 +52,8 @@ import {
 } from "./memberlist";
 import { formatByteSize } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts, nextChannelNotification } from "./notifications";
-import { handlePromptPrefixBackspace } from "./promptbackspace";
+import { cancelPromptReaction, handlePromptPrefixBackspace } from "./promptbackspace";
+import { configuredQuickReaction, DEFAULT_QUICK_REACTION, handleQuickReactionKey, resetQuickReaction } from "./quickreactions";
 import { invalidateFrame } from "./frame";
 import { render } from "./render";
 import {
@@ -189,6 +190,7 @@ let initialNoiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MO
 let initialMicGainDb = DEFAULT_LOCAL_GAIN_DB;
 let initialParticipantVolumes: ParticipantVolumes = {};
 let initialSavedLogins: Record<string, string> = {};
+let initialQuickReactionEmoji = DEFAULT_QUICK_REACTION;
 const startupWarnings: string[] = [];
 
 try {
@@ -199,6 +201,7 @@ try {
   initialNoiseSuppression = parseNoiseSuppressionMode(config.audio?.noiseSuppression) ?? DEFAULT_NOISE_SUPPRESSION_MODE;
   initialMicGainDb = normalizeGainDb(config.audio?.micGainDb ?? DEFAULT_LOCAL_GAIN_DB);
   initialParticipantVolumes = normalizeParticipantVolumes(config.audio?.participantVolumes);
+  initialQuickReactionEmoji = configuredQuickReaction(config.quickReactionEmoji);
 } catch (error) {
   const err = error as NodeJS.ErrnoException;
   if (err.code !== "ENOENT") {
@@ -216,7 +219,7 @@ try {
 }
 
 const savedStartingState = loadTuiStartingState();
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji });
 let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
@@ -1975,7 +1978,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
-  if (state.editor.mode === "normal" && key.type === "char" && key.char === "+") {
+  if (state.editor.mode === "normal" && !editorHasPendingInput() && key.type === "char" && key.char === "m") {
     const message = selectedHistoryMessage();
     if (!message || message.localStatus || message.id.startsWith("local:")) {
       setNotice(state, "Select a sent message to react to.", "warning");
@@ -2246,6 +2249,7 @@ function handleKey(key: KeyEvent): void {
   }
 
   if (key.event === "release") return;
+  if (handleQuickReactionKey(state, key, effects)) return;
 
   if (state.imageModal) {
     const result = handleImageModalKey(key);
@@ -2265,6 +2269,12 @@ function handleKey(key: KeyEvent): void {
 
   if (state.sidebar.serverActionModal) {
     handleServerModalKey(key);
+    return;
+  }
+
+  if (state.panelFocus === "chat" && key.type === "escape" && state.editor.mode === "normal"
+    && cancelPromptReaction(state)) {
+    scheduleRender();
     return;
   }
 
@@ -2304,6 +2314,7 @@ function handleKey(key: KeyEvent): void {
 }
 
 function handleMouse(event: MouseEvent): void {
+  resetQuickReaction(state);
   if (state.imageModal || voiceMessageController?.isRecording() || state.voiceMessagePrompt) return;
 
   const previousFocus = state.panelFocus;

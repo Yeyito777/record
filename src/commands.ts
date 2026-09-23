@@ -12,6 +12,7 @@ import { setNotice } from "./state";
 import { THEME_NAMES, setTheme, theme, type ThemeName } from "./theme";
 import { clearTimelineInlineImageStates, pushTimelineSystemMessage } from "./timeline";
 import { DEFAULT_LOCAL_GAIN_DB, formatGainDbWithUnit, parseGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
+import { parseReactionEmoji } from "./reactions";
 
 export interface CompletionItem {
   /** Text or inline marker shown in the autocomplete popup. */
@@ -293,6 +294,29 @@ const commands: SlashCommand[] = [
       const emoji = text.slice("/react".length).trim();
       if (!emoji) return usage(state, "Usage: /react <emoji> (type :name then Tab)");
       return { type: "reaction", emoji, remove: false };
+    },
+  },
+  {
+    name: "/quickreact",
+    description: "Show/set the double-Space reaction emoji",
+    handler: (text, state) => {
+      const input = text.slice("/quickreact".length).trim();
+      if (!input) {
+        setNotice(state, `Double-Space reaction: ${state.quickReactionEmoji}. Change with /quickreact <emoji>.`, "muted");
+        clearPrompt(state);
+        return { type: "handled" };
+      }
+      const emoji = parseReactionEmoji(input);
+      if (!emoji || emoji.id) return usage(state, "Usage: /quickreact <standard emoji> (e.g. /quickreact :heart:)");
+      try {
+        saveConfig({ quickReactionEmoji: emoji.name });
+        state.quickReactionEmoji = emoji.name;
+        clearPrompt(state);
+        setNotice(state, `Double-Space reaction set to ${emoji.name}.`, "success");
+      } catch (error) {
+        setNotice(state, `Could not save quick reaction: ${(error as Error).message}`, "error");
+      }
+      return { type: "handled" };
     },
   },
   {

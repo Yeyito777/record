@@ -137,6 +137,7 @@ export interface AppState {
   /** Stable history selection while composing a reaction command. */
   reactionTarget: Pick<ReplyTarget, "messageId" | "channelId" | "authorDisplayName" | "summary"> | null;
   reactionComposer: boolean;
+  quickReactionEmoji: string;
   editTarget: EditTarget | null;
   messageDeletePending: MessageDeletePending | null;
   voiceCall: VoiceCallStatus | null;
@@ -164,7 +165,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown } = {},
+  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown; quickReactionEmoji?: string } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -201,6 +202,7 @@ export function createInitialState(
     replyTarget: null,
     reactionTarget: null,
     reactionComposer: false,
+    quickReactionEmoji: options.quickReactionEmoji ?? "❤️",
     editTarget: null,
     messageDeletePending: null,
     voiceCall: null,
