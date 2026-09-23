@@ -33,10 +33,11 @@ Controls:
 - `;` in history visual/visual-line mode: quote the selection into the draft and focus the following line
 - `r` in history normal mode or `Ctrl+R`: reply to the selected message with ping enabled
 - `Shift+R` in history normal mode: reply without pinging; the prompt marks this with `NO-PING` (pinging replies have no badge)
-- `m` in history normal mode: opens a `Reacting` prompt starting with `:`; type an emoji name, press `Tab` to choose it, then `Enter` to send. Backspace at cursor zero or `Esc` in normal mode cancels the reaction context; `Ctrl+Q` cancels and clears the prompt
+- `m` in history normal mode: opens a `Reacting` prompt starting with `:`; type an emoji name, press `Tab` to choose it, then `Enter` to send. Your draft (including images and reply/edit context) is saved and restored on send or cancellation. Backspace at cursor zero, `Esc` in normal mode, or `Ctrl+Q` cancels
 - Double-tap `Space` in history normal mode (within 400 ms): react with ❤️ without changing your draft. `/quickreact <emoji>` changes and saves this default (e.g. `/quickreact :thumbsup:`); `/quickreact` shows it
 - `/react <emoji>`: add a reaction to the message selected in history (WhatsApp replaces your previous reaction); accepts Unicode, `:shortcodes:`, and Discord custom emoji via autocomplete. The prompt shows the captured target; `Ctrl+Q` cancels
 - `/unreact <emoji>`: remove your reaction; on WhatsApp, `/unreact` alone removes your current reaction
+- Reactions appear immediately, roll back on failure, and keep the last message's reaction row visible if you were already at the bottom
 - `Shift+J` / `Shift+K`: jump the sidebar selection up/down from non-typing contexts
 - `j` / `k` or arrow keys: move in the focused pane
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels

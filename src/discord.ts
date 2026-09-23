@@ -1138,6 +1138,7 @@ function applyDiscordReactionUpdate(
   if (update.type === "add") {
     if (index >= 0) {
       const existing = next[index]!;
+      if (update.me && existing.me) return next;
       next[index] = { ...existing, count: existing.count + 1, me: existing.me || update.me };
     } else {
       next.push({ emoji: { ...update.emoji }, count: 1, me: update.me });
@@ -1147,6 +1148,7 @@ function applyDiscordReactionUpdate(
 
   if (index < 0) return next;
   const existing = next[index]!;
+  if (update.me && !existing.me) return next;
   const count = existing.count - 1;
   if (count <= 0) {
     next.splice(index, 1);

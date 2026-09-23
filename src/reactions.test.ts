@@ -5,6 +5,9 @@ import { customEmojiMarker } from "./customemoji";
 import { applyDiscordMessagePatch, type DiscordMessage, type DiscordMessagePatch } from "./discord";
 import { parseReactionEmoji, reactToSelectedMessage } from "./reactions";
 import { createInitialState, focusHistory, focusPrompt } from "./state";
+import { beginReactionComposer } from "./reactionprompt";
+import { reconcileOptimisticReactionPatch } from "./optimisticreactions";
+import { renderTimelineLines } from "./timeline";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
@@ -45,7 +48,7 @@ describe("reactions", () => {
     }
   });
 
-  test("adds/removes via encoded Discord REST paths, leaving counts to the gateway", async () => {
+  test("adds/removes via encoded Discord REST paths with immediate counts and no success notice", async () => {
     const requests: { url: string; method: string }[] = [];
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       requests.push({ url: String(url), method: init!.method! });
@@ -57,7 +60,8 @@ describe("reactions", () => {
       url: `https://discord.com/api/v9/channels/channel-1/messages/message-1/reactions/${encodeURIComponent("👍")}/@me`,
       method: "PUT",
     });
-    expect(state.timeline.messages[0]?.reactions?.[0]).toMatchObject({ count: 2, me: false });
+    expect(state.timeline.messages[0]?.reactions?.[0]).toMatchObject({ count: 3, me: true });
+    expect(state.notice.text).not.toContain("Reaction added");
     expect(state.editor.buffer).toBe("");
     await reactToSelectedMessage(state, "👍", true, effects);
     expect(requests[1]?.method).toBe("DELETE");
@@ -76,13 +80,13 @@ describe("reactions", () => {
       id: message.id, channelId: message.channelId,
       reactionUpdate: { type: "add", emoji: parseReactionEmoji("👍")!, me: true },
     };
-    const added = applyDiscordMessagePatch(state.timeline.messages[0]!, patch);
+    const added = applyDiscordMessagePatch(state.timeline.messages[0]!, reconcileOptimisticReactionPatch(state, patch));
     expect(added.reactions?.[0]).toMatchObject({ count: 3, me: true });
     patch.reactionUpdate = { type: "remove", emoji: parseReactionEmoji("👍")!, me: true };
-    const removed = applyDiscordMessagePatch(added, patch);
-    expect(removed.reactions?.[0]).toMatchObject({ count: 2, me: false });
+    const removed = applyDiscordMessagePatch(added, reconcileOptimisticReactionPatch(state, patch));
+    expect(removed.reactions?.[0]).toMatchObject({ count: 3, me: true });
     patch.reactionUpdate = { type: "add", emoji: parseReactionEmoji("👍")!, me: true };
-    expect(applyDiscordMessagePatch(removed, patch).reactions?.[0]).toMatchObject({ count: 3, me: true });
+    expect(applyDiscordMessagePatch(removed, reconcileOptimisticReactionPatch(state, patch)).reactions?.[0]).toMatchObject({ count: 3, me: true });
   });
 
   test("failure preserves the command and existing reactions", async () => {
@@ -245,5 +249,64 @@ describe("reactions", () => {
     await sending;
     expect(state.reactionComposer).toBe(true);
     expect(state.editor.buffer).toBe("👍");
+  });
+
+  test("optimistic reaction restores a suspended draft before the request completes", async () => {
+    const { state, message } = setup();
+    state.editor.buffer = "draft in progress";
+    state.editor.cursor = 4;
+    const draftEditor = state.editor;
+    beginReactionComposer(state, message);
+    state.editor.buffer = "👍";
+    let finish!: () => void;
+    globalThis.fetch = (async () => {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    const sending = reactToSelectedMessage(state, "👍", false, effects);
+    expect(state.editor).toBe(draftEditor);
+    expect(state.editor.buffer).toBe("draft in progress");
+    expect(state.editor.cursor).toBe(4);
+    expect(state.timeline.messages[0]?.reactions?.[0]).toMatchObject({ count: 3, me: true });
+    state.editor.buffer = "continued typing";
+    finish();
+    await sending;
+    expect(state.editor.buffer).toBe("continued typing");
+    expect(state.notice.text).not.toContain("Reaction added");
+  });
+
+  test("bottom-pinned last-message reactions reveal the new row, but scrolled-up readers stay put", async () => {
+    const { state, message } = setup();
+    message.reactions = [];
+    message.content = "first\nsecond\nthird\nfourth";
+    renderTimelineLines(state.timeline, 40, 3, state.notice);
+    state.timeline.scrollOffset = state.timeline.maxScroll;
+    const oldMax = state.timeline.maxScroll;
+    globalThis.fetch = (async () => new Response(null, { status: 204 })) as unknown as typeof fetch;
+    const sending = reactToSelectedMessage(state, "👍", false, effects);
+    expect(state.timeline.scrollOffset).toBe(Number.MAX_SAFE_INTEGER);
+    const rendered = renderTimelineLines(state.timeline, 40, 3, state.notice);
+    expect(state.timeline.maxScroll).toBe(oldMax + 1);
+    expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll);
+    expect(rendered.lines.join("\n")).toContain("👍 1");
+    await sending;
+    state.timeline.scrollOffset = 0;
+    await reactToSelectedMessage(state, "❤️", false, effects);
+    expect(state.timeline.scrollOffset).toBe(0);
+  });
+
+  test("a rejected optimistic reaction rolls back without losing the saved draft", async () => {
+    const { state, message } = setup();
+    state.editor.buffer = "keep this draft";
+    state.pendingImages = [{ mediaType: "image/png", base64: "abc", sizeBytes: 2 }];
+    const images = state.pendingImages;
+    beginReactionComposer(state, message);
+    state.editor.buffer = "👍";
+    globalThis.fetch = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+    await reactToSelectedMessage(state, "👍", false, effects);
+    expect(state.editor.buffer).toBe("keep this draft");
+    expect(state.pendingImages).toBe(images);
+    expect(state.timeline.messages[0]?.reactions?.[0]).toMatchObject({ count: 2, me: false });
+    expect(state.notice.text).toContain("Could not add reaction");
   });
 });

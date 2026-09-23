@@ -137,6 +137,12 @@ export interface AppState {
   /** Stable history selection while composing a reaction command. */
   reactionTarget: Pick<ReplyTarget, "messageId" | "channelId" | "authorDisplayName" | "summary"> | null;
   reactionComposer: boolean;
+  reactionDraft: {
+    editor: EditorState;
+    pendingImages: ClipboardImageAttachment[];
+    replyTarget: ReplyTarget | null;
+    editTarget: EditTarget | null;
+  } | null;
   quickReactionEmoji: string;
   editTarget: EditTarget | null;
   messageDeletePending: MessageDeletePending | null;
@@ -202,6 +208,7 @@ export function createInitialState(
     replyTarget: null,
     reactionTarget: null,
     reactionComposer: false,
+    reactionDraft: null,
     quickReactionEmoji: options.quickReactionEmoji ?? "❤️",
     editTarget: null,
     messageDeletePending: null,

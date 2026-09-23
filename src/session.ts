@@ -136,6 +136,7 @@ import {
   setMemberListMessage,
 } from "./memberlist";
 import type { AppState } from "./state";
+import { reconcileOptimisticReactionPatch, resetOptimisticReactions } from "./optimisticreactions";
 import type { TuiStartingState } from "./startingstate";
 import { VOICE_MESSAGE_FLAG, type VoiceMessageClip } from "./voice-message";
 import {
@@ -1721,6 +1722,7 @@ export function handleGatewayMessageCreate(state: AppState, effects: SessionEffe
 }
 
 function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, patch: DiscordMessagePatch): void {
+  patch = reconcileOptimisticReactionPatch(state, patch);
   const guildId = patch.guildId ?? state.channelList.channels.find((channel) => channel.id === patch.channelId)?.guildId ?? null;
   if (patch.author?.roleIds) {
     recordMemberRoleIds(state, guildId, patch.author.id, patch.author.roleIds);
@@ -3401,6 +3403,7 @@ export function clearReadOnlyClient(state: AppState): void {
   state.memberRoleIdsByGuildId = {};
   state.channelMuteSettings = {};
   state.messageCacheByChannelId = {};
+  resetOptimisticReactions(state);
   state.channelPinCacheByChannelId = {};
   state.serverCommands = createServerCommandsState();
   state.replyTarget = null;

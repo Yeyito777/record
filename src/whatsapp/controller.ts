@@ -118,6 +118,14 @@ interface PendingHistoryRequest {
   timeout: ReturnType<typeof setTimeout>;
 }
 
+interface PendingReactionRequest {
+  optimistic: WhatsAppReactionEvent;
+  failed: boolean;
+  settled: boolean;
+  previous?: PendingReactionRequest;
+  rollback: WhatsAppReactionEvent;
+}
+
 function safeErrorMessage(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error || "Unknown error");
   return sanitizeTerminalLabel(text).slice(0, 240);
@@ -166,7 +174,7 @@ export class WhatsAppController {
   }>();
   // Include removals so a late history snapshot cannot resurrect a reaction.
   private readonly liveReactions = new Map<string, WhatsAppReactionEvent>();
-  private readonly reactionRequests = new Map<string, object>();
+  private readonly reactionRequests = new Map<string, PendingReactionRequest>();
 
   constructor(
     private readonly state: AppState,
@@ -356,17 +364,58 @@ export class WhatsAppController {
       throw new Error("WhatsApp reaction target is unavailable.");
     }
     const key = JSON.stringify([jid, target.id, "self"]);
-    const previous = this.liveReactions.get(key);
-    const request = {};
+    // Snapshot only our reaction: other participants may react while this send
+    // is pending. Rollback must not replace their updated reactions.
+    const previous = target.reactions?.find((reaction) => reaction.fromMe);
+    const optimistic: WhatsAppReactionEvent = {
+      target: { ...target.key },
+      reaction: {
+        senderId: previous?.senderId ?? this.state.whatsapp.account?.id ?? "whatsapp:me",
+        fromMe: true,
+        emoji,
+      },
+    };
+    const previousRequest = this.reactionRequests.get(key);
+    const rollback: WhatsAppReactionEvent = {
+      target: optimistic.target,
+      reaction: previous ? { ...previous } : { ...optimistic.reaction, emoji: "" },
+    };
+    const followsPending = previousRequest?.optimistic === this.liveReactions.get(key);
+    const request: PendingReactionRequest = {
+      optimistic,
+      failed: false,
+      settled: false,
+      previous: followsPending ? previousRequest : undefined,
+      // If overlapping sends both fail, skip the failed optimistic predecessor
+      // rather than resurrecting a reaction that was never sent.
+      rollback,
+    };
     this.reactionRequests.set(key, request);
     const generation = this.backendResetGeneration;
+    const isCurrent = () => generation === this.backendResetGeneration && !this.shuttingDown
+      && this.reactionRequests.get(key) === request
+      && this.liveReactions.get(key) === optimistic;
+    this.recordReactions([optimistic]);
     try {
       const event = await this.backend.sendReaction({ ...target.key }, emoji);
-      if (generation !== this.backendResetGeneration || this.shuttingDown
-        || this.reactionRequests.get(key) !== request
-        || this.liveReactions.get(key) !== previous) return;
+      if (!isCurrent()) return;
       this.recordReactions([event]);
+    } catch (error) {
+      request.failed = true;
+      // A gateway echo (including a removal) or a newer local request owns the
+      // state now; neither a late failure nor a late success may overwrite it.
+      if (isCurrent()) {
+        let restore = request;
+        while (restore.previous?.failed) restore = restore.previous;
+        const owner = restore.previous;
+        this.recordReactions([owner?.optimistic ?? restore.rollback]);
+        if (owner && !owner.settled) {
+          this.reactionRequests.set(key, owner);
+        }
+      }
+      throw error;
     } finally {
+      request.settled = true;
       if (this.reactionRequests.get(key) === request) this.reactionRequests.delete(key);
     }
   }

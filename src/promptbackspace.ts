@@ -1,10 +1,12 @@
 import type { AppState } from "./state";
+import { restoreReactionDraft } from "./promptstate";
 
 export type PromptBackspacePrefixAction = "image" | "reply" | "edit" | "reaction";
 
 /** Like cancelling a reply, leave the draft and editor mode untouched. */
 export function cancelPromptReaction(state: AppState): boolean {
   if (!state.reactionComposer) return false;
+  if (restoreReactionDraft(state)) return true;
   state.reactionComposer = false;
   state.reactionTarget = null;
   state.autocomplete = null;

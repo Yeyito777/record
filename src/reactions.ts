@@ -2,7 +2,8 @@ import { isWhatsAppChannelId } from "./chatproviders";
 import { decodeCustomEmojiMarkers } from "./customemoji";
 import { setChannelMessageReaction, type DiscordMessage, type DiscordMessageReactionEmoji } from "./discord";
 import { emojiCompletions } from "./emojis";
-import { clearPrompt } from "./promptstate";
+import { clearPrompt, restoreReactionDraft } from "./promptstate";
+import { beginOptimisticReaction } from "./optimisticreactions";
 import type { SessionEffects } from "./session";
 import { setNotice, type AppState } from "./state";
 
@@ -66,6 +67,9 @@ export async function reactToSelectedMessage(
   const token = state.auth.savedToken;
   if (!whatsapp && !token) return fail("Log in to Discord before reacting.");
   if (whatsapp && !effects.reactWhatsAppMessage) return fail("WhatsApp is unavailable.");
+  if (whatsapp && remove && emoji && !message.reactions?.some((reaction) => reaction.me && reaction.emoji.name === emoji.name)) {
+    return fail("You haven't reacted with that emoji.");
+  }
 
   const key = `${message.channelId}/${message.id}`;
   const requests = pending.get(state) ?? new Set<string>();
@@ -75,23 +79,30 @@ export async function reactToSelectedMessage(
   const buffer = state.editor.buffer;
   const target = state.reactionTarget;
   const composer = state.reactionComposer;
+  const atBottom = state.timeline.channelId === message.channelId
+    && state.timeline.messages.at(-1)?.id === message.id
+    && state.timeline.scrollOffset >= state.timeline.maxScroll;
+  if (!options.preservePrompt && composer) restoreReactionDraft(state);
+  const optimistic = whatsapp ? null : beginOptimisticReaction(state, message, emoji!, remove);
+  // The new reaction row increases maxScroll on the next render. Pin to that
+  // new bottom, but never jump a reader who had scrolled up.
+  if (atBottom) state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
   try {
     if (whatsapp) {
-      if (remove && emoji && !message.reactions?.some((reaction) => reaction.me && reaction.emoji.name === emoji.name)) {
-        return fail("You haven't reacted with that emoji.");
-      }
-      await effects.reactWhatsAppMessage!(message, remove ? "" : emoji!.name);
+      const sending = effects.reactWhatsAppMessage!(message, remove ? "" : emoji!.name);
+      effects.scheduleRender();
+      await sending;
     } else {
+      effects.scheduleRender();
       await setChannelMessageReaction(token!, message.channelId, message.id, emoji!, remove);
-      // Gateway events remain authoritative. Replaying REST acknowledgements
-      // as deltas can resurrect an older reaction when opposite operations'
-      // gateway echoes arrive after their REST responses.
+      optimistic!.finish(true);
       if (state.auth.savedToken !== token) return;
     }
     if (!options.preservePrompt && state.editor.buffer === buffer && state.timeline.channelId === message.channelId
       && state.reactionTarget === target && state.reactionComposer === composer) clearPrompt(state);
-    setNotice(state, remove ? "Reaction removed." : "Reaction added.", "success");
   } catch (error) {
+    optimistic?.finish(false);
+    if (!whatsapp && state.auth.savedToken !== token) return;
     fail(`Could not ${remove ? "remove" : "add"} reaction: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     requests.delete(key);

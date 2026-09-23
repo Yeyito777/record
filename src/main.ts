@@ -53,6 +53,8 @@ import {
 import { formatByteSize } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts, nextChannelNotification } from "./notifications";
 import { cancelPromptReaction, handlePromptPrefixBackspace } from "./promptbackspace";
+import { clearPrompt, restoreReactionDraft } from "./promptstate";
+import { beginReactionComposer } from "./reactionprompt";
 import { configuredQuickReaction, DEFAULT_QUICK_REACTION, handleQuickReactionKey, resetQuickReaction } from "./quickreactions";
 import { invalidateFrame } from "./frame";
 import { render } from "./render";
@@ -1183,7 +1185,12 @@ function handlePromptBackspacePrefixAction(): boolean {
 }
 
 function cancelCurrentAction(): void {
-  if (state.reactionComposer || (state.reactionTarget && /^\/(?:un)?react(?:\s|$)/.test(state.editor.buffer))) {
+  if (state.reactionComposer) {
+    if (!restoreReactionDraft(state)) clearPrompt(state);
+    scheduleRender();
+    return;
+  }
+  if (state.reactionTarget && /^\/(?:un)?react(?:\s|$)/.test(state.editor.buffer)) {
     state.reactionComposer = false;
     state.reactionTarget = null;
     resetEditor(state.editor, "", "insert");
@@ -1284,6 +1291,7 @@ function deleteSelectedHistoryMessage(): void {
 function startEditSelectedHistoryMessage(): void {
   const message = selectedHistoryMessage();
   if (!selectedMessageCanBeEdited(message)) return;
+  restoreReactionDraft(state);
   state.reactionComposer = false;
 
   state.editTarget = {
@@ -1325,8 +1333,7 @@ function startReplyToSelectedHistoryMessage(mention = true): void {
   }
 
   if (state.reactionComposer) {
-    state.reactionComposer = false;
-    resetEditor(state.editor, "", "insert");
+    if (!restoreReactionDraft(state)) clearPrompt(state);
   }
   state.replyTarget = {
     messageId: message.id,
@@ -1982,13 +1989,8 @@ function handleHistoryFocused(key: KeyEvent): boolean {
     const message = selectedHistoryMessage();
     if (!message || message.localStatus || message.id.startsWith("local:")) {
       setNotice(state, "Select a sent message to react to.", "warning");
-    } else if (state.editor.buffer || state.pendingImages.length || state.editTarget) {
-      setNotice(state, "Finish or clear your draft before reacting.", "warning");
     } else {
-      resetEditor(state.editor, ":", "insert");
-      state.reactionComposer = false;
-      focusPrompt(state);
-      state.reactionComposer = true;
+      beginReactionComposer(state, message);
       syncPromptAutocomplete();
     }
     scheduleRender();
