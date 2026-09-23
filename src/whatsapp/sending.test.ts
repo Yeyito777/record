@@ -26,9 +26,11 @@ describe("WhatsApp sending options", () => {
         userJid: "self@s.whatsapp.net",
         upload: async () => ({ mediaUrl: "", directPath: "" }),
         ...options,
+        messageId: "3EB000112233445566778899AABBCCDDEEFF00112233",
       },
     );
     expect(generated.message?.extendedTextMessage?.contextInfo?.expiration).toBe(86_400);
+    expect(generated.key.id).toBe("3EB000112233445566778899AABBCCDDEEFF00112233");
   });
 
   test("uses a known direct-chat duration and never invents a default", async () => {
@@ -116,6 +118,37 @@ describe("WhatsApp sending options", () => {
       undefined,
       undefined,
     )).rejects.toThrow("image 2 has invalid data");
+    expect(sends).toBe(0);
+  });
+
+  test("uses the exact corresponding message ID for each image", async () => {
+    const calls: unknown[] = [];
+    const socket = {
+      sendMessage: async (_jid: string, _content: unknown, options: { messageId: string }) => {
+        calls.push(options);
+        return { key: { id: options.messageId } };
+      },
+    } as unknown as Pick<WASocket, "sendMessage">;
+    const image = { mediaType: "image/png" as const, base64: "b25l", sizeBytes: 3 };
+    const quoted = { key: { id: "quoted" } } as WAMessage;
+    const sent = await sendWhatsAppImages(socket, "person@s.whatsapp.net", [image, image], "caption", quoted, 60, ["first", "second"]);
+    expect(sent.map((message) => message.key.id)).toEqual(["first", "second"]);
+    expect(calls).toEqual([
+      { quoted, ephemeralExpiration: 60, messageId: "first" },
+      { ephemeralExpiration: 60, messageId: "second" },
+    ]);
+  });
+
+  test("rejects malformed image IDs before any image is sent", async () => {
+    let sends = 0;
+    const socket = {
+      sendMessage: async () => { sends++; return undefined; },
+    } as unknown as Pick<WASocket, "sendMessage">;
+    const image = { mediaType: "image/png" as const, base64: "b25l", sizeBytes: 3 };
+    for (const ids of [[], ["one"], ["same", "same"], ["one", ""], ["one", "   "]]) {
+      await expect(sendWhatsAppImages(socket, "person@s.whatsapp.net", [image, image], "", undefined, undefined, ids))
+        .rejects.toThrow("message IDs");
+    }
     expect(sends).toBe(0);
   });
 });

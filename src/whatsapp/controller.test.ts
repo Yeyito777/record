@@ -14,6 +14,7 @@ import type {
   WhatsAppBackendEventName,
   WhatsAppConnectionState,
   WhatsAppLoginResult,
+  WhatsAppMessage,
 } from "./types";
 
 class FakeBackend implements WhatsAppBackendHandle {
@@ -62,7 +63,8 @@ class FakeBackend implements WhatsAppBackendHandle {
     text: string,
     _quoted?: import("./types").WhatsAppMessage,
     ephemeralExpirationSeconds?: number,
-  ) {
+    _messageId?: string,
+  ): Promise<WhatsAppMessage> {
     this.sentTexts.push(text);
     this.sentExpirations.push(ephemeralExpirationSeconds);
     return {
@@ -80,7 +82,10 @@ class FakeBackend implements WhatsAppBackendHandle {
     chatId: string,
     images: import("./worker-protocol").WhatsAppImageUpload[],
     caption: string,
-  ) {
+    _quoted?: WhatsAppMessage,
+    _ephemeralExpirationSeconds?: number,
+    _messageIds?: string[],
+  ): Promise<WhatsAppMessage[]> {
     this.sentImageBatches.push({ caption, count: images.length });
     return images.map((image, index) => ({
       key: { id: `sent-image-${index + 1}`, chatId, fromMe: true },
@@ -176,6 +181,335 @@ function fixture(options: { historyPageDelayMs?: number; historyRequestTimeoutMs
   });
   return { state, backend, controller, renders: () => renders };
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function raceMessage(id: string, chatId: string, timestampMs = 10, fromMe = false): WhatsAppMessage {
+  return {
+    id, chatId, key: { id, chatId, fromMe }, fromMe, timestampMs,
+    senderId: fromMe ? "self@s.whatsapp.net" : chatId,
+    content: { kind: "text", text: id },
+  };
+}
+
+function historyPage(messages: WhatsAppMessage[], requestId?: string): WhatsAppBackendEventMap["history"] {
+  return { chats: [], contacts: [], messages, skippedMessages: 0, syncKind: "on-demand", requestId };
+}
+
+function raceFixture(jid = "race@s.whatsapp.net") {
+  const result = fixture();
+  const { backend, controller } = result;
+  backend.emit("state", {
+    status: "connected", resumed: true, connectedAtMs: 1,
+    account: { id: "self@s.whatsapp.net" },
+  });
+  backend.emit("history", historyPage([raceMessage("original", jid, 100)]));
+  controller.openChannel(whatsappChannelId(jid));
+  return { ...result, jid };
+}
+
+const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+describe("WhatsApp loading races", () => {
+  test("does not accept sends during asynchronous logout", async () => {
+    const { state, backend, controller } = raceFixture();
+    const logout = deferred<void>();
+    backend.logout = () => logout.promise;
+    controller.logout();
+    state.editor.buffer = "keep this draft";
+    expect(controller.sendMessage("keep this draft")).toBe(true);
+    expect(backend.sentTexts).toEqual([]);
+    expect(state.editor.buffer).toBe("keep this draft");
+    expect(state.timeline.messages.some((m) => m.localStatus)).toBe(false);
+    logout.resolve();
+    await settle();
+    await controller.shutdown();
+  });
+
+  test("updates an evicted message that is still visible", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      backend.emit("messages", {
+        kind: "upsert", upsertType: "append", skippedMessages: 0,
+        messages: Array.from({ length: MAX_WHATSAPP_MESSAGES_PER_CHAT },
+          (_, index) => raceMessage(`new-${index}`, jid, 200 + index)),
+      });
+      expect(state.whatsapp.messagesByChatId[jid]?.some((m) => m.id === "original")).toBe(false);
+      backend.emit("messages", {
+        kind: "update", skippedMessages: 0,
+        messages: [{ ...raceMessage("original", jid, 100), content: { kind: "text", text: "edited while evicted" } }],
+      });
+      expect(state.timeline.messages.find((m) => m.id === "original")?.content).toBe("edited while evicted");
+    } finally { await controller.shutdown(); }
+  });
+
+  test("exact echoes acknowledge identical overlapping sends before their RPC responses", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const first = deferred<WhatsAppMessage>();
+    const second = deferred<WhatsAppMessage>();
+    const ids: string[] = [];
+    backend.sendText = (_jid, _text, _quoted, _expiration, id) => {
+      ids.push(id!);
+      return ids.length === 1 ? first.promise : second.promise;
+    };
+    controller.sendMessage("same");
+    controller.sendMessage("same");
+    try {
+      expect(ids[0]).not.toBe(ids[1]);
+      const echo = { ...raceMessage(ids[1]!, jid, 200, true), content: { kind: "text" as const, text: "same" } };
+      backend.emit("messages", { kind: "upsert", upsertType: "notify", skippedMessages: 0, messages: [echo] });
+      backend.emit("history", historyPage([echo]));
+      expect(state.timeline.messages.filter((m) => m.localStatus === "pending")).toHaveLength(1);
+      expect(state.timeline.messages.filter((m) => m.id === ids[1])).toHaveLength(1);
+      second.reject(new Error("lost RPC response"));
+      await settle();
+      expect(state.timeline.messages.some((m) => m.localStatus === "failed")).toBe(false);
+      first.resolve({ ...raceMessage(ids[0]!, jid, 210, true), content: { kind: "text", text: "same" } });
+      await settle();
+      expect(state.timeline.messages.filter((m) => m.content === "same")).toHaveLength(2);
+      expect(state.timeline.messages.some((m) => m.localStatus)).toBe(false);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("partial image delivery only leaves unsent images pending or failed", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const send = deferred<WhatsAppMessage[]>();
+    let ids: string[] = [];
+    backend.sendImages = (_jid, _images, _caption, _quoted, _expiration, messageIds) => {
+      ids = messageIds!;
+      return send.promise;
+    };
+    state.pendingImages = [
+      { base64: "aW1hZ2U=", mediaType: "image/png", sizeBytes: 5 },
+      { base64: "b3RoZXI=", mediaType: "image/png", sizeBytes: 5 },
+    ];
+    controller.sendMessage("caption");
+    try {
+      const echo = { ...raceMessage(ids[0]!, jid, 200, true), content: { kind: "media" as const, mediaKind: "image" as const, caption: "caption" } };
+      backend.emit("messages", { kind: "upsert", upsertType: "notify", skippedMessages: 0, messages: [echo] });
+      backend.emit("history", historyPage([]));
+      const pending = state.timeline.messages.find((m) => m.localStatus);
+      expect(pending?.attachments).toHaveLength(1);
+      expect(pending?.content).toBe("");
+      send.reject(new Error("second image failed"));
+      await settle();
+      expect(state.pendingImages.map((image) => image.base64)).toEqual(["b3RoZXI="]);
+      expect(state.editor.buffer).toBe("");
+      expect(state.timeline.messages.find((m) => m.localStatus === "failed")?.attachments).toHaveLength(1);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("learns history reactions on cached messages without resurrecting live removals", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const target = { id: "original", chatId: jid };
+    try {
+      backend.emit("reactions", [{ target, reaction: { senderId: "removed", fromMe: false, emoji: "" } }]);
+      backend.emit("history", {
+        ...historyPage([]),
+        reactions: [
+          { target, reaction: { senderId: "removed", fromMe: false, emoji: "👎" } },
+          { target, reaction: { senderId: "new-person", fromMe: false, emoji: "👍" } },
+        ],
+      });
+      expect(state.timeline.messages[0]?.reactions?.map((r) => r.emoji.name)).toEqual(["👍"]);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("retains reactions arriving before their history message", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      backend.emit("reactions", [{
+        target: { id: "older", chatId: jid },
+        reaction: { senderId: jid, fromMe: false, emoji: "👍" },
+      }]);
+      backend.emit("history", historyPage([raceMessage("older", jid, 10)]));
+      expect(state.timeline.messages[0]?.reactions?.[0]?.emoji.name).toBe("👍");
+    } finally { await controller.shutdown(); }
+  });
+
+  test("retains pending sends through history, reactions, live updates and navigation", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const send = deferred<WhatsAppMessage>();
+    backend.sendText = () => send.promise;
+    controller.sendMessage("outgoing");
+    const localId = state.timeline.messages.at(-1)!.id;
+    try {
+      backend.emit("history", historyPage([raceMessage("older", jid)]));
+      expect(state.timeline.messages.find((m) => m.id === localId)?.localStatus).toBe("pending");
+      backend.emit("reactions", [{
+        target: { id: "original", chatId: jid },
+        reaction: { senderId: jid, fromMe: false, emoji: "👍" },
+      }]);
+      expect(state.timeline.messages.some((m) => m.id === localId)).toBe(true);
+      backend.emit("messages", {
+        kind: "upsert", upsertType: "notify", skippedMessages: 0,
+        messages: [raceMessage("live", jid, 200)],
+      });
+      backend.emit("chats", { kind: "upsert", chats: [{ id: "other@g.us", kind: "group" }] });
+      controller.openChannel(whatsappChannelId("other@g.us"));
+      controller.openChannel(whatsappChannelId(jid));
+      expect(state.timeline.messages.some((m) => m.id === localId)).toBe(true);
+      const sent = raceMessage("sent", jid, 300, true);
+      backend.emit("messages", { kind: "upsert", upsertType: "notify", skippedMessages: 0, messages: [sent] });
+      backend.emit("history", historyPage([sent]));
+      send.resolve(sent);
+      await settle();
+      expect(state.timeline.messages.map((m) => m.id)).toEqual(["older", "original", "live", "sent"]);
+      expect(state.timeline.messages.some((m) => m.localStatus)).toBe(false);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("keeps failed sends visible without clobbering newer text, reply or images", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const send = deferred<WhatsAppMessage>();
+    backend.sendText = () => send.promise;
+    controller.sendMessage("failed text");
+    const image = { base64: "bmV3", mediaType: "image/png" as const, sizeBytes: 3 };
+    state.editor.buffer = "new draft";
+    state.editor.cursor = 9;
+    state.pendingImages = [image];
+    const reply = { channelId: whatsappChannelId(jid), guildId: WHATSAPP_GUILD_ID, messageId: "original", authorId: jid, authorDisplayName: "Person", authorColor: "", mention: false, timestamp: 100, summary: "original" };
+    state.replyTarget = reply;
+    try {
+      backend.emit("history", historyPage([raceMessage("older", jid)]));
+      send.reject(new Error("offline"));
+      await settle();
+      expect(state.editor.buffer).toBe("new draft");
+      expect(state.pendingImages).toEqual([image]);
+      expect(state.replyTarget).toBe(reply);
+      backend.emit("history", historyPage([]));
+      expect(state.timeline.messages.find((m) => m.content === "failed text")).toMatchObject({ localStatus: "failed", localError: "offline" });
+    } finally { await controller.shutdown(); }
+  });
+
+  test("does not restore failed text into another chat and retains it when returning", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const send = deferred<WhatsAppMessage>();
+    backend.sendText = () => send.promise;
+    controller.sendMessage("original draft");
+    backend.emit("chats", { kind: "upsert", chats: [{ id: "other@g.us", kind: "group" }] });
+    controller.openChannel(whatsappChannelId("other@g.us"));
+    try {
+      send.reject(new Error("offline"));
+      await settle();
+      expect(state.editor.buffer).toBe("");
+      expect(state.timeline.messages).toEqual([]);
+      controller.openChannel(whatsappChannelId(jid));
+      expect(state.timeline.messages.at(-1)).toMatchObject({ content: "original draft", localStatus: "failed" });
+    } finally { await controller.shutdown(); }
+  });
+
+  test("retains pending image bytes during backfill and replaces them after success", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const send = deferred<WhatsAppMessage[]>();
+    backend.sendImages = () => send.promise;
+    state.pendingImages = [{ base64: "aW1hZ2U=", mediaType: "image/png", sizeBytes: 5 }];
+    controller.sendMessage("caption");
+    const attachmentId = state.timeline.messages.at(-1)!.attachments[0]!.id;
+    try {
+      backend.emit("history", historyPage([raceMessage("older", jid)]));
+      expect(state.timeline.messages.at(-1)!.attachments[0]!.id).toBe(attachmentId);
+      expect(state.localAttachmentImages[attachmentId]?.base64).toBe("aW1hZ2U=");
+      send.resolve([{ ...raceMessage("image", jid, 200, true), content: { kind: "media", mediaKind: "image", caption: "caption" } }]);
+      await settle();
+      expect(state.timeline.messages.at(-1)?.id).toBe("image");
+      expect(state.localAttachmentImages[attachmentId]).toBeUndefined();
+    } finally { await controller.shutdown(); }
+  });
+
+  test("ignores a send completing after logout", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const send = deferred<WhatsAppMessage>();
+    backend.sendText = () => send.promise;
+    controller.sendMessage("old session");
+    controller.logout();
+    send.resolve(raceMessage("stale", jid, 200, true));
+    await settle();
+    expect(state.whatsapp.messagesByChatId[jid]?.some((m) => m.id === "stale") ?? false).toBe(false);
+    await controller.shutdown();
+  });
+
+  test("correlates a history page arriving before the fetch response and continues paging", async () => {
+    const { state, backend, controller } = fixture();
+    const jid = "early@g.us";
+    const ack = deferred<string>();
+    let requests = 0;
+    backend.fetchHistory = () => { requests++; return ack.promise; };
+    backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1 });
+    backend.emit("history", historyPage([raceMessage("recent", jid, 100)]));
+    controller.openChannel(whatsappChannelId(jid));
+    try {
+      backend.emit("history", historyPage([raceMessage("older", jid, 50)], "early-request"));
+      expect(state.timeline.loadingOlder).toBe(true);
+      ack.resolve("early-request");
+      await settle();
+      expect(state.timeline.loadingOlder).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(requests).toBe(2);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("an empty early page ends loading, while unrelated history does not", async () => {
+    const { state, backend, controller } = fixture();
+    const jid = "empty@g.us";
+    const ack = deferred<string>();
+    backend.fetchHistory = () => ack.promise;
+    backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1 });
+    backend.emit("history", historyPage([raceMessage("recent", jid, 100)]));
+    controller.openChannel(whatsappChannelId(jid));
+    try {
+      backend.emit("history", { ...historyPage([raceMessage("older", jid, 50)]), syncKind: "recent" });
+      expect(state.timeline.loadingOlder).toBe(true);
+      backend.emit("history", historyPage([], "empty-page"));
+      ack.resolve("empty-page");
+      await settle();
+      expect(state.timeline.loadingOlder).toBe(false);
+      expect(state.timeline.hasOlder).toBe(false);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("preserves sends and history requests when a LID becomes a phone JID", async () => {
+    const lid = "opaque@lid";
+    const phone = "15551234567@s.whatsapp.net";
+    const { state, backend, controller } = raceFixture(lid);
+    const send = deferred<WhatsAppMessage>();
+    backend.sendText = () => send.promise;
+    controller.sendMessage("migrating");
+    await settle();
+    try {
+      backend.emit("lid-mapping", { lid, phoneId: phone });
+      expect(state.timeline.channelId).toBe(whatsappChannelId(phone));
+      expect(state.timeline.messages.at(-1)?.localStatus).toBe("pending");
+      expect(state.timeline.loadingOlder).toBe(true);
+      backend.emit("history", historyPage([], "history-1"));
+      expect(state.timeline.loadingOlder).toBe(false);
+      send.resolve(raceMessage("sent", lid, 200, true));
+      await settle();
+      expect(state.timeline.messages.map((m) => m.id)).toEqual(["original", "sent"]);
+      expect(state.timeline.messages.every((m) => m.channelId === whatsappChannelId(phone))).toBe(true);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("backfill does not revert live edits or reactions", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      const edited = { ...raceMessage("original", jid, 100), editedTimestampMs: 200, content: { kind: "text" as const, text: "edited live" } };
+      backend.emit("messages", { kind: "update", skippedMessages: 0, messages: [edited] });
+      backend.emit("reactions", [{
+        target: { id: "original", chatId: jid },
+        reaction: { senderId: jid, fromMe: false, emoji: "👍" },
+      }]);
+      backend.emit("history", historyPage([{ ...raceMessage("original", jid, 100), reactions: [] }]));
+      expect(state.timeline.messages[0]?.content).toBe("edited live");
+      expect(state.timeline.messages[0]?.reactions?.[0]?.emoji.name).toBe("👍");
+    } finally { await controller.shutdown(); }
+  });
+});
 
 describe("WhatsApp controller", () => {
   test("drives the QR modal from backend events and cancels without Discord auth", async () => {

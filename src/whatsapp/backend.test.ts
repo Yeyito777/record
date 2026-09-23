@@ -175,6 +175,27 @@ function setup(
 }
 
 describe("RecordWhatsAppBackend", () => {
+  test("a stale socket credential failure does not stop its replacement", async () => {
+    let rejectWrite!: (error: Error) => void;
+    let writes = 0;
+    const { backend, sockets, timers } = setup(true, {}, () => {
+      if (++writes === 1) return new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+      return Promise.resolve();
+    });
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", closeUpdate(DisconnectReason.connectionClosed));
+    timers.runNext();
+    expect(sockets).toHaveLength(2);
+    sockets[1].emitter.emit("connection.update", { connection: "open" });
+    rejectWrite(new Error("old write failed"));
+    expect((await login).status).toBe("connected");
+    expect(sockets[1].endCalls).toBe(0);
+    await backend.shutdown();
+  });
+
   test("runs a fresh QR login without retaining the QR in connection state", async () => {
     const { backend, sockets, configs } = setup(false);
     const states: WhatsAppConnectionState[] = [];

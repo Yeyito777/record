@@ -47,6 +47,7 @@ export interface WhatsAppSendTextParams {
   quoted?: WhatsAppMessage;
   /** Known per-chat disappearing-message duration. Zero explicitly means off. */
   ephemeralExpirationSeconds?: number;
+  messageId?: string;
 }
 
 export interface WhatsAppImageUpload {
@@ -63,6 +64,7 @@ export interface WhatsAppSendImagesParams {
   quoted?: WhatsAppMessage;
   /** Known per-chat disappearing-message duration. Zero explicitly means off. */
   ephemeralExpirationSeconds?: number;
+  messageIds?: string[];
 }
 
 export interface WhatsAppDownloadMediaParams {

@@ -99,8 +99,9 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
     text: string,
     quoted?: WhatsAppMessage,
     ephemeralExpirationSeconds?: number,
+    messageId?: string,
   ): Promise<WhatsAppMessage> {
-    const params: WhatsAppSendTextParams = { chatId, text, quoted, ephemeralExpirationSeconds };
+    const params: WhatsAppSendTextParams = { chatId, text, quoted, ephemeralExpirationSeconds, messageId };
     return await this.request("send-text", params as unknown as Record<string, unknown>) as WhatsAppMessage;
   }
 
@@ -110,8 +111,9 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
     caption: string,
     quoted?: WhatsAppMessage,
     ephemeralExpirationSeconds?: number,
+    messageIds?: string[],
   ): Promise<WhatsAppMessage[]> {
-    const params: WhatsAppSendImagesParams = { chatId, images, caption, quoted, ephemeralExpirationSeconds };
+    const params: WhatsAppSendImagesParams = { chatId, images, caption, quoted, ephemeralExpirationSeconds, messageIds };
     return await this.request("send-images", params as unknown as Record<string, unknown>) as WhatsAppMessage[];
   }
 
@@ -189,11 +191,19 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
     this.child = child;
     this.inputBuffer = "";
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.handleData(chunk));
+    child.stdout.on("data", (chunk: string) => {
+      if (this.child === child) this.handleData(chunk);
+    });
     // Never let worker diagnostics write into Record's alternate-screen TUI.
     child.stderr.on("data", () => {});
-    child.on("error", (error) => this.handleWorkerFailure(error));
-    child.on("exit", (code, signal) => {
+    child.on("error", (error) => {
+      if (this.child !== child) return;
+      this.child = null;
+      this.handleWorkerFailure(error);
+    });
+    // exit can precede the final stdout data (including history and replies).
+    // close runs only after the worker's stdio has drained.
+    child.on("close", (code, signal) => {
       if (this.child !== child) return;
       this.child = null;
       if (this.stopping) return;

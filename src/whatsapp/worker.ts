@@ -119,10 +119,13 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
       const sent = await socket.sendMessage(
         params.chatId,
         { text: params.text },
-        buildWhatsAppSendOptions(
-          params.quoted ? quotedMessage(params.quoted) : undefined,
-          expiration,
-        ),
+        {
+          ...buildWhatsAppSendOptions(
+            params.quoted ? quotedMessage(params.quoted) : undefined,
+            expiration,
+          ),
+          ...(params.messageId ? { messageId: params.messageId } : {}),
+        },
       );
       const converted = sent ? toWhatsAppMessage(sent, { selfId: socket.user?.id }) : null;
       if (!converted) throw new Error("WhatsApp did not return the sent message.");
@@ -146,6 +149,7 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
         params.caption,
         params.quoted ? quotedMessage(params.quoted) : undefined,
         expiration,
+        params.messageIds,
       );
       const converted = sent.map((message) => toWhatsAppMessage(message, { selfId: socket.user?.id }));
       if (converted.some((message) => message === null)) throw new Error("WhatsApp returned an invalid sent image.");

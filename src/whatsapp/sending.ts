@@ -71,9 +71,18 @@ export async function sendWhatsAppImages(
   caption: string,
   quoted: WAMessage | undefined,
   ephemeralExpirationSeconds: number | undefined,
+  messageIds?: readonly string[],
 ): Promise<WAMessage[]> {
   if (images.length === 0 || images.length > MAX_WHATSAPP_IMAGES_PER_SEND) {
     throw new Error(`WhatsApp image sends require 1-${MAX_WHATSAPP_IMAGES_PER_SEND} images.`);
+  }
+  if (messageIds !== undefined && (
+    !Array.isArray(messageIds)
+    || messageIds.length !== images.length
+    || Array.from(messageIds).some((id) => typeof id !== "string" || !id.trim())
+    || new Set(messageIds).size !== messageIds.length
+  )) {
+    throw new Error("WhatsApp image message IDs must be nonempty, unique, and match the image count.");
   }
   // Validate everything before the first network send so malformed later images
   // cannot leave the operation partially sent.
@@ -88,7 +97,12 @@ export async function sendWhatsAppImages(
     const sent = await socket.sendMessage(
       chatId,
       content,
-      buildWhatsAppSendOptions(index === 0 ? quoted : undefined, ephemeralExpirationSeconds),
+      messageIds
+        ? {
+          ...buildWhatsAppSendOptions(index === 0 ? quoted : undefined, ephemeralExpirationSeconds),
+          messageId: messageIds[index],
+        }
+        : buildWhatsAppSendOptions(index === 0 ? quoted : undefined, ephemeralExpirationSeconds),
     );
     if (!sent) throw new Error(`WhatsApp did not return sent image ${index + 1}.`);
     sentMessages.push(sent);

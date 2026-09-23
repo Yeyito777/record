@@ -715,6 +715,10 @@ function timelinePageSize(): number {
 function maybeLoadOlderHistory(): void {
   const token = state.auth.savedToken;
   const channelId = state.timeline.channelId;
+  if (isWhatsAppChannelId(channelId)) {
+    if (shouldLoadOlderMessages(state.timeline)) whatsAppController.loadOlderHistory();
+    return;
+  }
   if (!token || !channelId || !shouldLoadOlderMessages(state.timeline)) return;
 
   startLoadingOlderMessages(state.timeline);

@@ -227,7 +227,11 @@ function canonicalizeWhatsAppMessage(state: WhatsAppUiState, message: WhatsAppMe
   };
 }
 
-export function upsertWhatsAppMessages(state: WhatsAppUiState, messages: readonly WhatsAppMessage[]): void {
+export function upsertWhatsAppMessages(
+  state: WhatsAppUiState,
+  messages: readonly WhatsAppMessage[],
+  options: { preferExisting?: boolean } = {},
+): void {
   const touched = new Set<string>();
   for (const incoming of messages) {
     // Protocol control envelopes from caches produced by older Record builds are
@@ -245,12 +249,29 @@ export function upsertWhatsAppMessages(state: WhatsAppUiState, messages: readonl
       incoming.key.alternateChatId,
     ]);
     if (pair) registerWhatsAppLidMapping(state, pair.lid, pair.phoneId);
-    const message = canonicalizeWhatsAppMessage(state, incoming);
+    let message = canonicalizeWhatsAppMessage(state, incoming);
     if (!message.chatId || message.chatId === "status@broadcast") continue;
     const existing = state.messagesByChatId[message.chatId] ?? [];
     const index = existing.findIndex((candidate) => candidate.id === message.id);
     if (index >= 0) {
-      const previous = existing[index];
+      let previous = existing[index];
+      // Backfilled snapshots must not roll back a live edit/reaction. Still
+      // enrich missing fields (notably media download metadata) from history.
+      if (options.preferExisting) {
+        const newerContent = (message.editedTimestampMs ?? 0) > (previous.editedTimestampMs ?? 0)
+          || (previous.content.kind === "unsupported" && message.content.kind !== "unsupported");
+        [previous, message] = [message, previous];
+        if (previous.reactions || message.reactions) {
+          const reactions = new Map([...(previous.reactions ?? []), ...(message.reactions ?? [])]
+            .map((reaction) => [reaction.senderId, reaction]));
+          message = { ...message, reactions: [...reactions.values()] };
+        }
+        if (newerContent) message = {
+          ...message,
+          content: previous.content,
+          editedTimestampMs: previous.editedTimestampMs ?? message.editedTimestampMs,
+        };
+      }
       const content = message.content.kind === "media" && previous.content.kind === "media"
         ? {
           ...previous.content,

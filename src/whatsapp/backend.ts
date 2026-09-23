@@ -764,7 +764,6 @@ export class RecordWhatsAppBackend {
   private async finalizeConnectedSocket(active: ActiveSocket): Promise<void> {
     if (!this.auth) return;
     const saveCreds = this.auth.saveCreds;
-    const generation = active.generation;
 
     // Pairing is not successful until the linked identity is durably handed to
     // the auth store. Queue one final save behind every creds.update observed so
@@ -788,7 +787,9 @@ export class RecordWhatsAppBackend {
       });
       this.settleLogin({ status: "connected", resumed: this.initialSavedSession, account });
     } catch (error) {
-      if (!this.isCurrentGeneration(generation)) return;
+      // A reconnect can replace this socket while its credential write waits.
+      // Its failure must not tear down the replacement socket.
+      if (!this.isCurrentSocket(active)) return;
       this.reportError({ phase: "auth", error, recoverable: false });
       this.failRun(error);
     } finally {
