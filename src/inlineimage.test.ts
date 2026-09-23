@@ -15,6 +15,7 @@ import {
   prepareInlineImage,
   prepareInlineImageBytes,
   stickerImageAttachment,
+  shouldLoadInlineImage,
   visibleInlineImageSources,
 } from "./inlineimage";
 
@@ -29,6 +30,19 @@ afterEach(() => {
 });
 
 describe("inline chat images", () => {
+  test("retries waiting previews only after connection, including explicit requests in hide mode", () => {
+    const waiting = { phase: "waiting" as const, attachmentId: "image", filename: "image.jpg", sourceUrl: "", requestId: 1 };
+    for (const autoShow of [true, false]) {
+      expect(shouldLoadInlineImage(waiting, "", autoShow, false)).toBe(false);
+      expect(shouldLoadInlineImage(waiting, "", autoShow, true)).toBe(true);
+      expect(shouldLoadInlineImage({ ...waiting, phase: "loading" }, "", autoShow, true)).toBe(false);
+      expect(shouldLoadInlineImage({ ...waiting, phase: "error", error: "bad image" }, "", autoShow, true)).toBe(false);
+    }
+    // Cancelling a manually requested preview must not restart it in hide mode.
+    expect(shouldLoadInlineImage(undefined, "", false, true)).toBe(false);
+    expect(shouldLoadInlineImage(undefined, "", true, false)).toBe(true); // May already be cached.
+  });
+
   test("recognizes image MIME types and filename fallbacks", () => {
     expect(isImageAttachment({ id: "1", filename: "photo.bin", contentType: "image/jpeg", size: 1, url: "u" })).toBe(true);
     expect(isImageAttachment({ id: "2", filename: "photo.WEBP", contentType: null, size: 1, url: "u" })).toBe(true);

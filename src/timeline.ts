@@ -927,8 +927,10 @@ function renderInlineImageExtras(
     const encodedId = encodeURIComponent(state.attachmentId);
     const label = state.phase === "loading"
       ? loadingLabel(`Loading ${state.filename}…`, loadingFrameIndex)
-      : `✗ Could not display ${state.filename}: ${inlineImageErrorText(state.error)}`;
-    const color = state.phase === "loading" ? theme.muted : theme.error;
+      : state.phase === "waiting"
+        ? `Waiting for connection to load ${state.filename}…`
+        : `✗ Could not display ${state.filename}: ${inlineImageErrorText(state.error)}`;
+    const color = state.phase === "error" ? theme.error : theme.muted;
     const wrapped = wrapPlainText(label, width);
     wrapped.forEach((line, index) => {
       lines.push(`${color}${line}${theme.reset}`);
@@ -1777,7 +1779,7 @@ function messageRenderFingerprint(
     ? [image.attachmentId, image.phase, String(image.imageId), String(image.pixelWidth), String(image.pixelHeight)].join("\u0002")
     : image.phase === "loading"
       ? [image.attachmentId, image.phase, String(image.requestId), String(loadingFrameIndex)].join("\u0002")
-      : [image.attachmentId, image.phase, String(image.requestId), image.error].join("\u0002"))
+      : [image.attachmentId, image.phase, String(image.requestId), image.phase === "error" ? image.error : ""].join("\u0002"))
     .join("\u0000");
   return [
     String(message.timestamp),

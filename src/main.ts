@@ -32,7 +32,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { handleImageModalKey } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
@@ -371,7 +371,7 @@ function setInlineImageError(attachment: InlineChatImageLoading, error: string):
 
 function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void {
   const existing = state.timeline.inlineImages[attachment.id];
-  if (existing && existing.sourceUrl === attachment.url) return;
+  if (existing && existing.sourceUrl === attachment.url && existing.phase !== "waiting") return;
   if (existing) removeTimelineInlineImageState(state.timeline, attachment.id);
 
   state.inlineImageHiddenAttachmentIds.delete(attachment.id);
@@ -407,6 +407,11 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
         const current = currentInlineImageRequest(requestId);
         if (!running || state.timeline.channelId !== channelId || !current) return;
         if (!downloaded.ok || !downloaded.path) {
+          if (downloaded.retryWhenConnected) {
+            setTimelineInlineImageState(state.timeline, { ...current, phase: "waiting" });
+            scheduleRender();
+            return;
+          }
           setInlineImageError(current, downloaded.error ?? "unknown download error");
           return;
         }
@@ -442,7 +447,7 @@ function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): bool
   if (!isImageAttachment(attachment)) return false;
 
   const existing = state.timeline.inlineImages[attachment.id];
-  if (existing?.phase === "ready" || existing?.phase === "loading") {
+  if (existing?.phase === "ready" || existing?.phase === "loading" || existing?.phase === "waiting") {
     removeTimelineInlineImageState(state.timeline, attachment.id);
     if (state.imageDisplayMode === "show") state.inlineImageHiddenAttachmentIds.add(attachment.id);
     scheduleRender();
@@ -525,7 +530,7 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
 }
 
 function autoShowVisibleInlineImages(): void {
-  if (!running || state.imageDisplayMode !== "show") return;
+  if (!running) return;
   const viewportStart = state.timeline.scrollOffset;
   const attachments = visibleInlineImageSources(
     state.timeline.messages,
@@ -536,7 +541,8 @@ function autoShowVisibleInlineImages(): void {
   for (const attachment of attachments) {
     if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
     const existing = state.timeline.inlineImages[attachment.id];
-    if (existing?.sourceUrl === attachment.url) continue;
+    if (!shouldLoadInlineImage(existing, attachment.url, state.imageDisplayMode === "show",
+      !isWhatsAppChannelId(state.timeline.channelId) || whatsAppController.isConnected)) continue;
     startInlineAttachmentImage(attachment);
   }
 }

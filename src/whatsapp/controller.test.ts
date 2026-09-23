@@ -216,6 +216,69 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
 describe("WhatsApp loading races", () => {
+  test("defers restored-chat images until connected and still serves offline cached files", async () => {
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    const directory = mkdtempSync(join(tmpdir(), "record-wa-startup-image-"));
+    process.env.XDG_CONFIG_HOME = directory;
+    const { state, backend, controller, renders } = fixture();
+    const jid = "startup@g.us";
+    try {
+      backend.emit("history", historyPage([{
+        ...raceMessage("startup-image", jid),
+        content: { kind: "media", mediaKind: "image", mimeType: "image/jpeg", sizeBytes: 4 },
+      }]));
+      controller.openChannel(whatsappChannelId(jid));
+      const attachment = state.timeline.messages[0]!.attachments[0]!;
+      expect(await controller.downloadAttachment(attachment)).toMatchObject({ ok: false, retryWhenConnected: true });
+      expect(backend.mediaDownloads).toHaveLength(0);
+
+      const before = renders();
+      backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1 });
+      expect(renders()).toBeGreaterThan(before); // Drives waiting-preview retry.
+      backend.mediaDownloadBytes = new Uint8Array([1, 2, 3, 4]);
+      expect(await controller.downloadAttachment(attachment)).toMatchObject({ ok: true, cached: false });
+      expect(backend.mediaDownloads).toHaveLength(1);
+
+      backend.emit("state", { status: "connecting", source: "saved-session", attempt: 0 });
+      expect(await controller.downloadAttachment(attachment)).toMatchObject({ ok: true, cached: true });
+      expect(backend.mediaDownloads).toHaveLength(1);
+    } finally {
+      await controller.shutdown();
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("retries connection-interrupted downloads but preserves genuine media failures", async () => {
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    const directory = mkdtempSync(join(tmpdir(), "record-wa-reconnect-image-"));
+    process.env.XDG_CONFIG_HOME = directory;
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      backend.emit("history", historyPage([{
+        ...raceMessage("reconnect-image", jid, 200),
+        content: { kind: "media", mediaKind: "image", mimeType: "image/jpeg", sizeBytes: 4 },
+      }]));
+      const attachment = state.timeline.messages.at(-1)!.attachments[0]!;
+      const download = deferred<import("./worker-protocol").WhatsAppDownloadMediaResult>();
+      backend.downloadMedia = () => download.promise;
+      const result = controller.downloadAttachment(attachment);
+      backend.emit("state", { status: "connecting", source: "saved-session", attempt: 1 });
+      backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 2 });
+      download.reject(new Error("connection closed"));
+      expect(await result).toMatchObject({ ok: false, retryWhenConnected: true });
+
+      backend.downloadMedia = async () => { throw new Error("invalid media"); };
+      expect(await controller.downloadAttachment(attachment)).toEqual({ ok: false, error: "invalid media" });
+    } finally {
+      await controller.shutdown();
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("does not accept sends during asynchronous logout", async () => {
     const { state, backend, controller } = raceFixture();
     const logout = deferred<void>();

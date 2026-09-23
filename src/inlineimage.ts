@@ -39,6 +39,10 @@ export interface InlineChatImageLoading extends InlineChatImageBase {
   phase: "loading";
 }
 
+export interface InlineChatImageWaiting extends InlineChatImageBase {
+  phase: "waiting";
+}
+
 export interface InlineChatImageError extends InlineChatImageBase {
   phase: "error";
   error: string;
@@ -52,7 +56,18 @@ export interface InlineChatImageReady extends InlineChatImageBase {
   pixelHeight: number;
 }
 
-export type InlineChatImageState = InlineChatImageLoading | InlineChatImageError | InlineChatImageReady;
+export type InlineChatImageState = InlineChatImageLoading | InlineChatImageWaiting | InlineChatImageError | InlineChatImageReady;
+
+/** Resume requested previews even in hide mode, without retrying real errors. */
+export function shouldLoadInlineImage(
+  existing: InlineChatImageState | undefined,
+  sourceUrl: string,
+  autoShow: boolean,
+  providerConnected: boolean,
+): boolean {
+  if (existing?.sourceUrl === sourceUrl) return existing.phase === "waiting" && providerConnected;
+  return autoShow;
+}
 
 export interface InlineImageCellLayout {
   columns: number;

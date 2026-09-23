@@ -535,9 +535,11 @@ export class WhatsAppController {
       return { ok: false, error: "WhatsApp media message is unavailable." };
     }
     if (!this.backend.isConnected) {
-      return { ok: false, error: "WhatsApp must be connected to download this attachment." };
+      return { ok: false, retryWhenConnected: true, error: "WhatsApp must be connected to download this attachment." };
     }
 
+    const backend = this.backend;
+    const connection = backend.state;
     try {
       const messages = this.state.whatsapp.messagesByChatId[jid] ?? [];
       const messageIndex = messages.findIndex((candidate) => candidate.id === message.id);
@@ -552,7 +554,7 @@ export class WhatsAppController {
       const recoveryAnchor = newerAnchor?.timestampMs
         ? { key: newerAnchor.key, timestampMs: newerAnchor.timestampMs }
         : undefined;
-      await this.backend.downloadMedia(message, path, recoveryAnchor);
+      await backend.downloadMedia(message, path, recoveryAnchor);
       if (!cachedAttachmentIsComplete(path, attachment.size)) {
         rmSync(path, { force: true });
         return { ok: false, error: "WhatsApp returned an incomplete attachment." };
@@ -561,7 +563,12 @@ export class WhatsAppController {
       return { ok: true, path, cached: false };
     } catch (error) {
       rmSync(path, { force: true });
-      return { ok: false, error: safeErrorMessage(error) };
+      return {
+        ok: false,
+        error: safeErrorMessage(error),
+        ...(backend !== this.backend || connection !== backend.state || !backend.isConnected
+          ? { retryWhenConnected: true } : {}),
+      };
     }
   }
 

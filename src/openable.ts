@@ -24,6 +24,8 @@ export interface AttachmentOpenResult {
   path?: string;
   error?: string;
   cached?: boolean;
+  /** Provider is offline; inline previews should wait, not cache a hard error. */
+  retryWhenConnected?: boolean;
 }
 
 export interface AttachmentDownloadProgress {

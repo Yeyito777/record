@@ -1052,6 +1052,17 @@ describe("timeline rendering", () => {
     expect(rendered.allLines.map(stripAnsi)).toContain("⠙ Loading cat.jpg…");
 
     setTimelineInlineImageState(timeline, {
+      phase: "waiting",
+      attachmentId: "a1",
+      filename: "cat.jpg",
+      sourceUrl: "https://cdn.example/cat.jpg",
+      requestId: 1,
+    });
+    rendered = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" }, 0);
+    expect(rendered.allLines.map(stripAnsi)).toContain("Waiting for connection to load cat.jpg…");
+    expect(rendered.allLines.some((line) => line.includes("Could not display"))).toBe(false);
+
+    setTimelineInlineImageState(timeline, {
       phase: "error",
       attachmentId: "a1",
       filename: "cat.jpg",
