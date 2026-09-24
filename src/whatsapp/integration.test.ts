@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
+import { attachmentAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor } from "../historyopenable";
+import { inlineImageSourcesForMessage, isImageAttachment } from "../inlineimage";
+import { createInitialState } from "../state";
+import { renderTimelineLines, setTimelineMessages, setTimelineInlineImageState } from "../timeline";
 import {
   createWhatsAppUiState,
   applyWhatsAppReactions,
@@ -12,6 +16,7 @@ import {
   whatsAppChannels,
   whatsAppDisplayName,
   whatsAppTimelineMessages,
+  whatsAppAttachmentMessage,
 } from "./integration";
 import type { WhatsAppMessage } from "./types";
 
@@ -247,6 +252,48 @@ describe("WhatsApp UI integration", () => {
       size: 42,
       url: "",
     });
+  });
+
+  test("renders WhatsApp stickers with private downloadable sources and selectable labels", () => {
+    for (const animated of [false, true]) {
+      const state = createInitialState(null, "/tmp/record-config.json");
+      const chatId = "stickers@g.us";
+      const channelId = whatsappChannelId(chatId);
+      const download = { mediaKeyBase64: "AQIDBA==", directPath: "/sticker.enc" };
+      upsertWhatsAppMessages(state.whatsapp, [{
+        ...message("sticker-1", chatId, 10, ""),
+        content: { kind: "media", mediaKind: "sticker", animated, download },
+      }]);
+      const [mapped] = whatsAppTimelineMessages(state.whatsapp, channelId);
+      expect(mapped!.attachments).toEqual([]);
+      expect(mapped!.stickerNames).toEqual(["WhatsApp sticker"]);
+      const [source] = inlineImageSourcesForMessage(mapped!);
+      expect(source).toBe(mapped!.stickers![0]!.attachment!);
+      expect(source).toMatchObject({ id: "wa-media:sticker-1", contentType: "image/webp", url: "" });
+      expect(isImageAttachment(source!)).toBe(true);
+      expect(whatsAppAttachmentMessage(source!)?.content).toMatchObject({ download });
+      expect(JSON.stringify(mapped)).not.toContain(download.mediaKeyBase64);
+      expect(JSON.stringify(mapped)).not.toContain(download.directPath);
+
+      setTimelineMessages(state.timeline, channelId, [mapped!]);
+      setTimelineInlineImageState(state.timeline, {
+        phase: "ready", attachmentId: source!.id, filename: source!.filename,
+        sourceUrl: source!.url, requestId: 1, imageId: 123,
+        pngBase64: "cG5n", pixelWidth: 512, pixelHeight: 512,
+      });
+      const rendered = renderTimelineLines(state.timeline, 60, 30, { text: "", tone: "muted", loading: false }, 0);
+      expect(rendered.inlineImages).toHaveLength(1);
+      expect(rendered.inlineImages[0]!.image.attachmentId).toBe(source!.id);
+      expect(rendered.lineAnchors.some((anchor) => anchor.includes("image:wa-media%3Asticker-1:"))).toBe(true);
+
+      state.historyLines = ["[sticker] WhatsApp sticker", ""];
+      state.historyLineAnchors = ["msg:sticker-1:content:0", "msg:sticker-1:image:wa-media%3Asticker-1:0"];
+      state.historyMessageBounds = [{ messageId: "sticker-1", start: 0, end: 2, contentStart: 0, contentEnd: 2 }];
+      state.historyCursor = { row: 0, col: 2 };
+      expect(attachmentAtHistoryCursor(state)).toBe(source!);
+      state.historyCursor = { row: 1, col: 0 };
+      expect(inlineImageBodyAttachmentAtHistoryCursor(state)).toBe(source!);
+    }
   });
 
   test("keeps media download information across sparse message updates", () => {

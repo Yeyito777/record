@@ -135,9 +135,11 @@ export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttach
   if (!message || attachments.length === 0) return null;
 
   for (const attachment of attachments) {
-    const sticker = attachment.id.startsWith("sticker:");
+    const providerSticker = [...(message.stickers ?? []), ...(message.forwarded?.stickers ?? [])]
+      .find((item) => item.attachment?.id === attachment.id);
+    const sticker = Boolean(providerSticker) || attachment.id.startsWith("sticker:");
     const displayName = sticker
-      ? attachment.filename.replace(/\.[^.]+$/, "")
+      ? providerSticker?.name ?? attachment.filename.replace(/\.[^.]+$/, "")
       : attachment.filename;
     let searchFrom = 0;
     while (searchFrom < logicalLine.text.length) {
