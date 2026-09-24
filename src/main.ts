@@ -1985,7 +1985,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
-  if (state.editor.mode === "normal" && !editorHasPendingInput() && key.type === "char" && key.char === "m") {
+  if (state.editor.mode === "normal" && !editorHasPendingInput() && key.type === "char" && key.char === ":") {
     const message = selectedHistoryMessage();
     if (!message || message.localStatus || message.id.startsWith("local:")) {
       setNotice(state, "Select a sent message to react to.", "warning");
