@@ -19,6 +19,7 @@ export interface InstagramControllerOptions {
   saveSession?: typeof saveInstagramSession;
   removeSession?: typeof removeInstagramSession;
   pollIntervalMs?: number;
+  retryDelayMs?: number;
 }
 
 export class InstagramController {
@@ -30,16 +31,28 @@ export class InstagramController {
   private historyRequests = new Set<string>();
   private seen = new Map<string, string>();
   private authWrites: Promise<void> = Promise.resolve();
+  private retryAttempt = 0;
+  private retrying = false;
+  private lastErrorNotice: string | null = null;
 
   constructor(private state: AppState, private render: () => void, private options: InstagramControllerOptions = {}) {}
 
   get isConnected(): boolean { return this.state.instagram.connection.status === "connected"; }
 
   async autoConnect(): Promise<void> {
+    if (this.state.instagram.connection.status === "connecting") return;
     const generation = ++this.generation;
+    this.stopTimer();
+    this.state.instagram.connection = { status: "connecting" };
+    this.updateStatus();
     try {
       const session = await (this.options.loadSession || loadInstagramSession)();
-      if (session && generation === this.generation) await this.connect(session, generation);
+      if (generation !== this.generation) return;
+      if (session) await this.connect(session, generation);
+      else {
+        this.state.instagram.connection = { status: "idle" };
+        this.updateStatus();
+      }
     } catch (error) { if (generation === this.generation) this.failure(error); }
   }
 
@@ -51,18 +64,22 @@ export class InstagramController {
     this.sending = false;
     this.historyRequests.clear();
     this.seen.clear();
+    this.retryAttempt = 0;
     this.state.instagram.connection = { status: "connecting" };
+    this.updateStatus();
     this.notice("Importing Instagram session from vimbrowser…");
     try {
       const session = await (this.options.importSession || importInstagramSession)(tabId);
       if (generation !== this.generation) return;
-      await this.connect(session, generation);
-      if (generation !== this.generation || !this.isConnected) return;
+      // Keep the explicit browser import even if the first inbox request times
+      // out. A temporary network failure must not lose the user's login.
       // Serialize storage mutations so logout cannot race a late credential save.
       this.authWrites = this.authWrites.catch(() => {}).then(async () => {
         if (generation === this.generation) await (this.options.saveSession || saveInstagramSession)(session);
       });
       await this.authWrites;
+      if (generation !== this.generation) return;
+      await this.connect(session, generation);
       if (generation === this.generation) this.notice("Instagram connected.");
     } catch (error) { if (generation === this.generation) this.failure(error); }
   }
@@ -70,15 +87,18 @@ export class InstagramController {
   private async connect(session: InstagramSession, generation: number): Promise<void> {
     const client = (this.options.clientFactory || (s => new InstagramClient(s)))(session);
     this.state.instagram.connection = { status: "connecting" };
+    this.updateStatus();
     const inbox = await client.inbox();
     if (generation !== this.generation) return;
-    if (this.state.instagram.account?.id !== String(inbox.viewer.pk)) this.clearProvider();
+    if (this.state.instagram.account?.id !== String(inbox.viewer.pk)) this.clearProvider(false);
     this.client = client;
     this.state.instagram.account = {
       id: String(inbox.viewer.pk), username: sanitizeTerminalLabel(inbox.viewer.username || ""),
       name: sanitizeTerminalLabel(inbox.viewer.full_name || inbox.viewer.username || "Me"),
     };
     this.state.instagram.connection = { status: "connected" };
+    this.retryAttempt = 0;
+    this.clearErrorNotice();
     this.acceptInbox(inbox);
     const layout = loadCachedSidebarChannelLayout(`instagram:${this.state.instagram.account.id}`);
     if (layout?.[INSTAGRAM_GUILD_ID]) applySidebarChannelLayoutForGuild(this.state.sidebar, INSTAGRAM_GUILD_ID, layout[INSTAGRAM_GUILD_ID]!);
@@ -133,11 +153,16 @@ export class InstagramController {
       setChannelList(this.state.channelList, INSTAGRAM_GUILD_ID, channels);
       setActiveChannelEntry(this.state.channelList, channels.find(channel => channel.id === activeId) || null);
     }
-    this.render();
+    this.updateStatus();
   }
 
   async refresh(): Promise<void> {
-    if (!this.client || this.refreshing || this.state.instagram.connection.status === "connecting") return;
+    if (this.refreshing || this.state.instagram.connection.status === "connecting") return;
+    if (!this.client) {
+      await this.autoConnect();
+      if (this.state.instagram.connection.status === "idle") this.notice("Connect with /login instagram to load Instagram chats.");
+      return;
+    }
     const generation = this.generation;
     const client = this.client;
     this.refreshing = true;
@@ -146,6 +171,8 @@ export class InstagramController {
       const inbox = await client.inbox();
       if (generation !== this.generation) return;
       this.state.instagram.connection = { status: "connected" };
+      this.retryAttempt = 0;
+      this.clearErrorNotice();
       this.acceptInbox(inbox);
       const id = instagramThreadIdFromChannelId(this.state.timeline.channelId || "");
       if (id) await this.fetchThread(id, false);
@@ -153,8 +180,21 @@ export class InstagramController {
     finally {
       if (generation === this.generation) {
         this.refreshing = false;
-        this.schedulePoll();
+        if (!this.retrying) this.schedulePoll();
       }
+    }
+  }
+
+  openRoot(): void {
+    this.state.channelList.requestId++;
+    this.state.sidebar.focusedGuildId = INSTAGRAM_GUILD_ID;
+    this.syncSidebar();
+    if (this.state.instagram.connection.status === "idle") {
+      this.notice("Connect with /login instagram to load Instagram chats.");
+      // A session may have been imported by another instance since startup.
+      void this.autoConnect();
+    } else if (this.state.instagram.connection.status === "error") {
+      this.notice(this.state.instagram.connection.error || "Instagram is offline. Try /refresh.", true);
     }
   }
 
@@ -317,19 +357,35 @@ export class InstagramController {
     this.sending = false;
     this.historyRequests.clear();
     this.seen.clear();
+    this.retryAttempt = 0;
   }
 
-  private clearProvider(): void {
+  private clearProvider(updateStatus = true): void {
     for (const channel of instagramChannels(this.state.instagram)) clearChannelNotifications(this.state.notifications, channel.id);
     if (this.state.channelList.guildId === INSTAGRAM_GUILD_ID) clearChannelList(this.state.channelList);
     if (instagramThreadIdFromChannelId(this.state.timeline.channelId || "")) clearTimeline(this.state.timeline);
     Object.assign(this.state.instagram, createInstagramUiState());
     setSidebarCachedChannels(this.state.sidebar, INSTAGRAM_GUILD_ID, []);
     applySidebarChannelLayoutForGuild(this.state.sidebar, INSTAGRAM_GUILD_ID, {});
+    if (updateStatus) this.updateStatus();
+  }
+
+  private updateStatus(): void {
+    const connection = this.state.instagram.connection;
+    const status = connection.status === "connecting" ? { text: "Connecting Instagram…", loading: true }
+      : connection.status === "idle" ? { text: "Use /login instagram" }
+      : connection.status === "error" ? { text: this.retrying ? "Retrying Instagram…" : "Offline · /refresh", loading: this.retrying }
+      : Object.keys(this.state.instagram.threadsById).length === 0 ? { text: "No conversations" } : null;
+    if (status) this.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID] = status;
+    else delete this.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID];
     this.render();
   }
 
-  private stopTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = null; }
+  private stopTimer(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.retrying = false;
+  }
   private schedulePoll(): void {
     this.stopTimer();
     if (this.isConnected && this.client) {
@@ -341,12 +397,33 @@ export class InstagramController {
     setNotice(this.state, message, warning ? "warning" : "muted", { statusLine: true, chat: false });
     this.render();
   }
+  private clearErrorNotice(): void {
+    if (this.lastErrorNotice && this.state.notice.text === this.lastErrorNotice) {
+      setNotice(this.state, "", "muted");
+    }
+    this.lastErrorNotice = null;
+  }
   private failure(error: unknown, suffix = ""): void {
     const message = error instanceof Error ? sanitizeTerminalLabel(error.message).slice(0, 240) : "Instagram request failed.";
-    if (error instanceof InstagramApiError && error.fatal || this.state.instagram.connection.status === "connecting") {
+    if (error instanceof InstagramApiError || this.state.instagram.connection.status === "connecting") {
       this.state.instagram.connection = { status: "error", error: message };
       this.stopTimer();
+      // Only transient API failures are retried. Auth challenges and rate
+      // limits require user action; never hammer them in the background.
+      if (error instanceof InstagramApiError && !error.fatal) {
+        const generation = this.generation;
+        const delay = Math.min(60_000, (this.options.retryDelayMs ?? 5_000) * 2 ** Math.min(this.retryAttempt++, 4));
+        this.retrying = true;
+        this.timer = setTimeout(() => {
+          this.timer = null;
+          this.retrying = false;
+          if (generation === this.generation) void this.refresh();
+        }, delay);
+        this.timer.unref?.();
+      }
     }
-    this.notice(message + suffix, true);
+    this.updateStatus();
+    this.lastErrorNotice = message + suffix;
+    this.notice(this.lastErrorNotice, true);
   }
 }

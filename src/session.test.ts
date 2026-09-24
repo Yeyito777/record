@@ -84,7 +84,7 @@ describe("session", () => {
       { id: "ig:1", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false },
       { id: "ig:2", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "Bob", topic: null, position: 1, type: 1, nsfw: false },
     ];
-    state.sidebar.selectedIndex = 2;
+    state.sidebar.selectedItem = { type: "channel", guildId: INSTAGRAM_GUILD_ID, id: "ig:2" };
     moveSelectedGuildOrder(state, { scheduleRender: () => {} }, "up");
     toggleSelectedPrivateConversationPin(state, { scheduleRender: () => {} });
     expect(loadCachedSidebarChannelLayout("instagram:ig-self")?.[INSTAGRAM_GUILD_ID]).toEqual({

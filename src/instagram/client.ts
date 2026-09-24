@@ -66,6 +66,9 @@ export class InstagramClient {
       throw new InstagramApiError("Instagram request failed or timed out. Try /refresh.");
     }
     if (response.status === 429) throw new InstagramApiError("Instagram rate limit reached. Wait before /refresh.", true);
+    if (response.status >= 500 || response.status === 408) {
+      throw new InstagramApiError("Instagram is temporarily unavailable. Record will retry.");
+    }
     if ([301, 302, 303, 307, 308, 401, 403].includes(response.status)) {
       throw new InstagramApiError("Instagram session expired or needs verification. Open Instagram in vimbrowser, then /login instagram.", true);
     }

@@ -273,6 +273,7 @@ function hasActiveLoadingIndicator(): boolean {
     || state.auth.status === "loading"
     || state.sidebar.loading
     || Boolean(state.sidebar.loadingGuildId)
+    || Object.values(state.sidebar.providerStatusByGuildId).some(status => status.loading)
     || state.memberList.loading
     || state.channelList.loading
     || state.timeline.loading
@@ -1746,6 +1747,7 @@ function activateSidebarSelection(): void {
     if (selectedBefore.kind === "channel") instagramController.openChannel(selectedBefore.id);
     else {
       activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      if (state.sidebar.expandedGuildId === INSTAGRAM_GUILD_ID) instagramController.openRoot();
       scheduleRender();
     }
     return;

@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { INSTAGRAM_GUILD_ID, instagramChannelId, WHATSAPP_GUILD_ID } from "../chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID } from "../discord";
 import { createInitialState } from "../state";
+import { buildSidebarEntries } from "../sidebar";
 import { loadInstagramSession, saveInstagramSession, validateSession } from "./auth";
 import { InstagramApiError, InstagramClient, type InstagramInbox, type InstagramThread } from "./client";
-import { InstagramController } from "./controller";
+import { InstagramController, type InstagramControllerOptions } from "./controller";
 import { createInstagramUiState, instagramChannels, instagramMessageToTimeline, mergeInstagramThread } from "./integration";
 
 const session = { cookies: { sessionid: "test-session", csrftoken: "test-csrf", ds_user_id: "1" } };
@@ -90,6 +91,14 @@ describe("Instagram client", () => {
     await expect(client.sendText("100", "hello")).rejects.toThrow("Refresh before retrying");
     expect(calls).toBe(1);
   });
+  test("treats HTML service errors as transient rather than expired auth", async () => {
+    const client = new InstagramClient(session, (async () => new Response("<html>Unavailable</html>", { status: 503 })) as unknown as typeof fetch);
+    try { await client.inbox(); throw new Error("expected rejection"); }
+    catch (error) {
+      expect(error).toBeInstanceOf(InstagramApiError);
+      expect((error as InstagramApiError).fatal).toBe(false);
+    }
+  });
 });
 
 describe("Instagram conversions", () => {
@@ -133,7 +142,7 @@ describe("Instagram conversions", () => {
   });
 });
 
-function harness(overrides: Partial<InstagramClient> = {}) {
+function harness(overrides: Partial<InstagramClient> = {}, options: InstagramControllerOptions = {}) {
   const state = createInitialState(null, "test", {});
   let sends = 0;
   const fake = {
@@ -147,11 +156,102 @@ function harness(overrides: Partial<InstagramClient> = {}) {
   const controller = new InstagramController(state, () => {}, {
     clientFactory: () => fake, loadSession: async () => session, importSession: async () => session,
     saveSession: async () => {}, removeSession: async () => {}, pollIntervalMs: 60_000,
+    ...options,
   });
   return { state, controller, sends: () => sends };
 }
 
 describe("Instagram controller", () => {
+  test("shows a logged-out row and root refresh loads credentials added after startup", async () => {
+    let saved = false;
+    const h = harness({}, { loadSession: async () => saved ? session : null });
+    try {
+      await h.controller.autoConnect();
+      h.state.sidebar.expandedGuildId = INSTAGRAM_GUILD_ID;
+      h.controller.openRoot();
+      await tick();
+      const rows = buildSidebarEntries(h.state.sidebar, h.state.channelList.channels);
+      expect(rows.some(row => row.guildId === INSTAGRAM_GUILD_ID && row.label.includes("/login instagram"))).toBe(true);
+      expect(h.state.sidebar.focusedGuildId).toBe(INSTAGRAM_GUILD_ID);
+      expect(h.state.notice.text).toContain("/login instagram");
+      saved = true;
+      await h.controller.refresh();
+      expect(h.controller.isConnected).toBe(true);
+      expect(buildSidebarEntries(h.state.sidebar, h.state.channelList.channels).some(row => row.id === "ig:100")).toBe(true);
+      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]).toBeUndefined();
+    } finally { await h.controller.shutdown(); }
+  });
+  test("renders connecting state while the first inbox is pending and distinguishes empty inbox", async () => {
+    const pending = deferred<InstagramInbox>();
+    const h = harness({ inbox: () => pending.promise });
+    try {
+      const connecting = h.controller.autoConnect();
+      await tick();
+      h.controller.openRoot();
+      h.state.sidebar.expandedGuildId = INSTAGRAM_GUILD_ID;
+      expect(buildSidebarEntries(h.state.sidebar, []).some(row => row.label.includes("Connecting Instagram"))).toBe(true);
+      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.loading).toBe(true);
+      pending.resolve({ ...inbox(), inbox: { threads: [], has_older: false } });
+      await connecting;
+      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.text).toBe("No conversations");
+    } finally { await h.controller.shutdown(); }
+  });
+  test("retries transient initial failures without requiring another login", async () => {
+    let calls = 0;
+    const h = harness({ inbox: async () => {
+      if (++calls === 1) throw new InstagramApiError("Temporary failure");
+      return inbox();
+    } }, { retryDelayMs: 1 });
+    try {
+      await h.controller.autoConnect();
+      expect(h.state.instagram.connection.status).toBe("error");
+      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.text).toContain("Retrying");
+      const deadline = Date.now() + 1000;
+      while (!h.controller.isConnected && Date.now() < deadline) await tick();
+      expect(h.controller.isConnected).toBe(true);
+      expect(calls).toBe(2);
+      expect(h.state.notice.text).not.toContain("Temporary failure");
+    } finally { await h.controller.shutdown(); }
+  });
+  test("does not retry auth/rate-limit failures, but explicit refresh can reconnect", async () => {
+    let calls = 0;
+    const h = harness({ inbox: async () => {
+      if (++calls === 1) throw new InstagramApiError("Session expired", true);
+      return inbox();
+    } }, { retryDelayMs: 1 });
+    try {
+      await h.controller.autoConnect();
+      await new Promise(resolve => setTimeout(resolve, 15));
+      expect(calls).toBe(1);
+      expect(h.state.instagram.connection.status).toBe("error");
+      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.loading).toBe(false);
+      await h.controller.refresh();
+      expect(h.controller.isConnected).toBe(true);
+    } finally { await h.controller.shutdown(); }
+  });
+  test("logout cancels pending startup retries", async () => {
+    let calls = 0;
+    const h = harness({ inbox: async () => {
+      calls++;
+      throw new InstagramApiError("Temporary failure");
+    } }, { retryDelayMs: 5 });
+    await h.controller.autoConnect();
+    await h.controller.logout();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(calls).toBe(1);
+    expect(h.state.instagram.connection.status).toBe("idle");
+  });
+  test("keeps explicitly imported auth when the first inbox request fails", async () => {
+    let saved = false;
+    const h = harness({ inbox: async () => { throw new InstagramApiError("Temporary failure"); } }, {
+      saveSession: async () => { saved = true; }, retryDelayMs: 60_000,
+    });
+    try {
+      await h.controller.login();
+      expect(saved).toBe(true);
+      expect(h.state.instagram.connection.status).toBe("error");
+    } finally { await h.controller.shutdown(); }
+  });
   test("connects without Discord, opens history and sends to Instagram", async () => {
     const h = harness();
     try {

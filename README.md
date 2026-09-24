@@ -107,6 +107,12 @@ Sign into Instagram in **vimbrowser**, then run `/login instagram` in Record.
 For an isolated browser context, use `/login instagram <tab ID>` with that
 signed-in Instagram tab. Importing auth does not navigate or focus the browser.
 The imported session reconnects automatically on subsequent launches.
+If the Instagram section is empty, its status row distinguishes connecting,
+logged out (`/login instagram`), and offline states. `/refresh` retries saved
+auth even after an initial connection failure; transient network failures retry
+automatically, while expired sessions and rate limits require user action.
+Worktree logins remain isolated: after cleaning a test worktree, import the
+session once in main with `/login instagram` if main was not already linked.
 
 Instagram has its own sidebar section, independent of Discord and WhatsApp.
 Open existing individual or group conversations, read/paginate history, send
