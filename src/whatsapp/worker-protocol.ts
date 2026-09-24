@@ -11,6 +11,7 @@ export type WhatsAppWorkerMethod =
   | "start-login"
   | "cancel-login"
   | "send-text"
+  | "send-reaction"
   | "send-images"
   | "download-media"
   | "fetch-history"
@@ -48,6 +49,12 @@ export interface WhatsAppSendTextParams {
   /** Known per-chat disappearing-message duration. Zero explicitly means off. */
   ephemeralExpirationSeconds?: number;
   messageId?: string;
+}
+
+export interface WhatsAppSendReactionParams {
+  key: WhatsAppMessageKey;
+  /** Empty text removes the current user's reaction. */
+  emoji: string;
 }
 
 export interface WhatsAppImageUpload {

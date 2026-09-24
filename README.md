@@ -33,6 +33,11 @@ Controls:
 - `;` in history visual/visual-line mode: quote the selection into the draft and focus the following line
 - `r` in history normal mode or `Ctrl+R`: reply to the selected message with ping enabled
 - `Shift+R` in history normal mode: reply without pinging; the prompt marks this with `NO-PING` (pinging replies have no badge)
+- `:` in history normal mode: opens a `Reacting` prompt starting with `:`; type an emoji name, press `Tab` to choose it, then `Enter` to send. Your draft (including images and reply/edit context) is saved and restored on send or cancellation. Backspace at cursor zero, `Esc` in normal mode, or `Ctrl+Q` cancels
+- Double-tap `Space` in history normal mode (within 400 ms): react with ❤️ without changing your draft. `/quickreact <emoji>` changes and saves this default (e.g. `/quickreact :thumbsup:`); `/quickreact` shows it
+- `/react <emoji>`: add a reaction to the message selected in history (WhatsApp replaces your previous reaction); accepts Unicode, `:shortcodes:`, and Discord custom emoji via autocomplete. The prompt shows the captured target; `Ctrl+Q` cancels
+- `/unreact <emoji>`: remove your reaction; on WhatsApp, `/unreact` alone removes your current reaction
+- Reactions appear immediately, roll back on failure, and keep the last message's reaction row visible if you were already at the bottom
 - `Shift+J` / `Shift+K`: jump the sidebar selection up/down from non-typing contexts
 - `j` / `k` or arrow keys: move in the focused pane
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
@@ -89,6 +94,7 @@ Notes:
 - custom emoji autocomplete uses the active server's emoji for non-Nitro accounts and all joined servers' emoji for Nitro accounts
 - tokens are stored as plaintext for now, just with strict file permissions
 - expanded chat images use the Kitty direct-stream graphics protocol; PNGs are sent directly and other image formats use `ffmpeg` to produce a bounded first-frame PNG
+- WhatsApp stickers expand inline like images, including first-frame previews of animated WebP stickers
 - downloaded Discord and WhatsApp attachments share a 100-file LRU cache; cache hits refresh their age and successful additions prune the oldest files
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`

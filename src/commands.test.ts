@@ -28,6 +28,22 @@ describe("commands", () => {
     expect(tryCommand("/logout instagram", state)).toEqual({ type: "logout_instagram" });
     expect(tryCommand("/login instagram a b", state)).not.toEqual({ type: "login", credential: "instagram a b" });
   });
+  test("shows and persists the default quick reaction, accepting standard shortcodes", () => {
+    withTempConfigHome(() => {
+      const state = createInitialState(null, "/tmp/config.json");
+      tryCommand("/quickreact", state);
+      expect(state.notice.text).toContain("❤️");
+      tryCommand("/quickreact :thumbsup:", state);
+      expect(state.quickReactionEmoji).toBe("👍");
+      expect(loadConfig().quickReactionEmoji).toBe("👍");
+      tryCommand("/quickreact <:custom:123>", state);
+      expect(state.notice.text).toContain("standard emoji");
+      tryCommand("/quickreact hello", state);
+      expect(state.quickReactionEmoji).toBe("👍");
+      expect(loadConfig().quickReactionEmoji).toBe("👍");
+    });
+  });
+
   test("parses /login <token or username>", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     const result = tryCommand("/login abc123", state);

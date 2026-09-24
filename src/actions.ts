@@ -18,8 +18,9 @@ import { isCurrentAuthRequest, nextAuthRequestId, setLoadingNotice, setNotice } 
 import { normalizeToken } from "./token";
 import { INSTAGRAM_GUILD_ID, isWhatsAppChannelId, isInstagramChannelId } from "./chatproviders";
 import { pushTimelineSystemMessage } from "./timeline";
+import { reactToSelectedMessage, type ReactionEffects } from "./reactions";
 
-export interface AppEffects extends SessionEffects {
+export interface AppEffects extends SessionEffects, ReactionEffects {
   quit: () => void;
   applyThemeCursor: () => void;
   bootstrapSession: (token: string) => void;
@@ -157,6 +158,9 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
   if (result === null) return false;
 
   switch (result.type) {
+    case "reaction":
+      void reactToSelectedMessage(state, result.emoji, result.remove, effects);
+      return true;
     case "handled":
       effects.scheduleRender();
       return true;
@@ -263,6 +267,16 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   const hasImages = state.pendingImages.length > 0;
   state.autocomplete = null;
 
+  if (state.reactionComposer) {
+    if (hasImages) {
+      setNotice(state, "Remove attached images before sending a reaction.", "warning");
+      effects.scheduleRender();
+    } else {
+      void reactToSelectedMessage(state, text, false, effects);
+    }
+    return;
+  }
+
   if (state.editTarget) {
     const expandedRawText = expandMacros(rawText);
     editCurrentMessage(state, state.auth.savedToken, expandedRawText, effects, {
@@ -273,6 +287,12 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   }
 
   if (!text && !hasImages) return;
+
+  if (hasImages && /^\/(?:un)?react(?:\s|$)/.test(text)) {
+    setNotice(state, "Remove attached images before sending a reaction.", "warning");
+    effects.scheduleRender();
+    return;
+  }
 
   const expandedText = expandMacros(text);
   if (text && expandedText === text) {

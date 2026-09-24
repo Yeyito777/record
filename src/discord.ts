@@ -428,6 +428,8 @@ export interface DiscordMessageSticker {
   name: string;
   /** Discord sticker format: 1 PNG, 2 APNG, 3 Lottie, 4 GIF. */
   formatType: number | null;
+  /** Provider-backed media source when this is not a Discord CDN sticker. */
+  attachment?: DiscordMessageAttachment;
 }
 
 export interface DiscordMessageEmbed {
@@ -1138,6 +1140,7 @@ function applyDiscordReactionUpdate(
   if (update.type === "add") {
     if (index >= 0) {
       const existing = next[index]!;
+      if (update.me && existing.me) return next;
       next[index] = { ...existing, count: existing.count + 1, me: existing.me || update.me };
     } else {
       next.push({ emoji: { ...update.emoji }, count: 1, me: update.me });
@@ -1147,6 +1150,7 @@ function applyDiscordReactionUpdate(
 
   if (index < 0) return next;
   const existing = next[index]!;
+  if (update.me && !existing.me) return next;
   const count = existing.count - 1;
   if (count <= 0) {
     next.splice(index, 1);
@@ -2027,6 +2031,20 @@ export async function deleteChannelMessage(token: string, channelId: string, mes
   await requestJson<unknown>(token, `/channels/${channelId}/messages/${messageId}`, {
     method: "DELETE",
   });
+}
+
+export async function setChannelMessageReaction(
+  token: string,
+  channelId: string,
+  messageId: string,
+  emoji: DiscordMessageReactionEmoji,
+  remove = false,
+): Promise<void> {
+  const identifier = emoji.id ? `${emoji.name}:${emoji.id}` : emoji.name;
+  await requestJson<unknown>(token,
+    `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(identifier)}/@me`,
+    { method: remove ? "DELETE" : "PUT" },
+  );
 }
 
 export async function createMessageThread(

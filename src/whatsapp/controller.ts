@@ -80,6 +80,7 @@ export interface WhatsAppBackendHandle {
     messageIds?: string[],
   ): Promise<import("./types").WhatsAppMessage[]>;
   markRead(keys: import("./types").WhatsAppMessageKey[]): Promise<void>;
+  sendReaction(key: WhatsAppMessageKey, emoji: string): Promise<WhatsAppReactionEvent>;
   fetchHistory(
     count: number,
     oldestKey: import("./types").WhatsAppMessageKey,
@@ -115,6 +116,14 @@ interface PendingHistoryRequest {
   requestId: string | null;
   receivedPages: Map<string, readonly import("./types").WhatsAppMessage[]>;
   timeout: ReturnType<typeof setTimeout>;
+}
+
+interface PendingReactionRequest {
+  optimistic: WhatsAppReactionEvent;
+  failed: boolean;
+  settled: boolean;
+  previous?: PendingReactionRequest;
+  rollback: WhatsAppReactionEvent;
 }
 
 function safeErrorMessage(error: unknown): string {
@@ -166,6 +175,7 @@ export class WhatsAppController {
   }>();
   // Include removals so a late history snapshot cannot resurrect a reaction.
   private readonly liveReactions = new Map<string, WhatsAppReactionEvent>();
+  private readonly reactionRequests = new Map<string, PendingReactionRequest>();
 
   constructor(
     private readonly state: AppState,
@@ -338,6 +348,90 @@ export class WhatsAppController {
   loadOlderHistory(): void {
     const jid = this.activeWhatsAppJid();
     if (jid) this.requestOlderHistory(jid);
+  }
+
+  async reactToMessage(message: DiscordMessage, emoji: string): Promise<void> {
+    if (!this.backend.isConnected || this.backendResetPromise || this.shuttingDown) {
+      throw new Error("WhatsApp is not connected.");
+    }
+    const decoded = whatsappJidFromChannelId(message.channelId);
+    if (!decoded || message.localStatus || typeof emoji !== "string") {
+      throw new Error("Invalid WhatsApp reaction target.");
+    }
+    const jid = canonicalWhatsAppJid(this.state.whatsapp, decoded);
+    const target = this.state.whatsapp.messagesByChatId[jid]?.find((candidate) => candidate.id === message.id);
+    if (!target || !target.key.id || !target.key.chatId
+      || (target.key.chatId.endsWith("@g.us") && !target.key.participantId && !target.key.fromMe)) {
+      throw new Error("WhatsApp reaction target is unavailable.");
+    }
+    const key = JSON.stringify([jid, target.id, "self"]);
+    // Snapshot only our reaction: other participants may react while this send
+    // is pending. Rollback must not replace their updated reactions.
+    const previous = target.reactions?.find((reaction) => reaction.fromMe);
+    const optimistic: WhatsAppReactionEvent = {
+      target: { ...target.key },
+      reaction: {
+        senderId: previous?.senderId ?? this.state.whatsapp.account?.id ?? "whatsapp:me",
+        fromMe: true,
+        emoji,
+      },
+    };
+    const previousRequest = this.reactionRequests.get(key);
+    const rollback: WhatsAppReactionEvent = {
+      target: optimistic.target,
+      reaction: previous ? { ...previous } : { ...optimistic.reaction, emoji: "" },
+    };
+    const followsPending = previousRequest?.optimistic === this.liveReactions.get(key);
+    const request: PendingReactionRequest = {
+      optimistic,
+      failed: false,
+      settled: false,
+      previous: followsPending ? previousRequest : undefined,
+      // If overlapping sends both fail, skip the failed optimistic predecessor
+      // rather than resurrecting a reaction that was never sent.
+      rollback,
+    };
+    this.reactionRequests.set(key, request);
+    const generation = this.backendResetGeneration;
+    const isCurrent = () => generation === this.backendResetGeneration && !this.shuttingDown
+      && this.reactionRequests.get(key) === request
+      && this.liveReactions.get(key) === optimistic;
+    this.recordReactions([optimistic]);
+    try {
+      const event = await this.backend.sendReaction({ ...target.key }, emoji);
+      if (!isCurrent()) return;
+      this.recordReactions([event]);
+    } catch (error) {
+      request.failed = true;
+      // A gateway echo (including a removal) or a newer local request owns the
+      // state now; neither a late failure nor a late success may overwrite it.
+      if (isCurrent()) {
+        let restore = request;
+        while (restore.previous?.failed) restore = restore.previous;
+        const owner = restore.previous;
+        this.recordReactions([owner?.optimistic ?? restore.rollback]);
+        if (owner && !owner.settled) {
+          this.reactionRequests.set(key, owner);
+        }
+      }
+      throw error;
+    } finally {
+      request.settled = true;
+      if (this.reactionRequests.get(key) === request) this.reactionRequests.delete(key);
+    }
+  }
+
+  private recordReactions(events: WhatsAppReactionEvent[]): void {
+    for (const event of events) {
+      const key = JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, event.target.chatId),
+        event.target.id, event.reaction.fromMe ? "self" : event.reaction.senderId]);
+      this.liveReactions.set(key, event);
+    }
+    const changed = applyWhatsAppReactions(this.state.whatsapp, events);
+    if (changed.length === 0) return;
+    this.queueCacheSave();
+    this.refreshActiveTimeline();
+    this.scheduleRender();
   }
 
   sendMessage(content: string): boolean {
@@ -675,19 +769,7 @@ export class WhatsAppController {
         this.syncProviderState();
       }),
       this.backend.on("reactions", (events) => {
-        for (const event of events) {
-          const key = JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, event.target.chatId), event.target.id, event.reaction.senderId]);
-          this.liveReactions.set(key, event);
-        }
-        const changedChatIds = applyWhatsAppReactions(this.state.whatsapp, events);
-        if (changedChatIds.length === 0) return;
-        this.queueCacheSave();
-        const activeJid = this.activeWhatsAppJid();
-        if (activeJid && changedChatIds.includes(activeJid)) {
-          const channelId = whatsappChannelId(activeJid);
-          this.refreshTimeline(channelId);
-        }
-        this.scheduleRender();
+        this.recordReactions(events);
       }),
       this.backend.on("lid-mapping", ({ lid, phoneId }) => {
         registerWhatsAppLidMapping(this.state.whatsapp, lid, phoneId);

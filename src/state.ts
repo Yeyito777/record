@@ -5,7 +5,7 @@
 import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
 import type { ImageDisplayMode, SavedLogins } from "./config";
-import type { DiscordCustomStatus, DiscordGuildMember, DiscordIdentity, DiscordPresenceStatus, DiscordRole } from "./discord";
+import { summarizeDiscordMessageReplyPreview, type DiscordCustomStatus, type DiscordGuildMember, type DiscordIdentity, type DiscordPresenceStatus, type DiscordRole } from "./discord";
 import type { ChannelMessageCache } from "./messagecache";
 import type { ChannelPinCache } from "./pincache";
 import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState } from "./editor";
@@ -135,6 +135,16 @@ export interface AppState {
   lastTypingRowCount: number;
   notifications: NotificationState;
   replyTarget: ReplyTarget | null;
+  /** Stable history selection while composing a reaction command. */
+  reactionTarget: Pick<ReplyTarget, "messageId" | "channelId" | "authorDisplayName" | "summary"> | null;
+  reactionComposer: boolean;
+  reactionDraft: {
+    editor: EditorState;
+    pendingImages: ClipboardImageAttachment[];
+    replyTarget: ReplyTarget | null;
+    editTarget: EditTarget | null;
+  } | null;
+  quickReactionEmoji: string;
   editTarget: EditTarget | null;
   messageDeletePending: MessageDeletePending | null;
   voiceCall: VoiceCallStatus | null;
@@ -163,7 +173,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown } = {},
+  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown; quickReactionEmoji?: string } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -198,6 +208,10 @@ export function createInitialState(
     lastTypingRowCount: 0,
     notifications: createNotificationState(),
     replyTarget: null,
+    reactionTarget: null,
+    reactionComposer: false,
+    reactionDraft: null,
+    quickReactionEmoji: options.quickReactionEmoji ?? "❤️",
     editTarget: null,
     messageDeletePending: null,
     voiceCall: null,
@@ -266,6 +280,16 @@ export function isCurrentAuthRequest(state: AppState, requestId: number): boolea
 }
 
 export function focusPrompt(state: AppState, append = false): void {
+  if (state.chatFocus === "history" && !state.reactionComposer) {
+    const bound = state.historyMessageBounds.find(({ start, end }) =>
+      state.historyCursor.row >= start && state.historyCursor.row < end);
+    const message = state.timeline.messages.find((entry) => entry.id === bound?.messageId);
+    state.reactionTarget = message ? {
+      messageId: message.id, channelId: message.channelId,
+      authorDisplayName: message.author.displayName,
+      summary: summarizeDiscordMessageReplyPreview(message).slice(0, 160),
+    } : null;
+  }
   state.navigationPendingKeys = "";
   state.panelFocus = "chat";
   state.chatFocus = "prompt";
@@ -274,6 +298,7 @@ export function focusPrompt(state: AppState, append = false): void {
 }
 
 export function focusHistory(state: AppState): void {
+  if (!state.reactionComposer) state.reactionTarget = null;
   state.navigationPendingKeys = "";
   state.panelFocus = "chat";
   state.chatFocus = "history";

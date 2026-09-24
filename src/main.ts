@@ -52,7 +52,10 @@ import {
 } from "./memberlist";
 import { formatByteSize } from "./messageparts";
 import { channelNotificationCounts, guildNotificationCounts, nextChannelNotification } from "./notifications";
-import { handlePromptPrefixBackspace } from "./promptbackspace";
+import { cancelPromptReaction, handlePromptPrefixBackspace } from "./promptbackspace";
+import { clearPrompt, restoreReactionDraft } from "./promptstate";
+import { beginReactionComposer } from "./reactionprompt";
+import { configuredQuickReaction, DEFAULT_QUICK_REACTION, handleQuickReactionKey, resetQuickReaction } from "./quickreactions";
 import { invalidateFrame } from "./frame";
 import { render } from "./render";
 import {
@@ -192,6 +195,7 @@ let initialNoiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MO
 let initialMicGainDb = DEFAULT_LOCAL_GAIN_DB;
 let initialParticipantVolumes: ParticipantVolumes = {};
 let initialSavedLogins: Record<string, string> = {};
+let initialQuickReactionEmoji = DEFAULT_QUICK_REACTION;
 const startupWarnings: string[] = [];
 
 try {
@@ -202,6 +206,7 @@ try {
   initialNoiseSuppression = parseNoiseSuppressionMode(config.audio?.noiseSuppression) ?? DEFAULT_NOISE_SUPPRESSION_MODE;
   initialMicGainDb = normalizeGainDb(config.audio?.micGainDb ?? DEFAULT_LOCAL_GAIN_DB);
   initialParticipantVolumes = normalizeParticipantVolumes(config.audio?.participantVolumes);
+  initialQuickReactionEmoji = configuredQuickReaction(config.quickReactionEmoji);
 } catch (error) {
   const err = error as NodeJS.ErrnoException;
   if (err.code !== "ENOENT") {
@@ -219,7 +224,7 @@ try {
 }
 
 const savedStartingState = loadTuiStartingState();
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji });
 let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
@@ -1213,6 +1218,19 @@ function handlePromptBackspacePrefixAction(): boolean {
 }
 
 function cancelCurrentAction(): void {
+  if (state.reactionComposer) {
+    if (!restoreReactionDraft(state)) clearPrompt(state);
+    scheduleRender();
+    return;
+  }
+  if (state.reactionTarget && /^\/(?:un)?react(?:\s|$)/.test(state.editor.buffer)) {
+    state.reactionComposer = false;
+    state.reactionTarget = null;
+    resetEditor(state.editor, "", "insert");
+    state.autocomplete = null;
+    scheduleRender();
+    return;
+  }
   if (clearPendingMessageDelete()) {
     scheduleRender();
     return;
@@ -1307,6 +1325,8 @@ function deleteSelectedHistoryMessage(): void {
 function startEditSelectedHistoryMessage(): void {
   const message = selectedHistoryMessage();
   if (!selectedMessageCanBeEdited(message)) return;
+  restoreReactionDraft(state);
+  state.reactionComposer = false;
 
   state.editTarget = {
     messageId: message.id,
@@ -1346,6 +1366,9 @@ function startReplyToSelectedHistoryMessage(mention = true): void {
     return;
   }
 
+  if (state.reactionComposer) {
+    if (!restoreReactionDraft(state)) clearPrompt(state);
+  }
   state.replyTarget = {
     messageId: message.id,
     channelId: message.channelId,
@@ -2019,6 +2042,18 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 }
 
 function handleHistoryFocused(key: KeyEvent): boolean {
+  if (state.editor.mode === "normal" && !editorHasPendingInput() && key.type === "char" && key.char === ":") {
+    const message = selectedHistoryMessage();
+    if (!message || message.localStatus || message.id.startsWith("local:")) {
+      setNotice(state, "Select a sent message to react to.", "warning");
+    } else {
+      beginReactionComposer(state, message);
+      syncPromptAutocomplete();
+    }
+    scheduleRender();
+    return true;
+  }
+
   if (key.type === "escape" && state.timeline.view === "pinned") {
     focusHistory(state);
     exitPinnedMessages();
@@ -2274,6 +2309,7 @@ function handleKey(key: KeyEvent): void {
   }
 
   if (key.event === "release") return;
+  if (handleQuickReactionKey(state, key, effects)) return;
 
   if (state.imageModal) {
     const result = handleImageModalKey(key);
@@ -2293,6 +2329,12 @@ function handleKey(key: KeyEvent): void {
 
   if (state.sidebar.serverActionModal) {
     handleServerModalKey(key);
+    return;
+  }
+
+  if (state.panelFocus === "chat" && key.type === "escape" && state.editor.mode === "normal"
+    && cancelPromptReaction(state)) {
+    scheduleRender();
     return;
   }
 
@@ -2332,6 +2374,7 @@ function handleKey(key: KeyEvent): void {
 }
 
 function handleMouse(event: MouseEvent): void {
+  resetQuickReaction(state);
   if (state.imageModal || voiceMessageController?.isRecording() || state.voiceMessagePrompt) return;
 
   const previousFocus = state.panelFocus;
@@ -2442,6 +2485,7 @@ const effects: AppEffects = {
   refreshInstagram: () => { void instagramController.refresh(); },
   logoutWhatsApp,
   sendWhatsAppMessage: (content) => whatsAppController.sendMessage(content),
+  reactWhatsAppMessage: (message, emoji) => whatsAppController.reactToMessage(message, emoji),
 };
 
 voiceMessageController = createVoiceMessageController(state, scheduleRender, {

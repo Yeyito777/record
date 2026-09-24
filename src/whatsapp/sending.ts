@@ -4,8 +4,32 @@ import type {
   WAMessage,
   WASocket,
 } from "@whiskeysockets/baileys";
+import { jidNormalizedUser } from "@whiskeysockets/baileys";
 
 import type { WhatsAppImageUpload } from "./worker-protocol";
+import type { WhatsAppMessageKey, WhatsAppReactionEvent } from "./types";
+
+export async function sendWhatsAppReaction(
+  socket: Pick<WASocket, "sendMessage" | "user">,
+  key: WhatsAppMessageKey,
+  emoji: string,
+): Promise<WhatsAppReactionEvent> {
+  if (!key?.id || !key.chatId || typeof emoji !== "string"
+    || (key.chatId.endsWith("@g.us") && !key.participantId && !key.fromMe)) {
+    throw new Error("Invalid reaction target.");
+  }
+  const senderId = socket.user?.id;
+  if (!senderId) throw new Error("WhatsApp account is unavailable.");
+  // Locally sent group messages can omit key.participant. Their author is
+  // unambiguous; incoming group messages must retain the original participant.
+  const participant = key.participantId
+    ?? (key.fromMe && key.chatId.endsWith("@g.us") ? jidNormalizedUser(senderId) : undefined);
+  await socket.sendMessage(key.chatId, { react: {
+    text: emoji,
+    key: { remoteJid: key.chatId, id: key.id, fromMe: key.fromMe, participant },
+  } });
+  return { target: key, reaction: { senderId, fromMe: true, emoji } };
+}
 
 export const MAX_WHATSAPP_IMAGES_PER_SEND = 30;
 export const MAX_WHATSAPP_IMAGE_BYTES = 64 * 1024 * 1024;

@@ -102,8 +102,12 @@ describe("WhatsApp media downloads", () => {
     });
   }
 
-  test("recovers and decrypts through the real Baileys HTTP downloader", async () => {
+  test.each(["image", "sticker"] as const)("recovers and decrypts %s through the real Baileys HTTP downloader", async (mediaKind) => {
     const message = mediaMessage();
+    if (message.content.kind !== "media") throw new Error("Expected media");
+    message.content.mediaKind = mediaKind;
+    message.content.mimeType = mediaKind === "sticker" ? "image/webp" : "image/jpeg";
+    const field = mediaKind === "sticker" ? "stickerMessage" : "imageMessage";
     const keys = await getMediaKeys(Buffer.from([1, 2, 3, 4]), "image");
     const plain = Buffer.from([1, 2, 3, 4]);
     const cipher = createCipheriv("aes-256-cbc", keys.cipherKey, keys.iv);
@@ -122,8 +126,9 @@ describe("WhatsApp media downloads", () => {
       const result = await downloadWhatsAppMediaToFile({
         updateMediaMessage: async (source) => {
           refreshes++;
-          source.message!.imageMessage!.directPath = "/fresh.enc";
-          source.message!.imageMessage!.url = "https://mmg.whatsapp.net/fresh.enc";
+          expect(source.message![field]).toBeDefined();
+          source.message![field]!.directPath = "/fresh.enc";
+          source.message![field]!.url = "https://mmg.whatsapp.net/fresh.enc";
           return source;
         },
       }, message, join(directory, "photo.jpg"));

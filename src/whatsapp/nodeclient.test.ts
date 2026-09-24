@@ -15,6 +15,25 @@ function worker() {
   });
 }
 
+test("carries reaction keys and empty removal text through worker IPC", async () => {
+  const child = worker();
+  const client = new NodeWhatsAppBackendClient({
+    authDirectory: "/mock/auth",
+    spawnWorker: () => child as unknown as ChildProcessWithoutNullStreams,
+  });
+  const key = { id: "target", chatId: "group@g.us", fromMe: false, participantId: "person@lid" };
+  child.stdin.on("data", (chunk) => {
+    const request = JSON.parse(chunk.toString());
+    expect(request).toMatchObject({ method: "send-reaction", params: { key, emoji: "" } });
+    child.stdout.write(JSON.stringify({ type: "response", id: request.id,
+      result: { target: key, reaction: { senderId: "self", fromMe: true, emoji: "" } },
+    }) + "\n");
+  });
+  expect((await client.sendReaction(key, "")).reaction.emoji).toBe("");
+  child.emit("close", 0, null);
+  await client.shutdown();
+});
+
 test("carries caller-chosen text and image IDs through worker IPC", async () => {
   const child = worker();
   const client = new NodeWhatsAppBackendClient({

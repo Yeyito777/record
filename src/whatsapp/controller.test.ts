@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 
 import { INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { createInitialState } from "../state";
+import { inlineImageSourcesForMessage } from "../inlineimage";
 import { WhatsAppController, type WhatsAppBackendHandle } from "./controller";
 import { MAX_WHATSAPP_MESSAGES_PER_CHAT } from "./integration";
 import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
@@ -105,6 +106,10 @@ class FakeBackend implements WhatsAppBackendHandle {
 
   async markRead(keys: import("./types").WhatsAppMessageKey[]): Promise<void> {
     this.readMessageIds.push(...keys.map((key) => key.id));
+  }
+
+  async sendReaction(key: import("./types").WhatsAppMessageKey, emoji: string): Promise<import("./types").WhatsAppReactionEvent> {
+    return { target: key, reaction: { senderId: "self@s.whatsapp.net", fromMe: true, emoji } };
   }
 
   async fetchHistory(
@@ -216,7 +221,165 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
 describe("WhatsApp loading races", () => {
-  test("defers restored-chat images until connected and still serves offline cached files", async () => {
+  test("overlapping failed reactions do not resurrect either optimistic value", async () => {
+    for (const newestFirst of [false, true]) {
+      const { state, backend, controller } = raceFixture();
+      try {
+        const older = deferred<import("./types").WhatsAppReactionEvent>();
+        const newer = deferred<import("./types").WhatsAppReactionEvent>();
+        backend.sendReaction = () => older.promise;
+        const first = controller.reactToMessage(state.timeline.messages[0]!, "👍");
+        backend.sendReaction = () => newer.promise;
+        const second = controller.reactToMessage(state.timeline.messages[0]!, "❤️");
+        const ordered = newestFirst ? [[newer, second], [older, first]] as const
+          : [[older, first], [newer, second]] as const;
+        for (const [pending, send] of ordered) {
+          pending.reject(new Error("failed"));
+          await expect(send).rejects.toThrow("failed");
+        }
+        expect(state.timeline.messages[0]!.reactions).toEqual([]);
+      } finally { await controller.shutdown(); }
+    }
+  });
+
+  test("renders optimistic reactions and removals before the send resolves", async () => {
+    const { state, backend, controller, jid, renders } = raceFixture();
+    try {
+      const message = state.timeline.messages[0]!;
+      const target = state.whatsapp.messagesByChatId[jid]![0]!.key;
+      let pending = deferred<import("./types").WhatsAppReactionEvent>();
+      backend.sendReaction = () => pending.promise;
+      const before = renders();
+      const send = controller.reactToMessage(message, "👍");
+      expect(renders()).toBeGreaterThan(before);
+      expect(state.timeline.messages[0]!.reactions).toMatchObject([
+        { count: 1, me: true, emoji: { name: "👍" } },
+      ]);
+      const echo = { target, reaction: { senderId: "self@lid", fromMe: true, emoji: "👍" } };
+      backend.emit("reactions", [echo]);
+      expect(state.timeline.messages[0]!.reactions![0]!.count).toBe(1);
+      pending.resolve(echo);
+      await send;
+      expect(state.timeline.messages[0]!.reactions![0]!.count).toBe(1);
+      pending = deferred<import("./types").WhatsAppReactionEvent>();
+      const remove = controller.reactToMessage(message, "");
+      expect(state.timeline.messages[0]!.reactions).toEqual([]);
+      pending.resolve({ ...echo, reaction: { ...echo.reaction, emoji: "" } });
+      await remove;
+      expect(state.timeline.messages[0]!.reactions).toEqual([]);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("failed optimistic replacement and removal restore only self, including cached reactions", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      const original = state.whatsapp.messagesByChatId[jid]![0]!;
+      // This prior reaction came from history, not the live reaction ledger.
+      backend.emit("history", historyPage([{ ...original, reactions: [
+        { senderId: "self@lid", fromMe: true, emoji: "❤️" },
+      ] }]));
+      for (const emoji of ["👍", ""]) {
+        const pending = deferred<import("./types").WhatsAppReactionEvent>();
+        backend.sendReaction = () => pending.promise;
+        const send = controller.reactToMessage(state.timeline.messages[0]!, emoji);
+        expect(state.timeline.messages[0]!.reactions?.some((reaction) =>
+          reaction.me && reaction.emoji.name === "❤️")).toBe(false);
+        backend.emit("reactions", [{
+          target: original.key,
+          reaction: { senderId: "other@s.whatsapp.net", fromMe: false, emoji: "🎉" },
+        }]);
+        pending.reject(new Error("send failed"));
+        await expect(send).rejects.toThrow("send failed");
+        expect(state.timeline.messages[0]!.reactions).toEqual(expect.arrayContaining([
+          expect.objectContaining({ count: 1, me: true, emoji: expect.objectContaining({ name: "❤️" }) }),
+          expect.objectContaining({ count: 1, me: false, emoji: expect.objectContaining({ name: "🎉" }) }),
+        ]));
+        backend.emit("history", historyPage([{ ...original, reactions: [] }]));
+        expect(state.timeline.messages[0]!.reactions).toHaveLength(2);
+      }
+    } finally { await controller.shutdown(); }
+  });
+
+  test("late failed sends cannot undo a self gateway event or a newer local send", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      const message = state.timeline.messages[0]!;
+      const target = state.whatsapp.messagesByChatId[jid]![0]!.key;
+      const pending = deferred<import("./types").WhatsAppReactionEvent>();
+      backend.sendReaction = () => pending.promise;
+      const send = controller.reactToMessage(message, "👍");
+      backend.emit("reactions", [{
+        target, reaction: { senderId: "self@lid", fromMe: true, emoji: "❤️" },
+      }]);
+      pending.reject(new Error("late failure"));
+      await expect(send).rejects.toThrow("late failure");
+      expect(state.timeline.messages[0]!.reactions![0]!.emoji.name).toBe("❤️");
+
+      const older = deferred<import("./types").WhatsAppReactionEvent>();
+      const newer = deferred<import("./types").WhatsAppReactionEvent>();
+      backend.sendReaction = () => older.promise;
+      const first = controller.reactToMessage(message, "👍");
+      backend.sendReaction = () => newer.promise;
+      const second = controller.reactToMessage(message, "🎉");
+      older.reject(new Error("superseded"));
+      await expect(first).rejects.toThrow("superseded");
+      expect(state.timeline.messages[0]!.reactions![0]!.emoji.name).toBe("🎉");
+      newer.resolve({ target, reaction: { senderId: "self@lid", fromMe: true, emoji: "🎉" } });
+      await second;
+      expect(state.timeline.messages[0]!.reactions![0]!.count).toBe(1);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("sends original group keys, deduplicates self echoes, and preserves removal over history", async () => {
+    const { state, backend, controller, jid } = raceFixture("group@g.us");
+    try {
+      const original = state.whatsapp.messagesByChatId[jid]![0]!;
+      original.key.participantId = "sender:2@s.whatsapp.net";
+      const message = state.timeline.messages[0]!;
+      const keys: import("./types").WhatsAppMessageKey[] = [];
+      backend.sendReaction = async (key, emoji) => {
+        keys.push(key);
+        return { target: key, reaction: { senderId: "self:1@s.whatsapp.net", fromMe: true, emoji } };
+      };
+      await controller.reactToMessage(message, "👍");
+      expect(keys).toEqual([original.key]);
+      expect(state.timeline.messages[0]!.reactions).toMatchObject([{ count: 1, me: true, emoji: { name: "👍" } }]);
+      backend.emit("reactions", [{ target: original.key, reaction: { senderId: "self@lid", fromMe: true, emoji: "👍" } }]);
+      expect(state.timeline.messages[0]!.reactions![0]!.count).toBe(1);
+      await controller.reactToMessage(message, "");
+      backend.emit("history", historyPage([{ ...original, reactions: [
+        { senderId: "self@lid", fromMe: true, emoji: "👍" },
+      ] }]));
+      expect(state.timeline.messages[0]!.reactions).toEqual([]);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("reaction failures and invalid targets do not mutate state; gateway beats late response", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      const message = state.timeline.messages[0]!;
+      let calls = 0;
+      backend.sendReaction = async () => { calls++; throw new Error("send failed"); };
+      await expect(controller.reactToMessage({ ...message, localStatus: "pending" }, "👍")).rejects.toThrow();
+      await expect(controller.reactToMessage({ ...message, id: "missing" }, "👍")).rejects.toThrow();
+      await expect(controller.reactToMessage({ ...message, channelId: "discord" }, "👍")).rejects.toThrow();
+      expect(calls).toBe(0);
+      await expect(controller.reactToMessage(message, "👍")).rejects.toThrow("send failed");
+      expect(state.timeline.messages[0]!.reactions).toEqual([]);
+      const pending = deferred<import("./types").WhatsAppReactionEvent>();
+      backend.sendReaction = () => pending.promise;
+      const send = controller.reactToMessage(message, "👍");
+      const event = { target: { id: message.id, chatId: jid }, reaction: { senderId: "self@lid", fromMe: true, emoji: "❤️" } };
+      backend.emit("reactions", [event]);
+      pending.resolve({ ...event, reaction: { ...event.reaction, emoji: "👍" } });
+      await send;
+      expect(state.timeline.messages[0]!.reactions![0]!.emoji.name).toBe("❤️");
+      backend.isConnected = false;
+      await expect(controller.reactToMessage(message, "")).rejects.toThrow("not connected");
+    } finally { await controller.shutdown(); }
+  });
+
+  test.each(["image", "sticker"] as const)("defers restored-chat %s until connected and still serves offline cached files", async (mediaKind) => {
     const previousXdg = process.env.XDG_CONFIG_HOME;
     const directory = mkdtempSync(join(tmpdir(), "record-wa-startup-image-"));
     process.env.XDG_CONFIG_HOME = directory;
@@ -225,10 +388,10 @@ describe("WhatsApp loading races", () => {
     try {
       backend.emit("history", historyPage([{
         ...raceMessage("startup-image", jid),
-        content: { kind: "media", mediaKind: "image", mimeType: "image/jpeg", sizeBytes: 4 },
+        content: { kind: "media", mediaKind, sizeBytes: 4 },
       }]));
       controller.openChannel(whatsappChannelId(jid));
-      const attachment = state.timeline.messages[0]!.attachments[0]!;
+      const attachment = inlineImageSourcesForMessage(state.timeline.messages[0]!)[0]!;
       expect(await controller.downloadAttachment(attachment)).toMatchObject({ ok: false, retryWhenConnected: true });
       expect(backend.mediaDownloads).toHaveLength(0);
 

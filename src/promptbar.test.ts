@@ -10,6 +10,21 @@ function stripAnsi(line: string): string {
 }
 
 describe("promptbar", () => {
+  test("shows the frozen reaction target only while composing a reaction", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.timeline.channelId = "channel-1";
+    state.reactionTarget = { messageId: "message-1", channelId: "channel-1", authorDisplayName: "Other", summary: "hello" };
+    state.editor.buffer = "/react :heart:";
+    expect(stripAnsi(renderPromptSeparator(state, 80, theme.accent))).toContain("Reacting: Other: hello");
+    state.editor.buffer = "normal draft";
+    expect(stripAnsi(renderPromptSeparator(state, 80, theme.accent))).not.toContain("Reacting:");
+    state.reactionComposer = true;
+    state.editor.buffer = ":";
+    expect(stripAnsi(renderPromptSeparator(state, 80, theme.accent))).toContain("Reacting: Other: hello");
+    state.editor.buffer = "❤️";
+    expect(stripAnsi(renderPromptSeparator(state, 80, theme.accent))).toContain("Reacting: Other: hello");
+  });
+
   test("embeds active reply target in the prompt separator with existing colors", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.replyTarget = {
