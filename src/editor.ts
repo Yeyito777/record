@@ -246,7 +246,9 @@ function applyPasteCommand(editor: EditorState, position: "after" | "before"): v
   if (!text) return;
 
   pushUndo(editor.undo, editor.buffer, editor.cursor);
-  const insertAt = position === "after" ? editor.cursor + 1 : editor.cursor;
+  // Cursor offsets are UTF-16 indices; step over the whole grapheme before
+  // putting text, rather than splitting an emoji or its modifiers in half.
+  const insertAt = position === "after" ? nextGraphemeEnd(editor.buffer, editor.cursor) : editor.cursor;
   const pos = Math.min(insertAt, editor.buffer.length);
   editor.buffer = editor.buffer.slice(0, pos) + text + editor.buffer.slice(pos);
   editor.cursor = clampNormalCursor(editor.buffer, pos + Math.max(0, text.length - 1));

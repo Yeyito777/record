@@ -1510,7 +1510,7 @@ function ensureSidebarEntryGuildLoaded(guildId: string): void {
 
 function openSelectedServerActionModal(): boolean {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
-  if (selected.guildId === INSTAGRAM_GUILD_ID) return false;
+  if (selected.guildId === INSTAGRAM_GUILD_ID && selected.kind !== "channel") return false;
   if (selected.kind !== "guild" && selected.kind !== "category" && selected.kind !== "channel" && selected.kind !== "voice-member") return false;
   if (selected.guildId === WHATSAPP_GUILD_ID && selected.kind !== "channel") return false;
   state.navigationPendingKeys = "";
@@ -1563,8 +1563,10 @@ function openSelectedServerActionModal(): boolean {
 function toggleSelectedMute(): void {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
   if (selected.guildId === INSTAGRAM_GUILD_ID) {
-    setNotice(state, "Instagram mute is not supported.", "warning");
-    scheduleRender();
+    if (selected.kind !== "channel" || !instagramController.toggleChatMute(selected.id)) {
+      setNotice(state, "Select an Instagram chat to mute or unmute it locally.", "muted", { statusLine: true, chat: false });
+      scheduleRender();
+    }
     return;
   }
   if (selected.guildId === WHATSAPP_GUILD_ID) {
@@ -1587,6 +1589,7 @@ function runServerModalAction(action: ServerAction): void {
   if (!modal || modal.busy) return;
   if (modal.guildId === INSTAGRAM_GUILD_ID) {
     state.sidebar.serverActionModal = null;
+    if (action === "toggle_mute" && modal.targetKind === "channel") instagramController.toggleChatMute(modal.targetId);
     scheduleRender();
     return;
   }

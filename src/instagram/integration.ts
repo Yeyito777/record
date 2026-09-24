@@ -2,15 +2,17 @@ import type { DiscordChannel, DiscordMessage, DiscordMessageAttachment } from ".
 import { INSTAGRAM_GUILD_ID, instagramChannelId, instagramThreadIdFromChannelId } from "../chatproviders";
 import { sanitizeTerminalLabel, sanitizeTerminalText } from "../whatsapp/sanitize";
 import type { InstagramItem, InstagramThread, InstagramUser } from "./client";
+import { isInstagramThreadMuted, type InstagramMuteOverrides } from "./mute";
 
 export interface InstagramUiState {
   connection: { status: "idle" | "connecting" | "connected" | "error"; error?: string };
   account: { id: string; username: string; name: string } | null;
   threadsById: Record<string, InstagramThread>;
+  muteOverridesByThreadId: InstagramMuteOverrides;
 }
 
 export function createInstagramUiState(): InstagramUiState {
-  return { connection: { status: "idle" }, account: null, threadsById: {} };
+  return { connection: { status: "idle" }, account: null, threadsById: {}, muteOverridesByThreadId: {} };
 }
 
 export function instagramChannels(state: InstagramUiState): DiscordChannel[] {
@@ -19,7 +21,8 @@ export function instagramChannels(state: InstagramUiState): DiscordChannel[] {
     .map((thread, position) => ({
       id: instagramChannelId(thread.thread_id), guildId: INSTAGRAM_GUILD_ID, parentId: null,
       name: sanitizeTerminalLabel(thread.thread_title || thread.users.map(u => u.full_name || u.username).join(", ") || "Instagram chat"),
-      topic: null, position, type: thread.is_group ? 3 : 1, nsfw: false, muted: Boolean(thread.muted),
+      topic: null, position, type: thread.is_group ? 3 : 1, nsfw: false,
+      muted: isInstagramThreadMuted(state.muteOverridesByThreadId, thread),
       recipients: thread.users.map(user => ({ ...author(user), bot: false })),
     }));
 }

@@ -8,6 +8,7 @@ import {
   renderServerActionModal,
 } from "./serveractions";
 import { theme } from "./theme";
+import { INSTAGRAM_GUILD_ID } from "./chatproviders";
 
 function stripAnsi(text: string): string {
   return text
@@ -16,6 +17,14 @@ function stripAnsi(text: string): string {
 }
 
 describe("server actions modal", () => {
+  test("Instagram chat actions expose only explicitly local mute/unmute", () => {
+    const modal = createChannelActionModal("channel", INSTAGRAM_GUILD_ID, "ig:100", "Friend");
+    expect(modal.actions).toEqual(["toggle_mute"]);
+    expect(stripAnsi(renderServerActionModal(modal, 3, 30, 30, 100))).toContain("Mute Locally");
+    expect(handleServerActionModalKey(modal, { type: "enter" })).toEqual({ type: "action", action: "toggle_mute" });
+    modal.muted = true;
+    expect(stripAnsi(renderServerActionModal(modal, 3, 30, 30, 100))).toContain("Unmute Locally");
+  });
   test("navigates with j/k and closes with escape", () => {
     const modal = createServerActionModal("guild-1", "Example");
 

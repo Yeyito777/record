@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 
-import { createEditorState, getInputLines, getViewport, handleEditorKey, wrappedLineOffsets } from "./editor";
+import { createEditorState, getInputLines, getViewport, getVisualRange, handleEditorKey, wrappedLineOffsets } from "./editor";
 
 describe("editor", () => {
   test("escape leaves insert mode and moves cursor left", () => {
@@ -182,6 +182,93 @@ describe("editor", () => {
       }
     } finally {
       spawn.mockRestore();
+      which.mockRestore();
+    }
+  });
+
+  test("clipboard puts preserve whole graphemes before and after the cursor", () => {
+    const which = spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null);
+    const spawn = spyOn(Bun, "spawnSync").mockImplementation((() => ({
+      exitCode: 0,
+      stdout: Buffer.from("🥺"),
+    })) as unknown as typeof Bun.spawnSync);
+
+    try {
+      for (const grapheme of ["🫳", "😭", "❤️", "👍🏽", "👩‍💻", "🇨🇦", "e\u0301", "a"]) {
+        for (const char of ["p", "P"]) {
+          for (const suffix of ["", "!"]) {
+            const original = `x${grapheme}${suffix}`;
+            const editor = createEditorState(original, "normal");
+            editor.cursor = 1;
+            handleEditorKey(editor, { type: "char", char });
+
+            const insertAt = char === "p" ? 1 + grapheme.length : 1;
+            const expected = original.slice(0, insertAt) + "🥺" + original.slice(insertAt);
+            expect(editor.buffer).toBe(expected);
+            expect(editor.cursor).toBe(insertAt);
+            expect(editor.mode).toBe("normal");
+            expect(Buffer.from(editor.buffer).toString("utf8")).toBe(expected);
+
+            handleEditorKey(editor, { type: "char", char: "u" });
+            expect(editor.buffer).toBe(original);
+            expect(editor.cursor).toBe(1);
+            handleEditorKey(editor, { type: "ctrl-r" });
+            expect(editor.buffer).toBe(expected);
+            expect(editor.cursor).toBe(insertAt);
+          }
+        }
+      }
+      for (const char of ["p", "P"]) {
+        const editor = createEditorState("", "normal");
+        handleEditorKey(editor, { type: "char", char });
+        expect(editor.buffer).toBe("🥺");
+        expect(editor.cursor).toBe(0);
+      }
+    } finally {
+      spawn.mockRestore();
+      which.mockRestore();
+    }
+  });
+
+  test("repeated emoji yank/put/select round trips never split the clipboard text", () => {
+    let clipboard = "";
+    const which = spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null);
+    const copy = spyOn(Bun, "spawn").mockImplementation((() => ({
+      stdin: {
+        write(text: string) { clipboard = Buffer.from(text).toString("utf8"); },
+        end() {},
+      },
+    })) as unknown as typeof Bun.spawn);
+    const paste = spyOn(Bun, "spawnSync").mockImplementation((() => ({
+      exitCode: 0,
+      stdout: Buffer.from(clipboard),
+    })) as unknown as typeof Bun.spawnSync);
+
+    try {
+      for (const emoji of ["🫳", "❤️", "👍🏽", "👩‍💻", "🇨🇦"]) {
+        const editor = createEditorState("", "insert");
+        handleEditorKey(editor, { type: "paste", text: emoji });
+        handleEditorKey(editor, { type: "escape" });
+        handleEditorKey(editor, { type: "char", char: "v" });
+        handleEditorKey(editor, { type: "char", char: "y" });
+        expect(clipboard).toBe(emoji);
+
+        for (let count = 2; count <= 5; count++) {
+          handleEditorKey(editor, { type: "char", char: "p" });
+          expect(editor.buffer).toBe(emoji.repeat(count));
+          expect(editor.cursor).toBe(emoji.length * (count - 1));
+          handleEditorKey(editor, { type: "char", char: "v" });
+          const { start, endExclusive } = getVisualRange(
+            editor.buffer, editor.visualAnchor, editor.cursor, editor.mode,
+          );
+          expect(editor.buffer.slice(start, endExclusive)).toBe(emoji);
+          handleEditorKey(editor, { type: "char", char: "y" });
+          expect(clipboard).toBe(emoji);
+        }
+      }
+    } finally {
+      paste.mockRestore();
+      copy.mockRestore();
       which.mockRestore();
     }
   });
