@@ -115,6 +115,15 @@ and locally pin/reorder chats with the usual sidebar keys. Opening a chat marks
 it read. The inbox is paginated at startup; new messages are polled every 30
 seconds. `/refresh` in an Instagram chat updates it immediately.
 
+Press `m` on an Instagram chat, or use `;` → **Mute Locally / Unmute Locally**.
+The sidebar and unread badges update immediately, even while disconnected.
+This is Record-only: it never sends a mute request to Instagram. Local choices
+override Instagram's mute flag, survive refresh/restarts, and are stored per
+account in `record/instagram/accounts/<user ID>/local-mutes.json` under the
+config directory. Logout keeps these preferences; worktrees remain isolated.
+If a disk write fails, the choice stays active for the session and Record warns
+that it could not be saved.
+
 `/logout instagram` removes Record's saved session without signing out the
 browser. Credentials are plaintext in
 `$XDG_CONFIG_HOME/record/instagram/session.json` (default

@@ -11,6 +11,7 @@ import { sanitizeTerminalLabel } from "../whatsapp/sanitize";
 import { importInstagramSession, loadInstagramSession, removeInstagramSession, saveInstagramSession, type InstagramSession } from "./auth";
 import { InstagramApiError, InstagramClient, type InstagramInbox } from "./client";
 import { createInstagramUiState, instagramChannels, instagramTimelineMessages, mergeInstagramThread } from "./integration";
+import { isInstagramThreadMuted, loadInstagramMutes, saveInstagramMutes } from "./mute";
 
 export interface InstagramControllerOptions {
   clientFactory?: (session: InstagramSession) => InstagramClient;
@@ -19,6 +20,8 @@ export interface InstagramControllerOptions {
   saveSession?: typeof saveInstagramSession;
   removeSession?: typeof removeInstagramSession;
   pollIntervalMs?: number;
+  loadMutes?: typeof loadInstagramMutes;
+  saveMutes?: typeof saveInstagramMutes;
 }
 
 export class InstagramController {
@@ -30,6 +33,9 @@ export class InstagramController {
   private historyRequests = new Set<string>();
   private seen = new Map<string, string>();
   private authWrites: Promise<void> = Promise.resolve();
+  private muteWrites: Promise<void> = Promise.resolve();
+  private muteSequence = 0;
+  private mutePersistenceAvailable = true;
 
   constructor(private state: AppState, private render: () => void, private options: InstagramControllerOptions = {}) {}
 
@@ -71,8 +77,18 @@ export class InstagramController {
     const client = (this.options.clientFactory || (s => new InstagramClient(s)))(session);
     this.state.instagram.connection = { status: "connecting" };
     const inbox = await client.inbox();
+    await this.muteWrites;
     if (generation !== this.generation) return;
-    if (this.state.instagram.account?.id !== String(inbox.viewer.pk)) this.clearProvider();
+    if (this.state.instagram.account?.id !== String(inbox.viewer.pk)) {
+      this.clearProvider();
+      this.mutePersistenceAvailable = true;
+      try {
+        this.state.instagram.muteOverridesByThreadId = (this.options.loadMutes || loadInstagramMutes)(String(inbox.viewer.pk));
+      } catch {
+        this.mutePersistenceAvailable = false;
+        this.notice("Could not load Instagram's local mute settings; changes will apply only for this session.", true);
+      }
+    }
     this.client = client;
     this.state.instagram.account = {
       id: String(inbox.viewer.pk), username: sanitizeTerminalLabel(inbox.viewer.username || ""),
@@ -126,7 +142,7 @@ export class InstagramController {
       const visible = id === this.state.timeline.channelId
         && isTimelineNearBottom(this.state.timeline.scrollOffset, this.state.timeline.maxScroll);
       setChannelNotificationCount(this.state.notifications, id, INSTAGRAM_GUILD_ID,
-        visible || thread.muted ? 0 : unread ? 1 : 0);
+        visible || isInstagramThreadMuted(this.state.instagram.muteOverridesByThreadId, thread) ? 0 : unread ? 1 : 0);
     }
     if (this.state.channelList.guildId === INSTAGRAM_GUILD_ID) {
       const activeId = this.state.channelList.activeChannelId;
@@ -156,6 +172,37 @@ export class InstagramController {
         this.schedulePoll();
       }
     }
+  }
+
+  /** Record-only preference: never calls Instagram or requires a live connection. */
+  toggleChatMute(channelId: string): boolean {
+    const id = instagramThreadIdFromChannelId(channelId);
+    const thread = id ? this.state.instagram.threadsById[id] : null;
+    const accountId = this.state.instagram.account?.id;
+    if (!id || !thread || !accountId) return false;
+    const overrides = this.state.instagram.muteOverridesByThreadId;
+    const muted = !isInstagramThreadMuted(overrides, thread);
+    overrides[id] = muted;
+    // Publish to sidebar, active channel and unread counts before any disk I/O.
+    this.syncSidebar();
+    this.notice(muted ? "Chat muted locally in Record." : "Chat unmuted locally in Record.");
+    if (!this.mutePersistenceAvailable) {
+      this.notice("Local mute changed for this session. Saved mute settings could not be loaded and were left untouched.", true);
+      return true;
+    }
+
+    const snapshot = { ...overrides };
+    const sequence = ++this.muteSequence;
+    const generation = this.generation;
+    // Serialize snapshots so rapid mute/unmute clicks cannot save out of order.
+    this.muteWrites = this.muteWrites.catch(() => {}).then(() =>
+      (this.options.saveMutes || saveInstagramMutes)(accountId, snapshot)
+    ).catch(() => {
+      if (generation !== this.generation || sequence !== this.muteSequence
+        || this.state.instagram.account?.id !== accountId) return;
+      this.notice("Local mute changed for this session, but could not be saved for next launch.", true);
+    });
+    return true;
   }
 
   openChannel(channelId: string): boolean {
@@ -305,7 +352,7 @@ export class InstagramController {
     void this.shutdown();
     this.clearProvider();
     this.authWrites = this.authWrites.catch(() => {}).then(() => (this.options.removeSession || removeInstagramSession)());
-    try { await this.authWrites; this.notice("Instagram disconnected from Record (browser session unchanged)."); }
+    try { await Promise.all([this.authWrites, this.muteWrites]); this.notice("Instagram disconnected from Record (browser session unchanged)."); }
     catch { this.notice("Could not remove saved Instagram auth.", true); }
   }
 
@@ -317,6 +364,7 @@ export class InstagramController {
     this.sending = false;
     this.historyRequests.clear();
     this.seen.clear();
+    await this.muteWrites;
   }
 
   private clearProvider(): void {

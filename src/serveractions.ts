@@ -3,6 +3,7 @@
  */
 
 import type { KeyEvent } from "./input";
+import { INSTAGRAM_GUILD_ID } from "./chatproviders";
 import { moveTo } from "./frame";
 import { theme } from "./theme";
 import { termWidth } from "./textwidth";
@@ -206,6 +207,7 @@ function actionLabel(modal: ServerActionModalState, action: ServerAction): strin
     case "copy_invite":
       return "Copy Invite";
     case "toggle_mute": {
+      if (modal.guildId === INSTAGRAM_GUILD_ID) return modal.muted ? "Unmute Locally" : "Mute Locally";
       if (modal.targetKind === "voice_member") return modal.muted ? "Unmute" : "Mute";
       const muteTarget = modal.targetKind === "guild"
         ? "Server"
