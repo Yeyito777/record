@@ -935,7 +935,14 @@ function editorHasPendingInput(): boolean {
 }
 
 function switchToNextNotification(): void {
-  const target = nextChannelNotification(state.notifications, state.channelList.activeChannelId);
+  const focusedGuildId = state.panelFocus === "sidebar" && state.sidebar.open
+    ? getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()).guildId
+    : state.sidebar.activeGuildId;
+  const target = nextChannelNotification(
+    state.notifications,
+    state.channelList.activeChannelId,
+    focusedGuildId || state.sidebar.activeGuildId,
+  );
   if (!target) {
     scheduleRender();
     return;
