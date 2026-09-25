@@ -21,6 +21,7 @@ export interface InstagramControllerOptions {
   removeSession?: typeof removeInstagramSession;
   pollIntervalMs?: number;
   retryDelayMs?: number;
+  inboxPageDelayMs?: number;
   loadMutes?: typeof loadInstagramMutes;
   saveMutes?: typeof saveInstagramMutes;
 }
@@ -37,6 +38,9 @@ export class InstagramController {
   private retryAttempt = 0;
   private retrying = false;
   private lastErrorNotice: string | null = null;
+  private inboxCursor: string | null = null;
+  private inboxCursors = new Set<string>();
+  private pagingGeneration: number | null = null;
   private muteWrites: Promise<void> = Promise.resolve();
   private muteSequence = 0;
   private mutePersistenceAvailable = true;
@@ -71,6 +75,7 @@ export class InstagramController {
     this.historyRequests.clear();
     this.seen.clear();
     this.retryAttempt = 0;
+    this.resetInboxPaging();
     this.state.instagram.connection = { status: "connecting" };
     this.updateStatus();
     this.notice("Importing Instagram session from vimbrowser…");
@@ -116,29 +121,47 @@ export class InstagramController {
     this.retryAttempt = 0;
     this.clearErrorNotice();
     this.acceptInbox(inbox);
+    this.inboxCursor = inbox.inbox.has_older ? inbox.inbox.oldest_cursor || null : null;
+    this.inboxCursors.clear();
     const layout = loadCachedSidebarChannelLayout(`instagram:${this.state.instagram.account.id}`);
     if (layout?.[INSTAGRAM_GUILD_ID]) applySidebarChannelLayoutForGuild(this.state.sidebar, INSTAGRAM_GUILD_ID, layout[INSTAGRAM_GUILD_ID]!);
     this.render();
     // Page the sidebar independently; never block initial chat access on a large inbox.
-    void this.loadInboxPages(client, inbox, generation);
+    void this.loadInboxPages(client, generation);
     this.schedulePoll();
   }
 
-  private async loadInboxPages(client: InstagramClient, inbox: InstagramInbox, generation: number): Promise<void> {
-    const cursors = new Set<string>();
+  private resetInboxPaging(): void {
+    this.inboxCursor = null;
+    this.inboxCursors.clear();
+    this.pagingGeneration = null;
+  }
+
+  private async loadInboxPages(client: InstagramClient, generation: number): Promise<void> {
+    if (generation !== this.generation || !this.isConnected
+      || this.pagingGeneration === generation || !this.inboxCursor) return;
+    this.pagingGeneration = generation;
     try {
-      while (inbox.inbox.has_older && inbox.inbox.oldest_cursor && generation === this.generation) {
-        const cursor = inbox.inbox.oldest_cursor;
-        if (cursors.has(cursor)) break;
-        cursors.add(cursor);
+      while (this.inboxCursor && generation === this.generation) {
+        const cursor = this.inboxCursor;
+        if (this.inboxCursors.has(cursor)) { this.inboxCursor = null; break; }
         // Keep startup pagination gentle on Instagram's private API.
-        await new Promise(resolve => setTimeout(resolve, 750));
+        await new Promise(resolve => setTimeout(resolve, this.options.inboxPageDelayMs ?? 750));
         if (generation !== this.generation || !this.isConnected) return;
-        inbox = await client.inbox(cursor);
-        if (generation !== this.generation) return;
+        const inbox = await client.inbox(cursor);
+        if (generation !== this.generation || !this.isConnected) return;
+        // Advance only after success. A transient failure must resume this page,
+        // not silently abandon older conversations after refreshing page one.
+        this.inboxCursors.add(cursor);
+        this.inboxCursor = inbox.inbox.has_older ? inbox.inbox.oldest_cursor || null : null;
+        if (!this.historyRequests.size) this.retryAttempt = 0;
+        this.clearErrorNotice();
         this.acceptInbox(inbox);
       }
     } catch (error) { if (generation === this.generation) this.failure(error); }
+    finally {
+      if (this.pagingGeneration === generation) this.pagingGeneration = null;
+    }
   }
 
   private acceptInbox(inbox: InstagramInbox): void {
@@ -187,11 +210,17 @@ export class InstagramController {
       const inbox = await client.inbox();
       if (generation !== this.generation) return;
       this.state.instagram.connection = { status: "connected" };
-      this.retryAttempt = 0;
       this.clearErrorNotice();
       this.acceptInbox(inbox);
       const id = instagramThreadIdFromChannelId(this.state.timeline.channelId || "");
       if (id) await this.fetchThread(id, false);
+      if (generation !== this.generation) return;
+      if (this.isConnected) {
+        // A successful head request alone is not recovery from a failing
+        // history/page request: preserve its exponential backoff.
+        if (!this.inboxCursor && !this.historyRequests.size) this.retryAttempt = 0;
+        void this.loadInboxPages(client, generation);
+      }
     } catch (error) { if (generation === this.generation) this.failure(error); }
     finally {
       if (generation === this.generation) {
@@ -405,6 +434,7 @@ export class InstagramController {
     this.historyRequests.clear();
     this.seen.clear();
     this.retryAttempt = 0;
+    this.resetInboxPaging();
     await this.muteWrites;
   }
 

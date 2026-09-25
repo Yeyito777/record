@@ -120,6 +120,9 @@ text and replies, view ordinary photo/video/voice attachments and shared posts,
 and locally pin/reorder chats with the usual sidebar keys. Opening a chat marks
 it read. The inbox is paginated at startup; new messages are polled every 30
 seconds. `/refresh` in an Instagram chat updates it immediately.
+Inbox requests use the browser's smaller page size to reduce response load.
+Temporary failures retry with backoff and resume unfinished inbox pagination;
+HTTP service errors show their status code without exposing response contents.
 
 Press `m` on an Instagram chat, or use `;` → **Mute Locally / Unmute Locally**.
 The sidebar and unread badges update immediately, even while disconnected.

@@ -29,6 +29,11 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 async function tick() { await new Promise(resolve => setImmediate(resolve)); }
+async function waitFor(predicate: () => boolean) {
+  const deadline = Date.now() + 1500;
+  while (!predicate() && Date.now() < deadline) await tick();
+  expect(predicate()).toBe(true);
+}
 
 describe("Instagram session", () => {
   test("validates required cookies and rejects header injection", () => {
@@ -61,6 +66,9 @@ describe("Instagram client", () => {
     }) as unknown as typeof fetch);
     await client.inbox("a&b");
     expect(calls[0]!.url).toContain("cursor=a%26b");
+    const query = new URL(calls[0]!.url).searchParams;
+    expect(query.get("limit")).toBe("20");
+    expect(query.get("thread_message_limit")).toBe("10");
     expect(calls[0]!.options.redirect).toBe("manual");
     expect((calls[0]!.options.headers as Record<string, string>)["X-CSRFToken"]).toBe("test-csrf");
     const sent = await client.sendText("100", "test & hello", "10");
@@ -97,6 +105,7 @@ describe("Instagram client", () => {
     catch (error) {
       expect(error).toBeInstanceOf(InstagramApiError);
       expect((error as InstagramApiError).fatal).toBe(false);
+      expect((error as Error).message).toContain("HTTP 503");
     }
   });
 });
@@ -240,6 +249,166 @@ describe("Instagram controller", () => {
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(calls).toBe(1);
     expect(h.state.instagram.connection.status).toBe("idle");
+  });
+  test("resumes the failed inbox page after an automatic retry without losing chats", async () => {
+    const calls: Array<string | undefined> = [];
+    let failed = false;
+    const h = harness({ inbox: async (cursor?: string) => {
+      calls.push(cursor);
+      if (cursor === "page2" && !failed) {
+        failed = true;
+        throw new InstagramApiError("Temporary page failure");
+      }
+      return cursor
+        ? { ...inbox(), inbox: { threads: [thread("200")], has_older: false } }
+        : { ...inbox(), inbox: { threads: [thread()], has_older: true, oldest_cursor: "page2" } };
+    } }, { retryDelayMs: 1, inboxPageDelayMs: 0 });
+    try {
+      await h.controller.autoConnect();
+      await waitFor(() => Boolean(h.state.instagram.threadsById["200"]));
+      expect(calls).toEqual([undefined, "page2", undefined, "page2"]);
+      expect(Object.keys(h.state.instagram.threadsById)).toEqual(["100", "200"]);
+      expect(h.controller.isConnected).toBe(true);
+      expect(h.state.notice.text).not.toContain("Temporary page failure");
+    } finally { await h.controller.shutdown(); }
+  });
+  test("stops paging on fatal errors and resumes only on explicit refresh", async () => {
+    let pageCalls = 0;
+    const h = harness({ inbox: async (cursor?: string) => {
+      if (!cursor) return { ...inbox(), inbox: { threads: [thread()], has_older: true, oldest_cursor: "page2" } };
+      if (++pageCalls === 1) throw new InstagramApiError("Rate limited", true);
+      return { ...inbox(), inbox: { threads: [thread("200")], has_older: false } };
+    } }, { retryDelayMs: 1, inboxPageDelayMs: 0 });
+    try {
+      await h.controller.autoConnect();
+      await waitFor(() => h.state.instagram.connection.status === "error");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(pageCalls).toBe(1);
+      await h.controller.refresh();
+      await waitFor(() => Boolean(h.state.instagram.threadsById["200"]));
+      expect(pageCalls).toBe(2);
+    } finally { await h.controller.shutdown(); }
+  });
+  test("deduplicates paging during refresh and terminates repeated cursors", async () => {
+    const pending = deferred<InstagramInbox>();
+    let pageCalls = 0;
+    const h = harness({ inbox: async (cursor?: string) => {
+      if (cursor) { pageCalls++; return pending.promise; }
+      return { ...inbox(), inbox: { threads: [thread()], has_older: true, oldest_cursor: "page2" } };
+    } }, { inboxPageDelayMs: 0 });
+    try {
+      await h.controller.autoConnect();
+      await waitFor(() => pageCalls === 1);
+      await h.controller.refresh();
+      pending.resolve({ ...inbox(), inbox: { threads: [thread("200")], has_older: true, oldest_cursor: "page2" } });
+      await waitFor(() => Boolean(h.state.instagram.threadsById["200"]));
+      await h.controller.refresh();
+      await tick();
+      expect(pageCalls).toBe(1);
+    } finally { await h.controller.shutdown(); }
+  });
+  test("does not reset retry backoff when only the latest inbox succeeds", async () => {
+    let fail = false;
+    const h = harness({ thread: async () => {
+      if (fail) throw new InstagramApiError("Temporary thread failure");
+      return thread();
+    } }, { retryDelayMs: 60_000 });
+    try {
+      await h.controller.autoConnect();
+      h.controller.openChannel("ig:100");
+      await tick();
+      fail = true;
+      await h.controller.refresh();
+      expect((h.controller as any).retryAttempt).toBe(1);
+      await h.controller.refresh();
+      expect((h.controller as any).retryAttempt).toBe(2);
+      fail = false;
+      await h.controller.refresh();
+      expect((h.controller as any).retryAttempt).toBe(0);
+    } finally { await h.controller.shutdown(); }
+  });
+  test("ignores an old pending page after logout and reconnect", async () => {
+    const pending = deferred<InstagramInbox>();
+    let pageCalls = 0;
+    const h = harness({ inbox: async (cursor?: string) => {
+      if (!cursor) return { ...inbox(), inbox: { threads: [thread()], has_older: true, oldest_cursor: "page2" } };
+      if (++pageCalls === 1) return pending.promise;
+      return { ...inbox(), inbox: { threads: [thread("300")], has_older: false } };
+    } }, { inboxPageDelayMs: 0 });
+    try {
+      await h.controller.autoConnect();
+      await waitFor(() => pageCalls === 1);
+      await h.controller.logout();
+      await h.controller.autoConnect();
+      await waitFor(() => Boolean(h.state.instagram.threadsById["300"]));
+      pending.resolve({ ...inbox(), inbox: { threads: [thread("200")], has_older: false } });
+      await tick();
+      expect(h.state.instagram.threadsById["200"]).toBeUndefined();
+      expect(h.controller.isConnected).toBe(true);
+    } finally { await h.controller.shutdown(); }
+  });
+  test("preserves page-failure backoff across successful head refreshes", async () => {
+    let pageCalls = 0;
+    const h = harness({ inbox: async (cursor?: string) => {
+      if (!cursor) return { ...inbox(), inbox: { threads: [thread()], has_older: true, oldest_cursor: "page2" } };
+      pageCalls++;
+      throw new InstagramApiError("Temporary page failure");
+    } }, { retryDelayMs: 60_000, inboxPageDelayMs: 0 });
+    try {
+      await h.controller.autoConnect();
+      await waitFor(() => h.state.instagram.connection.status === "error");
+      expect((h.controller as any).retryAttempt).toBe(1);
+      await h.controller.refresh();
+      await waitFor(() => h.state.instagram.connection.status === "error");
+      expect(pageCalls).toBe(2);
+      expect((h.controller as any).retryAttempt).toBe(2);
+    } finally { await h.controller.shutdown(); }
+  });
+  test("head refresh does not reset backoff while another thread request is pending", async () => {
+    const pending = deferred<InstagramThread>();
+    const h = harness({ thread: () => pending.promise }, { retryDelayMs: 60_000 });
+    try {
+      await h.controller.autoConnect();
+      h.controller.openChannel("ig:100");
+      // Represent a previous transient failure while openChannel's independent
+      // history request is still pending. Skipping that request is not recovery.
+      (h.controller as any).retryAttempt = 1;
+      await h.controller.refresh();
+      expect((h.controller as any).retryAttempt).toBe(1);
+      pending.reject(new InstagramApiError("Temporary thread failure"));
+      await tick();
+      expect((h.controller as any).retryAttempt).toBe(2);
+    } finally { await h.controller.shutdown(); }
+  });
+  test("stale thread refresh cannot unlock a new session's pending pagination", async () => {
+    const pendingThread = deferred<InstagramThread>();
+    const pendingPage = deferred<InstagramInbox>();
+    let paging = false;
+    let pageCalls = 0;
+    const h = harness({
+      inbox: async (cursor?: string) => {
+        if (cursor) { pageCalls++; return pendingPage.promise; }
+        return paging ? { ...inbox(), inbox: { threads: [thread()], has_older: true, oldest_cursor: "page2" } } : inbox();
+      },
+      thread: () => pendingThread.promise,
+    }, { inboxPageDelayMs: 0 });
+    try {
+      await h.controller.autoConnect();
+      h.state.timeline.channelId = "ig:100";
+      const oldRefresh = h.controller.refresh();
+      await tick();
+      await h.controller.logout();
+      paging = true;
+      await h.controller.autoConnect();
+      await waitFor(() => pageCalls === 1);
+      pendingThread.resolve(thread());
+      await oldRefresh;
+      await h.controller.refresh();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(pageCalls).toBe(1);
+      pendingPage.resolve({ ...inbox(), inbox: { threads: [thread("200")], has_older: false } });
+      await tick();
+    } finally { await h.controller.shutdown(); }
   });
   test("keeps explicitly imported auth when the first inbox request fails", async () => {
     let saved = false;

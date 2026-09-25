@@ -67,7 +67,7 @@ export class InstagramClient {
     }
     if (response.status === 429) throw new InstagramApiError("Instagram rate limit reached. Wait before /refresh.", true);
     if (response.status >= 500 || response.status === 408) {
-      throw new InstagramApiError("Instagram is temporarily unavailable. Record will retry.");
+      throw new InstagramApiError(`Instagram is temporarily unavailable (HTTP ${response.status}). Record will retry.`);
     }
     if ([301, 302, 303, 307, 308, 401, 403].includes(response.status)) {
       throw new InstagramApiError("Instagram session expired or needs verification. Open Instagram in vimbrowser, then /login instagram.", true);
@@ -87,7 +87,9 @@ export class InstagramClient {
   }
 
   async inbox(cursor?: string): Promise<InstagramInbox> {
-    const query = new URLSearchParams({ limit: "50", thread_message_limit: "20" });
+    // Match the web inbox's page size. Large pages can be multi-megabyte
+    // responses; polling 50 threads with 20 items needlessly strains this API.
+    const query = new URLSearchParams({ limit: "20", thread_message_limit: "10" });
     if (cursor) query.set("cursor", cursor);
     const data = await this.request(`direct_v2/inbox/?${query}`);
     if (!Array.isArray(data.inbox?.threads) || !data.viewer?.pk) throw new InstagramApiError("Instagram inbox format is unsupported.", true);
