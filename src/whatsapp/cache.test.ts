@@ -3,7 +3,7 @@ import { lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createWhatsAppUiState } from "./integration";
+import { createWhatsAppUiState, registerWhatsAppLidMapping } from "./integration";
 import {
   hydrateWhatsAppUiState,
   loadWhatsAppCache,
@@ -18,6 +18,31 @@ afterEach(async () => {
 });
 
 describe("WhatsApp UI cache", () => {
+  test("cached aliases cannot replace newer phone-JID metadata", () => {
+    for (const knownMapping of [false, true]) {
+      const state = createWhatsAppUiState();
+      const phone = "15551234567@s.whatsapp.net";
+      const lid = "opaque@lid";
+      state.chatsById[phone] = { id: phone, kind: "direct", name: "Live name", unreadCount: 0 };
+      state.contactsById[phone] = { id: phone, name: "Live contact" };
+      if (knownMapping) registerWhatsAppLidMapping(state, lid, phone);
+      hydrateWhatsAppUiState(state, { version: 1, savedAtMs: 1, account: null,
+        contacts: [{ id: lid, phoneId: phone, name: "Old contact" }],
+        chats: [{ id: lid, kind: "direct", name: "Old name", unreadCount: 10 }], messagesByChatId: {} });
+      expect(state.chatsById[phone]?.name).toBe("Live name");
+      expect(state.chatsById[phone]?.unreadCount).toBe(0);
+      expect(state.contactsById[phone]?.name).toBe("Live contact");
+      expect(state.chatsById[lid]).toBeUndefined();
+    }
+  });
+  test("does not hydrate a different account's delayed cache", () => {
+    const state = createWhatsAppUiState();
+    state.account = { id: "current@s.whatsapp.net" };
+    hydrateWhatsAppUiState(state, { version: 1, savedAtMs: 1, account: { id: "previous@s.whatsapp.net" },
+      contacts: [], chats: [{ id: "private@g.us", kind: "group" }], messagesByChatId: {} });
+    expect(state.account.id).toBe("current@s.whatsapp.net");
+    expect(state.chatsById).toEqual({});
+  });
   test("round-trips chats, contacts, messages, and account with private atomic storage", async () => {
     const root = await mkdtemp(join(tmpdir(), "record-wa-cache-"));
     temporaryDirectories.push(root);

@@ -9,6 +9,18 @@ function stripAnsi(line: string): string {
 }
 
 describe("statusline", () => {
+  test("WhatsApp loading survives cleared notices and disappears when loading ends or chat changes", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.timeline.channelId = "wa:loading@g.us";
+    state.timeline.loadingOlder = true;
+    state.notice.text = "";
+    expect(stripAnsi(renderStatusLine(state, 40).lines.join(""))).toContain("Loading WhatsApp history");
+    state.timeline.loadingOlder = false;
+    expect(stripAnsi(renderStatusLine(state, 80).lines.join(""))).not.toContain("Loading WhatsApp");
+    state.timeline.loadingOlder = true;
+    state.timeline.channelId = "discord-channel";
+    expect(stripAnsi(renderStatusLine(state, 80).lines.join(""))).not.toContain("Loading WhatsApp");
+  });
   test("shows nickname and online status when authenticated", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.auth.status = "authenticated";

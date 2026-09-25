@@ -6,7 +6,9 @@ import { dirname, join } from "node:path";
 import { INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { createInitialState } from "../state";
 import { inlineImageSourcesForMessage } from "../inlineimage";
-import { WhatsAppController, type WhatsAppBackendHandle } from "./controller";
+import { WhatsAppController, type WhatsAppBackendHandle, type WhatsAppControllerOptions } from "./controller";
+import { renderStatusLine } from "../statusline";
+import type { WhatsAppCacheSnapshot } from "./cache";
 import { MAX_WHATSAPP_MESSAGES_PER_CHAT } from "./integration";
 import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 import type {
@@ -172,7 +174,7 @@ class DelayedShutdownBackend extends FakeBackend {
   }
 }
 
-function fixture(options: { historyPageDelayMs?: number; historyRequestTimeoutMs?: number } = {}) {
+function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" | "historyRequestTimeoutMs" | "loadCache"> = {}) {
   const state = createInitialState(null, "/tmp/config.json");
   const backend = new FakeBackend();
   let renders = 0;
@@ -183,6 +185,7 @@ function fixture(options: { historyPageDelayMs?: number; historyRequestTimeoutMs
     successModalDelayMs: 0,
     historyPageDelayMs: options.historyPageDelayMs ?? 0,
     historyRequestTimeoutMs: options.historyRequestTimeoutMs ?? 1_000,
+    loadCache: options.loadCache,
   });
   return { state, backend, controller, renders: () => renders };
 }
@@ -221,6 +224,201 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
 describe("WhatsApp loading races", () => {
+  test("history reactions update evicted visible messages without defeating live removals", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const target = raceMessage("original", jid, 100).key;
+    const reaction = { senderId: "friend", fromMe: false, emoji: "👍" };
+    try {
+      backend.emit("history", historyPage(Array.from({ length: MAX_WHATSAPP_MESSAGES_PER_CHAT },
+        (_, index) => raceMessage(`new-${index}`, jid, 200 + index))));
+      backend.emit("history", { ...historyPage([]), reactions: [{ target, reaction }] });
+      expect(state.timeline.messages.find(message => message.id === "original")?.reactions?.[0]?.emoji.name).toBe("👍");
+      backend.emit("history", { ...historyPage([]), reactions: [{ target, reaction: { ...reaction, emoji: "❤️" } }] });
+      expect(state.timeline.messages.find(message => message.id === "original")?.reactions?.[0]?.emoji.name).toBe("❤️");
+      backend.emit("reactions", [{ target, reaction: { ...reaction, emoji: "" } }]);
+      backend.emit("history", { ...historyPage([]), reactions: [{ target, reaction }] });
+      expect(state.timeline.messages.find(message => message.id === "original")?.reactions).toEqual([]);
+    } finally { await controller.shutdown(); }
+  });
+  test("a late alias reaction cannot resurrect a newer canonical removal", async () => {
+    const phone = "15551234567@s.whatsapp.net";
+    const lid = "alias@lid";
+    const { state, backend, controller } = raceFixture(phone);
+    const reaction = { senderId: "friend", fromMe: false, emoji: "👍" };
+    const target = raceMessage("original", phone, 100).key;
+    try {
+      backend.emit("reactions", [{ target, reaction }]);
+      backend.emit("reactions", [{ target: { ...target, chatId: lid }, reaction: { ...reaction, emoji: "❤️" } }]);
+      backend.emit("lid-mapping", { lid, phoneId: phone });
+      expect(state.timeline.messages[0]?.reactions?.[0]?.emoji.name).toBe("❤️");
+      backend.emit("reactions", [{ target, reaction: { ...reaction, emoji: "" } }]);
+      backend.emit("history", historyPage([raceMessage("original", phone, 100)]));
+      expect(state.timeline.messages[0]?.reactions).toEqual([]);
+    } finally { await controller.shutdown(); }
+  });
+  test("identity migration preserves evicted visible message channel IDs", async () => {
+    const lid = "retained@lid";
+    const phone = "15551234567@s.whatsapp.net";
+    const { state, backend, controller } = raceFixture(lid);
+    try {
+      backend.emit("history", historyPage(Array.from({ length: MAX_WHATSAPP_MESSAGES_PER_CHAT },
+        (_, index) => raceMessage(`new-${index}`, lid, 200 + index))));
+      backend.emit("lid-mapping", { lid, phoneId: phone });
+      expect(state.timeline.messages.find(message => message.id === "original")?.channelId).toBe(whatsappChannelId(phone));
+      expect(state.timeline.messages.every(message => message.channelId === state.timeline.channelId)).toBe(true);
+    } finally { await controller.shutdown(); }
+  });
+  test("keeps acknowledged sends visible even when history immediately evicts them from cache", async () => {
+    for (const missingTimestamp of [false, true]) {
+      const { state, backend, controller, jid } = raceFixture();
+      const sent = deferred<WhatsAppMessage>();
+      backend.sendText = () => sent.promise;
+      try {
+        controller.sendMessage("my sent message");
+        const local = state.timeline.messages.find(message => message.localStatus)!;
+        backend.emit("history", historyPage(Array.from({ length: MAX_WHATSAPP_MESSAGES_PER_CHAT },
+          (_, index) => raceMessage(`future-${index}`, jid, local.timestamp + 1000 + index))));
+        sent.resolve({
+          ...raceMessage("confirmed", jid, 150, true),
+          timestampMs: missingTimestamp ? null : 150,
+          content: { kind: "text", text: "my sent message" },
+        });
+        await settle();
+        expect(state.whatsapp.messagesByChatId[jid]!.some(message => message.id === "confirmed")).toBe(false);
+        expect(state.timeline.messages.filter(message => message.content === "my sent message")).toHaveLength(1);
+        const confirmed = state.timeline.messages.find(message => message.id === "confirmed")!;
+        expect(confirmed.localStatus).toBeUndefined();
+        expect(confirmed.timestamp).toBe(missingTimestamp ? local.timestamp : 150);
+        backend.emit("history", historyPage([]));
+        expect(state.timeline.messages.find(message => message.id === "confirmed")?.content).toBe("my sent message");
+      } finally { await controller.shutdown(); }
+    }
+  });
+
+  test("stale replay cannot overwrite an evicted visible edit or move its viewport", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      backend.emit("history", historyPage(Array.from({ length: MAX_WHATSAPP_MESSAGES_PER_CHAT },
+        (_, index) => raceMessage(`new-${index}`, jid, 200 + index))));
+      backend.emit("messages", { kind: "update", skippedMessages: 0,
+        messages: [{ ...raceMessage("original", jid, 100), content: { kind: "text", text: "edited" } }] });
+      state.timeline.maxScroll = 100;
+      state.timeline.scrollOffset = 20;
+      backend.emit("messages", { kind: "upsert", upsertType: "append", skippedMessages: 0,
+        messages: [raceMessage("original", jid, 100), raceMessage("even-older", jid, 50)] });
+      expect(state.timeline.messages.find(message => message.id === "original")?.content).toBe("edited");
+      expect(state.timeline.scrollOffset).toBe(20);
+      expect(state.timeline.maxScroll).toBe(100);
+      backend.emit("history", historyPage([raceMessage("original", jid, 100)]));
+      expect(state.timeline.messages.find(message => message.id === "original")?.content).toBe("edited");
+      expect(state.timeline.scrollOffset).toBe(20);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("new notifications do not pull a reader to the bottom or mark unread text read", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      const reads = backend.readMessageIds.length;
+      state.timeline.maxScroll = 100;
+      state.timeline.scrollOffset = 20;
+      backend.emit("messages", { kind: "upsert", upsertType: "notify", skippedMessages: 0,
+        messages: [raceMessage("new-notification", jid, 300)] });
+      expect(state.timeline.scrollOffset).toBe(20);
+      expect(state.timeline.maxScroll).toBe(100);
+      expect(backend.readMessageIds).toHaveLength(reads);
+      state.timeline.scrollOffset = 100;
+      backend.emit("messages", { kind: "upsert", upsertType: "notify", skippedMessages: 0,
+        messages: [raceMessage("next-notification", jid, 400)] });
+      expect(state.timeline.scrollOffset).toBe(Number.MAX_SAFE_INTEGER);
+      expect(backend.readMessageIds).toContain("next-notification");
+    } finally { await controller.shutdown(); }
+  });
+
+  test("timestamp-less messages keep a stable time across refreshes", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    try {
+      backend.emit("messages", { kind: "upsert", upsertType: "append", skippedMessages: 0,
+        messages: [{ ...raceMessage("no-time", jid), timestampMs: null }] });
+      const timestamp = state.timeline.messages.find(message => message.id === "no-time")!.timestamp;
+      await new Promise(resolve => setTimeout(resolve, 5));
+      backend.emit("history", historyPage([raceMessage("later", jid, timestamp + 1)]));
+      expect(state.timeline.messages.find(message => message.id === "no-time")!.timestamp).toBe(timestamp);
+      expect(state.timeline.messages.at(-1)!.id).toBe("later");
+    } finally { await controller.shutdown(); }
+  });
+
+  test("loading stays visible near the prompt during queued pages and pending sends", async () => {
+    const { state, backend, controller } = fixture({ historyPageDelayMs: 60_000 });
+    const jid = "loading@g.us";
+    const sent = deferred<WhatsAppMessage>();
+    backend.sendText = () => sent.promise;
+    backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1 });
+    backend.emit("history", historyPage([raceMessage("recent", jid, 100)]));
+    controller.openChannel(whatsappChannelId(jid));
+    try {
+      await settle();
+      backend.emit("history", historyPage([raceMessage("older", jid, 50)], "history-1"));
+      expect(state.timeline.loadingOlder).toBe(true);
+      controller.sendMessage("still sending");
+      expect(state.notice.text).toBe("");
+      expect(renderStatusLine(state, 80).lines.join("")).toContain("Loading WhatsApp");
+      controller.loadOlderHistory();
+      expect(backend.historyRequests).toHaveLength(1); // queued request is deduplicated
+      await controller.shutdown();
+      expect(state.timeline.loadingOlder).toBe(false);
+      expect(renderStatusLine(state, 80).lines.join("")).not.toContain("Loading WhatsApp");
+      sent.resolve(raceMessage("after-shutdown", jid, 200, true));
+      await settle();
+      expect(state.timeline.messages.some(message => message.id === "after-shutdown")).toBe(false);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("opening an empty chat begins paging when its first history anchor arrives", async () => {
+    const { state, backend, controller } = fixture();
+    const jid = "empty@g.us";
+    backend.emit("state", { status: "connecting", source: "saved-session", attempt: 0 });
+    backend.emit("chats", { kind: "upsert", chats: [{ id: jid, kind: "group" }] });
+    controller.openChannel(whatsappChannelId(jid));
+    try {
+      expect(state.timeline.loading).toBe(true);
+      expect(renderStatusLine(state, 80).lines.join("")).toContain("Connecting WhatsApp");
+      backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1 });
+      expect(backend.historyRequests).toHaveLength(0);
+      backend.emit("history", { ...historyPage([raceMessage("anchor", jid, 100)]), syncKind: "recent" });
+      expect(backend.historyRequests).toHaveLength(1);
+      expect(state.timeline.loading).toBe(false);
+      expect(state.timeline.loadingOlder).toBe(true);
+      await settle();
+      backend.emit("history", historyPage([], "history-1"));
+      expect(state.timeline.loadingOlder).toBe(false);
+      expect(state.timeline.hasOlder).toBe(false);
+      backend.emit("history", { ...historyPage([raceMessage("other-chat", "other@g.us")]), syncKind: "recent" });
+      expect(state.timeline.hasOlder).toBe(false);
+    } finally { await controller.shutdown(); }
+  });
+
+  test("delayed cache hydration cannot overwrite live messages, account, or unread state", async () => {
+    const cache = deferred<WhatsAppCacheSnapshot | null>();
+    const { state, backend, controller } = fixture({ loadCache: () => cache.promise });
+    const jid = "cache@g.us";
+    backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1, account: { id: "self", name: "Live" } });
+    backend.emit("history", historyPage([raceMessage("original", jid, 100)]));
+    controller.openChannel(whatsappChannelId(jid));
+    backend.emit("messages", { kind: "update", skippedMessages: 0,
+      messages: [{ ...raceMessage("original", jid, 100), content: { kind: "text", text: "live edit" } }] });
+    try {
+      cache.resolve({ version: 1, savedAtMs: 1, account: { id: "self", name: "Old" }, contacts: [],
+        chats: [{ id: jid, kind: "group", unreadCount: 10 }],
+        messagesByChatId: { [jid]: [raceMessage("original", jid, 100), raceMessage("cached-older", jid, 50)] } });
+      await controller.restoreCachedChannel(whatsappChannelId(jid));
+      expect(state.whatsapp.account!.name).toBe("Live");
+      expect(state.whatsapp.chatsById[jid]!.unreadCount).toBe(0);
+      expect(state.whatsapp.messagesByChatId[jid]!.find(message => message.id === "original")!.content).toEqual({ kind: "text", text: "live edit" });
+      expect(state.timeline.messages.find(message => message.id === "original")!.content).toBe("live edit");
+      expect(state.timeline.messages.some(message => message.id === "cached-older")).toBe(true);
+    } finally { await controller.shutdown(); }
+  });
+
   test("overlapping failed reactions do not resurrect either optimistic value", async () => {
     for (const newestFirst of [false, true]) {
       const { state, backend, controller } = raceFixture();
@@ -674,7 +872,7 @@ describe("WhatsApp loading races", () => {
       expect(state.timeline.loadingOlder).toBe(true);
       ack.resolve("early-request");
       await settle();
-      expect(state.timeline.loadingOlder).toBe(false);
+      expect(state.timeline.loadingOlder).toBe(true); // Next page is queued, not finished.
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(requests).toBe(2);
     } finally { await controller.shutdown(); }
@@ -742,7 +940,8 @@ describe("WhatsApp controller", () => {
     const { state, backend, controller, renders } = fixture();
 
     controller.login();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const deadline = Date.now() + 1000;
+    while (!backend.started && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 1));
     expect(backend.started).toBe(1);
     expect(state.whatsapp.loginModal?.phase).toBe("starting");
 

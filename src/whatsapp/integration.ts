@@ -227,6 +227,49 @@ function canonicalizeWhatsAppMessage(state: WhatsAppUiState, message: WhatsAppMe
   };
 }
 
+/** Shared by the bounded cache and the larger, currently visible history. */
+export function mergeWhatsAppMessage(
+  previous: WhatsAppMessage | undefined,
+  incoming: WhatsAppMessage,
+  preferExisting = false,
+): WhatsAppMessage {
+  let message = incoming;
+  const receivedAtMs = previous?.receivedAtMs ?? message.receivedAtMs ?? Date.now();
+  if (!previous) return { ...message, receivedAtMs };
+  if (preferExisting) {
+    const newerContent = (message.editedTimestampMs ?? 0) > (previous.editedTimestampMs ?? 0)
+      || (previous.content.kind === "unsupported" && message.content.kind !== "unsupported");
+    [previous, message] = [message, previous];
+    if (previous.reactions || message.reactions) {
+      const reactions = new Map([...(previous.reactions ?? []), ...(message.reactions ?? [])]
+        .map((reaction) => [reaction.senderId, reaction]));
+      message = { ...message, reactions: [...reactions.values()] };
+    }
+    if (newerContent) message = {
+      ...message,
+      content: previous.content,
+      editedTimestampMs: previous.editedTimestampMs ?? message.editedTimestampMs,
+    };
+  }
+  const content = message.content.kind === "media" && previous.content.kind === "media"
+    ? { ...previous.content, ...message.content, download: message.content.download ?? previous.content.download }
+    : message.content;
+  return {
+    ...previous, ...message, content, receivedAtMs,
+    key: { ...previous.key, ...message.key },
+    timestampMs: message.timestampMs ?? previous.timestampMs,
+    senderId: message.senderId ?? previous.senderId,
+    senderName: message.senderName ?? previous.senderName,
+    replyTo: message.replyTo ?? previous.replyTo,
+  };
+}
+
+export function isVisibleWhatsAppMessage(message: WhatsAppMessage): boolean {
+  return message.chatId !== "status@broadcast" && !(message.content.kind === "unsupported" && [
+    "protocolMessage", "reactionMessage", "albumMessage", "secretEncryptedMessage", "associatedChildMessage",
+  ].includes(message.content.sourceType ?? ""));
+}
+
 export function upsertWhatsAppMessages(
   state: WhatsAppUiState,
   messages: readonly WhatsAppMessage[],
@@ -236,13 +279,7 @@ export function upsertWhatsAppMessages(
   for (const incoming of messages) {
     // Protocol control envelopes from caches produced by older Record builds are
     // not user-visible messages (edits now arrive through messages.update).
-    if (incoming.content.kind === "unsupported" && [
-      "protocolMessage",
-      "reactionMessage",
-      "albumMessage",
-      "secretEncryptedMessage",
-      "associatedChildMessage",
-    ].includes(incoming.content.sourceType ?? "")) continue;
+    if (!isVisibleWhatsAppMessage(incoming)) continue;
     const pair = directIdentityPair([
       incoming.chatId,
       incoming.key.chatId,
@@ -253,43 +290,9 @@ export function upsertWhatsAppMessages(
     if (!message.chatId || message.chatId === "status@broadcast") continue;
     const existing = state.messagesByChatId[message.chatId] ?? [];
     const index = existing.findIndex((candidate) => candidate.id === message.id);
-    if (index >= 0) {
-      let previous = existing[index];
-      // Backfilled snapshots must not roll back a live edit/reaction. Still
-      // enrich missing fields (notably media download metadata) from history.
-      if (options.preferExisting) {
-        const newerContent = (message.editedTimestampMs ?? 0) > (previous.editedTimestampMs ?? 0)
-          || (previous.content.kind === "unsupported" && message.content.kind !== "unsupported");
-        [previous, message] = [message, previous];
-        if (previous.reactions || message.reactions) {
-          const reactions = new Map([...(previous.reactions ?? []), ...(message.reactions ?? [])]
-            .map((reaction) => [reaction.senderId, reaction]));
-          message = { ...message, reactions: [...reactions.values()] };
-        }
-        if (newerContent) message = {
-          ...message,
-          content: previous.content,
-          editedTimestampMs: previous.editedTimestampMs ?? message.editedTimestampMs,
-        };
-      }
-      const content = message.content.kind === "media" && previous.content.kind === "media"
-        ? {
-          ...previous.content,
-          ...message.content,
-          download: message.content.download ?? previous.content.download,
-        }
-        : message.content;
-      existing[index] = {
-        ...previous,
-        ...message,
-        content,
-        key: { ...previous.key, ...message.key },
-        timestampMs: message.timestampMs ?? previous.timestampMs,
-        senderId: message.senderId ?? previous.senderId,
-        senderName: message.senderName ?? previous.senderName,
-        replyTo: message.replyTo ?? previous.replyTo,
-      };
-    } else existing.push(message);
+    message = mergeWhatsAppMessage(existing[index], message, options.preferExisting);
+    if (index >= 0) existing[index] = message;
+    else existing.push(message);
     state.messagesByChatId[message.chatId] = existing;
     touched.add(message.chatId);
 
@@ -333,7 +336,7 @@ export function applyWhatsAppReactions(state: WhatsAppUiState, events: readonly 
 }
 
 function compareWhatsAppMessages(left: WhatsAppMessage, right: WhatsAppMessage): number {
-  const time = (left.timestampMs ?? 0) - (right.timestampMs ?? 0);
+  const time = (left.timestampMs ?? left.receivedAtMs ?? 0) - (right.timestampMs ?? right.receivedAtMs ?? 0);
   return time || left.id.localeCompare(right.id);
 }
 
@@ -495,7 +498,7 @@ export function whatsAppMessageToTimeline(state: WhatsAppUiState, message: Whats
     mentionRoleIds: [],
     mentionUserIds: [],
     mentionUsers: [],
-    timestamp: message.timestampMs ?? Date.now(),
+    timestamp: message.timestampMs ?? message.receivedAtMs ?? 0,
     editedTimestamp: message.editedTimestampMs ?? null,
     author: messageAuthor(state, message),
     reply: replyPreview(state, message),

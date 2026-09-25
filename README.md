@@ -95,6 +95,8 @@ Notes:
 - tokens are stored as plaintext for now, just with strict file permissions
 - expanded chat images use the Kitty direct-stream graphics protocol; PNGs are sent directly and other image formats use `ffmpeg` to produce a bounded first-frame PNG
 - WhatsApp stickers expand inline like images, including first-frame previews of animated WebP stickers
+- WhatsApp history loading stays visible below the prompt, including between pages; sending a message does not clear it.
+- Late WhatsApp history/cache loads preserve sent messages, live edits, and the reading viewport.
 - downloaded Discord and WhatsApp attachments share a 100-file LRU cache; cache hits refresh their age and successful additions prune the oldest files
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`

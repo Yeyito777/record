@@ -14,13 +14,15 @@ import {
 import { applySidebarChannelLayoutForGuild, setSidebarCachedChannels, setSidebarGuilds, sidebarCachedGuilds, sidebarChannelLayoutForGuild } from "../sidebar";
 import type { AppState } from "../state";
 import { setNotice } from "../state";
-import { clearTimeline, appendTimelineMessage, replaceTimelineMessage, setTimelineMessages } from "../timeline";
+import { clearTimeline, appendTimelineMessage, replaceTimelineMessage, setTimelineMessages, isTimelineNearBottom } from "../timeline";
 import { clearPrompt } from "../promptstate";
 import {
   beginWhatsAppLoginUi,
   applyWhatsAppReactions,
   canonicalWhatsAppJid,
   MAX_WHATSAPP_MESSAGES_PER_CHAT,
+  mergeWhatsAppMessage,
+  isVisibleWhatsAppMessage,
   registerWhatsAppLidMapping,
   resetWhatsAppUiState,
   upsertWhatsAppChats,
@@ -31,7 +33,6 @@ import {
   whatsAppChannels,
   whatsAppDisplayName,
   whatsAppMessageToTimeline,
-  whatsAppTimelineMessages,
 } from "./integration";
 import { isWhatsAppChatMuted, WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 import { setLoginModalPhase } from "./loginmodal";
@@ -103,6 +104,7 @@ export interface WhatsAppControllerOptions {
   successModalDelayMs?: number;
   historyPageDelayMs?: number;
   historyRequestTimeoutMs?: number;
+  loadCache?: typeof loadWhatsAppCache;
 }
 
 const DEFAULT_SUCCESS_MODAL_DELAY_MS = 900;
@@ -146,6 +148,7 @@ export class WhatsAppController {
   private readonly authDirectory: string;
   private readonly cacheFile: string;
   private readonly cacheReady: Promise<void>;
+  private readonly loadCache: typeof loadWhatsAppCache;
   private readonly cacheSaveDelayMs: number;
   private readonly successModalDelayMs: number;
   private readonly historyPageDelayMs: number;
@@ -162,6 +165,10 @@ export class WhatsAppController {
   private restoreScheduled = false;
   private historyRequestGeneration = 0;
   private readonly pendingHistoryByChatId = new Map<string, PendingHistoryRequest>();
+  private readonly queuedHistoryByChatId = new Map<string, ReturnType<typeof setTimeout>>();
+  private visibleChatId: string | null = null;
+  private readonly visibleMessages = new Map<string, WhatsAppMessage>();
+  private cacheLoading = true;
   private muteRequestSequence = 0;
   private readonly muteRequestIdByChatId = new Map<string, number>();
   private loadedSidebarLayoutScope: string | null = null;
@@ -184,6 +191,7 @@ export class WhatsAppController {
   ) {
     this.authDirectory = options.authDirectory ?? getRecordWhatsAppPaths().authDirectory;
     this.cacheFile = options.cacheFile ?? join(dirname(this.authDirectory), "cache.json");
+    this.loadCache = options.loadCache ?? loadWhatsAppCache;
     this.cacheSaveDelayMs = options.cacheSaveDelayMs ?? DEFAULT_CACHE_SAVE_DELAY_MS;
     this.successModalDelayMs = options.successModalDelayMs ?? DEFAULT_SUCCESS_MODAL_DELAY_MS;
     this.historyPageDelayMs = options.historyPageDelayMs ?? DEFAULT_HISTORY_PAGE_DELAY_MS;
@@ -192,6 +200,7 @@ export class WhatsAppController {
     this.backend = this.backendFactory();
     this.bindBackend();
     ensureWhatsAppRoot(this.state);
+    this.updateLoadingState();
     this.cacheReady = this.loadCachedState();
   }
 
@@ -261,6 +270,7 @@ export class WhatsAppController {
     this.state.whatsapp.loginRequestId += 1;
     this.state.whatsapp.loginModal = null;
     this.cacheEnabled = false;
+    this.updateLoadingState();
     this.clearCacheSaveTimer();
     const resetGeneration = ++this.backendResetGeneration;
     const previous = this.backend;
@@ -425,10 +435,14 @@ export class WhatsAppController {
     for (const event of events) {
       const key = JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, event.target.chatId),
         event.target.id, event.reaction.fromMe ? "self" : event.reaction.senderId]);
+      // Map.set alone preserves the original insertion position. Reinsert so
+      // aliases learned later replay in arrival order, with newest removals last.
+      this.liveReactions.delete(key);
       this.liveReactions.set(key, event);
     }
     const changed = applyWhatsAppReactions(this.state.whatsapp, events);
-    if (changed.length === 0) return;
+    const visibleChanged = this.applyVisibleReactions(events);
+    if (changed.length === 0 && visibleChanged.length === 0) return;
     this.queueCacheSave();
     this.refreshActiveTimeline();
     this.scheduleRender();
@@ -529,7 +543,13 @@ export class WhatsAppController {
     void send.then((sentMessages) => {
       if (generation !== this.backendResetGeneration) return;
       if (sentMessages.length === 0) throw new Error("WhatsApp did not return the sent message.");
-      upsertWhatsAppMessages(this.state.whatsapp, sentMessages, { preferExisting: true });
+      const acknowledged = sentMessages.map(message => ({
+        ...message, receivedAtMs: message.receivedAtMs ?? localMessage.timestamp,
+      }));
+      // Retain the acknowledgement before removing the local bubble, even if
+      // its server timestamp puts it outside the newest-300 disk cache.
+      this.mergeVisibleMessages(acknowledged, true);
+      upsertWhatsAppMessages(this.state.whatsapp, acknowledged, { preferExisting: true });
       this.localMessages.delete(localMessageId);
       this.outgoing.delete(localMessageId);
       for (const attachment of localMessage.attachments) delete this.state.localAttachmentImages[attachment.id];
@@ -670,6 +690,7 @@ export class WhatsAppController {
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     this.clearPendingHistoryRequests();
+    this.updateLoadingState();
     this.clearSuccessModalTimer();
     this.backendResetGeneration += 1;
     this.unbindBackend();
@@ -688,6 +709,8 @@ export class WhatsAppController {
         this.scheduleRender();
       }),
       this.backend.on("history", (event) => {
+        const activeBefore = this.activeWhatsAppJid();
+        const hadMessages = activeBefore && Boolean(this.state.whatsapp.messagesByChatId[activeBefore]?.length);
         upsertWhatsAppContacts(this.state.whatsapp, event.contacts);
         // On-demand history is a message backfill, not authoritative current
         // chat metadata. Old pages can contain an old last-message timestamp;
@@ -697,23 +720,30 @@ export class WhatsAppController {
           : event.chats;
         upsertWhatsAppChats(this.state.whatsapp, chats);
         upsertWhatsAppMessages(this.state.whatsapp, event.messages, { preferExisting: true });
+        this.mergeVisibleMessages(event.messages, true);
         applyWhatsAppReactions(this.state.whatsapp, event.reactions ?? []);
+        this.applyVisibleReactions(event.reactions ?? []);
         this.reapplyLiveReactions([...event.messages, ...(event.reactions ?? []).map(({ target }) => target)]);
         this.confirmOutgoingMessages(event.messages);
         this.reconcileProviderChannelIds();
         const completedHistoryRequest = event.syncKind === "on-demand"
           ? this.completeHistoryRequest(event.requestId, event.messages)
           : null;
+        this.continueHistory(completedHistoryRequest);
         this.queueCacheSave();
         const activeJid = this.activeWhatsAppJid();
         if (activeJid) {
           const channelId = whatsappChannelId(activeJid);
           this.refreshTimeline(channelId, true,
-            (this.state.whatsapp.messagesByChatId[activeJid]?.length ?? 0) < MAX_WHATSAPP_MESSAGES_PER_CHAT
-            && (completedHistoryRequest?.chatId !== activeJid || completedHistoryRequest.anchorAdvanced));
+            completedHistoryRequest?.chatId === activeJid
+              ? completedHistoryRequest.anchorAdvanced
+                && (this.state.whatsapp.messagesByChatId[activeJid]?.length ?? 0) < MAX_WHATSAPP_MESSAGES_PER_CHAT
+              : this.state.timeline.hasOlder);
+          // Opening an empty chat cannot page until the first real anchor
+          // arrives. Start then, rather than requiring a second navigation.
+          if (!hadMessages && this.state.whatsapp.messagesByChatId[activeJid]?.length) this.requestOlderHistory(activeJid);
         }
         this.syncProviderState(true);
-        this.continueHistory(completedHistoryRequest);
       }),
       this.backend.on("contacts", (event) => {
         upsertWhatsAppContacts(this.state.whatsapp, event.contacts);
@@ -727,6 +757,9 @@ export class WhatsAppController {
         this.syncProviderState(true);
       }),
       this.backend.on("messages", (event) => {
+        const activeBefore = this.activeWhatsAppJid();
+        const hadMessages = activeBefore && Boolean(this.state.whatsapp.messagesByChatId[activeBefore]?.length);
+        const wasNearBottom = isTimelineNearBottom(this.state.timeline.scrollOffset, this.state.timeline.maxScroll);
         const previouslyKnownIds = new Set(event.messages
           .filter((message) => {
             const chatId = canonicalWhatsAppJid(this.state.whatsapp, message.chatId);
@@ -735,6 +768,7 @@ export class WhatsAppController {
           })
           .map((message) => message.id));
         upsertWhatsAppMessages(this.state.whatsapp, event.messages, { preferExisting: event.kind === "upsert" });
+        this.mergeVisibleMessages(event.messages, event.kind === "upsert");
         this.reapplyLiveReactions(event.messages);
         this.confirmOutgoingMessages(event.messages);
         // A message can reveal an LID→phone mapping after the corresponding
@@ -744,7 +778,8 @@ export class WhatsAppController {
         this.queueCacheSave();
         for (const message of event.messages) {
           const storedChatId = canonicalWhatsAppJid(this.state.whatsapp, message.chatId);
-          const stored = (this.state.whatsapp.messagesByChatId[storedChatId] ?? [])
+          const stored = (storedChatId === this.activeWhatsAppJid() ? this.visibleMessages.get(message.id) : undefined)
+            ?? (this.state.whatsapp.messagesByChatId[storedChatId] ?? [])
             .find((candidate) => candidate.id === message.id) ?? message;
           const mapped = whatsAppMessageToTimeline(this.state.whatsapp, stored);
           if (this.state.timeline.channelId === mapped.channelId) {
@@ -755,9 +790,11 @@ export class WhatsAppController {
             if (previous && stored.timestampMs === null) mapped.timestamp = previous.timestamp;
             if (previous && !stored.senderId && !stored.senderName) mapped.author = previous.author;
             replaceTimelineMessage(this.state.timeline, mapped.id, mapped);
-            const isNewUpsert = event.kind === "upsert" && !previouslyKnownIds.has(message.id);
-            if (isNewUpsert) this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
-            if (!message.fromMe && isNewUpsert && event.upsertType === "notify") {
+            const isNewUpsert = event.kind === "upsert" && !previous && !previouslyKnownIds.has(message.id);
+            if (isNewUpsert && event.upsertType === "notify" && wasNearBottom) {
+              this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+            }
+            if (!message.fromMe && isNewUpsert && event.upsertType === "notify" && wasNearBottom) {
               const chat = this.state.whatsapp.chatsById[storedChatId];
               if (chat) chat.unreadCount = 0;
               clearChannelNotifications(this.state.notifications, mapped.channelId);
@@ -766,6 +803,8 @@ export class WhatsAppController {
           }
         }
         this.refreshActiveTimeline();
+        const active = this.activeWhatsAppJid();
+        if (active && !hadMessages && this.state.whatsapp.messagesByChatId[active]?.length) this.requestOlderHistory(active);
         this.syncProviderState();
       }),
       this.backend.on("reactions", (events) => {
@@ -773,8 +812,10 @@ export class WhatsAppController {
       }),
       this.backend.on("lid-mapping", ({ lid, phoneId }) => {
         registerWhatsAppLidMapping(this.state.whatsapp, lid, phoneId);
+        applyWhatsAppReactions(this.state.whatsapp, [...this.liveReactions.values()]);
         this.queueCacheSave();
         this.syncProviderState();
+        this.refreshActiveTimeline();
       }),
       this.backend.on("error", (event) => {
         if (!event.recoverable && this.state.whatsapp.loginModal) {
@@ -804,7 +845,7 @@ export class WhatsAppController {
         : null;
       this.applyCachedSidebarChannelLayout();
       this.queueCacheSave();
-      this.state.sidebar.loadingGuildId = null;
+      if (this.state.sidebar.loadingGuildId === WHATSAPP_GUILD_ID) this.state.sidebar.loadingGuildId = null;
       const jid = this.activeWhatsAppJid();
       if (jid) this.requestOlderHistory(jid);
     }
@@ -862,6 +903,7 @@ export class WhatsAppController {
       }
     }
 
+    this.updateLoadingState();
     this.scheduleRender();
   }
 
@@ -935,6 +977,8 @@ export class WhatsAppController {
     this.localMessages.clear();
     this.outgoing.clear();
     this.liveReactions.clear();
+    this.visibleMessages.clear();
+    this.visibleChatId = null;
   }
 
   private reapplyLiveReactions(targets: readonly Pick<WhatsAppMessageKey, "id" | "chatId">[]): void {
@@ -972,15 +1016,49 @@ export class WhatsAppController {
     }
   }
 
+  private mergeVisibleMessages(messages: readonly WhatsAppMessage[], preferExisting: boolean, jid = this.activeWhatsAppJid()): void {
+    if (!jid) return;
+    if (!this.visibleChatId || canonicalWhatsAppJid(this.state.whatsapp, this.visibleChatId) !== jid) {
+      this.visibleMessages.clear();
+    } else if (this.visibleChatId !== jid) {
+      for (const [id, message] of this.visibleMessages) {
+        this.visibleMessages.set(id, {
+          ...message, chatId: jid,
+          ...(message.replyTo ? { replyTo: {
+            ...message.replyTo, chatId: canonicalWhatsAppJid(this.state.whatsapp, message.replyTo.chatId),
+          } } : {}),
+        });
+      }
+    }
+    this.visibleChatId = jid;
+    for (const incoming of messages) {
+      if (!isVisibleWhatsAppMessage(incoming)) continue;
+      if (canonicalWhatsAppJid(this.state.whatsapp, incoming.chatId) !== jid) continue;
+      const outgoing = [...this.outgoing.values()].find(send => send.messageIds.includes(incoming.id));
+      const message = { ...incoming, chatId: jid, receivedAtMs: incoming.receivedAtMs ?? outgoing?.message.timestamp };
+      this.visibleMessages.set(message.id, mergeWhatsAppMessage(this.visibleMessages.get(message.id), message, preferExisting));
+    }
+  }
+
+  private applyVisibleReactions(events: WhatsAppReactionEvent[]): string[] {
+    const jid = this.activeWhatsAppJid();
+    if (!jid || this.visibleChatId !== jid) return [];
+    return applyWhatsAppReactions({
+      ...this.state.whatsapp, messagesByChatId: { [jid]: [...this.visibleMessages.values()] },
+    }, events);
+  }
+
   private refreshTimeline(channelId: string, preserveScroll = true, hasOlder = this.state.timeline.hasOlder): void {
     const sameTimeline = preserveScroll && this.state.timeline.channelId === channelId;
     // The visible history may be larger than the bounded provider cache. Keep
     // those messages (and their attachment source objects) until navigation.
-    const byId = new Map((sameTimeline ? this.state.timeline.messages : [])
-      .filter((message) => !message.localStatus)
-      .map((message) => [message.id, message]));
-    for (const message of whatsAppTimelineMessages(this.state.whatsapp, channelId)) byId.set(message.id, message);
-    const messages = [...byId.values()];
+    const jid = whatsappJidFromChannelId(channelId)!;
+    this.mergeVisibleMessages(this.state.whatsapp.messagesByChatId[jid] ?? [], true, jid);
+    // Live reaction removals must also cover messages evicted from disk cache.
+    // Use the target chat explicitly: navigation has not updated timeline ID yet.
+    applyWhatsAppReactions({ ...this.state.whatsapp, messagesByChatId: { [jid]: [...this.visibleMessages.values()] } },
+      [...this.liveReactions.values()]);
+    const messages = [...this.visibleMessages.values()].map(message => whatsAppMessageToTimeline(this.state.whatsapp, message));
     for (const local of this.localMessages.values()) {
       const jid = whatsappJidFromChannelId(local.channelId)!;
       const canonicalChannelId = whatsappChannelId(canonicalWhatsAppJid(this.state.whatsapp, jid));
@@ -988,10 +1066,13 @@ export class WhatsAppController {
     }
     messages.sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
     const systemMessages = this.state.timeline.systemMessages;
+    const maxScroll = this.state.timeline.maxScroll;
     setTimelineMessages(this.state.timeline, channelId, messages, { preserveScroll, hasOlder });
-    if (sameTimeline) this.state.timeline.systemMessages = systemMessages;
-    const jid = whatsappJidFromChannelId(channelId);
-    this.state.timeline.loadingOlder = Boolean(jid && this.pendingHistoryByChatId.has(jid));
+    if (sameTimeline) {
+      this.state.timeline.systemMessages = systemMessages;
+      this.state.timeline.maxScroll = maxScroll;
+    }
+    this.updateLoadingState();
   }
 
   private refreshActiveTimeline(): void {
@@ -1001,12 +1082,21 @@ export class WhatsAppController {
 
   private continueHistory(completed: { chatId: string; anchorAdvanced: boolean } | null): void {
     if (!completed?.anchorAdvanced || this.activeWhatsAppJid() !== completed.chatId) return;
+    if ((this.state.whatsapp.messagesByChatId[completed.chatId]?.length ?? 0) >= MAX_WHATSAPP_MESSAGES_PER_CHAT) return;
+    if (this.queuedHistoryByChatId.has(completed.chatId)) return;
     const generation = this.historyRequestGeneration;
-    setTimeout(() => {
-      if (generation === this.historyRequestGeneration && this.activeWhatsAppJid() === completed.chatId) {
-        this.requestOlderHistory(completed.chatId);
+    const timer = setTimeout(() => {
+      const jid = canonicalWhatsAppJid(this.state.whatsapp, completed.chatId);
+      if (this.queuedHistoryByChatId.get(jid) !== timer) return;
+      this.queuedHistoryByChatId.delete(jid);
+      if (generation === this.historyRequestGeneration && this.activeWhatsAppJid() === jid) {
+        this.requestOlderHistory(jid);
       }
+      this.updateLoadingState();
+      this.scheduleRender();
     }, this.historyPageDelayMs);
+    this.queuedHistoryByChatId.set(completed.chatId, timer);
+    this.updateLoadingState();
   }
 
   private activeWhatsAppJid(): string | null {
@@ -1031,7 +1121,7 @@ export class WhatsAppController {
     if (messages.length === 0 || messages.length >= MAX_WHATSAPP_MESSAGES_PER_CHAT) return;
     const oldest = this.historyAnchor(messages);
     if (!oldest?.key.id || !oldest.key.chatId || !oldest.timestampMs) return;
-    if (this.pendingHistoryByChatId.has(jid)) return;
+    if (this.pendingHistoryByChatId.has(jid) || this.queuedHistoryByChatId.has(jid)) return;
     if (this.state.timeline.channelId === whatsappChannelId(jid)) this.state.timeline.loadingOlder = true;
     const timeout = setTimeout(() => {
       const currentJid = canonicalWhatsAppJid(this.state.whatsapp, jid);
@@ -1053,11 +1143,11 @@ export class WhatsAppController {
       const earlyPage = pending.receivedPages.get(requestId);
       if (earlyPage) {
         const completed = this.completeHistoryRequest(requestId, earlyPage);
+        this.continueHistory(completed);
         this.refreshActiveTimeline();
         if (completed?.chatId === this.activeWhatsAppJid() && !completed.anchorAdvanced) {
           this.state.timeline.hasOlder = false;
         }
-        this.continueHistory(completed);
         this.scheduleRender();
       }
       pending.receivedPages.clear();
@@ -1126,10 +1216,19 @@ export class WhatsAppController {
     this.historyRequestGeneration += 1;
     for (const pending of this.pendingHistoryByChatId.values()) clearTimeout(pending.timeout);
     this.pendingHistoryByChatId.clear();
+    for (const timer of this.queuedHistoryByChatId.values()) clearTimeout(timer);
+    this.queuedHistoryByChatId.clear();
     if (this.activeWhatsAppJid()) this.state.timeline.loadingOlder = false;
   }
 
   private reconcileProviderChannelIds(): void {
+    for (const [jid, timer] of this.queuedHistoryByChatId) {
+      const canonical = canonicalWhatsAppJid(this.state.whatsapp, jid);
+      if (canonical === jid) continue;
+      this.queuedHistoryByChatId.delete(jid);
+      if (this.queuedHistoryByChatId.has(canonical)) clearTimeout(timer);
+      else this.queuedHistoryByChatId.set(canonical, timer);
+    }
     for (const [jid, pending] of this.pendingHistoryByChatId) {
       const canonical = canonicalWhatsAppJid(this.state.whatsapp, jid);
       if (canonical === jid) continue;
@@ -1283,13 +1382,35 @@ export class WhatsAppController {
   private async loadCachedState(): Promise<void> {
     const generation = this.backendResetGeneration;
     try {
-      const cached = await loadWhatsAppCache(this.cacheFile);
+      const cached = await this.loadCache(this.cacheFile);
       if (!cached || !this.cacheEnabled || this.shuttingDown || generation !== this.backendResetGeneration) return;
       hydrateWhatsAppUiState(this.state.whatsapp, cached);
+      this.reapplyLiveReactions(Object.values(cached.messagesByChatId).flat());
+      this.refreshActiveTimeline();
       this.syncProviderState(true);
     } catch (error) {
+      if (this.shuttingDown || !this.cacheEnabled || generation !== this.backendResetGeneration) return;
       setNotice(this.state, `Could not load the WhatsApp chat cache: ${safeErrorMessage(error)}`, "warning", { statusLine: true, chat: false });
       this.scheduleRender();
+    } finally {
+      this.cacheLoading = false;
+      this.updateLoadingState();
+      this.scheduleRender();
+    }
+  }
+
+  private updateLoadingState(): void {
+    const status = this.state.whatsapp.connection.status;
+    const connecting = status === "loading-auth" || status === "connecting" || status === "reconnecting";
+    const text = connecting ? (status === "reconnecting" ? "Reconnecting WhatsApp…" : "Connecting WhatsApp…")
+      : this.cacheLoading ? "Loading WhatsApp cache…" : null;
+    if (text && !this.shuttingDown && this.cacheEnabled) {
+      this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID] = { text, loading: true };
+    } else delete this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID];
+    const jid = this.activeWhatsAppJid();
+    if (jid) {
+      this.state.timeline.loadingOlder = this.pendingHistoryByChatId.has(jid) || this.queuedHistoryByChatId.has(jid);
+      this.state.timeline.loading = !this.state.timeline.messages.length && Boolean(text) && !this.shuttingDown && this.cacheEnabled;
     }
   }
 

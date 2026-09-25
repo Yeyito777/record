@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 import {
+  canonicalWhatsAppJid,
   upsertWhatsAppChats,
   upsertWhatsAppContacts,
   upsertWhatsAppMessages,
@@ -112,11 +113,27 @@ export function snapshotWhatsAppUiState(state: WhatsAppUiState): WhatsAppCacheSn
 }
 
 export function hydrateWhatsAppUiState(state: WhatsAppUiState, snapshot: WhatsAppCacheSnapshot): void {
-  state.account = snapshot.account;
-  upsertWhatsAppContacts(state, snapshot.contacts);
-  upsertWhatsAppChats(state, snapshot.chats);
+  if (state.account && snapshot.account) {
+    const ids = (account: WhatsAppAccount) => [account.id, account.lid, account.phoneId]
+      .filter((id): id is string => Boolean(id)).map(id => id.replace(/:\d+@/, "@"));
+    if (!ids(state.account).some(id => ids(snapshot.account!).includes(id))) return;
+  }
+  state.account ??= snapshot.account;
+  // Disk hydration can finish after live events. Treat it as backfill, never
+  // an authoritative replacement of edits, account identity or unread state.
+  const preferLive = <T extends object>(cached: T, live: T | undefined): T => ({
+    ...cached,
+    ...Object.fromEntries(Object.entries(live ?? {}).filter(([, value]) => value !== undefined)),
+  });
+  for (const contact of snapshot.contacts) {
+    const live = [contact.phoneId, contact.id, contact.lid].filter((id): id is string => Boolean(id))
+      .map(id => state.contactsById[canonicalWhatsAppJid(state, id)]).find(Boolean);
+    upsertWhatsAppContacts(state, [{ ...preferLive(contact, live), id: contact.id }]);
+  }
+  upsertWhatsAppChats(state, snapshot.chats.map(chat =>
+    preferLive(chat, state.chatsById[canonicalWhatsAppJid(state, chat.id)])));
   for (const messages of Object.values(snapshot.messagesByChatId)) {
-    upsertWhatsAppMessages(state, messages);
+    upsertWhatsAppMessages(state, messages, { preferExisting: true });
   }
 }
 
