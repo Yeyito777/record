@@ -108,10 +108,16 @@ export interface ChannelNotificationTarget {
   guildId: string | null;
 }
 
-/** Return the next notified channel in notification insertion order, wrapping at the end. */
+/**
+ * Prefer other unread channels in the focused block before leaving it.
+ * Within each block, retain notification insertion order and wrap at the end.
+ */
 export function nextChannelNotification(
   notifications: NotificationState,
   currentChannelId: string | null | undefined,
+  focusedGuildId: string | null | undefined = currentChannelId
+    ? notifications.channelGuildIds[currentChannelId]
+    : null,
 ): ChannelNotificationTarget | null {
   const channelIds = Object.entries(notifications.byChannelId)
     .filter(([, count]) => count > 0)
@@ -119,7 +125,11 @@ export function nextChannelNotification(
   if (channelIds.length === 0) return null;
 
   const currentIndex = currentChannelId ? channelIds.indexOf(currentChannelId) : -1;
-  const channelId = channelIds[currentIndex < 0 ? 0 : (currentIndex + 1) % channelIds.length]!;
+  const ordered = [...channelIds.slice(currentIndex + 1), ...channelIds.slice(0, currentIndex + 1)];
+  const channelId = ordered.find((id) => id !== currentChannelId
+    && focusedGuildId
+    && notifications.channelGuildIds[id] === focusedGuildId)
+    ?? ordered[0]!;
   return {
     channelId,
     guildId: notifications.channelGuildIds[channelId] ?? null,
