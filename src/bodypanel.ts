@@ -13,7 +13,7 @@ export function renderBodyLines(state: AppState, width: number): string[] {
     return [
       `${theme.text}${truncate("Login with /login <token|username> to load your Discord servers.", width)}${theme.reset}`,
       `${theme.text}${truncate("Link WhatsApp with /login whatsapp.", width)}${theme.reset}`,
-      `${theme.text}${truncate("Import Instagram from vimbrowser with /login instagram [tab ID].", width)}${theme.reset}`,
+      `${theme.text}${truncate("Log in to Instagram with /login instagram <cookies> (run /login instagram for help).", width)}${theme.reset}`,
       `${theme.muted}${truncate("Use Ctrl+S or Ctrl+M to toggle the servers sidebar.", width)}${theme.reset}`,
     ];
   }

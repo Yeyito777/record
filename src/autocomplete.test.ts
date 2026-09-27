@@ -51,7 +51,7 @@ describe("autocomplete", () => {
 
     expect(state.autocomplete?.matches).toEqual([
       { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
-      { name: "instagram", desc: "Import Instagram from vimbrowser (optional tab ID)" },
+      { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)" },
       { name: "discord", desc: "Log in to Discord explicitly" },
       { name: "alice", desc: "saved login" },
       { name: "bob", desc: "saved login" },

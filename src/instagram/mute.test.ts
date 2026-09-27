@@ -131,7 +131,7 @@ describe("Instagram optimistic local mute", () => {
       await f.controller.autoConnect();
       expect(instagramChannels(f.state.instagram)[0]?.muted).toBe(false);
       f.remote.viewer.pk = "1003";
-      await f.controller.login();
+      await f.controller.login({ source: "browser" });
       expect(f.state.instagram.muteOverridesByThreadId).toEqual({});
       expect(f.saved["1001"]).toEqual({ "2001": false });
       expect(f.controller.toggleChatMute("ig:999")).toBe(false);

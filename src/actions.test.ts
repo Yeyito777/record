@@ -42,6 +42,29 @@ function waitForCondition(predicate: () => boolean, timeoutMs = 1_000): Promise<
 }
 
 describe("submitCurrentBuffer", () => {
+  test("Instagram cookies route only to login, even with an attachment or active editor", () => {
+    for (const mode of ["normal", "attachment", "edit", "reaction"]) {
+      const state = createInitialState(null, "/tmp/config.json");
+      const credential = "sessionid=test-session; csrftoken=test-csrf; ds_user_id=1";
+      state.editor.buffer = `/login instagram ${credential}`;
+      state.channelList.activeChannelId = "ig:123";
+      if (mode === "attachment") state.pendingImages = [{} as any];
+      if (mode === "edit") state.editTarget = {} as any;
+      if (mode === "reaction") state.reactionComposer = true;
+      let received: unknown;
+      globalThis.fetch = (() => { throw new Error("Must not call Discord"); }) as unknown as typeof fetch;
+      submitCurrentBuffer(state, {
+        ...effects,
+        loginInstagram: login => { received = login; },
+        sendInstagramMessage: () => { throw new Error("Must not send credentials"); },
+        sendWhatsAppMessage: () => { throw new Error("Must not send credentials"); },
+      });
+      expect(received).toEqual({ source: "cookies", credential });
+      expect(state.editor.buffer).toBe("");
+      expect(state.auth.status).toBe("idle");
+    }
+  });
+
   test("resolves saved login usernames before validation", () => {
     const state = createInitialState(null, "/tmp/record-config.json", { alice: "token-1" });
 

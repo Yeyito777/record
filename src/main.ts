@@ -2491,7 +2491,7 @@ const effects: AppEffects = {
   applyThemeCursor,
   bootstrapSession,
   loginWhatsApp,
-  loginInstagram: (tabId) => { void instagramController.login(tabId); },
+  loginInstagram: (login) => { void instagramController.login(login); },
   logoutInstagram: () => { void instagramController.logout(); },
   sendInstagramMessage: (content) => instagramController.sendMessage(content),
   refreshInstagram: () => { void instagramController.refresh(); },

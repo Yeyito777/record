@@ -8,7 +8,7 @@ import { applySidebarChannelLayoutForGuild, setSidebarCachedChannels, setSidebar
 import { setNotice, type AppState } from "../state";
 import { clearTimeline, isTimelineNearBottom, setTimelineMessages } from "../timeline";
 import { sanitizeTerminalLabel } from "../whatsapp/sanitize";
-import { importInstagramSession, loadInstagramSession, removeInstagramSession, saveInstagramSession, type InstagramSession } from "./auth";
+import { importInstagramSession, loadInstagramSession, parseInstagramCookies, removeInstagramSession, saveInstagramSession, type InstagramLogin, type InstagramSession } from "./auth";
 import { InstagramApiError, InstagramClient, type InstagramInbox } from "./client";
 import { createInstagramUiState, instagramChannels, instagramTimelineMessages, mergeInstagramThread } from "./integration";
 import { isInstagramThreadMuted, loadInstagramMutes, saveInstagramMutes } from "./mute";
@@ -66,7 +66,13 @@ export class InstagramController {
     } catch (error) { if (generation === this.generation) this.failure(error); }
   }
 
-  async login(tabId?: string): Promise<void> {
+  async login(login: InstagramLogin): Promise<void> {
+    // Bad pasted input must not interrupt a working connection or overwrite auth.
+    let pastedSession: InstagramSession | undefined;
+    if (login.source === "cookies") {
+      try { pastedSession = parseInstagramCookies(login.credential); }
+      catch (error) { this.notice((error as Error).message, true); return; }
+    }
     const generation = ++this.generation;
     this.stopTimer();
     this.client = null;
@@ -78,11 +84,13 @@ export class InstagramController {
     this.resetInboxPaging();
     this.state.instagram.connection = { status: "connecting" };
     this.updateStatus();
-    this.notice("Importing Instagram session from vimbrowser…", false, true);
+    this.notice(login.source === "browser" ? "Importing Instagram session from vimbrowser…" : "Connecting to Instagram…", false, true);
     try {
-      const session = await (this.options.importSession || importInstagramSession)(tabId);
+      const session = login.source === "browser"
+        ? await (this.options.importSession || importInstagramSession)(login.tabId)
+        : pastedSession!;
       if (generation !== this.generation) return;
-      // Keep the explicit browser import even if the first inbox request times
+      // Keep the explicitly supplied session even if the first inbox request times
       // out. A temporary network failure must not lose the user's login.
       // Serialize storage mutations so logout cannot race a late credential save.
       this.authWrites = this.authWrites.catch(() => {}).then(async () => {

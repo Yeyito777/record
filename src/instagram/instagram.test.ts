@@ -7,7 +7,7 @@ import { DIRECT_MESSAGES_GUILD_ID } from "../discord";
 import { createInitialState } from "../state";
 import { buildSidebarEntries } from "../sidebar";
 import { renderStatusLine } from "../statusline";
-import { loadInstagramSession, saveInstagramSession, validateSession } from "./auth";
+import { loadInstagramSession, parseInstagramCookies, saveInstagramSession, validateSession } from "./auth";
 import { InstagramApiError, InstagramClient, type InstagramInbox, type InstagramThread } from "./client";
 import { InstagramController, type InstagramControllerOptions } from "./controller";
 import { createInstagramUiState, instagramChannels, instagramMessageToTimeline, mergeInstagramThread } from "./integration";
@@ -37,6 +37,29 @@ async function waitFor(predicate: () => boolean) {
 }
 
 describe("Instagram session", () => {
+  test("accepts Cookie headers, optional wrapping quotes and opaque encoded values", () => {
+    const header = "sessionid=1%3Atest==; csrftoken=test-csrf; ds_user_id=1";
+    for (const value of [header, `Cookie: ${header}`, `cookie: ${header};`, `"${header}"`, `'${header}'`]) {
+      expect(parseInstagramCookies(value)).toEqual({
+        cookies: { ...session.cookies, sessionid: "1%3Atest==" },
+      });
+    }
+    expect(parseInstagramCookies(`${header}; rur="ABC\\054123"; ig_did=device`).cookies.rur).toBe('"ABC\\054123"');
+  });
+  test("rejects missing, duplicate, malformed and injected credentials without echoing them", () => {
+    const header = "sessionid=private-secret; csrftoken=test-csrf; ds_user_id=1";
+    for (const value of [
+      "", "private-secret", "sessionid=private-secret", `${header}; sessionid=other`,
+      `${header}; broken`, `${header}; evil name=value`, `${header}\r\nX-Evil: private-secret`,
+      `${header}; evil=\x1b[31m`, `${header}; empty=`, header.replace("test-csrf", "two words"),
+    ]) {
+      try { parseInstagramCookies(value); throw new Error("expected rejection"); }
+      catch (error) {
+        expect((error as Error).message).toContain("Invalid Instagram cookies");
+        expect((error as Error).message).not.toContain("private-secret");
+      }
+    }
+  });
   test("validates required cookies and rejects header injection", () => {
     expect(validateSession(session)).toEqual(session);
     expect(() => validateSession({ cookies: {} })).toThrow();
@@ -172,6 +195,39 @@ function harness(overrides: Partial<InstagramClient> = {}, options: InstagramCon
 }
 
 describe("Instagram controller", () => {
+  test("pasted credentials connect and persist without touching vimbrowser", async () => {
+    let imported = false;
+    let saved: unknown;
+    let received: unknown;
+    const h = harness({}, {
+      importSession: async () => { imported = true; throw new Error("Unexpected browser import"); },
+      saveSession: async value => { saved = value; },
+      clientFactory: value => {
+        received = value;
+        return { inbox: async () => inbox() } as unknown as InstagramClient;
+      },
+    });
+    try {
+      await h.controller.login({ source: "cookies", credential: "sessionid=test-session; csrftoken=test-csrf; ds_user_id=1" });
+      expect(h.controller.isConnected).toBe(true);
+      expect(imported).toBe(false);
+      expect(saved).toEqual(session);
+      expect(received).toEqual(session);
+      expect(h.state.notice.text).not.toContain("test-session");
+    } finally { await h.controller.shutdown(); }
+  });
+  test("invalid paste preserves a working connection and never writes auth", async () => {
+    let writes = 0;
+    const h = harness({}, { saveSession: async () => { writes++; } });
+    try {
+      await h.controller.autoConnect();
+      await h.controller.login({ source: "cookies", credential: "private-secret" });
+      expect(h.controller.isConnected).toBe(true);
+      expect(writes).toBe(0);
+      expect(h.state.notice.text).toContain("Invalid Instagram cookies");
+      expect(h.state.notice.text).not.toContain("private-secret");
+    } finally { await h.controller.shutdown(); }
+  });
   test("shows logged-out status in the statusline and root refresh loads credentials added after startup", async () => {
     let saved = false;
     const h = harness({}, { loadSession: async () => saved ? session : null });
@@ -424,7 +480,7 @@ describe("Instagram controller", () => {
       saveSession: async () => { saved = true; }, retryDelayMs: 60_000,
     });
     try {
-      await h.controller.login();
+      await h.controller.login({ source: "browser" });
       expect(saved).toBe(true);
       expect(h.state.instagram.connection.status).toBe("error");
     } finally { await h.controller.shutdown(); }
@@ -524,7 +580,7 @@ describe("Instagram controller", () => {
     });
     try {
       await controller.autoConnect();
-      const login = controller.login();
+      const login = controller.login({ source: "browser" });
       await controller.refresh();
       expect(inboxCalls).toBe(1);
       expect(state.instagram.connection.status).toBe("connecting");

@@ -19,13 +19,14 @@ import { normalizeToken } from "./token";
 import { INSTAGRAM_GUILD_ID, isWhatsAppChannelId, isInstagramChannelId } from "./chatproviders";
 import { pushTimelineSystemMessage } from "./timeline";
 import { reactToSelectedMessage, type ReactionEffects } from "./reactions";
+import type { InstagramLogin } from "./instagram/auth";
 
 export interface AppEffects extends SessionEffects, ReactionEffects {
   quit: () => void;
   applyThemeCursor: () => void;
   bootstrapSession: (token: string) => void;
   loginWhatsApp: () => void;
-  loginInstagram?: (tabId?: string) => void;
+  loginInstagram?: (login: InstagramLogin) => void;
   logoutInstagram?: () => void;
   sendInstagramMessage?: (content: string) => boolean;
   refreshInstagram?: () => void;
@@ -180,7 +181,7 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       effects.loginWhatsApp();
       return true;
     case "login_instagram":
-      effects.loginInstagram?.(result.tabId);
+      effects.loginInstagram?.(result.login);
       return true;
     case "logout_instagram":
       effects.logoutInstagram?.();
@@ -266,6 +267,10 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
   const text = rawText.trim();
   const hasImages = state.pendingImages.length > 0;
   state.autocomplete = null;
+
+  // Credentials must never become chat content, even while editing a message,
+  // composing a reaction, attaching a file, or matching a text macro.
+  if (/^\/login(?:\s|$)/.test(text) && handleCommandSubmit(state, text, effects)) return;
 
   if (state.reactionComposer) {
     if (hasImages) {

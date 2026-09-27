@@ -21,12 +21,29 @@ function withTempConfigHome(run: () => void): void {
 }
 
 describe("commands", () => {
-  test("parses Instagram vimbrowser import and provider logout", () => {
+  test("shows pasted-cookie instructions and keeps browser import explicit", () => {
     const state = createInitialState(null, "/tmp/config.json");
-    expect(tryCommand("/login instagram", state)).toEqual({ type: "login_instagram" });
-    expect(tryCommand("/login instagram tab-42", state)).toEqual({ type: "login_instagram", tabId: "tab-42" });
+    expect(tryCommand("/login instagram", state)).toEqual({ type: "handled" });
+    expect(state.notice.text).toContain("sessionid=…; csrftoken=…; ds_user_id=…");
+    expect(tryCommand("/login instagram browser", state)).toEqual({ type: "login_instagram", login: { source: "browser" } });
+    for (const input of ["browser 42", "42"]) {
+      expect(tryCommand(`/login instagram ${input}`, state)).toEqual({ type: "login_instagram", login: { source: "browser", tabId: "42" } });
+    }
+    for (const input of ["browser tab-42", "browser 42 extra"]) {
+      expect(tryCommand(`/login instagram ${input}`, state)).toEqual({ type: "handled" });
+    }
     expect(tryCommand("/logout instagram", state)).toEqual({ type: "logout_instagram" });
     expect(tryCommand("/login instagram a b", state)).not.toEqual({ type: "login", credential: "instagram a b" });
+  });
+  test("preserves a complete Instagram Cookie header and clears credentials from the editor", () => {
+    const state = createInitialState(null, "/tmp/config.json");
+    const credential = "Cookie: sessionid=1%3Aabc==; csrftoken=csrf; ds_user_id=1";
+    state.editor.buffer = `/login Instagram ${credential}`;
+    expect(tryCommand(state.editor.buffer, state)).toEqual({
+      type: "login_instagram", login: { source: "cookies", credential },
+    });
+    expect(JSON.stringify(state.editor)).not.toContain("1%3Aabc");
+    expect(state.notice.text).not.toContain("1%3Aabc");
   });
   test("shows and persists the default quick reaction, accepting standard shortcodes", () => {
     withTempConfigHome(() => {
@@ -353,7 +370,7 @@ describe("commands", () => {
 
     expect(getCommandArgs(state)["/login"]).toEqual([
       { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
-      { name: "instagram", desc: "Import Instagram from vimbrowser (optional tab ID)" },
+      { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)" },
       { name: "discord", desc: "Log in to Discord explicitly" },
       { name: "alice", desc: "saved login" },
       { name: "zed", desc: "saved login" },

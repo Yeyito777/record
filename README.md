@@ -105,16 +105,32 @@ Notes:
 
 ### Instagram Direct
 
-Sign into Instagram in **vimbrowser**, then run `/login instagram` in Record.
-For an isolated browser context, use `/login instagram <tab ID>` with that
-signed-in Instagram tab. Importing auth does not navigate or focus the browser.
-The imported session reconnects automatically on subsequent launches.
+Run `/login instagram` for instructions, then paste your Instagram cookies:
+
+```text
+/login instagram sessionid=…; csrftoken=…; ds_user_id=…
+```
+
+Instagram uses session cookies, not a Discord-style bearer token. Sign in at
+instagram.com in **any browser**, open DevTools → Network, reload the page,
+and select a request to `www.instagram.com`. Copy its **Cookie** request header
+value and paste it after `/login instagram ` in Record (not your shell).
+The full header works, with or without the `Cookie:` prefix; it must contain
+`sessionid`, `csrftoken`, and `ds_user_id` from the same session. A bare sessionid
+alone is not supported. Treat these cookies like a password: never share them.
+They are saved locally as plaintext with private file permissions.
+
+Optional **vimbrowser** import: `/login instagram browser [tab ID]`.
+For an isolated browser context, specify its signed-in Instagram tab ID.
+The old `/login instagram <numeric tab ID>` shortcut also works.
+Importing auth does not navigate or focus the browser.
+Either login method reconnects automatically on subsequent launches.
 If the Instagram section is empty, its status row distinguishes connecting,
 logged out (`/login instagram`), and offline states. `/refresh` retries saved
 auth even after an initial connection failure; transient network failures retry
 automatically, while expired sessions and rate limits require user action.
-Worktree logins remain isolated: after cleaning a test worktree, import the
-session once in main with `/login instagram` if main was not already linked.
+Worktree logins remain isolated: after cleaning a test worktree, log in once
+in main if main was not already linked.
 
 Instagram has its own sidebar section, independent of Discord and WhatsApp.
 Open existing individual or group conversations, read/paginate history, send
@@ -142,7 +158,8 @@ browser. Credentials are plaintext in
 permissions. Worktree test sessions have their own config copy.
 
 This uses Instagram's **unofficial web API**, which can change or be rate-limited.
-If Instagram requests verification, complete it in vimbrowser and import again.
+If Instagram requests verification, complete it in your browser and log in again
+with fresh cookies (or use the optional vimbrowser import).
 Uploads, calls, starting new chats, message requests, editing/deleting messages,
 and changing server-side mute settings are not supported yet. Disappearing
 media and unsupported/encrypted items show an “open in Instagram” placeholder

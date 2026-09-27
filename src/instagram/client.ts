@@ -70,17 +70,17 @@ export class InstagramClient {
       throw new InstagramApiError(`Instagram is temporarily unavailable (HTTP ${response.status}). Record will retry.`);
     }
     if ([301, 302, 303, 307, 308, 401, 403].includes(response.status)) {
-      throw new InstagramApiError("Instagram session expired or needs verification. Open Instagram in vimbrowser, then /login instagram.", true);
+      throw new InstagramApiError("Instagram session expired or needs verification. Sign in in your browser, then /login instagram.", true);
     }
     let data: any;
     try { data = await response.json(); } catch {
-      throw new InstagramApiError("Instagram returned an unreadable response. Check your session in vimbrowser.", true);
+      throw new InstagramApiError("Instagram returned an unreadable response. Check your session in your browser.", true);
     }
     if (!response.ok || data.status === "fail") {
       const fatal = Boolean(data.challenge || data.checkpoint_url || data.message === "login_required" || data.message === "challenge_required");
       // Never echo server payloads: they may contain credentials or arbitrary terminal controls.
       throw new InstagramApiError(fatal
-        ? "Instagram needs verification. Open it in vimbrowser, then /login instagram."
+        ? "Instagram needs verification. Open it in your browser, then /login instagram."
         : `Instagram request was rejected (HTTP ${response.status}).`, fatal);
     }
     return data;

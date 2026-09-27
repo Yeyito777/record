@@ -13,6 +13,7 @@ import { THEME_NAMES, setTheme, theme, type ThemeName } from "./theme";
 import { clearTimelineInlineImageStates, pushTimelineSystemMessage } from "./timeline";
 import { DEFAULT_LOCAL_GAIN_DB, formatGainDbWithUnit, parseGainDb, parseNoiseSuppressionMode, type NoiseSuppressionMode } from "./volume";
 import { parseReactionEmoji } from "./reactions";
+import { INSTAGRAM_LOGIN_HELP, type InstagramLogin } from "./instagram/auth";
 
 export interface CompletionItem {
   /** Text or inline marker shown in the autocomplete popup. */
@@ -30,7 +31,7 @@ export type CommandResult =
   | { type: "quit" }
   | { type: "login"; credential: string }
   | { type: "login_whatsapp" }
-  | { type: "login_instagram"; tabId?: string }
+  | { type: "login_instagram"; login: InstagramLogin }
   | { type: "logout_instagram" }
   | { type: "logout" }
   | { type: "logout_whatsapp" }
@@ -105,7 +106,7 @@ const STATUS_ARGS: CompletionItem[] = [
 
 const LOGIN_PROVIDER_ARGS: CompletionItem[] = [
   { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
-  { name: "instagram", desc: "Import Instagram from vimbrowser (optional tab ID)" },
+  { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)" },
   { name: "discord", desc: "Log in to Discord explicitly" },
 ];
 
@@ -253,15 +254,24 @@ const commands: SlashCommand[] = [
     description: "Log in to Discord, WhatsApp or Instagram",
     handler: (text, state) => {
       const match = text.match(/^\/login\s+(.+)$/);
-      if (!match) return usage(state, "Usage: /login <token|username> | /login whatsapp");
+      if (!match) return usage(state, "Usage: /login <token|username> | /login whatsapp | /login instagram");
       const credential = match[1].trim();
-      if (!credential) return usage(state, "Usage: /login <token|username> | /login whatsapp");
+      if (!credential) return usage(state, "Usage: /login <token|username> | /login whatsapp | /login instagram");
       clearPrompt(state);
       if (credential.toLowerCase() === "whatsapp") return { type: "login_whatsapp" };
       if (/^instagram(?:\s|$)/i.test(credential)) {
-        const parts = credential.split(/\s+/);
-        if (parts.length > 2) return usage(state, "Usage: /login instagram [tab ID]");
-        return { type: "login_instagram", ...(parts[1] ? { tabId: parts[1] } : {}) };
+        const input = credential.slice("instagram".length).trim();
+        if (!input) return usage(state, INSTAGRAM_LOGIN_HELP);
+        if (/^browser(?:\s|$)/i.test(input)) {
+          const parts = input.split(/\s+/);
+          if (parts.length > 2 || (parts[1] && !/^\d+$/.test(parts[1]))) {
+            return usage(state, "Usage: /login instagram browser [numeric tab ID]");
+          }
+          return { type: "login_instagram", login: { source: "browser", ...(parts[1] ? { tabId: parts[1] } : {}) } };
+        }
+        // Preserve the old explicit-tab shortcut, but never import implicitly.
+        if (/^\d+$/.test(input)) return { type: "login_instagram", login: { source: "browser", tabId: input } };
+        return { type: "login_instagram", login: { source: "cookies", credential: input } };
       }
       const explicitDiscord = credential.match(/^discord\s+(.+)$/i)?.[1]?.trim();
       if (/^discord(?:\s|$)/i.test(credential)) {
