@@ -1700,8 +1700,9 @@ function resetTimelineRenderCaches(timeline: TimelineState): void {
 
 function timelineLiveRenderKey(timeline: TimelineState, loadingFrameIndex: number, nowMs: number): string {
   const loadingImage = hasLoadingInlineTimelineImage(timeline);
-  if (!hasActiveTimelineCall(timeline) && !loadingImage) return "";
-  return `${loadingImage ? loadingFrameIndex : ""}:${hasActiveTimelineCall(timeline) ? Math.floor(nowMs / 1000) : ""}`;
+  const activeCall = hasActiveTimelineCall(timeline);
+  if (!activeCall && !loadingImage) return "";
+  return `${loadingFrameIndex}:${activeCall ? Math.floor(nowMs / 1000) : ""}`;
 }
 
 function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, nowMs: number): string {

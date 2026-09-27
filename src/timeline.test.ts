@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import {
   appendTimelineMessage,
@@ -1533,6 +1533,36 @@ describe("timeline rendering", () => {
 
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines[1]).toMatch(/^⠙ ☎ Call in progress · 1:0[45] · 2 participants$/);
+  });
+
+  test.each([
+    { authorId: "other-user", participantIds: ["viewer", "other-user"], label: "Call in progress", suffix: " · 2 participants" },
+    { authorId: "other-user", participantIds: ["other-user"], label: "Incoming call", suffix: "" },
+    { authorId: "viewer", participantIds: ["viewer"], label: "Calling…", suffix: "" },
+  ])("refreshes cached $label on animation ticks and elapsed seconds", ({ authorId, participantIds, label, suffix }) => {
+    const now = Date.UTC(2026, 0, 1, 12, 1, 5);
+    const clock = spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const timeline = createTimelineState();
+      setTimelineMessages(timeline, "channel-1", [message("call-1", "", {
+        type: 3,
+        authorId,
+        timestamp: now - 65_000,
+        call: { endedTimestamp: null, participantIds: [...participantIds] },
+      })]);
+      setTimelineRenderContext(timeline, "viewer", true);
+      const renderCall = (frame: number) => stripAnsi(renderTimelineLines(
+        timeline, 80, 10, { text: "", tone: "muted", loading: false }, frame,
+      ).lines[1] ?? "");
+
+      expect(renderCall(0)).toBe(`⠋ ☎ ${label} · 1:05${suffix}`);
+      clock.mockReturnValue(now + 80);
+      expect(renderCall(1)).toBe(`⠙ ☎ ${label} · 1:05${suffix}`);
+      clock.mockReturnValue(now + 1_000);
+      expect(renderCall(1)).toBe(`⠙ ☎ ${label} · 1:06${suffix}`);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   test("can locally mark active calls ended", () => {
