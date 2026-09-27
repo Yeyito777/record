@@ -1,25 +1,97 @@
 import { describe, expect, test } from "bun:test";
 
 import { renderStatusLine } from "./statusline";
-import { createInitialState } from "./state";
+import { createInitialState, setNotice } from "./state";
 import { theme } from "./theme";
+import { INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { buildSidebarEntries } from "./sidebar";
+import { termWidth } from "./textwidth";
+import { renderTimelineLines } from "./timeline";
+import { createLoginModalState } from "./whatsapp/loginmodal";
 
 function stripAnsi(line: string): string {
   return line.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 describe("statusline", () => {
-  test("WhatsApp loading survives cleared notices and disappears when loading ends or chat changes", () => {
+  test.each([
+    [INSTAGRAM_GUILD_ID, "Instagram", "Offline · /refresh", false],
+    [INSTAGRAM_GUILD_ID, "Instagram", "Retrying Instagram…", true],
+    [WHATSAPP_GUILD_ID, "WhatsApp", "Connecting WhatsApp…", true],
+    [WHATSAPP_GUILD_ID, "WhatsApp", "WhatsApp offline · /login whatsapp", false],
+  ] as const)("renders %s %s status %s only in a statusline block", (guildId, name, text, loading) => {
     const state = createInitialState(null, "/tmp/record-config.json");
-    state.timeline.channelId = "wa:loading@g.us";
-    state.timeline.loadingOlder = true;
     state.notice.text = "";
-    expect(stripAnsi(renderStatusLine(state, 40).lines.join(""))).toContain("Loading WhatsApp history");
-    state.timeline.loadingOlder = false;
-    expect(stripAnsi(renderStatusLine(state, 80).lines.join(""))).not.toContain("Loading WhatsApp");
-    state.timeline.loadingOlder = true;
+    state.sidebar.providerStatusByGuildId[guildId] = { text, loading };
+    expect(renderStatusLine(state, 160).lines.join("")).not.toContain(text);
+    state.sidebar.expandedGuildId = guildId;
+    state.sidebar.loadingGuildId = guildId;
+    const plain = stripAnsi(renderStatusLine(state, 160).lines.join(""));
+    expect(plain).toContain(text);
+    expect(plain).toContain(name);
+    expect(plain).toContain(" │ ");
+    expect(buildSidebarEntries(state.sidebar, []).some(row => row.guildId === guildId && row.kind === "loading")).toBe(false);
+    for (const cols of [12, 40, 80]) {
+      for (const line of renderStatusLine(state, cols).lines) expect(termWidth(line)).toBeLessThanOrEqual(cols);
+    }
+    state.sidebar.expandedGuildId = null;
+    expect(renderStatusLine(state, 160).lines.join("")).not.toContain(text);
+    state.channelList.guildId = guildId;
+    expect(renderStatusLine(state, 160).lines.join("")).toContain(text);
+    delete state.sidebar.providerStatusByGuildId[guildId];
+    expect(renderStatusLine(state, 160).lines.join("")).not.toContain(text);
+  });
+
+  test("Instagram status follows its active chat and uses warning color when offline", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.notice.text = "";
+    state.timeline.channelId = "ig:100";
+    state.instagram.connection = { status: "error", error: "Session expired" };
+    state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID] = { text: "Offline · /refresh" };
+    const line = renderStatusLine(state, 120).lines.join("");
+    expect(line).toContain("Instagram: Offline · /refresh");
+    expect(line).toContain(theme.warning);
     state.timeline.channelId = "discord-channel";
-    expect(stripAnsi(renderStatusLine(state, 80).lines.join(""))).not.toContain("Loading WhatsApp");
+    expect(renderStatusLine(state, 120).lines.join("")).not.toContain("Offline");
+  });
+
+  test.each(["wa:loading@g.us", "ig:100"])("history loading for %s appears only in the timeline", (channelId) => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.timeline.channelId = channelId;
+    delete state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID];
+    state.notice.text = "";
+    for (const field of ["loading", "loadingOlder", "loadingNewer"] as const) {
+      state.timeline[field] = true;
+      expect(renderTimelineLines(state.timeline, 80, 20, state.notice).lines.join("")).toContain("Loading");
+      expect(renderStatusLine(state, 160).lines.join("")).not.toContain("Loading");
+      state.timeline[field] = false;
+    }
+  });
+
+  test.each([INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID])("does not duplicate a %s connection notice, but preserves its fallback", (guildId) => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.sidebar.expandedGuildId = guildId;
+    state.sidebar.providerStatusByGuildId[guildId] = { text: "Offline · reconnect" };
+    setNotice(state, "Detailed connection failure", "warning", { connectionGuildId: guildId, chat: false });
+    expect(renderStatusLine(state, 160).lines.join("")).toContain("Detailed connection failure");
+    expect(renderStatusLine(state, 160).lines.join("")).not.toContain("Offline");
+    setNotice(state, "", "muted");
+    expect(renderStatusLine(state, 160).lines.join("")).toContain("Offline");
+    setNotice(state, "Unrelated action", "success", { chat: false });
+    expect(renderStatusLine(state, 160).lines.join("")).toContain("Offline");
+    setNotice(state, "Hidden connection failure", "warning", { connectionGuildId: guildId, chat: false, statusLine: false });
+    expect(renderStatusLine(state, 160).lines.join("")).toContain("Offline");
+  });
+
+  test("WhatsApp login modal owns its connection feedback", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.sidebar.expandedGuildId = WHATSAPP_GUILD_ID;
+    state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID] = { text: "Connecting WhatsApp…", loading: true };
+    setNotice(state, "WhatsApp connecting…", "muted", { connectionGuildId: WHATSAPP_GUILD_ID, loading: true, chat: false });
+    state.whatsapp.loginModal = createLoginModalState();
+    expect(renderStatusLine(state, 160).lines.join("")).not.toContain("WhatsApp");
+    state.whatsapp.loginModal = null;
+    expect(renderStatusLine(state, 160).lines.join("").match(/WhatsApp/g)).toHaveLength(1);
   });
   test("shows nickname and online status when authenticated", () => {
     const state = createInitialState(null, "/tmp/record-config.json");

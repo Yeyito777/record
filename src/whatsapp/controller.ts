@@ -315,7 +315,8 @@ export class WhatsAppController {
       || this.backend.state.status === "reconnecting"
       ? WHATSAPP_GUILD_ID
       : null;
-    if (!this.backend.isConnected && channels.length === 0) {
+    if (!this.backend.isConnected && channels.length === 0
+      && !this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID]) {
       setNotice(this.state, "Connect with /login whatsapp to load WhatsApp chats.", "muted", { statusLine: true, chat: false });
     }
     this.scheduleRender();
@@ -895,20 +896,20 @@ export class WhatsAppController {
     }
 
     if (!modal) {
+      const connectionNotice = { statusLine: true, chat: false, connectionGuildId: WHATSAPP_GUILD_ID };
       if (connection.status === "loading-auth" || connection.status === "connecting") {
-        setNotice(this.state, "WhatsApp connecting…", "muted", { loading: true, statusLine: true, chat: false });
+        setNotice(this.state, "WhatsApp connecting…", "muted", { ...connectionNotice, loading: true });
       } else if (connection.status === "reconnecting") {
         const delay = connection.delayMs > 0 ? ` in ${Math.ceil(connection.delayMs / 1_000)}s` : "";
-        setNotice(this.state, `WhatsApp reconnecting${delay}…`, "muted", { loading: true, statusLine: true, chat: false });
+        setNotice(this.state, `WhatsApp reconnecting${delay}…`, "muted", { ...connectionNotice, loading: true });
       } else if (connection.status === "failed") {
-        setNotice(this.state, `WhatsApp connection failed: ${safeErrorMessage(connection.error)}`, "error", { statusLine: true, chat: false });
+        setNotice(this.state, `WhatsApp connection failed: ${safeErrorMessage(connection.error)}`, "error", connectionNotice);
       } else if (connection.status === "logged-out") {
-        setNotice(this.state, "WhatsApp logged this linked device out. Run /logout whatsapp, then log in again.", "warning", { statusLine: true, chat: false });
+        setNotice(this.state, "WhatsApp logged this linked device out. Run /logout whatsapp, then log in again.", "warning", connectionNotice);
       } else if (connection.status === "connection-replaced") {
-        setNotice(this.state, "WhatsApp was opened by another client and this session was replaced.", "warning", { statusLine: true, chat: false });
+        setNotice(this.state, "WhatsApp was opened by another client and this session was replaced.", "warning", connectionNotice);
       } else if (connection.status === "connected"
-        && (this.state.notice.text.startsWith("WhatsApp connect")
-          || this.state.notice.text.startsWith("WhatsApp reconnect"))) {
+        && this.state.notice.connectionGuildId === WHATSAPP_GUILD_ID) {
         setNotice(this.state, "", "muted");
       }
     }
@@ -1440,7 +1441,13 @@ export class WhatsAppController {
     const connecting = status === "loading-auth" || status === "connecting" || status === "reconnecting";
     const text = connecting ? (status === "reconnecting" ? "Reconnecting WhatsApp…" : "Connecting WhatsApp…")
       : this.cacheLoading ? "Loading WhatsApp cache…" : null;
-    if (text && !this.shuttingDown && this.cacheEnabled) {
+    const warning = status === "failed" ? "WhatsApp offline · /login whatsapp"
+      : status === "logged-out" ? "WhatsApp logged out · /logout whatsapp, then /login whatsapp"
+      : status === "connection-replaced" ? "WhatsApp session replaced · /logout whatsapp, then /login whatsapp" : null;
+    // Cache hydration is routine; keep its loading indicator in the timeline.
+    if (warning && !this.shuttingDown && this.cacheEnabled) {
+      this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID] = { text: warning };
+    } else if (connecting && text && !this.shuttingDown && this.cacheEnabled) {
       this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID] = { text, loading: true };
     } else delete this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID];
     const jid = this.activeWhatsAppJid();

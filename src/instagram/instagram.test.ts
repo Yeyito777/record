@@ -6,6 +6,7 @@ import { INSTAGRAM_GUILD_ID, instagramChannelId, WHATSAPP_GUILD_ID } from "../ch
 import { DIRECT_MESSAGES_GUILD_ID } from "../discord";
 import { createInitialState } from "../state";
 import { buildSidebarEntries } from "../sidebar";
+import { renderStatusLine } from "../statusline";
 import { loadInstagramSession, saveInstagramSession, validateSession } from "./auth";
 import { InstagramApiError, InstagramClient, type InstagramInbox, type InstagramThread } from "./client";
 import { InstagramController, type InstagramControllerOptions } from "./controller";
@@ -171,7 +172,7 @@ function harness(overrides: Partial<InstagramClient> = {}, options: InstagramCon
 }
 
 describe("Instagram controller", () => {
-  test("shows a logged-out row and root refresh loads credentials added after startup", async () => {
+  test("shows logged-out status in the statusline and root refresh loads credentials added after startup", async () => {
     let saved = false;
     const h = harness({}, { loadSession: async () => saved ? session : null });
     try {
@@ -180,9 +181,10 @@ describe("Instagram controller", () => {
       h.controller.openRoot();
       await tick();
       const rows = buildSidebarEntries(h.state.sidebar, h.state.channelList.channels);
-      expect(rows.some(row => row.guildId === INSTAGRAM_GUILD_ID && row.label.includes("/login instagram"))).toBe(true);
+      expect(rows.some(row => row.guildId === INSTAGRAM_GUILD_ID && row.label.includes("/login instagram"))).toBe(false);
+      h.state.notice.text = "";
+      expect(renderStatusLine(h.state, 120).lines.join("")).toContain("/login instagram");
       expect(h.state.sidebar.focusedGuildId).toBe(INSTAGRAM_GUILD_ID);
-      expect(h.state.notice.text).toContain("/login instagram");
       saved = true;
       await h.controller.refresh();
       expect(h.controller.isConnected).toBe(true);
@@ -190,7 +192,7 @@ describe("Instagram controller", () => {
       expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]).toBeUndefined();
     } finally { await h.controller.shutdown(); }
   });
-  test("renders connecting state while the first inbox is pending and distinguishes empty inbox", async () => {
+  test("renders connecting state while the first inbox is pending, then stays quiet for an empty inbox", async () => {
     const pending = deferred<InstagramInbox>();
     const h = harness({ inbox: () => pending.promise });
     try {
@@ -198,11 +200,13 @@ describe("Instagram controller", () => {
       await tick();
       h.controller.openRoot();
       h.state.sidebar.expandedGuildId = INSTAGRAM_GUILD_ID;
-      expect(buildSidebarEntries(h.state.sidebar, []).some(row => row.label.includes("Connecting Instagram"))).toBe(true);
+      expect(buildSidebarEntries(h.state.sidebar, []).some(row => row.label.includes("Connecting Instagram"))).toBe(false);
+      expect(renderStatusLine(h.state, 120).lines.join("")).toContain("Connecting Instagram");
       expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.loading).toBe(true);
       pending.resolve({ ...inbox(), inbox: { threads: [], has_older: false } });
       await connecting;
-      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.text).toBe("No conversations");
+      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]).toBeUndefined();
+      expect(renderStatusLine(h.state, 120).lines.join("")).not.toContain("No conversations");
     } finally { await h.controller.shutdown(); }
   });
   test("retries transient initial failures without requiring another login", async () => {
@@ -234,8 +238,12 @@ describe("Instagram controller", () => {
       expect(calls).toBe(1);
       expect(h.state.instagram.connection.status).toBe("error");
       expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.loading).toBe(false);
+      h.controller.openRoot();
+      h.state.notice.text = "";
+      expect(renderStatusLine(h.state, 120).lines.join("")).toContain("Instagram: Offline · /refresh");
       await h.controller.refresh();
       expect(h.controller.isConnected).toBe(true);
+      expect(renderStatusLine(h.state, 120).lines.join("")).not.toContain("Offline");
     } finally { await h.controller.shutdown(); }
   });
   test("logout cancels pending startup retries", async () => {

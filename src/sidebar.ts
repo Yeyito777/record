@@ -151,7 +151,7 @@ export interface SidebarState {
   pendingDeleteItem: SidebarItemRef | null;
   prompt: SidebarFolderPromptState | null;
   loadingGuildId: string | null;
-  /** Provider-owned status rows, independent of Discord's channel loading. */
+  /** Provider-owned statusline blocks, independent of Discord's channel loading. */
   providerStatusByGuildId: Record<string, { text: string; loading?: boolean }>;
   scrollOffset: number;
   loading: boolean;
@@ -1443,18 +1443,10 @@ function pushExpandedGuildChildren(
   options: SidebarVisibilityOptions,
 ): void {
   const visibleGuildChannels = sidebarChannelsForGuild(sidebar, channels, guild.id);
-  const providerStatus = sidebar.providerStatusByGuildId[guild.id];
-  if (providerStatus) {
-    entries.push({
-      kind: "loading", id: `${guild.id}::status`, guildId: guild.id,
-      label: providerStatus.loading ? loadingLabel(providerStatus.text, loadingFrameIndex) : providerStatus.text,
-      depth: 1, selected: false, active: false, expanded: false,
-    });
-    if (visibleGuildChannels.length === 0) return;
-  }
   const loadingExpandedGuild = sidebar.loadingGuildId === guild.id
     || (guild.id === DIRECT_MESSAGES_GUILD_ID && sidebar.loading);
-  if (loadingExpandedGuild && visibleGuildChannels.length === 0) {
+  if (loadingExpandedGuild && visibleGuildChannels.length === 0
+    && guild.id !== WHATSAPP_GUILD_ID && guild.id !== INSTAGRAM_GUILD_ID) {
     entries.push({
       kind: "loading",
       id: `${guild.id}::loading`,
