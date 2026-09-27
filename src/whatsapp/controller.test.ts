@@ -1077,6 +1077,28 @@ describe("WhatsApp controller", () => {
     });
   });
 
+  test.each(["failed", "logged-out", "connection-replaced"] as const)(
+    "keeps WhatsApp %s status in a block until recovery",
+    async (status) => {
+      const { state, backend, controller } = fixture({ loadCache: async () => null });
+      try {
+        await settle();
+        backend.emit("state", status === "failed"
+          ? { status, error: new Error("stream closed") }
+          : { status, disconnect: { code: 401, name: "loggedOut" } });
+        controller.openRoot();
+        state.notice.text = "";
+        const text = state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID]?.text;
+        expect(text).toContain("WhatsApp");
+        expect(renderStatusLine(state, 160).lines.join("")).toContain(text!);
+        expect(state.timeline.loading).toBe(false);
+        backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1 });
+        expect(state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID]).toBeUndefined();
+        expect(renderStatusLine(state, 160).lines.join("")).not.toContain(text!);
+      } finally { await controller.shutdown(); }
+    },
+  );
+
   test("mutes and unmutes a WhatsApp chat optimistically", async () => {
     const { state, backend, controller } = fixture();
     const jid = "15551234567@s.whatsapp.net";

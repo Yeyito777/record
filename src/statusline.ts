@@ -14,7 +14,7 @@ import { accountBlock } from "./statusblocks/account";
 import { callBlock } from "./statusblocks/call";
 import { noticeBlock } from "./statusblocks/notice";
 import { presenceBlock } from "./statusblocks/presence";
-import { whatsappLoadingBlock } from "./statusblocks/whatsapp-loading";
+import { instagramStatusBlock, whatsappStatusBlock } from "./statusblocks/provider-status";
 
 export interface StatusBlock {
   id: string;
@@ -30,7 +30,8 @@ const BLOCK_BUILDERS: BlockBuilder[] = [
   accountBlock,
   presenceBlock,
   callBlock,
-  whatsappLoadingBlock,
+  whatsappStatusBlock,
+  instagramStatusBlock,
   noticeBlock,
 ];
 

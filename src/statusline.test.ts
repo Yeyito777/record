@@ -3,12 +3,57 @@ import { describe, expect, test } from "bun:test";
 import { renderStatusLine } from "./statusline";
 import { createInitialState } from "./state";
 import { theme } from "./theme";
+import { INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { buildSidebarEntries } from "./sidebar";
+import { termWidth } from "./textwidth";
 
 function stripAnsi(line: string): string {
   return line.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 describe("statusline", () => {
+  test.each([
+    [INSTAGRAM_GUILD_ID, "Instagram", "Offline · /refresh", false],
+    [INSTAGRAM_GUILD_ID, "Instagram", "Retrying Instagram…", true],
+    [INSTAGRAM_GUILD_ID, "Instagram", "No conversations", false],
+    [WHATSAPP_GUILD_ID, "WhatsApp", "Connecting WhatsApp…", true],
+    [WHATSAPP_GUILD_ID, "WhatsApp", "WhatsApp offline · /login whatsapp", false],
+  ] as const)("renders %s %s status %s only in a statusline block", (guildId, name, text, loading) => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.notice.text = "";
+    state.sidebar.providerStatusByGuildId[guildId] = { text, loading };
+    expect(renderStatusLine(state, 160).lines.join("")).not.toContain(text);
+    state.sidebar.expandedGuildId = guildId;
+    state.sidebar.loadingGuildId = guildId;
+    const plain = stripAnsi(renderStatusLine(state, 160).lines.join(""));
+    expect(plain).toContain(text);
+    expect(plain).toContain(name);
+    expect(plain).toContain(" │ ");
+    expect(buildSidebarEntries(state.sidebar, []).some(row => row.guildId === guildId && row.kind === "loading")).toBe(false);
+    for (const cols of [12, 40, 80]) {
+      for (const line of renderStatusLine(state, cols).lines) expect(termWidth(line)).toBeLessThanOrEqual(cols);
+    }
+    state.sidebar.expandedGuildId = null;
+    expect(renderStatusLine(state, 160).lines.join("")).not.toContain(text);
+    state.channelList.guildId = guildId;
+    expect(renderStatusLine(state, 160).lines.join("")).toContain(text);
+    delete state.sidebar.providerStatusByGuildId[guildId];
+    expect(renderStatusLine(state, 160).lines.join("")).not.toContain(text);
+  });
+
+  test("Instagram status follows its active chat and uses warning color when offline", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.notice.text = "";
+    state.timeline.channelId = "ig:100";
+    state.instagram.connection = { status: "error", error: "Session expired" };
+    state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID] = { text: "Offline · /refresh" };
+    const line = renderStatusLine(state, 120).lines.join("");
+    expect(line).toContain("Instagram: Offline · /refresh");
+    expect(line).toContain(theme.warning);
+    state.timeline.channelId = "discord-channel";
+    expect(renderStatusLine(state, 120).lines.join("")).not.toContain("Offline");
+  });
+
   test("WhatsApp loading survives cleared notices and disappears when loading ends or chat changes", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.timeline.channelId = "wa:loading@g.us";

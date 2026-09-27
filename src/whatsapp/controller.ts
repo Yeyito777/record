@@ -1404,7 +1404,12 @@ export class WhatsAppController {
     const connecting = status === "loading-auth" || status === "connecting" || status === "reconnecting";
     const text = connecting ? (status === "reconnecting" ? "Reconnecting WhatsApp…" : "Connecting WhatsApp…")
       : this.cacheLoading ? "Loading WhatsApp cache…" : null;
-    if (text && !this.shuttingDown && this.cacheEnabled) {
+    const warning = status === "failed" ? "WhatsApp offline · /login whatsapp"
+      : status === "logged-out" ? "WhatsApp logged out · /logout whatsapp, then /login whatsapp"
+      : status === "connection-replaced" ? "WhatsApp session replaced · /logout whatsapp, then /login whatsapp" : null;
+    if (warning && !this.shuttingDown && this.cacheEnabled) {
+      this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID] = { text: warning };
+    } else if (text && !this.shuttingDown && this.cacheEnabled) {
       this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID] = { text, loading: true };
     } else delete this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID];
     const jid = this.activeWhatsAppJid();
