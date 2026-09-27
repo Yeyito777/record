@@ -20,6 +20,7 @@ import {
   beginWhatsAppLoginUi,
   applyWhatsAppReactions,
   canonicalWhatsAppJid,
+  compareWhatsAppMessages,
   MAX_WHATSAPP_MESSAGES_PER_CHAT,
   mergeWhatsAppMessage,
   isVisibleWhatsAppMessage,
@@ -175,10 +176,12 @@ export class WhatsAppController {
   // Local sends are not server history. Keep them independently of the visible
   // timeline so backfills, reactions and navigation cannot discard them.
   private readonly localMessages = new Map<string, DiscordMessage>();
+  private lastOutgoingOrderMs = 0;
   private readonly outgoing = new Map<string, {
     message: DiscordMessage;
     messageIds: string[];
     confirmedIds: Set<string>;
+    receivedAtMs: number;
   }>();
   // Include removals so a late history snapshot cannot resurrect a reaction.
   private readonly liveReactions = new Map<string, WhatsAppReactionEvent>();
@@ -530,7 +533,11 @@ export class WhatsAppController {
     this.state.replyTarget = null;
     setNotice(this.state, "", "muted");
     this.localMessages.set(localMessageId, localMessage);
-    const outgoing = { message: localMessage, messageIds, confirmedIds: new Set<string>() };
+    // Reserve one order value per wire message before any RPC/echo can race.
+    // Keep this separate from the displayed timestamp, including same-ms sends.
+    const receivedAtMs = Math.max(localMessage.timestamp, this.lastOutgoingOrderMs + 1);
+    this.lastOutgoingOrderMs = receivedAtMs + messageIds.length - 1;
+    const outgoing = { message: localMessage, messageIds, confirmedIds: new Set<string>(), receivedAtMs };
     this.outgoing.set(localMessageId, outgoing);
     appendTimelineMessage(this.state.timeline, localMessage);
     this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
@@ -543,8 +550,9 @@ export class WhatsAppController {
     void send.then((sentMessages) => {
       if (generation !== this.backendResetGeneration) return;
       if (sentMessages.length === 0) throw new Error("WhatsApp did not return the sent message.");
-      const acknowledged = sentMessages.map(message => ({
-        ...message, receivedAtMs: message.receivedAtMs ?? localMessage.timestamp,
+      const acknowledged = sentMessages.map((message, index) => ({
+        ...message, receivedAtMs: outgoing.receivedAtMs
+          + (messageIds.includes(message.id) ? messageIds.indexOf(message.id) : index),
       }));
       // Retain the acknowledgement before removing the local bubble, even if
       // its server timestamp puts it outside the newest-300 disk cache.
@@ -708,10 +716,11 @@ export class WhatsAppController {
         }
         this.scheduleRender();
       }),
-      this.backend.on("history", (event) => {
+      this.backend.on("history", (incomingEvent) => {
         const activeBefore = this.activeWhatsAppJid();
         const hadMessages = activeBefore && Boolean(this.state.whatsapp.messagesByChatId[activeBefore]?.length);
-        upsertWhatsAppContacts(this.state.whatsapp, event.contacts);
+        upsertWhatsAppContacts(this.state.whatsapp, incomingEvent.contacts);
+        const event = { ...incomingEvent, messages: this.withOutgoingOrder(incomingEvent.messages) };
         // On-demand history is a message backfill, not authoritative current
         // chat metadata. Old pages can contain an old last-message timestamp;
         // applying it would make the focused conversation suddenly move down.
@@ -756,7 +765,8 @@ export class WhatsAppController {
         this.queueCacheSave();
         this.syncProviderState(true);
       }),
-      this.backend.on("messages", (event) => {
+      this.backend.on("messages", (incomingEvent) => {
+        const event = { ...incomingEvent, messages: this.withOutgoingOrder(incomingEvent.messages) };
         const activeBefore = this.activeWhatsAppJid();
         const hadMessages = activeBefore && Boolean(this.state.whatsapp.messagesByChatId[activeBefore]?.length);
         const wasNearBottom = isTimelineNearBottom(this.state.timeline.scrollOffset, this.state.timeline.maxScroll);
@@ -988,6 +998,19 @@ export class WhatsAppController {
       keys.has(JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, target.chatId), target.id]))));
   }
 
+  private withOutgoingOrder(messages: readonly WhatsAppMessage[]): WhatsAppMessage[] {
+    return messages.map(message => {
+      if (!message.fromMe) return message;
+      const outgoing = [...this.outgoing.values()].find(send => send.messageIds.includes(message.id)
+        && [message.chatId, message.key.chatId, message.key.alternateChatId].some(jid => jid
+          && canonicalWhatsAppJid(this.state.whatsapp, jid)
+            === canonicalWhatsAppJid(this.state.whatsapp, whatsappJidFromChannelId(send.message.channelId)!)));
+      return outgoing
+        ? { ...message, receivedAtMs: outgoing.receivedAtMs + outgoing.messageIds.indexOf(message.id) }
+        : message;
+    });
+  }
+
   private confirmOutgoingMessages(messages: readonly WhatsAppMessage[]): void {
     for (const [localId, outgoing] of this.outgoing) {
       const jid = canonicalWhatsAppJid(this.state.whatsapp, whatsappJidFromChannelId(outgoing.message.channelId)!);
@@ -1034,8 +1057,7 @@ export class WhatsAppController {
     for (const incoming of messages) {
       if (!isVisibleWhatsAppMessage(incoming)) continue;
       if (canonicalWhatsAppJid(this.state.whatsapp, incoming.chatId) !== jid) continue;
-      const outgoing = [...this.outgoing.values()].find(send => send.messageIds.includes(incoming.id));
-      const message = { ...incoming, chatId: jid, receivedAtMs: incoming.receivedAtMs ?? outgoing?.message.timestamp };
+      const message = { ...incoming, chatId: jid };
       this.visibleMessages.set(message.id, mergeWhatsAppMessage(this.visibleMessages.get(message.id), message, preferExisting));
     }
   }
@@ -1058,13 +1080,27 @@ export class WhatsAppController {
     // Use the target chat explicitly: navigation has not updated timeline ID yet.
     applyWhatsAppReactions({ ...this.state.whatsapp, messagesByChatId: { [jid]: [...this.visibleMessages.values()] } },
       [...this.liveReactions.values()]);
-    const messages = [...this.visibleMessages.values()].map(message => whatsAppMessageToTimeline(this.state.whatsapp, message));
+    const ordered = [...this.visibleMessages.values()].map(message => ({
+      timestampMs: message.timestampMs,
+      receivedAtMs: message.receivedAtMs,
+      message: whatsAppMessageToTimeline(this.state.whatsapp, message),
+    }));
     for (const local of this.localMessages.values()) {
       const jid = whatsappJidFromChannelId(local.channelId)!;
       const canonicalChannelId = whatsappChannelId(canonicalWhatsAppJid(this.state.whatsapp, jid));
-      if (canonicalChannelId === channelId) messages.push({ ...local, channelId });
+      if (canonicalChannelId === channelId) {
+        const outgoing = this.outgoing.get(local.id);
+        const firstPending = outgoing?.messageIds.findIndex(id => !outgoing.confirmedIds.has(id)) ?? 0;
+        ordered.push({
+          // Compare pending sends at the same precision as server timestamps,
+          // without changing the time shown on their optimistic bubbles.
+          timestampMs: Math.floor(local.timestamp / 1000) * 1000,
+          receivedAtMs: (outgoing?.receivedAtMs ?? local.timestamp) + Math.max(0, firstPending),
+          message: { ...local, channelId },
+        });
+      }
     }
-    messages.sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
+    const messages = ordered.sort(compareWhatsAppMessages).map(entry => entry.message);
     const systemMessages = this.state.timeline.systemMessages;
     const maxScroll = this.state.timeline.maxScroll;
     setTimelineMessages(this.state.timeline, channelId, messages, { preserveScroll, hasOlder });

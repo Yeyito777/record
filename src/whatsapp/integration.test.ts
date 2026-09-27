@@ -34,6 +34,39 @@ function message(id: string, chatId: string, timestampMs: number, text: string, 
 }
 
 describe("WhatsApp UI integration", () => {
+  test("same-second messages keep arrival order, not random message-ID order", () => {
+    const state = createWhatsAppUiState();
+    const jid = "order@s.whatsapp.net";
+    upsertWhatsAppMessages(state, [
+      { ...message("ZZZ", jid, 1000, "first"), receivedAtMs: 1100 },
+      { ...message("AAA", jid, 1000, "second"), receivedAtMs: 1200 },
+    ]);
+    expect(state.messagesByChatId[jid]!.map(message => message.id)).toEqual(["ZZZ", "AAA"]);
+    // A replay or edit must not change the original ordering metadata.
+    upsertWhatsAppMessages(state, [
+      { ...message("ZZZ", jid, 1000, "edited"), receivedAtMs: 3000 },
+    ]);
+    expect(state.messagesByChatId[jid]!.map(message => message.id)).toEqual(["ZZZ", "AAA"]);
+    expect(state.messagesByChatId[jid]![0]!.receivedAtMs).toBe(1100);
+  });
+
+  test("exact arrival ties are stable and server timestamps still take precedence", () => {
+    const state = createWhatsAppUiState();
+    const jid = "order@s.whatsapp.net";
+    upsertWhatsAppMessages(state, [
+      { ...message("newer", jid, 2000, "newer"), receivedAtMs: 100 },
+      { ...message("ZZZ", jid, 1000, "first"), receivedAtMs: 200 },
+      { ...message("AAA", jid, 1000, "second"), receivedAtMs: 200 },
+      { ...message("older", jid, 0, "older"), receivedAtMs: 300 },
+    ]);
+    expect(state.messagesByChatId[jid]!.map(message => message.id)).toEqual(["older", "ZZZ", "AAA", "newer"]);
+    upsertWhatsAppMessages(state, [
+      message("AAA", jid, 1000, "replayed second"),
+      message("ZZZ", jid, 1000, "replayed first"),
+    ], { preferExisting: true });
+    expect(state.messagesByChatId[jid]!.map(message => message.id)).toEqual(["older", "ZZZ", "AAA", "newer"]);
+  });
+
   test("maps active direct and group chats into the separate WhatsApp root", () => {
     const state = createWhatsAppUiState();
     upsertWhatsAppContacts(state, [{ id: "15551234567@s.whatsapp.net", name: "Mom" }]);

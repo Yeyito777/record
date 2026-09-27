@@ -382,6 +382,32 @@ describe("RecordWhatsAppBackend", () => {
     ]);
   });
 
+  test("normalizes newest-first history without reversing live same-second messages", async () => {
+    const { backend, sockets } = setup(false);
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+    const first = {
+      key: { id: "ZZZ", remoteJid: "person@s.whatsapp.net", fromMe: false },
+      message: { conversation: "first" }, messageTimestamp: 123,
+    };
+    const second = { ...first, key: { ...first.key, id: "AAA" }, message: { conversation: "second" } };
+    const history: string[][] = [];
+    const live: string[][] = [];
+    backend.on("history", event => { history.push(event.messages.map(message => message.id)); });
+    backend.on("messages", event => { live.push(event.messages.map(message => message.id)); });
+    const newestFirst = [second, first];
+    sockets[0].emitter.emit("messaging-history.set", {
+      chats: [], contacts: [], messages: newestFirst, syncType: 0,
+    });
+    sockets[0].emitter.emit("messages.upsert", { messages: [first, second], type: "notify" });
+    expect(history).toEqual([["ZZZ", "AAA"]]);
+    expect(live).toEqual([["ZZZ", "AAA"]]);
+    expect(newestFirst.map(message => message.key.id)).toEqual(["AAA", "ZZZ"]);
+    await backend.shutdown();
+  });
+
   test("recovers media metadata omitted by caches from before attachment opening", async () => {
     const { backend, sockets } = setup(false);
     const login = backend.startLogin();

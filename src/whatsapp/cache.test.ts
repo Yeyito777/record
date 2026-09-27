@@ -3,7 +3,7 @@ import { lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createWhatsAppUiState, registerWhatsAppLidMapping } from "./integration";
+import { createWhatsAppUiState, registerWhatsAppLidMapping, upsertWhatsAppMessages } from "./integration";
 import {
   hydrateWhatsAppUiState,
   loadWhatsAppCache,
@@ -18,6 +18,27 @@ afterEach(async () => {
 });
 
 describe("WhatsApp UI cache", () => {
+  test("same-second submission order survives disk reload and stale history replay", async () => {
+    const root = await mkdtemp(join(tmpdir(), "record-wa-order-"));
+    temporaryDirectories.push(root);
+    const cacheFile = join(root, "cache.json");
+    const jid = "person@s.whatsapp.net";
+    const source = createWhatsAppUiState();
+    // Confirmation order is the reverse of submission order.
+    const messages = ["AAA", "ZZZ"].map((id, index) => ({
+      key: { id, chatId: jid }, id, chatId: jid, fromMe: true,
+      timestampMs: 1000, receivedAtMs: 1200 - index,
+      content: { kind: "text" as const, text: id },
+    }));
+    upsertWhatsAppMessages(source, messages);
+    await saveWhatsAppCache(cacheFile, snapshotWhatsAppUiState(source));
+    const restored = createWhatsAppUiState();
+    hydrateWhatsAppUiState(restored, (await loadWhatsAppCache(cacheFile))!);
+    upsertWhatsAppMessages(restored, messages.map(({ receivedAtMs, ...message }) => message), { preferExisting: true });
+    expect(restored.messagesByChatId[jid]!.map(message => message.id)).toEqual(["ZZZ", "AAA"]);
+    expect(restored.messagesByChatId[jid]!.map(message => message.receivedAtMs)).toEqual([1199, 1200]);
+  });
+
   test("cached aliases cannot replace newer phone-JID metadata", () => {
     for (const knownMapping of [false, true]) {
       const state = createWhatsAppUiState();

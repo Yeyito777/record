@@ -335,9 +335,14 @@ export function applyWhatsAppReactions(state: WhatsAppUiState, events: readonly 
   return [...changedChatIds];
 }
 
-function compareWhatsAppMessages(left: WhatsAppMessage, right: WhatsAppMessage): number {
+export function compareWhatsAppMessages(
+  left: Pick<WhatsAppMessage, "timestampMs" | "receivedAtMs">,
+  right: Pick<WhatsAppMessage, "timestampMs" | "receivedAtMs">,
+): number {
   const time = (left.timestampMs ?? left.receivedAtMs ?? 0) - (right.timestampMs ?? right.receivedAtMs ?? 0);
-  return time || left.id.localeCompare(right.id);
+  // Wire timestamps have second precision and message IDs are random, not
+  // chronological. Keep submission/arrival order; exact ties use stable sort.
+  return time || (left.receivedAtMs ?? 0) - (right.receivedAtMs ?? 0);
 }
 
 function bareJid(jid: string): string {

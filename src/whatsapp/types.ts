@@ -68,7 +68,7 @@ export interface WhatsAppMessage {
   senderName?: string;
   fromMe: boolean;
   timestampMs: number | null;
-  /** Stable local ordering fallback when the wire message has no timestamp. */
+  /** Stable arrival/submission order for timestamp ties (also a fallback if no wire timestamp). */
   receivedAtMs?: number;
   editedTimestampMs?: number;
   content: WhatsAppMessageContent;

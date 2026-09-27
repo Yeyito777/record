@@ -521,7 +521,9 @@ export class RecordWhatsAppBackend {
 
     this.bind(active, "messaging-history.set", (event) => {
       this.forwardSocketEvent(active, () => {
-        const messages = event.messages.map((message) => toWhatsAppMessage(message, {
+        // Baileys history is newest-first within each chat. Normalize before
+        // ingestion so same-second messages retain chronological input order.
+        const messages = [...event.messages].reverse().map((message) => toWhatsAppMessage(message, {
           selfId: active.socket.user?.id,
         }));
         const reactions = event.messages.map((message) => {

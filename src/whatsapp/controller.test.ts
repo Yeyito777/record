@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -224,6 +224,82 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
 describe("WhatsApp loading races", () => {
+  for (const confirmation of ["rpc", "echo", "alias-echo", "history"] as const) {
+    test(`same-second sends stay in submission order with reversed ${confirmation} confirmations`, async () => {
+      const { state, backend, controller, jid } = raceFixture("15551234567@s.whatsapp.net");
+      const clock = spyOn(Date, "now").mockReturnValue(10_500);
+      const sends: Array<{ message: WhatsAppMessage; result: ReturnType<typeof deferred<WhatsAppMessage>> }> = [];
+      backend.sendText = (chatId, text, _quoted, _expiration, id) => {
+        const result = deferred<WhatsAppMessage>();
+        sends.push({ message: { ...raceMessage(id!, chatId, 10_000, true),
+          content: { kind: "text", text } }, result });
+        return result.promise;
+      };
+      const order = () => state.timeline.messages.filter(message => message.id !== "original").map(message => message.content);
+      try {
+        controller.sendMessage("first");
+        controller.sendMessage("second");
+        for (const send of [...sends].reverse()) {
+          if (confirmation === "rpc") send.result.resolve(send.message);
+          else if (confirmation === "echo" || confirmation === "alias-echo") backend.emit("messages", {
+            kind: "upsert", upsertType: "notify", skippedMessages: 0,
+            messages: [confirmation === "alias-echo" ? {
+              ...send.message, chatId: "order@lid",
+              key: { ...send.message.key, chatId: "order@lid", alternateChatId: jid },
+            } : send.message],
+          });
+          else backend.emit("history", historyPage([send.message]));
+          await settle();
+          expect(order()).toEqual(["first", "second"]);
+        }
+        for (const send of sends) send.result.resolve(send.message);
+        await settle();
+        backend.emit("history", historyPage(sends.map(send => send.message).reverse()));
+        expect(order()).toEqual(["first", "second"]);
+        // Rebuilding from cache, without the outgoing/visible maps, must agree.
+        controller.openChannel(whatsappChannelId("other@s.whatsapp.net"));
+        controller.openChannel(whatsappChannelId(jid));
+        expect(order()).toEqual(["first", "second"]);
+      } finally {
+        clock.mockRestore();
+        await controller.shutdown();
+      }
+    });
+  }
+
+  test("same-second image batches preserve attachment order through partial echoes and reversed RPC results", async () => {
+    const { state, backend, controller, jid } = raceFixture();
+    const clock = spyOn(Date, "now").mockReturnValue(10_500);
+    const sent = deferred<WhatsAppMessage[]>();
+    let ids: string[] = [];
+    backend.sendImages = (_jid, _images, _caption, _quoted, _expiration, messageIds) => {
+      ids = messageIds!;
+      return sent.promise;
+    };
+    state.pendingImages = [
+      { base64: "aW1hZ2U=", mediaType: "image/png", sizeBytes: 5 },
+      { base64: "b3RoZXI=", mediaType: "image/png", sizeBytes: 5 },
+    ];
+    try {
+      controller.sendMessage("caption");
+      const images = ids.map(id => ({
+        ...raceMessage(id, jid, 10_000, true),
+        content: { kind: "media" as const, mediaKind: "image" as const },
+      }));
+      backend.emit("messages", { kind: "upsert", upsertType: "notify", skippedMessages: 0, messages: [images[1]!] });
+      expect(state.timeline.messages.slice(1).map(message => message.localStatus ?? message.id)).toEqual(["pending", ids[1]!]);
+      backend.emit("messages", { kind: "upsert", upsertType: "notify", skippedMessages: 0, messages: [images[0]!] });
+      expect(state.timeline.messages.slice(1).map(message => message.id)).toEqual(ids);
+      sent.resolve([...images].reverse());
+      await settle();
+      expect(state.timeline.messages.slice(1).map(message => message.id)).toEqual(ids);
+      expect(state.whatsapp.messagesByChatId[jid]!.slice(1).map(message => message.id)).toEqual(ids);
+    } finally {
+      clock.mockRestore();
+      await controller.shutdown();
+    }
+  });
+
   test("history reactions update evicted visible messages without defeating live removals", async () => {
     const { state, backend, controller, jid } = raceFixture();
     const target = raceMessage("original", jid, 100).key;
