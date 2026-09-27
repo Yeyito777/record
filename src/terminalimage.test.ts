@@ -34,7 +34,7 @@ describe("inline terminal graphics", () => {
     expect(sequence.match(/\x1b_G/g)).toHaveLength(3);
   });
 
-  test("transmits once, moves placements, and reclaims collapsed images", () => {
+  test("transmits once, moves placements, and retains collapsed images until disposal", () => {
     const owner = {};
     const writes: string[] = [];
     const ready = image();
@@ -71,9 +71,84 @@ describe("inline terminal graphics", () => {
     expect(writes[4]).toContain("a=p");
 
     syncInlineTerminalImages(owner, [], [], (payload) => writes.push(payload));
-    expect(writes[5]).toContain(`a=d,d=I,i=${ready.imageId}`);
+    expect(writes[5]).toContain(`a=d,d=i,i=${ready.imageId}`);
+    expect(writes[5]).not.toContain("d=I");
     disposeInlineTerminalImages(owner, (payload) => writes.push(payload));
-    expect(writes).toHaveLength(6);
+    expect(writes[6]).toContain(`a=d,d=I,i=${ready.imageId}`);
+    expect(writes).toHaveLength(7);
+  });
+
+  test("switches A → B → A with placement commands only on return", () => {
+    const owner = {};
+    const a = image();
+    const b = image({ imageId: 0x40000002, pngBase64: "b3RoZXI=" });
+    const writes: string[] = [];
+    const show = (ready: InlineChatImageReady) => syncInlineTerminalImages(owner, [ready], [{
+      image: ready, placementId: 1, row: 4, col: 27, columns: 10, rows: 3,
+    }], (payload) => writes.push(payload));
+    show(a);
+    syncInlineTerminalImages(owner, [], [], (payload) => writes.push(payload));
+    show(b);
+    show(a);
+    expect(writes[3]).not.toContain("a=t");
+    expect(writes[3]).not.toContain("d=I");
+    expect(writes[3]).toContain(`a=p,i=${a.imageId}`);
+
+    // The same protocol ID with new pixels must still be retransmitted.
+    show({ ...a, pngBase64: "bmV3" });
+    expect(writes[4]).toContain("a=t");
+  });
+
+  test("evicts the least recently viewed idle image at the count limit", () => {
+    const owner = {};
+    let output = "";
+    const show = (id: number) => {
+      const ready = image({ imageId: id });
+      output = "";
+      syncInlineTerminalImages(owner, [ready], [{
+        image: ready, placementId: 1, row: 1, col: 1, columns: 10, rows: 3,
+      }], (payload) => { output += payload; });
+    };
+    for (let id = 1; id <= 65; id++) show(id);
+    show(1); // refresh age
+    expect(output).not.toContain("a=t");
+    show(66);
+    expect(output).toContain("a=d,d=I,i=2,");
+    expect(output).not.toContain("a=d,d=I,i=1,");
+    show(2);
+    expect(output).toContain("a=t");
+  });
+
+  test("bounds idle decoded bytes without evicting a visible oversized image", () => {
+    const owner = {};
+    const ready = image({ pixelWidth: 4096, pixelHeight: 4096 });
+    const writes: string[] = [];
+    const placement = { image: ready, placementId: 1, row: 1, col: 1, columns: 10, rows: 3 };
+    syncInlineTerminalImages(owner, [ready], [placement], (payload) => writes.push(payload));
+    expect(writes[0]).not.toContain("d=I");
+    syncInlineTerminalImages(owner, [], [], (payload) => writes.push(payload));
+    expect(writes[1]).toContain(`a=d,d=I,i=${ready.imageId}`);
+    syncInlineTerminalImages(owner, [ready], [placement], (payload) => writes.push(payload));
+    expect(writes[2]).toContain("a=t");
+  });
+
+  test("closing an oversized modal preserves smaller cached chat previews", () => {
+    const owner = {};
+    const small = image();
+    const large = image({ imageId: 2, pixelWidth: 4096, pixelHeight: 4096 });
+    let output = "";
+    const show = (ready: InlineChatImageReady) => {
+      output = "";
+      syncInlineTerminalImages(owner, [ready], [{
+        image: ready, placementId: 1, row: 1, col: 1, columns: 10, rows: 3,
+      }], (payload) => { output += payload; });
+    };
+    show(small);
+    show(large);
+    syncInlineTerminalImages(owner, [], [], () => {});
+    show(small);
+    expect(output).toContain("a=p");
+    expect(output).not.toContain("a=t");
   });
 
   test("can retain placements while deferring new or moved placements", () => {

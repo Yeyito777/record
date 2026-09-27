@@ -8,6 +8,8 @@ const ST = "\x1b\\";
 const SAVE_CURSOR = "\x1b7";
 const RESTORE_CURSOR = "\x1b8";
 const BASE64_CHUNK_CHARS = 4096;
+const MAX_IDLE_IMAGES = 64;
+const MAX_IDLE_IMAGE_BYTES = 32 * 1024 * 1024;
 
 export interface InlineTerminalImagePlacement {
   image: InlineChatImageReady;
@@ -23,7 +25,8 @@ export interface InlineTerminalImagePlacement {
 }
 
 interface TerminalImageSyncState {
-  images: Map<number, string>;
+  /** In LRU order; bytes charge both retained base64 and terminal RGBA pixels. */
+  images: Map<number, { fingerprint: string; bytes: number }>;
   placements: Map<string, string>;
 }
 
@@ -101,8 +104,8 @@ function imageFingerprint(image: InlineChatImageReady): string {
 
 /**
  * Reconcile terminal-owned image data and placements with the current chat
- * viewport. Image bytes are sent only once; scrolling normally emits only a
- * small placement command.
+ * viewport. Recently used data survives chat switches; only placements are
+ * removed. A bounded idle LRU keeps this from retaining every visited image.
  */
 export function syncInlineTerminalImages(
   owner: object,
@@ -118,26 +121,25 @@ export function syncInlineTerminalImages(
   }
 
   const out: string[] = [];
-  const currentImages = new Map(images.map((image) => [image.imageId, image]));
   const desiredPlacements = new Map(placements.map((placement) => [placementKey(placement), placement]));
   const desiredImageIds = new Set(placements.map((placement) => placement.image.imageId));
 
-  for (const imageId of state.images.keys()) {
-    if (currentImages.has(imageId)) continue;
-    out.push(hardDeleteImage(imageId));
-    state.images.delete(imageId);
-    for (const key of [...state.placements.keys()]) {
-      if (key.startsWith(`${imageId}:`)) state.placements.delete(key);
-    }
-  }
-
   const retransmitted = new Set<number>();
   for (const image of images) {
-    const fingerprint = imageFingerprint(image);
-    if (state.images.get(image.imageId) === fingerprint) continue;
     if (!desiredImageIds.has(image.imageId)) continue;
+    const fingerprint = imageFingerprint(image);
+    const resident = state.images.get(image.imageId);
+    if (resident?.fingerprint === fingerprint) {
+      state.images.delete(image.imageId);
+      state.images.set(image.imageId, resident);
+      continue;
+    }
     out.push(transmitInlinePng(image));
-    state.images.set(image.imageId, fingerprint);
+    state.images.delete(image.imageId);
+    state.images.set(image.imageId, {
+      fingerprint,
+      bytes: image.pngBase64.length * 2 + image.pixelWidth * image.pixelHeight * 4,
+    });
     retransmitted.add(image.imageId);
     for (const key of [...state.placements.keys()]) {
       if (key.startsWith(`${image.imageId}:`)) state.placements.delete(key);
@@ -158,6 +160,27 @@ export function syncInlineTerminalImages(
     if (options.allowPlacementUpdates === false) continue;
     out.push(placeImage(placement));
     state.placements.set(key, fingerprint);
+  }
+
+  // Visible images are pinned; the *additional* idle working set is bounded.
+  // Prune only after removing old placements so hard deletes cannot erase a
+  // current placement. Large modal images are reclaimed as soon as they close.
+  const idle = [...state.images].filter(([imageId]) => !desiredImageIds.has(imageId));
+  let idleBytes = idle.reduce((sum, [, image]) => sum + image.bytes, 0);
+  let idleCount = idle.length;
+  const evict = (imageId: number, bytes: number) => {
+    out.push(hardDeleteImage(imageId));
+    state.images.delete(imageId);
+    idleBytes -= bytes;
+    idleCount--;
+  };
+  // An oversized modal must not flush all the smaller cached chat previews.
+  for (const [imageId, image] of idle) {
+    if (image.bytes > MAX_IDLE_IMAGE_BYTES) evict(imageId, image.bytes);
+  }
+  for (const [imageId, image] of idle) {
+    if (idleCount <= MAX_IDLE_IMAGES && idleBytes <= MAX_IDLE_IMAGE_BYTES) break;
+    if (state.images.has(imageId)) evict(imageId, image.bytes);
   }
 
   if (out.length > 0) write(`${SAVE_CURSOR}${out.join("")}${RESTORE_CURSOR}`);
