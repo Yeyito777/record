@@ -78,7 +78,7 @@ export class InstagramController {
     this.resetInboxPaging();
     this.state.instagram.connection = { status: "connecting" };
     this.updateStatus();
-    this.notice("Importing Instagram session from vimbrowser…");
+    this.notice("Importing Instagram session from vimbrowser…", false, true);
     try {
       const session = await (this.options.importSession || importInstagramSession)(tabId);
       if (generation !== this.generation) return;
@@ -199,7 +199,7 @@ export class InstagramController {
     if (this.refreshing || this.state.instagram.connection.status === "connecting") return;
     if (!this.client) {
       await this.autoConnect();
-      if (this.state.instagram.connection.status === "idle") this.notice("Connect with /login instagram to load Instagram chats.");
+      if (this.state.instagram.connection.status === "idle") this.notice("Connect with /login instagram to load Instagram chats.", false, true);
       return;
     }
     const generation = this.generation;
@@ -235,11 +235,11 @@ export class InstagramController {
     this.state.sidebar.focusedGuildId = INSTAGRAM_GUILD_ID;
     this.syncSidebar();
     if (this.state.instagram.connection.status === "idle") {
-      this.notice("Connect with /login instagram to load Instagram chats.");
+      this.notice("Connect with /login instagram to load Instagram chats.", false, true);
       // A session may have been imported by another instance since startup.
       void this.autoConnect();
     } else if (this.state.instagram.connection.status === "error") {
-      this.notice(this.state.instagram.connection.error || "Instagram is offline. Try /refresh.", true);
+      this.notice(this.state.instagram.connection.error || "Instagram is offline. Try /refresh.", true, true);
     }
   }
 
@@ -453,7 +453,7 @@ export class InstagramController {
     const status = connection.status === "connecting" ? { text: "Connecting Instagram…", loading: true }
       : connection.status === "idle" ? { text: "Use /login instagram" }
       : connection.status === "error" ? { text: this.retrying ? "Retrying Instagram…" : "Offline · /refresh", loading: this.retrying }
-      : Object.keys(this.state.instagram.threadsById).length === 0 ? { text: "No conversations" } : null;
+      : null;
     if (status) this.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID] = status;
     else delete this.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID];
     this.render();
@@ -471,8 +471,11 @@ export class InstagramController {
       this.timer.unref?.();
     }
   }
-  private notice(message: string, warning = false): void {
-    setNotice(this.state, message, warning ? "warning" : "muted", { statusLine: true, chat: false });
+  private notice(message: string, warning = false, connection = false): void {
+    setNotice(this.state, message, warning ? "warning" : "muted", {
+      statusLine: true, chat: false,
+      ...(connection ? { connectionGuildId: INSTAGRAM_GUILD_ID } : {}),
+    });
     this.render();
   }
   private clearErrorNotice(): void {
@@ -502,6 +505,6 @@ export class InstagramController {
     }
     this.updateStatus();
     this.lastErrorNotice = message + suffix;
-    this.notice(this.lastErrorNotice, true);
+    this.notice(this.lastErrorNotice, true, this.state.instagram.connection.status === "error");
   }
 }

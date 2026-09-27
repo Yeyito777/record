@@ -39,6 +39,8 @@ export interface Notice {
   statusLine?: boolean;
   /** Whether this notice may be shown in the empty chat body when no messages are visible. */
   chat?: boolean;
+  /** Provider connection feedback; prevents duplicating its persistent status. */
+  connectionGuildId?: string;
 }
 
 export interface AuthState {
@@ -255,7 +257,7 @@ export function setNotice(
   state: AppState,
   text: string,
   tone: NoticeTone = "muted",
-  options: { loading?: boolean; statusLine?: boolean; chat?: boolean } = {},
+  options: { loading?: boolean; statusLine?: boolean; chat?: boolean; connectionGuildId?: string } = {},
 ): void {
   state.notice = {
     text,
@@ -263,6 +265,7 @@ export function setNotice(
     loading: options.loading ?? false,
     statusLine: options.statusLine ?? true,
     chat: options.chat ?? true,
+    ...(options.connectionGuildId ? { connectionGuildId: options.connectionGuildId } : {}),
   };
 }
 

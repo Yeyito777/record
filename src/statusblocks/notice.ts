@@ -3,6 +3,7 @@
  */
 
 import { loadingLabel } from "../loading";
+import { WHATSAPP_GUILD_ID } from "../chatproviders";
 import type { AppState, Notice } from "../state";
 import type { StatusBlock } from "../statusline";
 import { theme } from "../theme";
@@ -24,6 +25,7 @@ function toneColor(tone: Notice["tone"]): string {
 
 export function noticeBlock(state: AppState): StatusBlock | null {
   if (state.notice.statusLine === false) return null;
+  if (state.notice.connectionGuildId === WHATSAPP_GUILD_ID && state.whatsapp.loginModal) return null;
   const text = state.notice.text.split("\n")[0]?.trim();
   if (!text) return null;
 

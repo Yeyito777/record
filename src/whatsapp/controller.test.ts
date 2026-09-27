@@ -8,6 +8,7 @@ import { createInitialState } from "../state";
 import { inlineImageSourcesForMessage } from "../inlineimage";
 import { WhatsAppController, type WhatsAppBackendHandle, type WhatsAppControllerOptions } from "./controller";
 import { renderStatusLine } from "../statusline";
+import { renderTimelineLines } from "../timeline";
 import type { WhatsAppCacheSnapshot } from "./cache";
 import { MAX_WHATSAPP_MESSAGES_PER_CHAT } from "./integration";
 import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
@@ -347,7 +348,21 @@ describe("WhatsApp loading races", () => {
     } finally { await controller.shutdown(); }
   });
 
-  test("loading stays visible near the prompt during queued pages and pending sends", async () => {
+  test("routine cache hydration does not create a statusline block", async () => {
+    const cache = deferred<WhatsAppCacheSnapshot | null>();
+    const { state, controller } = fixture({ loadCache: () => cache.promise });
+    try {
+      controller.openRoot();
+      expect(state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID]).toBeUndefined();
+      expect(renderStatusLine(state, 160).lines.join("")).not.toContain("Loading WhatsApp cache");
+    } finally {
+      cache.resolve(null);
+      await settle();
+      await controller.shutdown();
+    }
+  });
+
+  test("history loading stays in the timeline, not the statusline, during queued pages and pending sends", async () => {
     const { state, backend, controller } = fixture({ historyPageDelayMs: 60_000 });
     const jid = "loading@g.us";
     const sent = deferred<WhatsAppMessage>();
@@ -361,7 +376,8 @@ describe("WhatsApp loading races", () => {
       expect(state.timeline.loadingOlder).toBe(true);
       controller.sendMessage("still sending");
       expect(state.notice.text).toBe("");
-      expect(renderStatusLine(state, 80).lines.join("")).toContain("Loading WhatsApp");
+      expect(renderStatusLine(state, 80).lines.join("")).not.toContain("Loading WhatsApp");
+      expect(renderTimelineLines(state.timeline, 80, 40, state.notice).lines.join("")).toContain("Loading older messages");
       controller.loadOlderHistory();
       expect(backend.historyRequests).toHaveLength(1); // queued request is deduplicated
       await controller.shutdown();
@@ -382,6 +398,7 @@ describe("WhatsApp loading races", () => {
     try {
       expect(state.timeline.loading).toBe(true);
       expect(renderStatusLine(state, 80).lines.join("")).toContain("Connecting WhatsApp");
+      expect(renderStatusLine(state, 160).lines.join("").match(/WhatsApp/g)).toHaveLength(1);
       backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1 });
       expect(backend.historyRequests).toHaveLength(0);
       backend.emit("history", { ...historyPage([raceMessage("anchor", jid, 100)]), syncKind: "recent" });

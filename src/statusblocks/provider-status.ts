@@ -14,11 +14,17 @@ function providerStatusBlock(
 ): StatusBlock | null {
   if (!active && state.channelList.guildId !== guildId
     && state.sidebar.focusedGuildId !== guildId && state.sidebar.expandedGuildId !== guildId) return null;
+  if (guildId === WHATSAPP_GUILD_ID && state.whatsapp.loginModal) return null;
+  const notice = state.notice;
+  // Detailed connection feedback already occupies a notice block (or the chat).
+  // Keep the persistent status as a fallback once that notice is cleared.
+  if (notice.connectionGuildId === guildId && notice.text.trim()
+    && (notice.chat !== false || (notice.statusLine !== false && !(state.voiceCall && notice.loading)))) return null;
   const provider = state.sidebar.providerStatusByGuildId[guildId];
-  const historyLoading = active && (state.timeline.loading || state.timeline.loadingOlder);
-  const text = provider?.text || (historyLoading ? `Loading ${name} history…` : null);
+  // History loading is already rendered inside the timeline.
+  const text = provider?.text;
   if (!text) return null;
-  const loading = provider ? provider.loading : historyLoading;
+  const loading = provider.loading;
   const namedText = text.includes(name) ? text : `${name}: ${text}`;
   const label = `  ${loading ? loadingLabel(namedText, state.loadingFrameIndex) : namedText}`;
   const warning = !loading && (guildId === INSTAGRAM_GUILD_ID

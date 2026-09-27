@@ -192,7 +192,7 @@ describe("Instagram controller", () => {
       expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]).toBeUndefined();
     } finally { await h.controller.shutdown(); }
   });
-  test("renders connecting state while the first inbox is pending and distinguishes empty inbox", async () => {
+  test("renders connecting state while the first inbox is pending, then stays quiet for an empty inbox", async () => {
     const pending = deferred<InstagramInbox>();
     const h = harness({ inbox: () => pending.promise });
     try {
@@ -205,7 +205,8 @@ describe("Instagram controller", () => {
       expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.loading).toBe(true);
       pending.resolve({ ...inbox(), inbox: { threads: [], has_older: false } });
       await connecting;
-      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]?.text).toBe("No conversations");
+      expect(h.state.sidebar.providerStatusByGuildId[INSTAGRAM_GUILD_ID]).toBeUndefined();
+      expect(renderStatusLine(h.state, 120).lines.join("")).not.toContain("No conversations");
     } finally { await h.controller.shutdown(); }
   });
   test("retries transient initial failures without requiring another login", async () => {
