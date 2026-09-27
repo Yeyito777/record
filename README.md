@@ -98,6 +98,7 @@ Notes:
 - WhatsApp history loading stays visible below the prompt, including between pages; sending a message does not clear it.
 - Late WhatsApp history/cache loads preserve sent messages, live edits, and the reading viewport.
 - downloaded Discord and WhatsApp attachments share a 100-file LRU cache; cache hits refresh their age and successful additions prune the oldest files
+- switching chats reuses a session-only LRU of prepared image previews (64 entries / 16 MiB); terminal image data also stays resident for recent images (up to 64 idle images / 32 MiB, plus visible images), avoiding reconversion and retransmission on return
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`
