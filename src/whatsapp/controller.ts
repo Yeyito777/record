@@ -447,6 +447,11 @@ export class WhatsAppController {
     const changed = applyWhatsAppReactions(this.state.whatsapp, events);
     const visibleChanged = this.applyVisibleReactions(events);
     if (changed.length === 0 && visibleChanged.length === 0) return;
+    const activeJid = this.activeWhatsAppJid();
+    if (activeJid && (changed.includes(activeJid) || visibleChanged.includes(activeJid))
+      && this.state.timeline.scrollOffset >= this.state.timeline.maxScroll) {
+      this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+    }
     this.queueCacheSave();
     this.refreshActiveTimeline();
     this.scheduleRender();

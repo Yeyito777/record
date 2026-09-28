@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { render } from "./render";
 import { createInitialState, focusHistory } from "./state";
 import { INSTAGRAM_GUILD_ID } from "./chatproviders";
-import { setTimelineInlineImageState, setTimelineMessages } from "./timeline";
+import { patchTimelineMessage, setTimelineInlineImageState, setTimelineMessages } from "./timeline";
 import { theme } from "./theme";
 import type { DiscordMessage } from "./discord";
 import { recordTypingStart } from "./typing";
@@ -173,6 +173,44 @@ describe("render", () => {
     expect(state.timeline.maxScroll).toBe(baselineMaxScroll + 1);
     expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll);
   });
+
+  for (const me of [false, true]) {
+    for (const target of ["2", "6"]) {
+      test(`reaction rows keep history at bottom (self=${me}, message=${target})`, () => {
+        const state = createInitialState(null, "/tmp/record-config.json");
+        state.cols = 80;
+        state.rows = 12;
+        setTimelineMessages(state.timeline, "channel-1",
+          Array.from({ length: 6 }, (_, i) => message(String(i + 1), `message ${i + 1}`)));
+        captureRender(state);
+        focusHistory(state);
+        captureRender(state);
+        const oldMax = state.timeline.maxScroll;
+        expect(oldMax).toBeGreaterThan(1);
+        const patch = {
+          id: target, channelId: "channel-1",
+          reactionUpdate: { type: "add" as const, me, emoji: { id: null, name: "👍", animated: false } },
+        };
+        patchTimelineMessage(state.timeline, patch);
+        captureRender(state);
+        expect(state.timeline.maxScroll).toBe(oldMax + 1);
+        expect(state.timeline.scrollOffset).toBe(oldMax + 1);
+
+        patchTimelineMessage(state.timeline, { ...patch, reactionUpdate: { type: "clear" } });
+        captureRender(state);
+        expect(state.timeline.scrollOffset).toBe(oldMax);
+
+        // Even one row above the bottom must not be treated as pinned.
+        state.timeline.scrollOffset = oldMax - 1;
+        captureRender(state);
+        const anchor = state.historyLineAnchors[state.timeline.scrollOffset];
+        patchTimelineMessage(state.timeline, patch);
+        captureRender(state);
+        expect(state.timeline.scrollOffset).toBeLessThan(state.timeline.maxScroll);
+        expect(state.historyLineAnchors[state.timeline.scrollOffset]).toBe(anchor);
+      });
+    }
+  }
 
   test("typing indicator bumps an unpinned history viewport instead of covering its bottom row", () => {
     const state = createInitialState(null, "/tmp/record-config.json");

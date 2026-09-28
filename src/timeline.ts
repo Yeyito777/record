@@ -388,6 +388,12 @@ export function patchTimelineMessage(timeline: TimelineState, patch: DiscordMess
   if (existingIndex < 0) return;
   const existing = timeline.messages[existingIndex];
   if (!existing) return;
+  // Reaction rows can grow on any message, from local sends or gateway events.
+  // Resolve the new bottom on render instead of retaining the old row offset.
+  if ((patch.reactionUpdate || patch.reactions !== undefined)
+    && timeline.scrollOffset >= timeline.maxScroll) {
+    timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+  }
   timeline.messages[existingIndex] = applyDiscordMessagePatch(existing, patch);
   pruneTimelineInlineImages(timeline);
   invalidateTimelineContentCache(timeline);

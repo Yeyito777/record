@@ -533,6 +533,40 @@ describe("WhatsApp loading races", () => {
     }
   });
 
+  for (const local of [false, true]) {
+    test(`WhatsApp reactions follow the bottom but not scrolled-up history (local=${local})`, async () => {
+      const { state, backend, controller, jid } = raceFixture();
+      try {
+        backend.emit("history", historyPage([raceMessage("later", jid, 200)]));
+        state.chatFocus = "history";
+        const draw = () => renderTimelineLines(state.timeline, 40, 1, state.notice);
+        draw();
+        state.timeline.scrollOffset = state.timeline.maxScroll;
+        const oldMax = state.timeline.maxScroll;
+        expect(oldMax).toBeGreaterThan(1);
+        const target = state.whatsapp.messagesByChatId[jid]!.find(m => m.id === "original")!.key;
+        const react = async (emoji: string) => {
+          if (local) {
+            await controller.reactToMessage(state.timeline.messages.find(m => m.id === "original")!, emoji);
+          } else {
+            backend.emit("reactions", [{ target, reaction: { senderId: jid, fromMe: false, emoji } }]);
+          }
+        };
+        await react("👍");
+        draw();
+        expect(state.timeline.maxScroll).toBe(oldMax + 1);
+        expect(state.timeline.scrollOffset).toBe(oldMax + 1);
+        await react("");
+        draw();
+        expect(state.timeline.scrollOffset).toBe(oldMax);
+        state.timeline.scrollOffset = oldMax - 1;
+        await react("👍");
+        draw();
+        expect(state.timeline.scrollOffset).toBe(oldMax - 1);
+      } finally { await controller.shutdown(); }
+    });
+  }
+
   test("renders optimistic reactions and removals before the send resolves", async () => {
     const { state, backend, controller, jid, renders } = raceFixture();
     try {

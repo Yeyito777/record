@@ -80,14 +80,8 @@ export async function reactToSelectedMessage(
   const buffer = state.editor.buffer;
   const target = state.reactionTarget;
   const composer = state.reactionComposer;
-  const atBottom = state.timeline.channelId === message.channelId
-    && state.timeline.messages.at(-1)?.id === message.id
-    && state.timeline.scrollOffset >= state.timeline.maxScroll;
   if (!options.preservePrompt && composer) restoreReactionDraft(state);
   const optimistic = whatsapp ? null : beginOptimisticReaction(state, message, emoji!, remove);
-  // The new reaction row increases maxScroll on the next render. Pin to that
-  // new bottom, but never jump a reader who had scrolled up.
-  if (atBottom) state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
   try {
     if (whatsapp) {
       const sending = effects.reactWhatsAppMessage!(message, remove ? "" : emoji!.name);
