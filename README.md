@@ -44,6 +44,7 @@ Controls:
 - `Enter` on a thread (shown with `↳`): open its timeline; posting automatically joins the thread when needed
 - `Enter` on an authored “Started a thread” message in history: open and focus that thread
 - image attachments expand inline by default; press `Enter` on their filename or image rows to collapse/reopen one
+- opening the full-image viewer shows an enlarged cached preview immediately, then upgrades it in the background; `Enter` / `Esc` closes even while loading. Chat images stay placed behind the higher-z viewer rather than disappearing.
 - `/images hide|show`: keep images collapsed until opened manually, or restore automatic expansion; the selected mode persists
 - `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
 - `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history

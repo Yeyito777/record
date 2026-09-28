@@ -34,7 +34,7 @@ import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./ch
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
 import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
-import { handleImageModalKey } from "./imagemodal";
+import { handleImageModalKey, upgradeImageModal, type ImageModalState } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
@@ -251,7 +251,8 @@ let terminalControlBuffer: TerminalControlBuffer | null = null;
 let terminalGraphicsClient: TerminalGraphicsClient | null = null;
 let nextInlineImageRequestId = 0;
 const inlineImageLoadQueue = new AsyncWorkQueue(INLINE_IMAGE_LOAD_CONCURRENCY);
-const inlineImageModalRequests = new Map<string, number>();
+// Viewer work has its own bounded lane, ahead of background thumbnail queues.
+const inlineImageModalLoadQueue = new AsyncWorkQueue(1);
 const inlineImageCache = new InlineImageCache();
 
 function syncTerminalGraphicsCells(): void {
@@ -495,68 +496,53 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   if (!isImageAttachment(attachment)) return false;
   const existing = state.timeline.inlineImages[attachment.id];
   if (existing?.phase !== "ready") return false;
-  if (inlineImageModalRequests.has(attachment.id)) return true;
-
   const requestId = ++nextInlineImageRequestId;
   const channelId = state.timeline.channelId;
   const sourceUrl = attachment.url;
-  inlineImageModalRequests.set(attachment.id, requestId);
-  void inlineImageLoadQueue.enqueue(async () => {
-    try {
-      const before = state.timeline.inlineImages[attachment.id];
-      if (!running
-        || state.timeline.channelId !== channelId
-        || inlineImageModalRequests.get(attachment.id) !== requestId
-        || before?.phase !== "ready"
-        || before.sourceUrl !== sourceUrl) return;
-
-      const local = state.localAttachmentImages[attachment.id];
-      let prepared: Awaited<ReturnType<typeof prepareInlineImage>>;
-      if (local) {
-        prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), { preserveSourceResolution: true });
-      } else {
-        const downloaded = isWhatsAppChannelId(channelId)
-          ? await whatsAppController.downloadAttachment(attachment)
-          : await downloadAttachment(attachment);
-        if (!downloaded.ok || !downloaded.path) throw new Error(downloaded.error ?? "unknown download error");
-        prepared = await prepareInlineImage(downloaded.path, { preserveSourceResolution: true });
-      }
-
-      const current = state.timeline.inlineImages[attachment.id];
-      if (!running
-        || state.timeline.channelId !== channelId
-        || inlineImageModalRequests.get(attachment.id) !== requestId
-        || current?.phase !== "ready"
-        || current.sourceUrl !== sourceUrl) return;
-      const modalAttachmentId = `modal:${attachment.id}`;
-      state.imageModal = {
-        filename: attachment.filename,
-        image: {
-          phase: "ready",
-          attachmentId: modalAttachmentId,
-          filename: attachment.filename,
-          sourceUrl,
-          requestId,
-          imageId: availableInlineImageId(
-            modalAttachmentId,
-            inlineImageId({ id: modalAttachmentId, url: sourceUrl }),
-          ),
-          ...prepared,
-        },
-      };
-      scheduleRender();
-    } catch (error) {
-      debugLog("inline_image.modal_failed", {
-        attachmentId: attachment.id,
-        filename: attachment.filename,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      if (inlineImageModalRequests.get(attachment.id) === requestId) {
-        inlineImageModalRequests.delete(attachment.id);
-      }
+  // Reuse resident preview pixels immediately, at viewer size, without waiting
+  // behind background thumbnail downloads/conversions.
+  const modal: ImageModalState = {
+    filename: attachment.filename, image: existing, loading: true, preview: true,
+  };
+  state.imageModal = modal;
+  scheduleRender();
+  const isCurrent = () => running && state.imageModal === modal
+    && state.timeline.channelId === channelId
+    && state.timeline.inlineImages[attachment.id]?.sourceUrl === sourceUrl;
+  void upgradeImageModal(modal, () => inlineImageModalLoadQueue.enqueue(async () => {
+    if (!isCurrent()) return existing;
+    const local = state.localAttachmentImages[attachment.id];
+    let prepared: Awaited<ReturnType<typeof prepareInlineImage>>;
+    if (local) {
+      prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), { preserveSourceResolution: true });
+    } else {
+      const downloaded = isWhatsAppChannelId(channelId)
+        ? await whatsAppController.downloadAttachment(attachment)
+        : await downloadAttachment(attachment);
+      if (!downloaded.ok || !downloaded.path) throw new Error(downloaded.error ?? "unknown download error");
+      prepared = await prepareInlineImage(downloaded.path, { preserveSourceResolution: true });
     }
-  });
+
+    const modalAttachmentId = `modal:${attachment.id}`;
+    return {
+      phase: "ready",
+      attachmentId: modalAttachmentId,
+      filename: attachment.filename,
+      sourceUrl,
+      requestId,
+      imageId: availableInlineImageId(
+        modalAttachmentId,
+        inlineImageId({ id: modalAttachmentId, url: sourceUrl }),
+      ),
+      ...prepared,
+    };
+  }), isCurrent).catch((error) => {
+    debugLog("inline_image.modal_failed", {
+      attachmentId: attachment.id,
+      filename: attachment.filename,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }).finally(() => { if (isCurrent()) scheduleRender(); });
   return true;
 }
 

@@ -16,6 +16,24 @@ const MODAL_EXTRA_ROWS = 4; // border, title, footer, border
 export interface ImageModalState {
   filename: string;
   image: InlineChatImageReady;
+  loading?: boolean;
+  preview?: boolean;
+}
+
+/** Upgrade only the still-open viewer; closing/reopening cannot revive stale work. */
+export async function upgradeImageModal(
+  modal: ImageModalState,
+  load: () => Promise<InlineChatImageReady>,
+  isCurrent: () => boolean,
+): Promise<void> {
+  try {
+    const image = await load();
+    if (!isCurrent()) return;
+    modal.image = image;
+    modal.preview = false;
+  } finally {
+    if (isCurrent()) modal.loading = false;
+  }
 }
 
 export interface ImageModalLayout {
@@ -79,7 +97,7 @@ export function imageModalLayout(
   const cellWidth = Math.max(1, cellWidthPixels);
   const cellHeight = Math.max(1, cellHeightPixels);
   const scale = Math.min(
-    1,
+    state.preview ? Infinity : 1,
     (maxColumns * cellWidth) / pixelWidth,
     (maxRows * cellHeight) / pixelHeight,
   );
@@ -102,6 +120,7 @@ export function imageModalLayout(
       col: left + 2,
       columns: imageColumns,
       rows: imageRows,
+      z: 2,
     },
   };
 }
@@ -149,7 +168,11 @@ export function renderImageModal(
   }
   out.push(
     moveTo(layout.top + 2 + layout.placement.rows, layout.left) + border + "│"
-    + theme.sidebarBg + theme.muted + centeredText("Enter or Esc to close", innerWidth)
+    + theme.sidebarBg + theme.muted + centeredText(
+      state.loading ? "Loading full image · Esc to close"
+        : state.preview ? "Preview only · Enter / Esc close" : "Enter or Esc to close",
+      innerWidth,
+    )
     + theme.reset + border + "│" + theme.reset,
   );
   out.push(

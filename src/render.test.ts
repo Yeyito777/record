@@ -134,6 +134,34 @@ describe("render", () => {
     expect(output).toContain("\x1b_Ga=p,i=1073741826");
   });
 
+  test("opening, upgrading, and closing the viewer preserves chat image placements", () => {
+    const state = stateWithReadyInlineImage();
+    captureRender(state);
+    const preview = state.timeline.inlineImages.a1!;
+    if (preview.phase !== "ready") throw new Error("missing fixture");
+    state.imageModal = { filename: preview.filename, image: preview, loading: true, preview: true };
+    const opening = captureRender(state);
+    expect(opening).not.toContain("a=t,");
+    expect(opening).not.toContain("a=d,");
+    expect(opening).toContain("z=2");
+    expect(captureRender(state)).not.toContain("\x1b_G");
+
+    state.imageModal = {
+      filename: preview.filename,
+      image: { ...preview, imageId: preview.imageId + 1, pixelWidth: 1920, pixelHeight: 1080 },
+    };
+    const upgrading = captureRender(state);
+    expect(upgrading).toContain(`a=p,i=${preview.imageId + 1}`);
+    // Only the temporary viewer placement goes away, never the inline one.
+    expect(upgrading.match(/a=d,d=i,/g)).toHaveLength(1);
+    state.imageModal = null;
+    const closing = captureRender(state);
+    expect(closing).not.toContain("a=t,");
+    expect(closing).not.toContain("a=p,");
+    expect(closing).toContain(`a=d,d=i,i=${preview.imageId + 1}`);
+    expect(closing).not.toContain(`a=d,d=i,i=${preview.imageId},`);
+  });
+
   test("opening a new channel stays pinned to the bottom even with old history anchors", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.cols = 80;

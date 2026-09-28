@@ -715,18 +715,17 @@ export function render(state: AppState): void {
     graphics: customEmojiImages.finishFrame(customEmojiFrame),
   });
 
-  const inlinePlacements = state.imageModal
-    ? imageModal?.placement ? [imageModal.placement] : []
-    : state.whatsapp.loginModal
-      ? []
-      : visibleInlineImagePlacements(
-        timeline,
-        state.timeline.scrollOffset,
-        bodyTop,
-        bodyRows,
-        mainCol + 1,
-        selectedHistoryRows,
-      );
+  const inlinePlacements = state.whatsapp.loginModal
+    ? []
+    : visibleInlineImagePlacements(
+      timeline,
+      state.timeline.scrollOffset,
+      bodyTop,
+      bodyRows,
+      mainCol + 1,
+      state.imageModal ? null : selectedHistoryRows,
+    );
+  if (imageModal?.placement) inlinePlacements.push(imageModal.placement);
   syncInlineTerminalImages(
     state,
     readyInlineImages(state),

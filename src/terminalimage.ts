@@ -20,6 +20,8 @@ export interface InlineTerminalImagePlacement {
   rows: number;
   sourceY?: number;
   sourceHeight?: number;
+  /** Higher values composite above ordinary chat previews (z=1). */
+  z?: number;
   /** Ask supporting terminals to tint this placement as one selected object. */
   selected?: boolean;
 }
@@ -80,6 +82,7 @@ function placementFingerprint(placement: InlineTerminalImagePlacement): string {
     placement.sourceY ?? 0,
     placement.sourceHeight ?? placement.image.pixelHeight,
     placement.selected ? 1 : 0,
+    placement.z ?? 1,
   ].join(":");
 }
 
@@ -94,7 +97,7 @@ function placeImage(placement: InlineTerminalImagePlacement): string {
     + graphicsCommand(
       // q=1 suppresses successful replies but lets the terminal report an
       // evicted image ID. handleInlineTerminalImageResponse then retries it.
-      `a=p,i=${placement.image.imageId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=1${selected},q=1`,
+      `a=p,i=${placement.image.imageId},p=${placement.placementId},c=${placement.columns},r=${placement.rows}${crop},C=1,z=${Math.trunc(placement.z ?? 1)}${selected},q=1`,
     );
 }
 

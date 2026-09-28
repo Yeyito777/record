@@ -26,6 +26,20 @@ function image(overrides: Partial<InlineChatImageReady> = {}): InlineChatImageRe
 }
 
 describe("inline terminal graphics", () => {
+  test("changing only the z-index replaces placement without retransmitting pixels", () => {
+    const owner = {};
+    const ready = image();
+    const placement = { image: ready, placementId: 1, row: 2, col: 3, columns: 10, rows: 5 };
+    const writes: string[] = [];
+    syncInlineTerminalImages(owner, [ready], [placement], (payload) => writes.push(payload));
+    syncInlineTerminalImages(owner, [ready], [{ ...placement, z: 2 }], (payload) => writes.push(payload));
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toContain("z=2");
+    expect(writes[1]).not.toContain("a=t");
+    syncInlineTerminalImages(owner, [ready], [{ ...placement, z: 2 }], (payload) => writes.push(payload));
+    expect(writes).toHaveLength(2);
+  });
+
   test("chunks large direct PNG transmissions into Kitty APC frames", () => {
     const sequence = transmitInlinePng(image({ pngBase64: "A".repeat(9000) }));
     expect(sequence).toContain("\x1b_Ga=t,t=d,f=100,i=1073741825,q=2,m=1;");
