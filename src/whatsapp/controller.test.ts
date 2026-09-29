@@ -175,7 +175,7 @@ class DelayedShutdownBackend extends FakeBackend {
   }
 }
 
-function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" | "historyRequestTimeoutMs" | "loadCache"> = {}) {
+function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" | "historyRequestTimeoutMs" | "recentHistoryIntervalMs" | "loadCache"> = {}) {
   const state = createInitialState(null, "/tmp/config.json");
   const backend = new FakeBackend();
   let renders = 0;
@@ -186,6 +186,7 @@ function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" |
     successModalDelayMs: 0,
     historyPageDelayMs: options.historyPageDelayMs ?? 0,
     historyRequestTimeoutMs: options.historyRequestTimeoutMs ?? 1_000,
+    recentHistoryIntervalMs: options.recentHistoryIntervalMs,
     loadCache: options.loadCache,
   });
   return { state, backend, controller, renders: () => renders };
@@ -223,6 +224,165 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 }
 
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+describe("WhatsApp recent-history reconciliation", () => {
+  const jid = "repair@s.whatsapp.net";
+  const connected: WhatsAppConnectionState = {
+    status: "connected", resumed: true, connectedAtMs: 1,
+    account: { id: "self@s.whatsapp.net" },
+  };
+  const fullHistory = () => Array.from({ length: MAX_WHATSAPP_MESSAGES_PER_CHAT },
+    (_, index) => raceMessage(`cached-${index}`, jid, (index + 1) * 1_000));
+
+  test("a restarted client reconciles a hydrated full cache without receiving startup history", async () => {
+    const { state, backend, controller } = fixture({
+      loadCache: async () => ({
+        version: 1, savedAtMs: 1, account: { id: "self@s.whatsapp.net" },
+        chats: [{ id: jid, kind: "direct", name: "Repair" }], contacts: [],
+        messagesByChatId: { [jid]: fullHistory() },
+      }),
+    });
+    try {
+      expect(await controller.restoreCachedChannel(whatsappChannelId(jid))).toBe(true);
+      expect(backend.historyRequests).toHaveLength(0);
+      backend.emit("state", connected);
+      await settle();
+      expect(backend.historyRequests[0]).toEqual({
+        count: 50, oldestId: "cached-299", oldestTimestampMs: 300_000,
+      });
+      backend.emit("history", historyPage([raceMessage("missing-before-restart", jid, 299_500)], "history-1"));
+      expect(state.timeline.messages.some(message => message.id === "missing-before-restart")).toBe(true);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("a full cache repairs recent holes on focus and reconnect without paging older", async () => {
+    const { state, backend, controller } = fixture();
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      expect(backend.historyRequests).toEqual([{
+        count: 50, oldestId: "cached-299", oldestTimestampMs: 300_000,
+      }]);
+      controller.openChannel(whatsappChannelId(jid));
+      expect(backend.historyRequests).toHaveLength(1);
+      state.timeline.hasOlder = true;
+      state.timeline.scrollOffset = 7;
+      backend.emit("history", historyPage([
+        raceMessage("missed", jid, 299_500),
+        raceMessage("cached-299", jid, 300_000),
+      ], "history-1"));
+      await settle();
+      expect(state.whatsapp.messagesByChatId[jid]).toHaveLength(MAX_WHATSAPP_MESSAGES_PER_CHAT);
+      expect(state.timeline.messages.filter(message => message.id === "missed")).toHaveLength(1);
+      expect(state.timeline.messages.filter(message => message.id === "cached-299")).toHaveLength(1);
+      expect(state.timeline.scrollOffset).toBe(7);
+      expect(state.timeline.hasOlder).toBe(true);
+      expect(state.timeline.loadingOlder).toBe(false);
+      expect(backend.historyRequests).toHaveLength(1);
+
+      backend.emit("state", { status: "reconnecting", attempt: 1, delayMs: 1, disconnect: { code: 428, name: null } });
+      backend.emit("state", connected);
+      expect(backend.historyRequests).toHaveLength(2);
+      expect(backend.historyRequests[1]?.oldestId).toBe("cached-299");
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("periodically repairs the active chat, deduplicates pending requests and stops on shutdown", async () => {
+    const { state, backend, controller } = fixture({ recentHistoryIntervalMs: 10 });
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      state.timeline.hasOlder = true;
+      // Unrelated provider events must not display a background sync as an
+      // older-history spinner.
+      backend.emit("chats", { kind: "update", chats: [{ id: jid, kind: "direct", name: "Repair" }] });
+      expect(state.timeline.loadingOlder).toBe(false);
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(backend.historyRequests).toHaveLength(1);
+      backend.emit("history", historyPage([], "history-1"));
+      backend.emit("messages", {
+        kind: "upsert", upsertType: "notify", skippedMessages: 0,
+        messages: [raceMessage("new-live-anchor", jid, 301_000)],
+      });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(backend.historyRequests).toHaveLength(2);
+      expect(backend.historyRequests[1]?.oldestId).toBe("new-live-anchor");
+      backend.emit("history", historyPage([raceMessage("repaired", jid, 300_500)], "history-2"));
+      expect(state.timeline.messages.some(message => message.id === "repaired")).toBe(true);
+      expect(state.timeline.hasOlder).toBe(true);
+      state.timeline.channelId = "discord-channel";
+      state.channelList.activeChannelId = "discord-channel";
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(backend.historyRequests).toHaveLength(2);
+      backend.emit("state", { status: "reconnecting", attempt: 1, delayMs: 1, disconnect: { code: 428, name: null } });
+      state.timeline.channelId = whatsappChannelId(jid);
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(backend.historyRequests).toHaveLength(2);
+    } finally {
+      await controller.shutdown();
+    }
+    const requests = backend.historyRequests.length;
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(backend.historyRequests).toHaveLength(requests);
+  });
+
+  test("recent-sync timeouts can retry and do not alter older-pagination state", async () => {
+    const { state, backend, controller } = fixture({ historyRequestTimeoutMs: 5 });
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      controller.openChannel(whatsappChannelId(jid));
+      state.timeline.hasOlder = true;
+      await new Promise(resolve => setTimeout(resolve, 15));
+      expect(state.timeline.hasOlder).toBe(true);
+      expect(state.timeline.loadingOlder).toBe(false);
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      backend.emit("history", historyPage([], "history-1"));
+      controller.openChannel(whatsappChannelId(jid));
+      expect(backend.historyRequests).toHaveLength(2);
+      backend.emit("history", historyPage([], "history-2"));
+      controller.openChannel(whatsappChannelId(jid));
+      expect(backend.historyRequests).toHaveLength(3);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("correlates early recent pages and resolves old LID keys through the canonical chat", async () => {
+    const { state, backend, controller } = fixture();
+    const calls: import("./types").WhatsAppMessageKey[] = [];
+    backend.fetchHistory = async (_count, key) => {
+      calls.push(key);
+      backend.emit("history", historyPage([raceMessage("repaired", jid, 299_500)], `early-${calls.length}`));
+      return `early-${calls.length}`;
+    };
+    try {
+      backend.emit("state", connected);
+      backend.emit("lid-mapping", { lid: "repair@lid", phoneId: jid });
+      backend.emit("history", historyPage(fullHistory().map(message => ({
+        ...message, key: { ...message.key, chatId: "repair@lid" },
+      }))));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      expect(calls[0]).toMatchObject({ id: "cached-299", chatId: "repair@lid", alternateChatId: jid });
+      expect(state.timeline.messages.some(message => message.id === "repaired")).toBe(true);
+      expect(state.timeline.loadingOlder).toBe(false);
+      controller.openChannel(whatsappChannelId(jid));
+      expect(calls).toHaveLength(2);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+});
 
 describe("WhatsApp loading races", () => {
   for (const confirmation of ["rpc", "echo", "alias-echo", "history"] as const) {

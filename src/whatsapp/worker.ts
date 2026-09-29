@@ -192,16 +192,7 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
         || !Number.isFinite(params.oldestTimestampMs) || params.oldestTimestampMs <= 0) {
         throw new Error("Invalid fetch-history request.");
       }
-      return await backend.getSocket().fetchMessageHistory(
-        params.count,
-        {
-          remoteJid: params.oldestKey.chatId,
-          id: params.oldestKey.id,
-          fromMe: params.oldestKey.fromMe,
-          participant: params.oldestKey.participantId,
-        },
-        params.oldestTimestampMs,
-      );
+      return await backend.fetchHistory(params.count, params.oldestKey, params.oldestTimestampMs);
     }
     case "set-chat-muted": {
       const params = request.params as unknown as WhatsAppSetChatMutedParams;

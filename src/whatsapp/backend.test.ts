@@ -175,6 +175,35 @@ function setup(
 }
 
 describe("RecordWhatsAppBackend", () => {
+  test("history resync addresses the phone thread and preserves group participant aliases", async () => {
+    const { backend, sockets } = setup(true);
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+    try {
+      await backend.fetchHistory(50, {
+        id: "latest", chatId: "person@lid", alternateChatId: "person@s.whatsapp.net", fromMe: false,
+      }, 456_000);
+      await backend.fetchHistory(50, {
+        id: "group-latest", chatId: "group@g.us", fromMe: false,
+        participantId: "person@lid", alternateParticipantId: "person@s.whatsapp.net",
+      }, 457_000);
+      expect(sockets[0].historyRequests).toEqual([
+        { count: 50, timestampMs: 456_000, key: {
+          id: "latest", remoteJid: "person@s.whatsapp.net", remoteJidAlt: "person@lid",
+          fromMe: false, participant: undefined, participantAlt: undefined,
+        } },
+        { count: 50, timestampMs: 457_000, key: {
+          id: "group-latest", remoteJid: "group@g.us", remoteJidAlt: undefined,
+          fromMe: false, participant: "person@s.whatsapp.net", participantAlt: "person@lid",
+        } },
+      ]);
+    } finally {
+      await backend.shutdown();
+    }
+  });
+
   test("a stale socket credential failure does not stop its replacement", async () => {
     let rejectWrite!: (error: Error) => void;
     let writes = 0;

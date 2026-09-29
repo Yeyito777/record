@@ -272,6 +272,20 @@ export class RecordWhatsAppBackend {
     return this.activeSocket.socket;
   }
 
+  /** History requests must address the phone thread, not its migrated LID alias. */
+  async fetchHistory(count: number, key: WhatsAppMessageKey, timestampMs: number): Promise<string> {
+    const remoteJid = mediaRecoveryChatId(key);
+    const participant = mediaRecoveryParticipantId(key);
+    return this.getSocket().fetchMessageHistory(count, {
+      id: key.id,
+      remoteJid,
+      fromMe: key.fromMe,
+      participant,
+      remoteJidAlt: alternateRecoveryId(remoteJid, [key.chatId, key.alternateChatId]),
+      participantAlt: alternateRecoveryId(participant, [key.participantId, key.alternateParticipantId]),
+    }, timestampMs);
+  }
+
   /** Re-fetch media metadata discarded by Record caches from before media opening existed. */
   async recoverMediaMessage(
     message: WhatsAppMessage,

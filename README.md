@@ -97,6 +97,7 @@ Notes:
 - expanded chat images use the Kitty direct-stream graphics protocol; PNGs are sent directly and other image formats use `ffmpeg` to produce a bounded first-frame PNG
 - WhatsApp stickers expand inline like images, including first-frame previews of animated WebP stickers
 - WhatsApp history loading stays visible below the prompt, including between pages; sending a message does not clear it.
+- WhatsApp rechecks the open chat's recent 50-message window every minute to recover missed messages; full caches also recheck on focus and reconnect instead of disabling history recovery.
 - Late WhatsApp history/cache loads preserve sent messages, live edits, and the reading viewport.
 - downloaded Discord and WhatsApp attachments share a 100-file LRU cache; cache hits refresh their age and successful additions prune the oldest files
 - switching chats reuses a session-only LRU of prepared image previews (64 entries / 16 MiB); terminal image data also stays resident for recent images (up to 64 idle images / 32 MiB, plus visible images), avoiding reconversion and retransmission on return

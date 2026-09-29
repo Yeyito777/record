@@ -105,6 +105,7 @@ export interface WhatsAppControllerOptions {
   successModalDelayMs?: number;
   historyPageDelayMs?: number;
   historyRequestTimeoutMs?: number;
+  recentHistoryIntervalMs?: number;
   loadCache?: typeof loadWhatsAppCache;
 }
 
@@ -112,9 +113,11 @@ const DEFAULT_SUCCESS_MODAL_DELAY_MS = 900;
 const DEFAULT_CACHE_SAVE_DELAY_MS = 250;
 const DEFAULT_HISTORY_PAGE_DELAY_MS = 250;
 const DEFAULT_HISTORY_REQUEST_TIMEOUT_MS = 20_000;
+const DEFAULT_RECENT_HISTORY_INTERVAL_MS = 60_000;
 const HISTORY_GAP_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
 
 interface PendingHistoryRequest {
+  recent: boolean;
   anchorId: string;
   requestId: string | null;
   receivedPages: Map<string, readonly import("./types").WhatsAppMessage[]>;
@@ -154,6 +157,8 @@ export class WhatsAppController {
   private readonly successModalDelayMs: number;
   private readonly historyPageDelayMs: number;
   private readonly historyRequestTimeoutMs: number;
+  private readonly recentHistoryIntervalMs: number;
+  private recentHistoryTimer: ReturnType<typeof setInterval> | null = null;
   private readonly unsubscribers: Array<() => void> = [];
   private successModalTimer: ReturnType<typeof setTimeout> | null = null;
   private loginStartedWithSavedAuth = false;
@@ -199,6 +204,7 @@ export class WhatsAppController {
     this.successModalDelayMs = options.successModalDelayMs ?? DEFAULT_SUCCESS_MODAL_DELAY_MS;
     this.historyPageDelayMs = options.historyPageDelayMs ?? DEFAULT_HISTORY_PAGE_DELAY_MS;
     this.historyRequestTimeoutMs = options.historyRequestTimeoutMs ?? DEFAULT_HISTORY_REQUEST_TIMEOUT_MS;
+    this.recentHistoryIntervalMs = options.recentHistoryIntervalMs ?? DEFAULT_RECENT_HISTORY_INTERVAL_MS;
     this.backendFactory = options.backendFactory ?? (() => createNodeWhatsAppBackendClient({ authDirectory: this.authDirectory }));
     this.backend = this.backendFactory();
     this.bindBackend();
@@ -355,7 +361,7 @@ export class WhatsAppController {
     if (unreadKeys.length > 0 && this.backend.isConnected) {
       void this.backend.markRead(unreadKeys).catch(() => {});
     }
-    this.requestOlderHistory(jid);
+    this.reconcileHistory(jid);
     return true;
   }
 
@@ -863,7 +869,14 @@ export class WhatsAppController {
       this.queueCacheSave();
       if (this.state.sidebar.loadingGuildId === WHATSAPP_GUILD_ID) this.state.sidebar.loadingGuildId = null;
       const jid = this.activeWhatsAppJid();
-      if (jid) this.requestOlderHistory(jid);
+      if (jid) this.reconcileHistory(jid);
+      if (!this.recentHistoryTimer) {
+        this.recentHistoryTimer = setInterval(() => {
+          const active = this.activeWhatsAppJid();
+          if (active) this.requestOlderHistory(active, true);
+        }, this.recentHistoryIntervalMs);
+        this.recentHistoryTimer.unref?.();
+      }
     }
 
     const modal = this.state.whatsapp.loginModal;
@@ -1157,29 +1170,44 @@ export class WhatsAppController {
     applySidebarChannelLayoutForGuild(this.state.sidebar, WHATSAPP_GUILD_ID, layout?.[WHATSAPP_GUILD_ID]);
   }
 
-  private requestOlderHistory(jid: string): void {
-    if (!this.backend.isConnected) return;
+  private reconcileHistory(jid: string): void {
+    // A full cache is a storage limit, not proof that the recent history has no
+    // holes. Sparse chats still use the existing gap-aware backward pagination.
+    const full = (this.state.whatsapp.messagesByChatId[jid]?.length ?? 0) >= MAX_WHATSAPP_MESSAGES_PER_CHAT;
+    this.requestOlderHistory(jid, full);
+  }
+
+  private requestOlderHistory(jid: string, recent = false): void {
+    if (!this.backend.isConnected || this.shuttingDown || !this.cacheEnabled) return;
     const messages = this.state.whatsapp.messagesByChatId[jid] ?? [];
-    if (messages.length === 0 || messages.length >= MAX_WHATSAPP_MESSAGES_PER_CHAT) return;
-    const oldest = this.historyAnchor(messages);
+    if (messages.length === 0 || (!recent && messages.length >= MAX_WHATSAPP_MESSAGES_PER_CHAT)) return;
+    // Re-fetch the recent window from its newest known message. Using the
+    // oldest cached message can only backfill older history, never repair gaps.
+    const oldest = recent
+      ? messages.findLast((message) => message.timestampMs !== null)
+      : this.historyAnchor(messages);
     if (!oldest?.key.id || !oldest.key.chatId || !oldest.timestampMs) return;
     if (this.pendingHistoryByChatId.has(jid) || this.queuedHistoryByChatId.has(jid)) return;
-    if (this.state.timeline.channelId === whatsappChannelId(jid)) this.state.timeline.loadingOlder = true;
+    if (!recent && this.state.timeline.channelId === whatsappChannelId(jid)) this.state.timeline.loadingOlder = true;
     const timeout = setTimeout(() => {
       const currentJid = canonicalWhatsAppJid(this.state.whatsapp, jid);
       if (this.pendingHistoryByChatId.get(currentJid) !== pending) return;
       this.pendingHistoryByChatId.delete(currentJid);
-      if (this.state.timeline.channelId === whatsappChannelId(currentJid)) {
+      if (!recent && this.state.timeline.channelId === whatsappChannelId(currentJid)) {
         this.state.timeline.loadingOlder = false;
         this.state.timeline.hasOlder = false;
         this.scheduleRender();
       }
     }, this.historyRequestTimeoutMs);
-    const pending: PendingHistoryRequest = { anchorId: oldest.key.id, requestId: null, receivedPages: new Map(), timeout };
+    const pending: PendingHistoryRequest = { recent, anchorId: oldest.key.id, requestId: null, receivedPages: new Map(), timeout };
     this.pendingHistoryByChatId.set(jid, pending);
     this.scheduleRender();
-    const count = Math.min(50, MAX_WHATSAPP_MESSAGES_PER_CHAT - messages.length);
-    void this.backend.fetchHistory(count, oldest.key, oldest.timestampMs).then((requestId) => {
+    const count = recent ? 50 : Math.min(50, MAX_WHATSAPP_MESSAGES_PER_CHAT - messages.length);
+    const key = { ...oldest.key };
+    // Some older cached keys lack the alternate ID even though contacts have
+    // already resolved the canonical phone thread.
+    if (key.chatId.endsWith("@lid") && jid.endsWith("@s.whatsapp.net")) key.alternateChatId = jid;
+    void this.backend.fetchHistory(count, key, oldest.timestampMs).then((requestId) => {
       if (this.pendingHistoryByChatId.get(canonicalWhatsAppJid(this.state.whatsapp, jid)) !== pending) return;
       pending.requestId = requestId;
       const earlyPage = pending.receivedPages.get(requestId);
@@ -1198,7 +1226,7 @@ export class WhatsAppController {
       if (this.pendingHistoryByChatId.get(currentJid) !== pending) return;
       clearTimeout(timeout);
       this.pendingHistoryByChatId.delete(currentJid);
-      if (this.state.timeline.channelId === whatsappChannelId(currentJid)) {
+      if (!recent && this.state.timeline.channelId === whatsappChannelId(currentJid)) {
         this.state.timeline.loadingOlder = false;
         this.state.timeline.hasOlder = false;
         this.scheduleRender();
@@ -1230,6 +1258,9 @@ export class WhatsAppController {
     const [chatId, pending] = match;
     clearTimeout(pending.timeout);
     this.pendingHistoryByChatId.delete(chatId);
+    // Recent reconciliation is not backward pagination: it must not change
+    // hasOlder or launch an unbounded cascade of older-page requests.
+    if (pending.recent) return null;
     const nextAnchorId = this.historyAnchor(this.state.whatsapp.messagesByChatId[chatId] ?? [])?.id;
     return { chatId, anchorAdvanced: Boolean(messages.length && nextAnchorId && nextAnchorId !== pending.anchorId) };
   }
@@ -1255,6 +1286,8 @@ export class WhatsAppController {
   }
 
   private clearPendingHistoryRequests(): void {
+    if (this.recentHistoryTimer) clearInterval(this.recentHistoryTimer);
+    this.recentHistoryTimer = null;
     this.historyRequestGeneration += 1;
     for (const pending of this.pendingHistoryByChatId.values()) clearTimeout(pending.timeout);
     this.pendingHistoryByChatId.clear();
@@ -1457,7 +1490,8 @@ export class WhatsAppController {
     } else delete this.state.sidebar.providerStatusByGuildId[WHATSAPP_GUILD_ID];
     const jid = this.activeWhatsAppJid();
     if (jid) {
-      this.state.timeline.loadingOlder = this.pendingHistoryByChatId.has(jid) || this.queuedHistoryByChatId.has(jid);
+      const pending = this.pendingHistoryByChatId.get(jid);
+      this.state.timeline.loadingOlder = Boolean(pending && !pending.recent) || this.queuedHistoryByChatId.has(jid);
       this.state.timeline.loading = !this.state.timeline.messages.length && Boolean(text) && !this.shuttingDown && this.cacheEnabled;
     }
   }
