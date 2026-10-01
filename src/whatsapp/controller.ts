@@ -1188,7 +1188,6 @@ export class WhatsAppController {
       : this.historyAnchor(messages);
     if (!oldest?.key.id || !oldest.key.chatId || !oldest.timestampMs) return;
     if (this.pendingHistoryByChatId.has(jid) || this.queuedHistoryByChatId.has(jid)) return;
-    if (!recent && this.state.timeline.channelId === whatsappChannelId(jid)) this.state.timeline.loadingOlder = true;
     const timeout = setTimeout(() => {
       const currentJid = canonicalWhatsAppJid(this.state.whatsapp, jid);
       if (this.pendingHistoryByChatId.get(currentJid) !== pending) return;
@@ -1196,11 +1195,13 @@ export class WhatsAppController {
       if (!recent && this.state.timeline.channelId === whatsappChannelId(currentJid)) {
         this.state.timeline.loadingOlder = false;
         this.state.timeline.hasOlder = false;
-        this.scheduleRender();
       }
+      this.updateLoadingState();
+      this.scheduleRender();
     }, this.historyRequestTimeoutMs);
     const pending: PendingHistoryRequest = { recent, anchorId: oldest.key.id, requestId: null, receivedPages: new Map(), timeout };
     this.pendingHistoryByChatId.set(jid, pending);
+    this.updateLoadingState();
     this.scheduleRender();
     const count = recent ? 50 : Math.min(50, MAX_WHATSAPP_MESSAGES_PER_CHAT - messages.length);
     const key = { ...oldest.key };
@@ -1229,8 +1230,9 @@ export class WhatsAppController {
       if (!recent && this.state.timeline.channelId === whatsappChannelId(currentJid)) {
         this.state.timeline.loadingOlder = false;
         this.state.timeline.hasOlder = false;
-        this.scheduleRender();
       }
+      this.updateLoadingState();
+      this.scheduleRender();
     });
   }
 
@@ -1258,6 +1260,7 @@ export class WhatsAppController {
     const [chatId, pending] = match;
     clearTimeout(pending.timeout);
     this.pendingHistoryByChatId.delete(chatId);
+    this.updateLoadingState();
     // Recent reconciliation is not backward pagination: it must not change
     // hasOlder or launch an unbounded cascade of older-page requests.
     if (pending.recent) return null;
@@ -1293,7 +1296,10 @@ export class WhatsAppController {
     this.pendingHistoryByChatId.clear();
     for (const timer of this.queuedHistoryByChatId.values()) clearTimeout(timer);
     this.queuedHistoryByChatId.clear();
-    if (this.activeWhatsAppJid()) this.state.timeline.loadingOlder = false;
+    if (this.activeWhatsAppJid()) {
+      this.state.timeline.loadingOlder = false;
+      this.state.timeline.loadingNewer = false;
+    }
   }
 
   private reconcileProviderChannelIds(): void {
@@ -1491,6 +1497,15 @@ export class WhatsAppController {
     const jid = this.activeWhatsAppJid();
     if (jid) {
       const pending = this.pendingHistoryByChatId.get(jid);
+      const loadingNewer = Boolean(pending?.recent);
+      // Keep the footer visible for a bottom-pinned chat (including history
+      // focus), but never pull a scrolled-up reader down to a background sync.
+      if (loadingNewer !== this.state.timeline.loadingNewer
+        && (this.state.timeline.scrollOffset === Number.MAX_SAFE_INTEGER
+          || this.state.timeline.scrollOffset === this.state.timeline.maxScroll)) {
+        this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+      }
+      this.state.timeline.loadingNewer = loadingNewer;
       this.state.timeline.loadingOlder = Boolean(pending && !pending.recent) || this.queuedHistoryByChatId.has(jid);
       this.state.timeline.loading = !this.state.timeline.messages.length && Boolean(text) && !this.shuttingDown && this.cacheEnabled;
     }

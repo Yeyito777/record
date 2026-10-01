@@ -9,6 +9,7 @@ import { inlineImageSourcesForMessage } from "../inlineimage";
 import { WhatsAppController, type WhatsAppBackendHandle, type WhatsAppControllerOptions } from "./controller";
 import { renderStatusLine } from "../statusline";
 import { renderTimelineLines } from "../timeline";
+import { render } from "../render";
 import type { WhatsAppCacheSnapshot } from "./cache";
 import { MAX_WHATSAPP_MESSAGES_PER_CHAT } from "./integration";
 import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
@@ -247,11 +248,13 @@ describe("WhatsApp recent-history reconciliation", () => {
       expect(backend.historyRequests).toHaveLength(0);
       backend.emit("state", connected);
       await settle();
+      expect(state.timeline.loadingNewer).toBe(true);
       expect(backend.historyRequests[0]).toEqual({
         count: 50, oldestId: "cached-299", oldestTimestampMs: 300_000,
       });
       backend.emit("history", historyPage([raceMessage("missing-before-restart", jid, 299_500)], "history-1"));
       expect(state.timeline.messages.some(message => message.id === "missing-before-restart")).toBe(true);
+      expect(state.timeline.loadingNewer).toBe(false);
     } finally {
       await controller.shutdown();
     }
@@ -264,6 +267,9 @@ describe("WhatsApp recent-history reconciliation", () => {
       backend.emit("history", historyPage(fullHistory()));
       controller.openChannel(whatsappChannelId(jid));
       await settle();
+      expect(state.timeline.loadingNewer).toBe(true);
+      expect(renderTimelineLines(state.timeline, 80, 10, state.notice).lines.at(-1))
+        .toContain("⠋ Loading newer messages…");
       expect(backend.historyRequests).toEqual([{
         count: 50, oldestId: "cached-299", oldestTimestampMs: 300_000,
       }]);
@@ -282,12 +288,118 @@ describe("WhatsApp recent-history reconciliation", () => {
       expect(state.timeline.scrollOffset).toBe(7);
       expect(state.timeline.hasOlder).toBe(true);
       expect(state.timeline.loadingOlder).toBe(false);
+      expect(state.timeline.loadingNewer).toBe(false);
       expect(backend.historyRequests).toHaveLength(1);
 
       backend.emit("state", { status: "reconnecting", attempt: 1, delayMs: 1, disconnect: { code: 428, name: null } });
+      expect(state.timeline.loadingNewer).toBe(false);
       backend.emit("state", connected);
+      expect(state.timeline.loadingNewer).toBe(true);
+      expect(state.timeline.scrollOffset).toBe(7);
       expect(backend.historyRequests).toHaveLength(2);
       expect(backend.historyRequests[1]?.oldestId).toBe("cached-299");
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  for (const focus of ["prompt", "history"] as const) {
+    test(`keeps the resync footer visible at the bottom with ${focus} focus`, async () => {
+      const { state, backend, controller } = fixture();
+      const write = spyOn(process.stdout, "write").mockImplementation(() => true);
+      try {
+        state.cols = 100;
+        state.rows = 24;
+        state.chatFocus = focus;
+        backend.emit("state", connected);
+        backend.emit("history", historyPage(fullHistory()));
+        controller.openChannel(whatsappChannelId(jid));
+        await settle();
+        backend.emit("history", historyPage([], "history-1"));
+        render(state);
+        expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll);
+
+        backend.emit("state", { status: "reconnecting", attempt: 1, delayMs: 1, disconnect: { code: 428, name: null } });
+        backend.emit("state", connected);
+        expect(state.timeline.scrollOffset).toBe(Number.MAX_SAFE_INTEGER);
+        render(state);
+        expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll);
+        expect(state.historyLines.at(-1)).toContain("⠋ Loading newer messages…");
+        await settle();
+        backend.emit("history", historyPage([raceMessage("repaired", jid, 299_500)], "history-2"));
+        render(state);
+        expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll);
+        expect(state.historyLines.join("")).not.toContain("Loading newer messages");
+
+        // Starting and ending another resync must leave a scrolled-up view alone.
+        state.timeline.scrollOffset = state.timeline.maxScroll - 1;
+        render(state);
+        const offset = state.timeline.scrollOffset;
+        const visibleAnchor = state.historyLineAnchors[offset];
+        backend.emit("state", { status: "reconnecting", attempt: 1, delayMs: 1, disconnect: { code: 428, name: null } });
+        backend.emit("state", connected);
+        render(state);
+        expect(state.timeline.scrollOffset).toBe(offset);
+        expect(state.historyLineAnchors[state.timeline.scrollOffset]).toBe(visibleAnchor);
+        await settle();
+        backend.emit("history", historyPage([], "history-3"));
+        render(state);
+        expect(state.timeline.scrollOffset).toBe(offset);
+      } finally {
+        write.mockRestore();
+        await controller.shutdown();
+      }
+    });
+  }
+
+  test("clears a failed recent resync and repaints without changing older-pagination state", async () => {
+    const { state, backend, controller, renders } = fixture();
+    const request = deferred<string>();
+    backend.fetchHistory = () => request.promise;
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      state.timeline.hasOlder = true;
+      expect(state.timeline.loadingNewer).toBe(true);
+      const beforeFailure = renders();
+      request.reject(new Error("offline"));
+      await settle();
+      expect(state.timeline.loadingNewer).toBe(false);
+      expect(state.timeline.loadingOlder).toBe(false);
+      expect(state.timeline.hasOlder).toBe(true);
+      expect(renders()).toBeGreaterThan(beforeFailure);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("shows only the active chat's pending resync and clears it on shutdown", async () => {
+    const { state, backend, controller } = fixture();
+    const otherJid = "other@s.whatsapp.net";
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage([
+        ...fullHistory(),
+        ...fullHistory().map(message => ({
+          ...message, chatId: otherJid, key: { ...message.key, chatId: otherJid },
+        })),
+      ]));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      expect(state.timeline.loadingNewer).toBe(true);
+      controller.openChannel(whatsappChannelId(otherJid));
+      await settle();
+      expect(state.timeline.loadingNewer).toBe(true);
+      backend.emit("history", historyPage([], "history-1"));
+      expect(state.timeline.loadingNewer).toBe(true);
+      backend.emit("history", historyPage([], "history-2"));
+      expect(state.timeline.loadingNewer).toBe(false);
+      controller.openChannel(whatsappChannelId(jid));
+      expect(state.timeline.loadingNewer).toBe(true);
+      await controller.shutdown();
+      expect(state.timeline.loadingNewer).toBe(false);
     } finally {
       await controller.shutdown();
     }
@@ -305,9 +417,11 @@ describe("WhatsApp recent-history reconciliation", () => {
       // older-history spinner.
       backend.emit("chats", { kind: "update", chats: [{ id: jid, kind: "direct", name: "Repair" }] });
       expect(state.timeline.loadingOlder).toBe(false);
+      expect(state.timeline.loadingNewer).toBe(true);
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(backend.historyRequests).toHaveLength(1);
       backend.emit("history", historyPage([], "history-1"));
+      expect(state.timeline.loadingNewer).toBe(false);
       backend.emit("messages", {
         kind: "upsert", upsertType: "notify", skippedMessages: 0,
         messages: [raceMessage("new-live-anchor", jid, 301_000)],
@@ -315,7 +429,9 @@ describe("WhatsApp recent-history reconciliation", () => {
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(backend.historyRequests).toHaveLength(2);
       expect(backend.historyRequests[1]?.oldestId).toBe("new-live-anchor");
+      expect(state.timeline.loadingNewer).toBe(true);
       backend.emit("history", historyPage([raceMessage("repaired", jid, 300_500)], "history-2"));
+      expect(state.timeline.loadingNewer).toBe(false);
       expect(state.timeline.messages.some(message => message.id === "repaired")).toBe(true);
       expect(state.timeline.hasOlder).toBe(true);
       state.timeline.channelId = "discord-channel";
@@ -335,15 +451,20 @@ describe("WhatsApp recent-history reconciliation", () => {
   });
 
   test("recent-sync timeouts can retry and do not alter older-pagination state", async () => {
-    const { state, backend, controller } = fixture({ historyRequestTimeoutMs: 5 });
+    const { state, backend, controller, renders } = fixture({ historyRequestTimeoutMs: 5 });
     try {
       backend.emit("state", connected);
       backend.emit("history", historyPage(fullHistory()));
       controller.openChannel(whatsappChannelId(jid));
       state.timeline.hasOlder = true;
+      await settle();
+      expect(state.timeline.loadingNewer).toBe(true);
+      const beforeTimeout = renders();
       await new Promise(resolve => setTimeout(resolve, 15));
       expect(state.timeline.hasOlder).toBe(true);
       expect(state.timeline.loadingOlder).toBe(false);
+      expect(state.timeline.loadingNewer).toBe(false);
+      expect(renders()).toBeGreaterThan(beforeTimeout);
       controller.openChannel(whatsappChannelId(jid));
       await settle();
       backend.emit("history", historyPage([], "history-1"));
@@ -376,6 +497,7 @@ describe("WhatsApp recent-history reconciliation", () => {
       expect(calls[0]).toMatchObject({ id: "cached-299", chatId: "repair@lid", alternateChatId: jid });
       expect(state.timeline.messages.some(message => message.id === "repaired")).toBe(true);
       expect(state.timeline.loadingOlder).toBe(false);
+      expect(state.timeline.loadingNewer).toBe(false);
       controller.openChannel(whatsappChannelId(jid));
       expect(calls).toHaveLength(2);
     } finally {

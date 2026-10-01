@@ -232,6 +232,25 @@ describe("timeline rendering", () => {
     expect(rendered.lines[0]).toContain("⠋ Loading messages…");
   });
 
+  test("newer-message loading animates below the messages without changing their anchors", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("1", "latest message")]);
+    const notice = { text: "", tone: "muted" as const };
+    const before = renderTimelineLines(timeline, 80, 2, notice);
+    timeline.loadingNewer = true;
+    timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+    const first = renderTimelineLines(timeline, 80, 2, notice, 0);
+    const next = renderTimelineLines(timeline, 80, 2, notice, 1);
+
+    expect(first.lines.map(stripAnsi)).toEqual(["latest message", "⠋ Loading newer messages…"]);
+    expect(next.lines.at(-1)).toContain("⠙ Loading newer messages…");
+    expect(first.lineAnchors.slice(0, -1)).toEqual(before.lineAnchors);
+    expect(next.lineAnchors).toEqual(first.lineAnchors);
+    expect(first.messageBounds).toEqual(before.messageBounds);
+    timeline.loadingNewer = false;
+    expect(renderTimelineLines(timeline, 80, 2, notice).lines.map(stripAnsi)).toEqual(before.lines.map(stripAnsi));
+  });
+
   test("shows message loading above live messages while the initial page loads", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [message("2", "from gateway")], { hasOlder: true });
