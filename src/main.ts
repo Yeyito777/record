@@ -2477,7 +2477,8 @@ function cleanup(): void {
   disconnectAppGateway();
   flushDataCacheSync();
   restoreTerminal();
-  const forceExit = setTimeout(() => process.exit(0), 1_000);
+  // Allow WhatsApp's bounded send drain and final durable cache flush to finish.
+  const forceExit = setTimeout(() => process.exit(0), 5_000);
   void Promise.allSettled([whatsAppController.shutdown(), instagramController.shutdown()]).finally(() => {
     clearTimeout(forceExit);
     process.exit(0);

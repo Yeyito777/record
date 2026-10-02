@@ -41,6 +41,10 @@ import { getRecordWhatsAppPaths } from "./paths";
 import { sanitizeTerminalLabel } from "./sanitize";
 import { createNodeWhatsAppBackendClient } from "./nodeclient";
 import {
+  loadWhatsAppOutgoingSends, removeWhatsAppOutgoingSend, sameWhatsAppAccount,
+  saveWhatsAppOutgoingSend, type WhatsAppOutgoingSend,
+} from "./outbox";
+import {
   hydrateWhatsAppUiState,
   loadWhatsAppCache,
   removeWhatsAppCache,
@@ -106,6 +110,7 @@ export interface WhatsAppControllerOptions {
   historyPageDelayMs?: number;
   historyRequestTimeoutMs?: number;
   recentHistoryIntervalMs?: number;
+  sendShutdownTimeoutMs?: number;
   loadCache?: typeof loadWhatsAppCache;
 }
 
@@ -114,6 +119,7 @@ const DEFAULT_CACHE_SAVE_DELAY_MS = 250;
 const DEFAULT_HISTORY_PAGE_DELAY_MS = 250;
 const DEFAULT_HISTORY_REQUEST_TIMEOUT_MS = 20_000;
 const DEFAULT_RECENT_HISTORY_INTERVAL_MS = 60_000;
+const DEFAULT_SEND_SHUTDOWN_TIMEOUT_MS = 2_000;
 const HISTORY_GAP_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
 
 interface PendingHistoryRequest {
@@ -151,6 +157,7 @@ export class WhatsAppController {
   private readonly backendFactory: () => WhatsAppBackendHandle;
   private readonly authDirectory: string;
   private readonly cacheFile: string;
+  private readonly outboxDirectory: string;
   private readonly cacheReady: Promise<void>;
   private readonly loadCache: typeof loadWhatsAppCache;
   private readonly cacheSaveDelayMs: number;
@@ -158,6 +165,7 @@ export class WhatsAppController {
   private readonly historyPageDelayMs: number;
   private readonly historyRequestTimeoutMs: number;
   private readonly recentHistoryIntervalMs: number;
+  private readonly sendShutdownTimeoutMs: number;
   private recentHistoryTimer: ReturnType<typeof setInterval> | null = null;
   private readonly unsubscribers: Array<() => void> = [];
   private successModalTimer: ReturnType<typeof setTimeout> | null = null;
@@ -185,12 +193,11 @@ export class WhatsAppController {
   // timeline so backfills, reactions and navigation cannot discard them.
   private readonly localMessages = new Map<string, DiscordMessage>();
   private lastOutgoingOrderMs = 0;
-  private readonly outgoing = new Map<string, {
-    message: DiscordMessage;
-    messageIds: string[];
-    confirmedIds: Set<string>;
-    receivedAtMs: number;
-  }>();
+  private readonly outgoing = new Map<string, WhatsAppOutgoingSend>();
+  // Completed entries remain durable until the history cache has reached disk.
+  private readonly outboxEntries = new Map<string, WhatsAppOutgoingSend>();
+  private readonly pendingSends = new Set<Promise<void>>();
+  private shutdownPromise: Promise<void> | null = null;
   // Include removals so a late history snapshot cannot resurrect a reaction.
   private readonly liveReactions = new Map<string, WhatsAppReactionEvent>();
   private readonly reactionRequests = new Map<string, PendingReactionRequest>();
@@ -202,12 +209,14 @@ export class WhatsAppController {
   ) {
     this.authDirectory = options.authDirectory ?? getRecordWhatsAppPaths().authDirectory;
     this.cacheFile = options.cacheFile ?? join(dirname(this.authDirectory), "cache.json");
+    this.outboxDirectory = join(dirname(this.cacheFile), "outbox");
     this.loadCache = options.loadCache ?? loadWhatsAppCache;
     this.cacheSaveDelayMs = options.cacheSaveDelayMs ?? DEFAULT_CACHE_SAVE_DELAY_MS;
     this.successModalDelayMs = options.successModalDelayMs ?? DEFAULT_SUCCESS_MODAL_DELAY_MS;
     this.historyPageDelayMs = options.historyPageDelayMs ?? DEFAULT_HISTORY_PAGE_DELAY_MS;
     this.historyRequestTimeoutMs = options.historyRequestTimeoutMs ?? DEFAULT_HISTORY_REQUEST_TIMEOUT_MS;
     this.recentHistoryIntervalMs = options.recentHistoryIntervalMs ?? DEFAULT_RECENT_HISTORY_INTERVAL_MS;
+    this.sendShutdownTimeoutMs = options.sendShutdownTimeoutMs ?? DEFAULT_SEND_SHUTDOWN_TIMEOUT_MS;
     this.backendFactory = options.backendFactory ?? (() => createNodeWhatsAppBackendClient({ authDirectory: this.authDirectory }));
     this.backend = this.backendFactory();
     this.bindBackend();
@@ -294,6 +303,8 @@ export class WhatsAppController {
       try {
         rmSync(this.authDirectory, { recursive: true, force: true });
         await removeWhatsAppCache(this.cacheFile);
+        rmSync(this.outboxDirectory, { recursive: true, force: true });
+        this.outboxEntries.clear();
       } catch (error) {
         setNotice(this.state, `Could not remove WhatsApp login: ${safeErrorMessage(error)}`, "warning", { statusLine: true, chat: false });
       }
@@ -537,6 +548,27 @@ export class WhatsAppController {
       localStatus: "pending" as const,
     };
 
+    const receivedAtMs = Math.max(localMessage.timestamp, this.lastOutgoingOrderMs + 1);
+    const outgoing: WhatsAppOutgoingSend = {
+      accountId: this.state.whatsapp.account?.id ?? "",
+      message: localMessage, messageIds, confirmedIds: new Set(), confirmedMessages: [],
+      receivedAtMs,
+      attachmentImages: Object.fromEntries(localMessage.attachments.map((attachment, index) => [
+        attachment.id, { mediaType: pendingImages[index]!.mediaType, base64: pendingImages[index]!.base64 },
+      ])),
+    };
+    // Persist the exact IDs and content BEFORE handing anything to WhatsApp.
+    // A closed terminal/forced exit must not erase an already delivered send.
+    try {
+      saveWhatsAppOutgoingSend(this.outboxDirectory, outgoing);
+      this.outboxEntries.set(localMessageId, outgoing);
+    } catch (error) {
+      setNotice(this.state, `WhatsApp draft was not sent: could not save it safely (${safeErrorMessage(error)}).`,
+        "warning", { statusLine: true, chat: false });
+      this.scheduleRender();
+      return true;
+    }
+
     // Optimistic attachments have no WhatsApp message ID yet. Render the
     // original upload bytes instead of trying to download a temporary ID.
     for (const [index, attachment] of localMessage.attachments.entries()) {
@@ -551,9 +583,7 @@ export class WhatsAppController {
     this.localMessages.set(localMessageId, localMessage);
     // Reserve one order value per wire message before any RPC/echo can race.
     // Keep this separate from the displayed timestamp, including same-ms sends.
-    const receivedAtMs = Math.max(localMessage.timestamp, this.lastOutgoingOrderMs + 1);
     this.lastOutgoingOrderMs = receivedAtMs + messageIds.length - 1;
-    const outgoing = { message: localMessage, messageIds, confirmedIds: new Set<string>(), receivedAtMs };
     this.outgoing.set(localMessageId, outgoing);
     appendTimelineMessage(this.state.timeline, localMessage);
     this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
@@ -563,13 +593,17 @@ export class WhatsAppController {
     const send = pendingImages.length > 0
       ? this.backend.sendImages(jid, pendingImages, text, storedReply ?? undefined, ephemeralExpirationSeconds, messageIds)
       : this.backend.sendText(jid, text, storedReply ?? undefined, ephemeralExpirationSeconds, messageIds[0]).then((sent) => [sent]);
-    void send.then((sentMessages) => {
+    const operation = send.then((sentMessages) => {
       if (generation !== this.backendResetGeneration) return;
       if (sentMessages.length === 0) throw new Error("WhatsApp did not return the sent message.");
       const acknowledged = sentMessages.map((message, index) => ({
         ...message, receivedAtMs: outgoing.receivedAtMs
           + (messageIds.includes(message.id) ? messageIds.indexOf(message.id) : index),
       }));
+      outgoing.confirmedMessages = acknowledged;
+      outgoing.confirmedIds = new Set(messageIds);
+      outgoing.attachmentImages = {};
+      this.persistOutgoing(outgoing);
       // Retain the acknowledgement before removing the local bubble, even if
       // its server timestamp puts it outside the newest-300 disk cache.
       this.mergeVisibleMessages(acknowledged, true);
@@ -588,6 +622,8 @@ export class WhatsAppController {
       const message = safeErrorMessage(error);
       const remaining = this.localMessages.get(localMessageId) ?? localMessage;
       this.localMessages.set(localMessageId, { ...remaining, localStatus: "failed", localError: message });
+      outgoing.message = { ...outgoing.message, localStatus: "failed", localError: message };
+      this.persistOutgoing(outgoing);
       const remainingImages = pendingImages.filter((_, index) => !outgoing.confirmedIds.has(messageIds[index]!));
       const remainingText = outgoing.confirmedIds.has(messageIds[0]!) ? "" : text;
       // Never replace a newer draft or insert an old chat's draft into another
@@ -604,6 +640,8 @@ export class WhatsAppController {
       setNotice(this.state, `WhatsApp send failed: ${message}`, "warning", { statusLine: true, chat: false });
       this.scheduleRender();
     });
+    this.pendingSends.add(operation);
+    void operation.finally(() => this.pendingSends.delete(operation));
     return true;
   }
 
@@ -711,15 +749,35 @@ export class WhatsAppController {
     }
   }
 
-  async shutdown(): Promise<void> {
+  shutdown(): Promise<void> {
+    return this.shutdownPromise ??= this.performShutdown();
+  }
+
+  private async performShutdown(): Promise<void> {
     this.shuttingDown = true;
     this.clearPendingHistoryRequests();
     this.updateLoadingState();
     this.clearSuccessModalTimer();
-    this.backendResetGeneration += 1;
-    this.unbindBackend();
-    await this.flushCacheSave();
-    await this.backend.shutdown();
+    // Keep acknowledgements and live echoes bound while in-flight sends drain.
+    // A timed-out send still has its write-ahead record; never resend it blindly.
+    if (this.pendingSends.size) {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled([...this.pendingSends]),
+          new Promise<void>(resolve => { timeout = setTimeout(resolve, this.sendShutdownTimeoutMs); }),
+        ]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+    }
+    try {
+      await this.backend.shutdown();
+    } finally {
+      this.backendResetGeneration += 1;
+      this.unbindBackend();
+      await this.flushCacheSave();
+    }
   }
 
   private bindBackend(): void {
@@ -874,12 +932,18 @@ export class WhatsAppController {
             ...(connection.account.name ? { name: sanitizeTerminalLabel(connection.account.name) } : {}),
           }
         : null;
+      const outboxCount = this.outboxEntries.size;
+      this.restoreOutgoingSends();
+      if (this.outboxEntries.size !== outboxCount) {
+        this.syncProviderState();
+        this.refreshActiveTimeline();
+      }
       this.applyCachedSidebarChannelLayout();
       this.queueCacheSave();
       if (this.state.sidebar.loadingGuildId === WHATSAPP_GUILD_ID) this.state.sidebar.loadingGuildId = null;
       const jid = this.activeWhatsAppJid();
       if (jid) this.reconcileHistory(jid);
-      if (!this.recentHistoryTimer) {
+      if (!this.recentHistoryTimer && !this.shuttingDown) {
         this.recentHistoryTimer = setInterval(() => {
           const active = this.activeWhatsAppJid();
           if (active) this.requestOlderHistory(active, true);
@@ -1014,9 +1078,64 @@ export class WhatsAppController {
     }
     this.localMessages.clear();
     this.outgoing.clear();
+    this.outboxEntries.clear();
     this.liveReactions.clear();
     this.visibleMessages.clear();
     this.visibleChatId = null;
+  }
+
+  private persistOutgoing(send: WhatsAppOutgoingSend): void {
+    this.outboxEntries.set(send.message.id, send);
+    try {
+      saveWhatsAppOutgoingSend(this.outboxDirectory, send);
+    } catch (error) {
+      // The initial intent remains on disk. A receipt-write failure must never
+      // turn a delivered message into a "failed" bubble or cause a duplicate send.
+      setNotice(this.state, `Could not save the WhatsApp send acknowledgement: ${safeErrorMessage(error)}`,
+        "warning", { statusLine: true, chat: false });
+    }
+  }
+
+  private restoreOutgoingSends(): void {
+    const account = this.state.whatsapp.account;
+    if (!account) return;
+    try {
+      for (const send of loadWhatsAppOutgoingSends(this.outboxDirectory)) {
+        if (!sameWhatsAppAccount(account.id, send.accountId) || this.outboxEntries.has(send.message.id)) continue;
+        const decoded = whatsappJidFromChannelId(send.message.channelId);
+        if (!decoded) continue;
+        const jid = canonicalWhatsAppJid(this.state.whatsapp, decoded);
+        this.outboxEntries.set(send.message.id, send);
+        if (!this.state.whatsapp.chatsById[jid]) {
+          upsertWhatsAppChats(this.state.whatsapp, [{ id: jid, kind: jid.endsWith("@g.us") ? "group" : "direct" }]);
+        }
+        upsertWhatsAppMessages(this.state.whatsapp, send.confirmedMessages, { preferExisting: true });
+        this.mergeVisibleMessages(send.confirmedMessages, true);
+        this.lastOutgoingOrderMs = Math.max(this.lastOutgoingOrderMs, send.receivedAtMs + send.messageIds.length - 1);
+        if (send.confirmedIds.size === send.messageIds.length) continue;
+        this.outgoing.set(send.message.id, send);
+        const confirmedFirst = send.confirmedIds.has(send.messageIds[0]!);
+        const attachments = send.message.attachments.filter((_, index) => !send.confirmedIds.has(send.messageIds[index]!));
+        this.localMessages.set(send.message.id, {
+          ...send.message,
+          content: confirmedFirst ? "" : send.message.content,
+          reply: confirmedFirst ? null : send.message.reply,
+          attachments,
+          localStatus: send.message.localStatus === "failed" ? "failed" : "unconfirmed",
+          localError: send.message.localStatus === "failed" ? send.message.localError
+            : "Record closed before delivery was confirmed. Check your phone before resending.",
+        });
+        for (const attachment of attachments) {
+          const image = send.attachmentImages[attachment.id];
+          if (image) this.state.localAttachmentImages[attachment.id] = image;
+        }
+      }
+      this.confirmOutgoingMessages(Object.values(this.state.whatsapp.messagesByChatId).flat());
+      if (this.outboxEntries.size) this.queueCacheSave();
+    } catch (error) {
+      setNotice(this.state, `Could not recover the WhatsApp outbox: ${safeErrorMessage(error)}`,
+        "warning", { statusLine: true, chat: false });
+    }
   }
 
   private reapplyLiveReactions(targets: readonly Pick<WhatsAppMessageKey, "id" | "chatId">[]): void {
@@ -1042,13 +1161,21 @@ export class WhatsAppController {
   private confirmOutgoingMessages(messages: readonly WhatsAppMessage[]): void {
     for (const [localId, outgoing] of this.outgoing) {
       const jid = canonicalWhatsAppJid(this.state.whatsapp, whatsappJidFromChannelId(outgoing.message.channelId)!);
+      let receivedConfirmation = false;
       for (const message of messages) {
         if (message.fromMe && outgoing.messageIds.includes(message.id)
           && canonicalWhatsAppJid(this.state.whatsapp, message.chatId) === jid) {
+          receivedConfirmation = true;
           outgoing.confirmedIds.add(message.id);
+          const attachment = outgoing.message.attachments[outgoing.messageIds.indexOf(message.id)];
+          if (attachment) delete outgoing.attachmentImages[attachment.id];
+          const known = outgoing.confirmedMessages.findIndex(candidate => candidate.id === message.id);
+          if (known < 0) outgoing.confirmedMessages.push(message);
+          else outgoing.confirmedMessages[known] = message;
         }
       }
       if (!outgoing.confirmedIds.size) continue;
+      if (receivedConfirmation) this.persistOutgoing(outgoing);
       const { message, messageIds, confirmedIds } = outgoing;
       if (confirmedIds.size === messageIds.length) {
         this.localMessages.delete(localId);
@@ -1104,6 +1231,7 @@ export class WhatsAppController {
     // those messages (and their attachment source objects) until navigation.
     const jid = whatsappJidFromChannelId(channelId)!;
     this.mergeVisibleMessages(this.state.whatsapp.messagesByChatId[jid] ?? [], true, jid);
+    this.mergeVisibleMessages([...this.outboxEntries.values()].flatMap(send => send.confirmedMessages), true, jid);
     // Live reaction removals must also cover messages evicted from disk cache.
     // Use the target chat explicitly: navigation has not updated timeline ID yet.
     applyWhatsAppReactions({ ...this.state.whatsapp, messagesByChatId: { [jid]: [...this.visibleMessages.values()] } },
@@ -1489,9 +1617,12 @@ export class WhatsAppController {
     const generation = this.backendResetGeneration;
     try {
       const cached = await this.loadCache(this.cacheFile);
-      if (!cached || !this.cacheEnabled || this.shuttingDown || generation !== this.backendResetGeneration) return;
-      hydrateWhatsAppUiState(this.state.whatsapp, cached);
-      this.reapplyLiveReactions(Object.values(cached.messagesByChatId).flat());
+      if (!this.cacheEnabled || this.shuttingDown || generation !== this.backendResetGeneration) return;
+      if (cached) {
+        hydrateWhatsAppUiState(this.state.whatsapp, cached);
+        this.reapplyLiveReactions(Object.values(cached.messagesByChatId).flat());
+      }
+      this.restoreOutgoingSends();
       this.refreshActiveTimeline();
       this.syncProviderState(true);
     } catch (error) {
@@ -1545,7 +1676,17 @@ export class WhatsAppController {
     this.cacheWrites = this.cacheWrites.then(
       () => saveWhatsAppCache(this.cacheFile, snapshot),
       () => saveWhatsAppCache(this.cacheFile, snapshot),
-    ).catch((error) => {
+    ).then(() => {
+      const persisted = new Set(Object.values(snapshot.messagesByChatId).flat()
+        .map(message => JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, message.chatId), message.id])));
+      for (const [id, send] of this.outboxEntries) {
+        if (send.confirmedIds.size !== send.messageIds.length || !send.confirmedMessages.length) continue;
+        if (!send.confirmedMessages.every(message =>
+          persisted.has(JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, message.chatId), message.id])))) continue;
+        removeWhatsAppOutgoingSend(this.outboxDirectory, id);
+        this.outboxEntries.delete(id);
+      }
+    }).catch((error) => {
       if (!this.cacheEnabled) return;
       setNotice(this.state, `Could not save the WhatsApp chat cache: ${safeErrorMessage(error)}`, "warning", { statusLine: true, chat: false });
       this.scheduleRender();

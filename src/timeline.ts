@@ -998,7 +998,8 @@ function renderMessage(
     memberRoleIdsByGuildId,
     activeGuildId,
   );
-  const statusSuffix = message.localStatus === "failed" ? `${theme.error} failed` : "";
+  const statusSuffix = message.localStatus === "failed" ? `${theme.error} failed`
+    : message.localStatus === "unconfirmed" ? `${theme.muted} delivery unconfirmed` : "";
   const header = `${theme.bold}${authorColor}${truncate(author, Math.max(1, width - 7))}${theme.boldOff}${theme.muted} ${time}${statusSuffix}${theme.reset}`;
   const replyPreview = wrapReplyPreview(
     message,
@@ -1183,16 +1184,17 @@ function shouldGroupMessages(previous: DiscordMessage, message: DiscordMessage):
   if (message.attachments.length > 0) return false;
   if (isCompactSystemMessageType(previous.type) || isCompactSystemMessageType(message.type)) return false;
   if (previous.call || message.call || message.type === 3 || previous.type === 3) return false;
-  if (previous.localStatus === "failed" || message.localStatus === "failed") return false;
+  if (["failed", "unconfirmed"].includes(previous.localStatus ?? "")
+    || ["failed", "unconfirmed"].includes(message.localStatus ?? "")) return false;
 
   const delta = message.timestamp - previous.timestamp;
   return delta >= 0 && delta <= MESSAGE_GROUP_WINDOW_MS;
 }
 
 function wrapFailureMessage(message: DiscordMessage, width: number): WrappedLine[] {
-  if (message.localStatus !== "failed") return [];
+  if (message.localStatus !== "failed" && message.localStatus !== "unconfirmed") return [];
   const error = message.localError?.trim() || "Message failed to send.";
-  return wrapPlainText(`✗ ${error}`, width).map((line, visualIndex) => ({
+  return wrapPlainText(`${message.localStatus === "unconfirmed" ? "?" : "✗"} ${error}`, width).map((line, visualIndex) => ({
     text: line,
     wrapContinuation: visualIndex > 0,
     visualIndex,

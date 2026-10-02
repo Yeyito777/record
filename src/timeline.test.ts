@@ -847,6 +847,20 @@ describe("timeline rendering", () => {
     expect(stripAnsi(rendered.lines[2] ?? "")).toBe("✗ Discord denied access.");
   });
 
+  test("renders interrupted sends as delivery unconfirmed, not failed or sent", () => {
+    const timeline = createTimelineState();
+    const interrupted = message("local-1", "I'm in bader");
+    interrupted.localStatus = "unconfirmed";
+    interrupted.localError = "Check your phone before resending.";
+    setTimelineMessages(timeline, "channel-1", [interrupted]);
+    const rendered = renderTimelineLines(timeline, 80, 10, { text: "", tone: "muted", loading: false });
+    const text = rendered.lines.map(stripAnsi).join("\n");
+    expect(text).toContain("delivery unconfirmed");
+    expect(text).toContain("I'm in bader");
+    expect(text).toContain("? Check your phone before resending.");
+    expect(text).not.toContain("failed");
+  });
+
   test("groups quick consecutive messages from the same author", () => {
     const timeline = createTimelineState();
     setTimelineMessages(timeline, "channel-1", [

@@ -508,7 +508,7 @@ export type DiscordMessageReactionUpdate =
   | { type: "clearEmoji"; emoji: DiscordMessageReactionEmoji }
   | { type: "clear" };
 
-export type DiscordMessageLocalStatus = "pending" | "failed";
+export type DiscordMessageLocalStatus = "pending" | "failed" | "unconfirmed";
 
 export interface DiscordMessage {
   id: string;

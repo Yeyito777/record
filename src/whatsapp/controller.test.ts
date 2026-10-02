@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -10,7 +11,7 @@ import { WhatsAppController, type WhatsAppBackendHandle, type WhatsAppController
 import { renderStatusLine } from "../statusline";
 import { renderTimelineLines } from "../timeline";
 import { render } from "../render";
-import type { WhatsAppCacheSnapshot } from "./cache";
+import { loadWhatsAppCache, type WhatsAppCacheSnapshot } from "./cache";
 import { MAX_WHATSAPP_MESSAGES_PER_CHAT } from "./integration";
 import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 import type {
@@ -176,7 +177,7 @@ class DelayedShutdownBackend extends FakeBackend {
   }
 }
 
-function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" | "historyRequestTimeoutMs" | "recentHistoryIntervalMs" | "loadCache"> = {}) {
+function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" | "historyRequestTimeoutMs" | "recentHistoryIntervalMs" | "sendShutdownTimeoutMs" | "loadCache"> = {}) {
   const state = createInitialState(null, "/tmp/config.json");
   const backend = new FakeBackend();
   let renders = 0;
@@ -188,9 +189,10 @@ function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" |
     historyPageDelayMs: options.historyPageDelayMs ?? 0,
     historyRequestTimeoutMs: options.historyRequestTimeoutMs ?? 1_000,
     recentHistoryIntervalMs: options.recentHistoryIntervalMs,
+    sendShutdownTimeoutMs: options.sendShutdownTimeoutMs ?? 50,
     loadCache: options.loadCache,
   });
-  return { state, backend, controller, renders: () => renders };
+  return { state, backend, controller, authDirectory, renders: () => renders };
 }
 
 function deferred<T>() {
@@ -225,6 +227,161 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 }
 
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+test("send → immediate quit → reopen retains an acknowledgement arriving during shutdown", async () => {
+  const { backend, controller, jid, authDirectory } = raceFixture();
+  const send = deferred<WhatsAppMessage>();
+  backend.sendText = () => send.promise;
+  controller.sendMessage("I'm in bader");
+  const closing = controller.shutdown();
+  send.resolve({ ...raceMessage("delivered", jid, Date.now(), true),
+    content: { kind: "text", text: "I'm in bader" } });
+  await closing;
+
+  const cached = await loadWhatsAppCache(join(dirname(authDirectory), "cache.json"));
+  expect(cached?.messagesByChatId[jid]?.some(message => message.id === "delivered")).toBe(true);
+  const restored = createInitialState(null, "/tmp/config.json");
+  const reopened = new WhatsAppController(restored, () => {}, { authDirectory, backendFactory: () => new FakeBackend() });
+  try {
+    expect(await reopened.restoreCachedChannel(whatsappChannelId(jid))).toBe(true);
+    expect(restored.timeline.messages.filter(message => message.content === "I'm in bader")).toHaveLength(1);
+    expect(restored.timeline.messages.at(-1)?.localStatus).toBeUndefined();
+    expect(readdirSync(join(dirname(authDirectory), "outbox"))).toEqual([]);
+  } finally {
+    await reopened.shutdown();
+    rmSync(dirname(authDirectory), { recursive: true, force: true });
+  }
+});
+
+test("a send that outlives shutdown stays visible on restart and an exact echo confirms it once", async () => {
+  const { state, backend, controller, jid, authDirectory } = raceFixture();
+  const send = deferred<WhatsAppMessage>();
+  let wireId = "";
+  backend.sendText = (_jid, _text, _quoted, _expiration, id) => { wireId = id!; return send.promise; };
+  controller.sendMessage("I'm in bader");
+  expect(state.timeline.messages.at(-1)?.localStatus).toBe("pending");
+  await controller.shutdown();
+
+  const restored = createInitialState(null, "/tmp/config.json");
+  const newBackend = new FakeBackend();
+  const reopened = new WhatsAppController(restored, () => {}, { authDirectory, backendFactory: () => newBackend });
+  try {
+    expect(await reopened.restoreCachedChannel(whatsappChannelId(jid))).toBe(true);
+    expect(restored.timeline.messages.at(-1)).toMatchObject({ content: "I'm in bader", localStatus: "unconfirmed" });
+    expect(newBackend.sentTexts).toEqual([]); // Never automatically resend a possibly delivered message.
+    const echo = { ...raceMessage(wireId, jid, Date.now(), true), content: { kind: "text" as const, text: "I'm in bader" } };
+    newBackend.emit("messages", { kind: "upsert", upsertType: "append", messages: [echo], skippedMessages: 0 });
+    newBackend.emit("history", historyPage([echo]));
+    expect(restored.timeline.messages.filter(message => message.content === "I'm in bader")).toHaveLength(1);
+    expect(restored.timeline.messages.at(-1)?.localStatus).toBeUndefined();
+  } finally {
+    await reopened.shutdown();
+    rmSync(dirname(authDirectory), { recursive: true, force: true });
+  }
+});
+
+test.each(["pending", "confirmed"] as const)("force-exiting with a %s send before the cache flush still recovers it", async (status) => {
+  const directory = mkdtempSync(join(tmpdir(), "record-wa-forced-exit-"));
+  const authDirectory = join(directory, "auth");
+  const child = spawnSync(process.execPath, ["-e", `
+    import { WhatsAppController } from "./src/whatsapp/controller.ts";
+    import { createInitialState } from "./src/state.ts";
+    import { whatsappChannelId } from "./src/chatproviders.ts";
+    const state = createInitialState(null, "/tmp/config.json");
+    const backend = {
+      state: { status: "connected" }, isConnected: true,
+      on: () => () => {}, fetchHistory: async () => "history", markRead: async () => {},
+      sendText: (chatId, text, _quote, _expiration, id) => ${status === "pending"
+        ? "new Promise(() => {})"
+        : `Promise.resolve({ id, chatId, key: { id, chatId, fromMe: true }, fromMe: true,
+          timestampMs: Date.now(), content: { kind: "text", text } })`},
+    };
+    const controller = new WhatsAppController(state, () => {}, {
+      authDirectory: ${JSON.stringify(authDirectory)}, backendFactory: () => backend, cacheSaveDelayMs: 60000,
+    });
+    state.whatsapp.account = { id: "self:4@s.whatsapp.net" };
+    state.whatsapp.chatsById["person@s.whatsapp.net"] = { id: "person@s.whatsapp.net", kind: "direct" };
+    controller.openChannel(whatsappChannelId("person@s.whatsapp.net"));
+    controller.sendMessage("I'm in bader");
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    process.exit(0);
+  `], { cwd: join(import.meta.dir, "../.."), encoding: "utf8" });
+  expect(child.status).toBe(0);
+  expect(child.stderr).toBe("");
+  expect(await loadWhatsAppCache(join(directory, "cache.json"))).toBeNull();
+  const restored = createInitialState(null, "/tmp/config.json");
+  const backend = new FakeBackend();
+  const reopened = new WhatsAppController(restored, () => {}, { authDirectory, backendFactory: () => backend });
+  try {
+    await reopened.restoreCachedChannel(whatsappChannelId("person@s.whatsapp.net"));
+    backend.emit("state", { status: "connected", resumed: true, connectedAtMs: 1,
+      account: { id: "self:5@s.whatsapp.net" } });
+    expect(restored.sidebar.cachedChannelsByGuildId[WHATSAPP_GUILD_ID]?.some(channel =>
+      channel.id === whatsappChannelId("person@s.whatsapp.net"))).toBe(true);
+    expect(reopened.openChannel(whatsappChannelId("person@s.whatsapp.net"))).toBe(true);
+    expect(restored.timeline.messages[0]?.content).toBe("I'm in bader");
+    expect(restored.timeline.messages[0]?.localStatus).toBe(status === "pending" ? "unconfirmed" : undefined);
+    expect(backend.sentTexts).toEqual([]);
+  } finally {
+    await reopened.shutdown();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("restart retains only unconfirmed images after a partially delivered image batch", async () => {
+  const { state, backend, controller, authDirectory, jid } = raceFixture();
+  let ids: string[] = [];
+  backend.sendImages = (_jid, _images, _caption, _quote, _expiry, messageIds) => {
+    ids = messageIds!;
+    return new Promise(() => {});
+  };
+  state.pendingImages = [
+    { mediaType: "image/png", base64: "b25l", sizeBytes: 3 },
+    { mediaType: "image/png", base64: "dHdv", sizeBytes: 3 },
+  ];
+  controller.sendMessage("caption");
+  backend.emit("messages", { kind: "upsert", upsertType: "notify", skippedMessages: 0,
+    messages: [{ ...raceMessage(ids[0]!, jid, Date.now(), true),
+      content: { kind: "media", mediaKind: "image", caption: "caption" } }] });
+  await controller.shutdown();
+  const restored = createInitialState(null, "/tmp/config.json");
+  const newBackend = new FakeBackend();
+  const reopened = new WhatsAppController(restored, () => {}, { authDirectory, backendFactory: () => newBackend });
+  try {
+    await reopened.restoreCachedChannel(whatsappChannelId(jid));
+    const local = restored.timeline.messages.find(message => message.localStatus)!;
+    expect(local.localStatus).toBe("unconfirmed");
+    expect(local.content).toBe("");
+    expect(local.attachments).toHaveLength(1);
+    expect(restored.localAttachmentImages[local.attachments[0]!.id]?.base64).toBe("dHdv");
+    newBackend.emit("history", historyPage([{ ...raceMessage(ids[1]!, jid, Date.now(), true),
+      content: { kind: "media", mediaKind: "image" } }]));
+    expect(restored.timeline.messages.some(message => message.localStatus)).toBe(false);
+    expect(newBackend.sentImageBatches).toEqual([]);
+  } finally {
+    await reopened.shutdown();
+    rmSync(dirname(authDirectory), { recursive: true, force: true });
+  }
+});
+
+test("a failed write-ahead save leaves the draft intact and never contacts WhatsApp", async () => {
+  const { state, backend, controller, authDirectory } = raceFixture();
+  const outbox = join(dirname(authDirectory), "outbox");
+  const target = mkdtempSync(join(tmpdir(), "record-wa-unsafe-outbox-"));
+  symlinkSync(target, outbox);
+  state.editor.buffer = "I'm in bader";
+  try {
+    controller.sendMessage(state.editor.buffer);
+    await settle();
+    expect(backend.sentTexts).toEqual([]);
+    expect(state.editor.buffer).toBe("I'm in bader");
+    expect(state.timeline.messages.some(message => message.localStatus)).toBe(false);
+  } finally {
+    await controller.shutdown();
+    rmSync(dirname(authDirectory), { recursive: true, force: true });
+    rmSync(target, { recursive: true, force: true });
+  }
+});
 
 describe("WhatsApp recent-history reconciliation", () => {
   const jid = "repair@s.whatsapp.net";
