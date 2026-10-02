@@ -172,6 +172,9 @@ export class WhatsAppController {
   private historyRequestGeneration = 0;
   private readonly pendingHistoryByChatId = new Map<string, PendingHistoryRequest>();
   private readonly queuedHistoryByChatId = new Map<string, ReturnType<typeof setTimeout>>();
+  // Remember successful terminal pages across navigation and reconnects. A
+  // changed gap/oldest anchor still allows genuinely new backfill work.
+  private readonly exhaustedHistoryAnchorByChatId = new Map<string, string>();
   private visibleChatId: string | null = null;
   private readonly visibleMessages = new Map<string, WhatsAppMessage>();
   private cacheLoading = true;
@@ -276,6 +279,7 @@ export class WhatsAppController {
   logout(): void {
     this.clearLocalMessages();
     this.clearPendingHistoryRequests();
+    this.exhaustedHistoryAnchorByChatId.clear();
     this.state.whatsapp.loginRequestId += 1;
     this.state.whatsapp.loginModal = null;
     this.cacheEnabled = false;
@@ -731,6 +735,8 @@ export class WhatsAppController {
       this.backend.on("history", (incomingEvent) => {
         const activeBefore = this.activeWhatsAppJid();
         const hadMessages = activeBefore && Boolean(this.state.whatsapp.messagesByChatId[activeBefore]?.length);
+        const wasAtBottom = this.state.timeline.scrollOffset === Number.MAX_SAFE_INTEGER
+          || this.state.timeline.scrollOffset === this.state.timeline.maxScroll;
         upsertWhatsAppContacts(this.state.whatsapp, incomingEvent.contacts);
         const event = { ...incomingEvent, messages: this.withOutgoingOrder(incomingEvent.messages) };
         // On-demand history is a message backfill, not authoritative current
@@ -760,6 +766,9 @@ export class WhatsAppController {
               ? completedHistoryRequest.anchorAdvanced
                 && (this.state.whatsapp.messagesByChatId[activeJid]?.length ?? 0) < MAX_WHATSAPP_MESSAGES_PER_CHAT
               : this.state.timeline.hasOlder);
+          // Silent repairs can add lines too. Follow them only if the reader
+          // was already bottom-pinned, never by adding a loading footer.
+          if (hadMessages && wasAtBottom) this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
           // Opening an empty chat cannot page until the first real anchor
           // arrives. Start then, rather than requiring a second navigation.
           if (!hadMessages && this.state.whatsapp.messagesByChatId[activeJid]?.length) this.requestOlderHistory(activeJid);
@@ -1172,15 +1181,22 @@ export class WhatsAppController {
 
   private reconcileHistory(jid: string): void {
     // A full cache is a storage limit, not proof that the recent history has no
-    // holes. Sparse chats still use the existing gap-aware backward pagination.
+    // holes. Completed sparse chats also recheck silently instead of restarting
+    // backward pagination on every open or reconnect.
     const full = (this.state.whatsapp.messagesByChatId[jid]?.length ?? 0) >= MAX_WHATSAPP_MESSAGES_PER_CHAT;
-    this.requestOlderHistory(jid, full);
+    this.requestOlderHistory(jid, full || this.hasExhaustedHistory(jid));
+  }
+
+  private hasExhaustedHistory(jid: string): boolean {
+    const anchorId = this.exhaustedHistoryAnchorByChatId.get(jid);
+    return Boolean(anchorId && anchorId === this.historyAnchor(this.state.whatsapp.messagesByChatId[jid] ?? [])?.key.id);
   }
 
   private requestOlderHistory(jid: string, recent = false): void {
     if (!this.backend.isConnected || this.shuttingDown || !this.cacheEnabled) return;
     const messages = this.state.whatsapp.messagesByChatId[jid] ?? [];
-    if (messages.length === 0 || (!recent && messages.length >= MAX_WHATSAPP_MESSAGES_PER_CHAT)) return;
+    if (messages.length === 0
+      || (!recent && (messages.length >= MAX_WHATSAPP_MESSAGES_PER_CHAT || this.hasExhaustedHistory(jid)))) return;
     // Re-fetch the recent window from its newest known message. Using the
     // oldest cached message can only backfill older history, never repair gaps.
     const oldest = recent
@@ -1264,8 +1280,10 @@ export class WhatsAppController {
     // Recent reconciliation is not backward pagination: it must not change
     // hasOlder or launch an unbounded cascade of older-page requests.
     if (pending.recent) return null;
-    const nextAnchorId = this.historyAnchor(this.state.whatsapp.messagesByChatId[chatId] ?? [])?.id;
-    return { chatId, anchorAdvanced: Boolean(messages.length && nextAnchorId && nextAnchorId !== pending.anchorId) };
+    const nextAnchorId = this.historyAnchor(this.state.whatsapp.messagesByChatId[chatId] ?? [])?.key.id;
+    const anchorAdvanced = Boolean(messages.length && nextAnchorId && nextAnchorId !== pending.anchorId);
+    if (!anchorAdvanced) this.exhaustedHistoryAnchorByChatId.set(chatId, pending.anchorId);
+    return { chatId, anchorAdvanced };
   }
 
   /**
@@ -1303,6 +1321,12 @@ export class WhatsAppController {
   }
 
   private reconcileProviderChannelIds(): void {
+    for (const [jid, anchorId] of this.exhaustedHistoryAnchorByChatId) {
+      const canonical = canonicalWhatsAppJid(this.state.whatsapp, jid);
+      if (canonical === jid) continue;
+      this.exhaustedHistoryAnchorByChatId.delete(jid);
+      if (!this.exhaustedHistoryAnchorByChatId.has(canonical)) this.exhaustedHistoryAnchorByChatId.set(canonical, anchorId);
+    }
     for (const [jid, timer] of this.queuedHistoryByChatId) {
       const canonical = canonicalWhatsAppJid(this.state.whatsapp, jid);
       if (canonical === jid) continue;
@@ -1432,6 +1456,7 @@ export class WhatsAppController {
   private async performBackendRecreation(removeAuth: boolean): Promise<void> {
     this.clearLocalMessages();
     this.clearPendingHistoryRequests();
+    this.exhaustedHistoryAnchorByChatId.clear();
     const generation = ++this.backendResetGeneration;
     const previous = this.backend;
     this.unbindBackend();
@@ -1497,15 +1522,9 @@ export class WhatsAppController {
     const jid = this.activeWhatsAppJid();
     if (jid) {
       const pending = this.pendingHistoryByChatId.get(jid);
-      const loadingNewer = Boolean(pending?.recent);
-      // Keep the footer visible for a bottom-pinned chat (including history
-      // focus), but never pull a scrolled-up reader down to a background sync.
-      if (loadingNewer !== this.state.timeline.loadingNewer
-        && (this.state.timeline.scrollOffset === Number.MAX_SAFE_INTEGER
-          || this.state.timeline.scrollOffset === this.state.timeline.maxScroll)) {
-        this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
-      }
-      this.state.timeline.loadingNewer = loadingNewer;
+      // A recent-window probe does not mean messages are missing. Its response
+      // is merged atomically, so routine checks never need a loading footer.
+      this.state.timeline.loadingNewer = false;
       this.state.timeline.loadingOlder = Boolean(pending && !pending.recent) || this.queuedHistoryByChatId.has(jid);
       this.state.timeline.loading = !this.state.timeline.messages.length && Boolean(text) && !this.shuttingDown && this.cacheEnabled;
     }
