@@ -862,7 +862,7 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
     const direction = state.editor.pendingFind;
     state.editor.lastFind = { char: key.char, direction };
     state.editor.pendingFind = null;
-    state.historyCursor = direction === "f"
+    state.historyCursor = direction === "f" || direction === "t"
       ? findForward(state.historyCursor, lines, key.char)
       : findBackward(state.historyCursor, lines, key.char);
     resetHistoryCurswant(state);
@@ -878,10 +878,9 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
   if (key.type === "char" && (key.char === ";" || key.char === ",")) {
     const lastFind = state.editor.lastFind;
     if (!lastFind) return true;
-    const direction = key.char === ";"
-      ? lastFind.direction
-      : (lastFind.direction === "f" ? "F" : "f");
-    state.historyCursor = direction === "f"
+    // History has no till motions; a prompt t/T repeats as f/F here.
+    const lastForward = lastFind.direction === "f" || lastFind.direction === "t";
+    state.historyCursor = lastForward === (key.char === ";")
       ? findForward(state.historyCursor, lines, lastFind.char)
       : findBackward(state.historyCursor, lines, lastFind.char);
     resetHistoryCurswant(state);

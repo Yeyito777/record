@@ -7,7 +7,8 @@ import type { UndoState } from "./undo";
 
 export type EditorMode = "insert" | "normal" | "visual" | "visual-line";
 export type EditorAction = "handled" | "submit" | "quit" | "scroll_top" | "scroll_bottom";
-export type FindDirection = "f" | "F";
+/** f/F find a character; t/T stop just before/after it. */
+export type FindDirection = "f" | "F" | "t" | "T";
 export type CursorSpec = "before" | "after" | "bol" | "eol";
 
 export interface EditorState {
@@ -16,12 +17,20 @@ export interface EditorState {
   /** Preferred visual column for repeated vertical movement (Vim curswant). */
   curswant: number | null;
   scroll: number;
+  /**
+   * Prompt wrap width in terminal cells, recorded by the renderer so j/k and
+   * Up/Down move by the same display rows that are drawn. Null moves by
+   * logical lines (no layout known yet).
+   */
+  wrapWidth: number | null;
   mode: EditorMode;
   pendingKeys: string;
   pendingOperator: string | null;
   pendingOperatorKey: string | null;
   pendingTextObjectModifier: "i" | "a" | null;
   count: number | null;
+  /** Count typed before a pending operator (the 2 in "2d3w"); multiplies the motion count. */
+  operatorCount: number | null;
   visualAnchor: number;
   pendingFind: FindDirection | null;
   lastFind: { char: string; direction: FindDirection } | null;
@@ -37,6 +46,8 @@ export interface EditorViewport {
 
 export interface InputLinesResult {
   lines: string[];
+  /** Buffer offset where each visible line starts. */
+  lineStarts: number[];
   isNewLine: boolean[];
   cursorLine: number;
   cursorCol: number;
@@ -79,6 +90,7 @@ export function resetPending(editor: EditorState): void {
   editor.pendingTextObjectModifier = null;
   editor.pendingKeys = "";
   editor.count = null;
+  editor.operatorCount = null;
   editor.pendingFind = null;
   editor.pendingReplace = false;
 }

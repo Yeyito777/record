@@ -60,7 +60,9 @@ Controls:
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
 - `Enter` in the prompt: submit the current message or slash command
-- `Tab` / `Shift+Tab`: cycle autocomplete, including custom emoji choices
+- `Tab` / `Shift+Tab`: cycle autocomplete, including custom emoji choices; with nothing to complete, `Tab` in insert mode inserts a four-space soft tab, which `Backspace`/`Delete` remove in one press
+- `>>` / `<<` in prompt normal or visual mode: shift the line (a count shifts that many lines) or the selected lines right/left by four spaces
+- Prompt vim keys follow Vim: `j`/`k` (and `Up`/`Down`) move by displayed rows of wrapped lines, counts work before operators (`3dd`, `2d3w`), `f`/`F`/`t`/`T` with `;`/`,`, `^`, `o` in visual mode, and `yy`/`Vy` put back as whole lines with `p`/`P`. A bare `t` in normal mode stays the next-notification shortcut; after a count or operator it is the till motion
 - `Ctrl+C` or `q` in normal mode: quit
 
 ### App/bot commands

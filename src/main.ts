@@ -2255,14 +2255,18 @@ function handleMemberListFocused(key: KeyEvent): boolean {
 function handlePromptFocused(key: KeyEvent): void {
   if (key.type === "backspace" && handlePromptBackspacePrefixAction()) return;
 
+  // Tab cycles autocomplete or completes a path; otherwise the editor inserts
+  // a four-space soft tab in insert mode.
   if (key.type === "tab") {
     if (state.autocomplete) {
       cycleAutocomplete(state, 1);
-    } else {
-      tryPathComplete(state);
+      scheduleRender();
+      return;
     }
-    scheduleRender();
-    return;
+    if (tryPathComplete(state)) {
+      scheduleRender();
+      return;
+    }
   }
 
   if (key.type === "backtab") {

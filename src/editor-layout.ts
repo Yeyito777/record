@@ -3,7 +3,7 @@
  */
 
 import type { EditorViewport, InputLinesResult } from "./editor-types";
-import { nextWidthClusterEnd, sliceByWidth, termWidth } from "./textwidth";
+import { nextWidthClusterEnd, sliceByWidth, sliceByWidthFrom, termWidth } from "./textwidth";
 
 export const PROMPT_PREFIX_WIDTH = 4;
 export const MAX_PROMPT_ROWS = 8;
@@ -21,11 +21,11 @@ function wrapLine(line: string, maxWidth: number): WrappedChunk[] {
   const chunks: WrappedChunk[] = [];
   let start = 0;
   while (start < line.length) {
-    const [fitting] = sliceByWidth(line.slice(start), maxWidth);
+    const [fittingEnd] = sliceByWidthFrom(line, start, maxWidth);
     // A two-cell cluster cannot fit in a one-cell viewport. Consume it anyway
     // so layout always makes progress and keeps the cluster atomic.
-    const end = fitting.length > 0
-      ? start + fitting.length
+    const end = fittingEnd > start
+      ? fittingEnd
       : nextWidthClusterEnd(line, start);
     chunks.push({ text: line.slice(start, end), start, end });
     start = end;
@@ -55,20 +55,48 @@ export function getViewport(buffer: string, cursor: number, width: number, previ
   };
 }
 
-export function wrappedLineOffsets(buffer: string, maxWidth: number): number[] {
-  if (maxWidth < 1) maxWidth = 1;
-  const offsets: number[] = [];
-  const lines = buffer.split("\n");
-  let pos = 0;
+/** One hard-wrapped prompt row: buffer offsets [start, end), excluding "\n". */
+export interface PromptRow {
+  start: number;
+  end: number;
+}
 
-  for (const line of lines) {
+/**
+ * Hard-wrap the buffer into terminal-width display rows (vim-style, no word
+ * boundaries) without splitting width clusters. Every logical line, including
+ * an empty one, yields at least one row. Rendering and j/k share this model.
+ */
+export function promptDisplayRows(buffer: string, maxWidth: number): PromptRow[] {
+  if (maxWidth < 1) maxWidth = 1;
+  const rows: PromptRow[] = [];
+  let lineStart = 0;
+
+  for (const line of buffer.split("\n")) {
     for (const chunk of wrapLine(line, maxWidth)) {
-      offsets.push(pos + chunk.start);
+      rows.push({ start: lineStart + chunk.start, end: lineStart + chunk.end });
     }
-    pos += line.length + 1;
+    lineStart += line.length + 1;
   }
 
-  return offsets;
+  return rows;
+}
+
+/**
+ * Row and display column of a buffer offset. A wrapped row's end offset is
+ * also its continuation row's start; the continuation row wins. An insert
+ * cursor just past a full-width line reports a column of `maxWidth`.
+ */
+export function promptCursorCell(buffer: string, rows: PromptRow[], pos: number): { row: number; col: number } {
+  let row = 0;
+  for (let i = 0; i < rows.length && rows[i]!.start <= pos; i++) {
+    if (pos <= rows[i]!.end) row = i;
+  }
+  const rowStart = rows[row]!.start;
+  return { row, col: termWidth(buffer.slice(rowStart, Math.max(rowStart, pos))) };
+}
+
+export function wrappedLineOffsets(buffer: string, maxWidth: number): number[] {
+  return promptDisplayRows(buffer, maxWidth).map((row) => row.start);
 }
 
 export function getInputLines(
@@ -79,51 +107,26 @@ export function getInputLines(
   prevScrollOffset = 0,
 ): InputLinesResult {
   if (maxWidth < 1) maxWidth = 1;
-  const bufferLines = buffer.split("\n");
-  const wrapped: string[] = [];
-  const isNewLineArr: boolean[] = [];
+  const rows = promptDisplayRows(buffer, maxWidth);
+  const wrapped = rows.map((row) => buffer.slice(row.start, row.end));
+  const lineStarts = rows.map((row) => row.start);
+  const isNewLineArr = rows.map((row) => row.start > 0 && buffer[row.start - 1] === "\n");
+  let { row: cursorWrappedLine, col: cursorColInLine } = promptCursorCell(buffer, rows, cursorPos);
 
-  let cursorWrappedLine = 0;
-  let cursorColInLine = 0;
-  let bufOffset = 0;
-
-  for (let li = 0; li < bufferLines.length; li++) {
-    const line = bufferLines[li];
-
-    const chunks = wrapLine(line, maxWidth);
-    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-      const chunk = chunks[chunkIndex]!;
-      const chunkStart = bufOffset + chunk.start;
-      const chunkEnd = bufOffset + chunk.end;
-      if (cursorPos >= chunkStart && cursorPos <= chunkEnd) {
-        cursorWrappedLine = wrapped.length;
-        const cursorInChunk = Math.max(0, Math.min(cursorPos - chunkStart, chunk.text.length));
-        cursorColInLine = termWidth(chunk.text.slice(0, cursorInChunk));
-      }
-      wrapped.push(chunk.text);
-      isNewLineArr.push(li > 0 && chunkIndex === 0);
-    }
-
-    bufOffset += line.length + 1;
-  }
-
-  if (wrapped.length === 0) {
-    wrapped.push("");
-    isNewLineArr.push(false);
-  }
-
+  // Cursor at the right edge of a full-width line gets its own empty
+  // continuation row, so it never overlaps the next line's first character.
   if (cursorColInLine >= maxWidth) {
     cursorWrappedLine++;
     cursorColInLine = 0;
-    if (cursorWrappedLine >= wrapped.length) {
-      wrapped.splice(cursorWrappedLine, 0, "");
-      isNewLineArr.splice(cursorWrappedLine, 0, false);
-    }
+    wrapped.splice(cursorWrappedLine, 0, "");
+    lineStarts.splice(cursorWrappedLine, 0, cursorPos);
+    isNewLineArr.splice(cursorWrappedLine, 0, false);
   }
 
   if (wrapped.length <= maxRows) {
     return {
       lines: wrapped,
+      lineStarts,
       isNewLine: isNewLineArr,
       cursorLine: cursorWrappedLine,
       cursorCol: cursorColInLine,
@@ -140,6 +143,7 @@ export function getInputLines(
 
   return {
     lines: wrapped.slice(scrollStart, scrollStart + maxRows),
+    lineStarts: lineStarts.slice(scrollStart, scrollStart + maxRows),
     isNewLine: isNewLineArr.slice(scrollStart, scrollStart + maxRows),
     cursorLine: cursorWrappedLine - scrollStart,
     cursorCol: cursorColInLine,

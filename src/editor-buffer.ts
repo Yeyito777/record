@@ -183,8 +183,15 @@ export function clampInsertCursor(buffer: string, cursor: number): number {
   return Math.max(0, Math.min(cursor, buffer.length));
 }
 
+/**
+ * Normal-mode cursors sit on a grapheme, never past the last one and never on
+ * a non-empty line's "\n"; only an empty line puts the cursor on its break.
+ */
 export function clampNormalCursor(buffer: string, cursor: number): number {
   if (buffer.length === 0) return 0;
   const max = buffer[buffer.length - 1] === "\n" ? buffer.length : previousGraphemeStart(buffer, buffer.length);
-  return graphemeStartAtOrAfter(buffer, Math.max(0, Math.min(cursor, max)));
+  const clamped = graphemeStartAtOrAfter(buffer, Math.max(0, Math.min(cursor, max)));
+  return buffer[clamped] === "\n" && clamped > 0 && buffer[clamped - 1] !== "\n"
+    ? previousGraphemeStart(buffer, clamped)
+    : clamped;
 }

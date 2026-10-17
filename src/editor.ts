@@ -16,37 +16,38 @@ import {
   undo as undoEdit,
 } from "./undo";
 import { lineEndOf, lineStartOf, clampInsertCursor, clampNormalCursor, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
-import { copyToClipboard, pasteFromClipboard } from "./editor-clipboard";
+import { isBufferSpace, isPunct, isWordChar } from "./editor-chars";
+import { copyToClipboard, isLinewiseClipboardText, pasteFromClipboard } from "./editor-clipboard";
 import { lookupCommand, isPrefix } from "./editor-keymap";
+import { promptCursorCell, promptDisplayRows } from "./editor-layout";
 import {
-  getInputLines,
-  getViewport,
-  MAX_PROMPT_ROWS,
-  PROMPT_PREFIX_WIDTH,
-  wrappedLineOffsets,
-} from "./editor-layout";
-import {
-  charLeft,
-  charRight,
-  findBackward,
-  findForward,
+  findCharCount,
+  firstNonBlank,
   resolveMotion,
+  reverseFindKind,
+  wordEnd,
+  wordEndBig,
 } from "./editor-motions";
 import {
-  changeLine,
+  changeLines,
   changeToEnd,
-  deleteChar,
-  deleteCharBefore,
-  deleteLine,
+  deleteChars,
+  deleteCharsBefore,
+  deleteLines,
   deleteRange,
   deleteToEnd,
+  lineSpan,
+  linewiseText,
   openLineAbove,
   openLineBelow,
+  putLines,
   replaceChar,
+  shiftLines,
   swapCase,
   swapCaseRange,
 } from "./editor-operations";
 import { getVisualRange } from "./editor-selection";
+import { PROMPT_TAB, promptDeleteEnd, promptDeleteStart } from "./editor-tabs";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
 import { getSymbol } from "./symbols";
 import { termWidth } from "./textwidth";
@@ -60,7 +61,6 @@ import {
   type EditorState,
   type EditorViewport,
   type FindDirection,
-  type InputLinesResult,
   type PromptCommand,
 } from "./editor-types";
 
@@ -75,17 +75,29 @@ export type {
   InputLinesResult,
   PromptCommand,
 } from "./editor-types";
-export { getInputLines, getViewport, MAX_PROMPT_ROWS, PROMPT_PREFIX_WIDTH, wrappedLineOffsets } from "./editor-layout";
+export {
+  getInputLines,
+  getViewport,
+  MAX_PROMPT_ROWS,
+  PROMPT_PREFIX_WIDTH,
+  promptDisplayRows,
+  wrappedLineOffsets,
+} from "./editor-layout";
 export { getVisualRange } from "./editor-selection";
 
 function resetCurswant(editor: EditorState): void {
   editor.curswant = null;
 }
 
-function cursorVCol(buffer: string, pos: number): number {
-  const lineStart = lineStartOf(buffer, pos);
-  return termWidth(buffer.slice(lineStart, pos));
-}
+/** Arrow/Home/End keys act as their Vim motions outside insert mode. */
+const ARROW_MOTIONS: Partial<Record<KeyEvent["type"], string>> = {
+  left: "h",
+  right: "l",
+  up: "k",
+  down: "j",
+  home: "0",
+  end: "$",
+};
 
 function offsetForVCol(line: string, desiredCol: number): number {
   let offset = 0;
@@ -104,55 +116,44 @@ function offsetForVCol(line: string, desiredCol: number): number {
   return line.length;
 }
 
-function verticalTarget(buffer: string, cursor: number, direction: -1 | 1, desiredCol: number): number | null {
-  const currentLineStart = lineStartOf(buffer, cursor);
-  let targetLineStart: number;
-  let targetLineEnd: number;
-
-  if (direction < 0) {
-    if (currentLineStart === 0) return null;
-    targetLineEnd = currentLineStart - 1;
-    targetLineStart = lineStartOf(buffer, targetLineEnd);
-  } else {
-    const currentLineEnd = lineEndOf(buffer, cursor);
-    if (currentLineEnd >= buffer.length) return null;
-    targetLineStart = currentLineEnd + 1;
-    targetLineEnd = lineEndOf(buffer, targetLineStart);
-  }
-
-  return targetLineStart + offsetForVCol(buffer.slice(targetLineStart, targetLineEnd), desiredCol);
-}
-
+/**
+ * Move by display rows (Vim gj/gk) using the renderer's wrap width, so a
+ * wrapped line's continuation rows are reachable and the prompt scrolls one
+ * row at a time. Without a known width every logical line is one row. The
+ * preferred column (curswant) is a display column within the row; Infinity
+ * sticks to the end of each row (after $/End).
+ */
 function moveVerticalWithCurswant(
   editor: EditorState,
   direction: -1 | 1,
   count = 1,
   normalMode = false,
 ): boolean {
-  const desiredCol = editor.curswant ?? cursorVCol(editor.buffer, editor.cursor);
-  let cursor = editor.cursor;
-  let moved = false;
-
-  for (let i = 0; i < Math.max(1, count); i++) {
-    const next = verticalTarget(editor.buffer, cursor, direction, desiredCol);
-    if (next === null) break;
-    cursor = next;
-    moved = true;
-  }
+  const buffer = editor.buffer;
+  const maxWidth = Math.max(1, editor.wrapWidth ?? Number.MAX_SAFE_INTEGER);
+  const rows = promptDisplayRows(buffer, maxWidth);
+  const cell = promptCursorCell(buffer, rows, editor.cursor);
+  // An insert cursor just past a full-width line is drawn at column 0 of its
+  // own row below it, so moving up first lands on the line's own last row.
+  const onPhantomRow = cell.col >= maxWidth;
+  const desiredCol = editor.curswant ?? (onPhantomRow ? 0 : cell.col);
+  const upFromPhantomRow = onPhantomRow && direction < 0;
+  const steps = Math.max(1, count) - (upFromPhantomRow ? 1 : 0);
+  const target = Math.max(0, Math.min(rows.length - 1, cell.row + direction * steps));
 
   editor.curswant = desiredCol;
-  if (moved) {
-    if (normalMode) {
-      const lineStart = lineStartOf(editor.buffer, cursor);
-      const lineEnd = lineEndOf(editor.buffer, cursor);
-      editor.cursor = lineEnd > lineStart && cursor >= lineEnd
-        ? previousGraphemeStart(editor.buffer, lineEnd)
-        : cursor;
-    } else {
-      editor.cursor = cursor;
-    }
+  if (target === cell.row && !upFromPhantomRow) return false;
+
+  const row = rows[target]!;
+  let pos = row.start + offsetForVCol(buffer.slice(row.start, row.end), desiredCol);
+  // A wrapped row's end offset is drawn at the start of its continuation row,
+  // and normal mode never rests past a line's last character.
+  const continues = target + 1 < rows.length && rows[target + 1]!.start === row.end;
+  if (pos >= row.end && row.end > row.start && (continues || normalMode)) {
+    pos = previousGraphemeStart(buffer, row.end);
   }
-  return moved;
+  editor.cursor = pos;
+  return true;
 }
 
 function isVerticalMotion(name: string): boolean {
@@ -222,36 +223,45 @@ function applyBufferEdit(
   resetPending(editor);
 }
 
-function applyCountedLineEdit(
-  editor: EditorState,
-  count: number,
-  fn: (buffer: string, pos: number) => BufferEdit,
-  mode: EditorMode | null = null,
-): void {
-  let buffer = editor.buffer;
-  let cursor = editor.cursor;
-
-  for (let i = 0; i < count; i++) {
-    if (buffer.length === 0) break;
-    const result = fn(buffer, cursor);
-    buffer = result.buffer;
-    cursor = result.cursor;
+/** Apply an edit, or just move the cursor when nothing changed (no empty undo step). */
+function applyEditIfChanged(editor: EditorState, edit: BufferEdit): void {
+  if (edit.buffer !== editor.buffer) {
+    applyBufferEdit(editor, edit);
+    return;
   }
-
-  applyBufferEdit(editor, { buffer, cursor }, mode, mode === "insert");
+  editor.cursor = clampNormalCursor(editor.buffer, edit.cursor);
+  resetCurswant(editor);
+  resetPending(editor);
 }
 
-function applyPasteCommand(editor: EditorState, position: "after" | "before"): void {
+/**
+ * p/P — put `count` copies of the clipboard; as whole lines below/above the
+ * cursor's line when it still holds our last linewise yank (yy, yj, Vy).
+ */
+function applyPasteCommand(editor: EditorState, position: "after" | "before", count: number): void {
   const text = pasteFromClipboard();
-  if (!text) return;
+  if (!text) {
+    resetPending(editor);
+    return;
+  }
 
   pushUndo(editor.undo, editor.buffer, editor.cursor);
-  // Cursor offsets are UTF-16 indices; step over the whole grapheme before
-  // putting text, rather than splitting an emoji or its modifiers in half.
-  const insertAt = position === "after" ? nextGraphemeEnd(editor.buffer, editor.cursor) : editor.cursor;
-  const pos = Math.min(insertAt, editor.buffer.length);
-  editor.buffer = editor.buffer.slice(0, pos) + text + editor.buffer.slice(pos);
-  editor.cursor = clampNormalCursor(editor.buffer, pos + Math.max(0, text.length - 1));
+  const buffer = editor.buffer;
+  if (isLinewiseClipboardText(text)) {
+    const lines = text.endsWith("\n") ? text : text + "\n";
+    const edit = putLines(buffer, editor.cursor, lines.repeat(count), position === "after");
+    editor.buffer = edit.buffer;
+    editor.cursor = edit.cursor;
+  } else {
+    // Cursor offsets are UTF-16 indices; step over the whole grapheme before
+    // putting text, rather than splitting an emoji or its modifiers in half.
+    const insertAt = position === "after" ? nextGraphemeEnd(buffer, editor.cursor) : editor.cursor;
+    const pos = Math.min(insertAt, buffer.length);
+    const pasted = text.repeat(count);
+    editor.buffer = buffer.slice(0, pos) + pasted + buffer.slice(pos);
+    // Cursor on the last pasted character.
+    editor.cursor = clampNormalCursor(editor.buffer, previousGraphemeStart(editor.buffer, pos + pasted.length));
+  }
   resetCurswant(editor);
   resetPending(editor);
 }
@@ -264,70 +274,150 @@ function motionTarget(buffer: string, cursor: number, motionName: string, count:
   return target;
 }
 
-function handleNormalLikeCursorKey(editor: EditorState, key: KeyEvent): boolean {
-  switch (key.type) {
-    case "left":
-      editor.cursor = charLeft(editor.buffer, editor.cursor);
-      resetCurswant(editor);
-      return true;
-    case "right":
-      editor.cursor = charRight(editor.buffer, editor.cursor);
-      resetCurswant(editor);
-      return true;
-    case "up":
-      moveVerticalWithCurswant(editor, -1, 1, editor.mode !== "insert");
-      return true;
-    case "down":
-      moveVerticalWithCurswant(editor, 1, 1, editor.mode !== "insert");
-      return true;
-    case "home":
-      editor.cursor = lineStartOf(editor.buffer, editor.cursor);
-      resetCurswant(editor);
-      return true;
-    case "end":
-      editor.cursor = lineEndOf(editor.buffer, editor.cursor);
-      resetCurswant(editor);
-      return true;
-    default:
-      return false;
-  }
+/** Outside insert mode, arrows are h/j/k/l/0/$ unless a find/replace awaits its character. */
+function arrowKeyAsMotion(editor: EditorState, key: KeyEvent): KeyEvent {
+  const motion = ARROW_MOTIONS[key.type];
+  if (!motion || editor.pendingFind || editor.pendingReplace) return key;
+  if (motion === "0") editor.count = null; // otherwise 0 extends a count
+  return { type: "char", char: motion };
 }
 
-function findTarget(buffer: string, cursor: number, direction: FindDirection, char: string): number {
-  return direction === "f"
-    ? findForward(buffer, cursor, char)
-    : findBackward(buffer, cursor, char);
+function isShiftPrefix(editor: EditorState): boolean {
+  return editor.pendingKeys === "<" || editor.pendingKeys === ">";
 }
 
-function applyFindMotion(editor: EditorState, direction: FindDirection, char: string, remember = true): void {
-  if (remember) editor.lastFind = { char, direction };
-  editor.pendingFind = null;
-  editor.cursor = findTarget(editor.buffer, editor.cursor, direction, char);
+/**
+ * Resolve a find (f/F/t/T, or a ;/, repeat) `count` times. Only a new find
+ * (not a repeat) is stored for ; and ,.
+ */
+function resolveFind(
+  editor: EditorState,
+  kind: FindDirection,
+  char: string,
+  repeat: boolean,
+  count: number,
+): number | null {
+  if (!repeat) editor.lastFind = { char, direction: kind };
+  return findCharCount(editor.buffer, editor.cursor, char, kind, count, repeat);
+}
+
+function applyFindMotion(editor: EditorState, kind: FindDirection, char: string, repeat: boolean): void {
+  const target = resolveFind(editor, kind, char, repeat, editor.count ?? 1);
+  resetPending(editor);
+  if (target === null) return;
+  editor.cursor = target;
   resetCurswant(editor);
 }
 
-function applyFindOperator(editor: EditorState, direction: FindDirection, char: string, remember = true): EditorAction {
-  if (remember) editor.lastFind = { char, direction };
-  editor.pendingFind = null;
+/** A find after an operator: f/t include the target; F/T exclude the cursor's character. */
+function applyFindOperator(editor: EditorState, kind: FindDirection, char: string, repeat: boolean): EditorAction {
+  const operator = editor.pendingOperator ?? "";
+  const cursor = editor.cursor;
+  const target = resolveFind(editor, kind, char, repeat, operatorMotionCount(editor));
+  resetPending(editor);
+  if (target === null) return "handled";
 
-  const target = findTarget(editor.buffer, editor.cursor, direction, char);
-  if (target === editor.cursor) {
-    resetPending(editor);
-    return "handled";
-  }
-
-  return applyOperatorToRange(
-    editor,
-    editor.pendingOperator ?? "",
-    Math.min(editor.cursor, target),
-    Math.max(editor.cursor, target) + 1,
-  );
+  const forward = kind === "f" || kind === "t";
+  const start = forward ? cursor : target;
+  const end = forward ? nextGraphemeEnd(editor.buffer, target) : cursor;
+  if (start >= end) return "handled";
+  return applyOperatorToRange(editor, operator, start, end);
 }
 
-function repeatFindDirection(editor: EditorState, key: ";" | ","): FindDirection | null {
+/** ;/, — the last find's kind, reversed for `,`. */
+function repeatFindKind(editor: EditorState, key: ";" | ","): FindDirection | null {
   if (!editor.lastFind) return null;
-  if (key === ";") return editor.lastFind.direction;
-  return editor.lastFind.direction === "f" ? "F" : "f";
+  return key === ";" ? editor.lastFind.direction : reverseFindKind(editor.lastFind.direction);
+}
+
+/** A count before an operator multiplies the motion's (3dw, 2d3w, 3dd). */
+function operatorMotionCount(editor: EditorState): number {
+  return (editor.operatorCount ?? 1) * (editor.count ?? 1);
+}
+
+/** Character class for Vim's word motions: 0 blank, 1 punctuation, 2 word. */
+function wordClass(ch: string | undefined, big: boolean): number {
+  if (ch === undefined || isBufferSpace(ch)) return 0;
+  if (big) return 2;
+  return isWordChar(ch) ? 2 : isPunct(ch) ? 1 : 0;
+}
+
+/**
+ * cw/cW on a non-blank — Vim changes to the end of the word, like ce/cE,
+ * except the cursor's own word counts even when already on its last character.
+ */
+function changeWordEnd(buffer: string, cursor: number, count: number, big: boolean): number {
+  const toWordEnd = big ? wordEndBig : wordEnd;
+  const cls = wordClass(buffer[cursor], big);
+  let end = wordClass(buffer[cursor + 1], big) === cls ? toWordEnd(buffer, cursor) : cursor;
+  for (let i = 1; i < count; i++) end = toWordEnd(buffer, end);
+  return end;
+}
+
+function applyOperatorMotion(editor: EditorState, operator: string, motionName: string, count: number): EditorAction {
+  const buffer = editor.buffer;
+  const cursor = editor.cursor;
+
+  // j/k are linewise: operate on whole lines (dj, yk, 2cj).
+  if (isVerticalMotion(motionName)) {
+    const span = lineSpan(buffer, cursor, motionName === "line_down" ? count : -count);
+    if (span.first === lineStartOf(buffer, cursor) && span.last === lineEndOf(buffer, cursor)) return "handled";
+    return applyOperatorToLines(editor, operator, span.first, span.last);
+  }
+
+  const isWordForward = motionName === "word_forward" || motionName === "word_forward_big";
+  if (operator === "change" && isWordForward && cursor < buffer.length && !isBufferSpace(buffer[cursor]!)) {
+    const end = changeWordEnd(buffer, cursor, count, motionName === "word_forward_big");
+    return applyOperatorToRange(editor, operator, cursor, nextGraphemeEnd(buffer, end));
+  }
+
+  // dl may reach the end of the line, unlike the normal-mode l motion.
+  if (motionName === "char_right") {
+    const le = lineEndOf(buffer, cursor);
+    let target = cursor;
+    for (let i = 0; i < count && target < le; i++) target = nextGraphemeEnd(buffer, target);
+    return target === cursor ? "handled" : applyOperatorToRange(editor, operator, cursor, target);
+  }
+
+  let from = cursor;
+  let target = cursor;
+  for (let i = 0; i < count; i++) {
+    from = target;
+    target = resolveMotion(motionName, buffer, target);
+  }
+  if (target === cursor) return "handled";
+
+  // An operated w/W whose last word ends its line stops at that line's end
+  // rather than eating the line break (dw on a line's last word).
+  if (isWordForward && buffer.slice(from, target).includes("\n")) {
+    const le = lineEndOf(buffer, from);
+    if (le > from) target = le;
+  }
+
+  const start = Math.min(cursor, target);
+  let end = Math.max(cursor, target);
+  // e/E are inclusive: the word's last character is part of the range.
+  if (motionName === "word_end" || motionName === "word_end_big") end = nextGraphemeEnd(buffer, end);
+  return applyOperatorToRange(editor, operator, start, end);
+}
+
+/** Apply an operator to whole lines [first line start, last line end]. */
+function applyOperatorToLines(editor: EditorState, operator: string, first: number, last: number): EditorAction {
+  switch (operator) {
+    case "delete":
+      applyBufferEdit(editor, deleteLines(editor.buffer, first, last));
+      return "handled";
+    case "change":
+      applyBufferEdit(editor, changeLines(editor.buffer, first, last), "insert", true);
+      return "handled";
+    case "yank":
+      copyToClipboard(linewiseText(editor.buffer, first, last), true);
+      resetPending(editor);
+      return "handled";
+    default:
+      resetPending(editor);
+      return "handled";
+  }
 }
 
 function exitVisualMode(editor: EditorState): void {
@@ -369,7 +459,7 @@ function executeModeChange(editor: EditorState, mode: EditorMode, cursorSpec?: C
       cursor = Math.min(nextGraphemeEnd(editor.buffer, editor.cursor), lineEndOf(editor.buffer, editor.cursor));
       break;
     case "bol":
-      cursor = lineStartOf(editor.buffer, editor.cursor);
+      cursor = firstNonBlank(editor.buffer, editor.cursor);
       break;
     case "eol":
       cursor = lineEndOf(editor.buffer, editor.cursor);
@@ -384,47 +474,57 @@ function executeModeChange(editor: EditorState, mode: EditorMode, cursorSpec?: C
 }
 
 function executeStandalone(editor: EditorState, name: string, count: number): EditorAction {
+  const { buffer, cursor } = editor;
   switch (name) {
     case "delete_char":
-      applyBufferEdit(editor, deleteChar(editor.buffer, editor.cursor));
+      applyEditIfChanged(editor, deleteChars(buffer, cursor, count));
       return "handled";
     case "delete_char_before":
-      applyBufferEdit(editor, deleteCharBefore(editor.buffer, editor.cursor));
+      applyEditIfChanged(editor, deleteCharsBefore(buffer, cursor, count));
       return "handled";
-    case "delete_line":
-      applyCountedLineEdit(editor, count, deleteLine);
+    case "delete_line": {
+      const span = lineSpan(buffer, cursor, count - 1);
+      applyEditIfChanged(editor, deleteLines(buffer, span.first, span.last));
       return "handled";
-    case "change_line":
-      applyBufferEdit(editor, changeLine(editor.buffer, editor.cursor), "insert", true);
+    }
+    case "change_line": {
+      const span = lineSpan(buffer, cursor, count - 1);
+      applyBufferEdit(editor, changeLines(buffer, span.first, span.last), "insert", true);
       return "handled";
+    }
     case "delete_to_eol":
-      applyBufferEdit(editor, deleteToEnd(editor.buffer, editor.cursor));
+      applyEditIfChanged(editor, deleteToEnd(buffer, cursor, count));
       return "handled";
     case "change_to_eol":
-      applyBufferEdit(editor, changeToEnd(editor.buffer, editor.cursor), "insert", true);
+      applyBufferEdit(editor, changeToEnd(buffer, cursor, count), "insert", true);
       return "handled";
     case "open_below":
-      applyBufferEdit(editor, openLineBelow(editor.buffer, editor.cursor), "insert", true);
+      applyBufferEdit(editor, openLineBelow(buffer, cursor), "insert", true);
       return "handled";
     case "open_above":
-      applyBufferEdit(editor, openLineAbove(editor.buffer, editor.cursor), "insert", true);
+      applyBufferEdit(editor, openLineAbove(buffer, cursor), "insert", true);
       return "handled";
     case "yank_line": {
-      const start = lineStartOf(editor.buffer, editor.cursor);
-      const lineEnd = lineEndOf(editor.buffer, editor.cursor);
-      const end = lineEnd < editor.buffer.length ? lineEnd + 1 : lineEnd;
-      copyToClipboard(editor.buffer.slice(start, end));
+      const span = lineSpan(buffer, cursor, count - 1);
+      copyToClipboard(linewiseText(buffer, span.first, span.last), true);
       resetPending(editor);
       return "handled";
     }
+    case "shift_right":
+    case "shift_left": {
+      // A count shifts that many lines once, not that many levels.
+      const last = lineSpan(buffer, cursor, count - 1).last;
+      applyEditIfChanged(editor, shiftLines(buffer, cursor, last, name === "shift_right" ? 1 : -1));
+      return "handled";
+    }
     case "swap_case":
-      applyBufferEdit(editor, swapCase(editor.buffer, editor.cursor, count));
+      applyEditIfChanged(editor, swapCase(buffer, cursor, count));
       return "handled";
     case "paste_after":
-      applyPasteCommand(editor, "after");
+      applyPasteCommand(editor, "after", count);
       return "handled";
     case "paste_before":
-      applyPasteCommand(editor, "before");
+      applyPasteCommand(editor, "before", count);
       return "handled";
     case "undo":
       applyUndo(editor);
@@ -435,22 +535,53 @@ function executeStandalone(editor: EditorState, name: string, count: number): Ed
   }
 }
 
+function executeMotion(editor: EditorState, name: string, count: number, normalMode: boolean): void {
+  if (isVerticalMotion(name)) {
+    moveVerticalWithCurswant(editor, directionForVerticalMotion(name), count, true);
+  } else {
+    const target = motionTarget(editor.buffer, editor.cursor, name, count);
+    editor.cursor = normalMode ? clampNormalCursor(editor.buffer, target) : target;
+    resetCurswant(editor);
+    // $ keeps later j/k at the end of each line.
+    if (name === "line_end") editor.curswant = Number.POSITIVE_INFINITY;
+  }
+  resetPending(editor);
+}
+
 function executeVisualCommand(editor: EditorState, command: PromptCommand): EditorAction {
   switch (command.type) {
     case "motion":
-      if (isVerticalMotion(command.name)) {
-        moveVerticalWithCurswant(editor, directionForVerticalMotion(command.name), 1, true);
-      } else {
-        editor.cursor = resolveMotion(command.name, editor.buffer, editor.cursor);
-        resetCurswant(editor);
-      }
+      executeMotion(editor, command.name, editor.count ?? 1, false);
       return "handled";
     case "standalone": {
-      const { start, endExclusive } = getVisualRange(editor.buffer, editor.visualAnchor, editor.cursor, editor.mode);
+      const name = command.name;
+      const anchor = editor.visualAnchor;
+      const cursor = editor.cursor;
+      resetPending(editor);
 
-      switch (command.name) {
+      if (name === "visual_swap_ends") {
+        editor.visualAnchor = cursor;
+        editor.cursor = anchor;
+        resetCurswant(editor);
+        return "handled";
+      }
+
+      if (name === "visual_shift_right" || name === "visual_shift_left") {
+        const edit = shiftLines(editor.buffer, anchor, cursor, name === "visual_shift_right" ? 1 : -1);
+        exitVisualMode(editor);
+        applyEditIfChanged(editor, edit);
+        return "handled";
+      }
+
+      const { start, endExclusive } = getVisualRange(editor.buffer, anchor, cursor, editor.mode);
+      const linewise = editor.mode === "visual-line";
+      const text = editor.buffer.slice(start, endExclusive);
+      // A linewise register is always "\n"-terminated, even for the last line.
+      const yankText = linewise && !text.endsWith("\n") ? text + "\n" : text;
+
+      switch (name) {
         case "visual_yank":
-          copyToClipboard(editor.buffer.slice(start, endExclusive));
+          copyToClipboard(yankText, linewise);
           exitVisualMode(editor);
           return "handled";
         case "visual_delete":
@@ -458,7 +589,7 @@ function executeVisualCommand(editor: EditorState, command: PromptCommand): Edit
           applyBufferEdit(editor, deleteRange(editor.buffer, start, endExclusive));
           return "handled";
         case "visual_delete_yank":
-          copyToClipboard(editor.buffer.slice(start, endExclusive));
+          copyToClipboard(yankText, linewise);
           exitVisualMode(editor);
           applyBufferEdit(editor, deleteRange(editor.buffer, start, endExclusive));
           return "handled";
@@ -498,10 +629,13 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
     case "char":
       if (key.char) insertText(editor, key.char);
       return "handled";
+    case "tab":
+      insertText(editor, PROMPT_TAB);
+      return "handled";
     case "backspace": {
       const pos = clampInsertCursor(editor.buffer, editor.cursor);
       if (pos > 0) {
-        const start = previousGraphemeStart(editor.buffer, pos);
+        const start = promptDeleteStart(editor.buffer, pos);
         editor.buffer = editor.buffer.slice(0, start) + editor.buffer.slice(pos);
         editor.cursor = start;
       }
@@ -511,7 +645,7 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
     case "delete": {
       const pos = clampInsertCursor(editor.buffer, editor.cursor);
       if (pos < editor.buffer.length) {
-        editor.buffer = editor.buffer.slice(0, pos) + editor.buffer.slice(nextGraphemeEnd(editor.buffer, pos));
+        editor.buffer = editor.buffer.slice(0, pos) + editor.buffer.slice(promptDeleteEnd(editor.buffer, pos));
       }
       resetCurswant(editor);
       return "handled";
@@ -530,7 +664,8 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
       return "handled";
     case "end":
       editor.cursor = lineEndOf(editor.buffer, editor.cursor);
-      resetCurswant(editor);
+      // Like Vim's <End>: later vertical moves stick to the end of each row.
+      editor.curswant = Number.POSITIVE_INFINITY;
       return "handled";
     case "up":
       moveVerticalWithCurswant(editor, -1);
@@ -552,6 +687,11 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
   }
 }
 
+/** Digits 1-9 start a count; 0 only continues one (alone it is the line_start motion). */
+function isCountKey(editor: EditorState, ks: string): boolean {
+  return /^[1-9]$/.test(ks) || (ks === "0" && editor.count !== null);
+}
+
 function handleVisualKey(editor: EditorState, key: KeyEvent): EditorAction {
   const ks = keyString(key);
 
@@ -570,28 +710,37 @@ function handleVisualKey(editor: EditorState, key: KeyEvent): EditorAction {
   }
 
   if (ks === null) {
-    handleNormalLikeCursorKey(editor, key);
+    resetPending(editor);
+    return "handled";
+  }
+
+  // A shift prefix requires the same second key, not a new find/count.
+  if (isShiftPrefix(editor) && ks !== editor.pendingKeys) {
+    resetPending(editor);
     return "handled";
   }
 
   if (editor.pendingFind) {
     if (key.type !== "char" || !key.char) {
-      editor.pendingFind = null;
+      resetPending(editor);
       return "handled";
     }
-    applyFindMotion(editor, editor.pendingFind, key.char);
+    applyFindMotion(editor, editor.pendingFind, key.char, false);
     return "handled";
   }
 
-  if (ks === "f" || ks === "F") {
+  if (ks === "f" || ks === "F" || ks === "t" || ks === "T") {
     editor.pendingFind = ks;
     return "handled";
   }
 
   if (ks === ";" || ks === ",") {
-    const direction = repeatFindDirection(editor, ks);
-    if (!direction || !editor.lastFind) return "handled";
-    applyFindMotion(editor, direction, editor.lastFind.char, false);
+    const kind = repeatFindKind(editor, ks);
+    if (!kind || !editor.lastFind) {
+      resetPending(editor);
+      return "handled";
+    }
+    applyFindMotion(editor, kind, editor.lastFind.char, true);
     return "handled";
   }
 
@@ -602,9 +751,14 @@ function handleVisualKey(editor: EditorState, key: KeyEvent): EditorAction {
       const range = resolveTextObject(modifier, ks, editor.buffer, editor.cursor);
       if (range && range.start !== range.end) {
         editor.visualAnchor = range.start;
-        editor.cursor = Math.max(range.start, range.end - 1);
+        editor.cursor = previousGraphemeStart(editor.buffer, range.end);
       }
     }
+    return "handled";
+  }
+
+  if (isCountKey(editor, ks)) {
+    editor.count = (editor.count ?? 0) * 10 + Number.parseInt(ks, 10);
     return "handled";
   }
 
@@ -640,17 +794,21 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
     return "submit";
   }
 
-  if (handleNormalLikeCursorKey(editor, key)) {
-    return "handled";
-  }
-
   if (key.type === "backspace") {
-    applyBufferEdit(editor, deleteCharBefore(editor.buffer, editor.cursor));
+    if (editor.cursor > 0) {
+      applyBufferEdit(editor, deleteRange(editor.buffer, previousGraphemeStart(editor.buffer, editor.cursor), editor.cursor));
+    } else {
+      resetPending(editor);
+    }
     return "handled";
   }
 
   if (key.type === "delete") {
-    applyBufferEdit(editor, deleteChar(editor.buffer, editor.cursor));
+    if (editor.cursor < editor.buffer.length) {
+      applyBufferEdit(editor, deleteRange(editor.buffer, editor.cursor, nextGraphemeEnd(editor.buffer, editor.cursor)));
+    } else {
+      resetPending(editor);
+    }
     return "handled";
   }
 
@@ -660,9 +818,38 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
   }
 
   const ks = keyString(key);
-  if (ks === null) return "handled";
+  if (ks === null) {
+    resetPending(editor);
+    return "handled";
+  }
 
-  if (/^[1-9]$/.test(ks) || (ks === "0" && editor.count !== null)) {
+  // A shift prefix requires the same second key, not a new find/replace/count.
+  if (isShiftPrefix(editor) && ks !== editor.pendingKeys) {
+    resetPending(editor);
+    return "handled";
+  }
+
+  if (editor.pendingFind) {
+    if (key.type !== "char" || !key.char) {
+      resetPending(editor);
+      return "handled";
+    }
+    if (editor.pendingOperator) {
+      return applyFindOperator(editor, editor.pendingFind, key.char, false);
+    }
+    applyFindMotion(editor, editor.pendingFind, key.char, false);
+    return "handled";
+  }
+
+  if (editor.pendingReplace) {
+    resetPending(editor);
+    if (key.type === "char" && key.char) {
+      applyEditIfChanged(editor, replaceChar(editor.buffer, editor.cursor, key.char));
+    }
+    return "handled";
+  }
+
+  if (isCountKey(editor, ks)) {
     editor.count = (editor.count ?? 0) * 10 + Number.parseInt(ks, 10);
     return "handled";
   }
@@ -672,40 +859,21 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
     return "handled";
   }
 
-  if (editor.pendingFind) {
-    if (key.type !== "char" || !key.char) {
-      editor.pendingFind = null;
-      return "handled";
-    }
-
-    if (editor.pendingOperator) {
-      return applyFindOperator(editor, editor.pendingFind, key.char);
-    }
-
-    applyFindMotion(editor, editor.pendingFind, key.char);
-    return "handled";
-  }
-
-  if (editor.pendingReplace) {
-    resetPending(editor);
-    if (key.type === "char" && key.char) {
-      applyBufferEdit(editor, replaceChar(editor.buffer, editor.cursor, key.char));
-    }
-    return "handled";
-  }
-
-  if (ks === "f" || ks === "F") {
+  if (ks === "f" || ks === "F" || ks === "t" || ks === "T") {
     editor.pendingFind = ks;
     return "handled";
   }
 
   if (ks === ";" || ks === ",") {
-    const direction = repeatFindDirection(editor, ks);
-    if (!direction || !editor.lastFind) return "handled";
-    if (editor.pendingOperator) {
-      return applyFindOperator(editor, direction, editor.lastFind.char, false);
+    const kind = repeatFindKind(editor, ks);
+    if (!kind || !editor.lastFind) {
+      resetPending(editor);
+      return "handled";
     }
-    applyFindMotion(editor, direction, editor.lastFind.char, false);
+    if (editor.pendingOperator) {
+      return applyFindOperator(editor, kind, editor.lastFind.char, true);
+    }
+    applyFindMotion(editor, kind, editor.lastFind.char, true);
     return "handled";
   }
 
@@ -714,7 +882,7 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
   if (editor.pendingOperator && ks === editor.pendingOperatorKey) {
     const doubled = lookupCommand(editor.mode, editor.pendingOperatorKey + ks);
     if (doubled) {
-      const count = editor.count ?? 1;
+      const count = operatorMotionCount(editor);
       resetPending(editor);
       return executeStandalone(editor, doubled.type === "standalone" ? doubled.name : "", count);
     }
@@ -743,13 +911,9 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
     const motionCommand = lookupCommand(editor.mode, ks);
     if (motionCommand?.type === "motion") {
       const operator = editor.pendingOperator;
-      const count = editor.count ?? 1;
-      const target = motionTarget(editor.buffer, editor.cursor, motionCommand.name, count);
-      const start = Math.min(editor.cursor, target);
-      const end = Math.max(editor.cursor, target);
+      const count = operatorMotionCount(editor);
       resetPending(editor);
-      if (start === end) return "handled";
-      return applyOperatorToRange(editor, operator ?? "", start, end);
+      return applyOperatorMotion(editor, operator, motionCommand.name, count);
     }
 
     resetPending(editor);
@@ -763,18 +927,13 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
 
     switch (command.type) {
       case "motion":
-        if (isVerticalMotion(command.name)) {
-          moveVerticalWithCurswant(editor, directionForVerticalMotion(command.name), count, true);
-        } else {
-          editor.cursor = clampNormalCursor(editor.buffer, motionTarget(editor.buffer, editor.cursor, command.name, count));
-          resetCurswant(editor);
-        }
-        resetPending(editor);
+        executeMotion(editor, command.name, count, true);
         return "handled";
       case "operator":
         editor.pendingOperator = command.name;
         editor.pendingOperatorKey = ks;
         editor.pendingKeys = "";
+        editor.operatorCount = editor.count;
         editor.count = null;
         return "handled";
       case "mode_change":
@@ -784,6 +943,7 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
         resetPending(editor);
         return command.action;
       case "standalone":
+        resetPending(editor);
         return executeStandalone(editor, command.name, count);
       default:
         return "handled";
@@ -805,12 +965,14 @@ export function createEditorState(initialBuffer = "", mode: EditorMode = "insert
     cursor: mode === "insert" ? initialBuffer.length : clampNormalCursor(initialBuffer, initialBuffer.length),
     curswant: null,
     scroll: 0,
+    wrapWidth: null,
     mode,
     pendingKeys: "",
     pendingOperator: null,
     pendingOperatorKey: null,
     pendingTextObjectModifier: null,
     count: null,
+    operatorCount: null,
     visualAnchor: 0,
     pendingFind: null,
     lastFind: null,
@@ -836,6 +998,7 @@ export function resetEditor(editor: EditorState, buffer = "", mode: EditorMode =
   editor.pendingOperatorKey = null;
   editor.pendingTextObjectModifier = null;
   editor.count = null;
+  editor.operatorCount = null;
   editor.visualAnchor = 0;
   editor.pendingFind = null;
   editor.lastFind = null;
@@ -877,11 +1040,12 @@ export function handleEditorKey(editor: EditorState, key: KeyEvent): EditorActio
     return handleInsertKey(editor, key);
   }
 
+  const motionKey = arrowKeyAsMotion(editor, key);
   if (editor.mode === "visual" || editor.mode === "visual-line") {
-    return handleVisualKey(editor, key);
+    return handleVisualKey(editor, motionKey);
   }
 
-  return handleNormalKey(editor, key);
+  return handleNormalKey(editor, motionKey);
 }
 
 export function displayCursor(editor: EditorState): number {

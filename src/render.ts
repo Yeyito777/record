@@ -11,7 +11,6 @@ import {
   getVisualRange,
   MAX_PROMPT_ROWS,
   PROMPT_PREFIX_WIDTH,
-  wrappedLineOffsets,
 } from "./editor";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { customEmojiImages, customEmojiMarker, type CustomEmojiRenderBatch } from "./customemoji";
@@ -141,16 +140,14 @@ function modeColor(mode: AppState["editor"]["mode"]): string {
 
 function highlightPromptSelection(
   line: string,
-  wrappedLineIdx: number,
+  lineStart: number | undefined,
   selectionStart: number,
   selectionEndExclusive: number,
-  offsets: number[],
 ): string {
-  if (wrappedLineIdx >= offsets.length) {
+  if (lineStart === undefined) {
     return `${theme.text}${line}${theme.reset}`;
   }
 
-  const lineStart = offsets[wrappedLineIdx];
   const lineEndExclusive = lineStart + line.length;
   const overlapStart = Math.max(selectionStart, lineStart);
   const overlapEndExclusive = Math.min(selectionEndExclusive, lineEndExclusive);
@@ -421,6 +418,7 @@ export function render(state: AppState): void {
     state.editor.scroll,
   );
   state.editor.scroll = input.scrollOffset;
+  state.editor.wrapWidth = maxInputWidth;
 
   const inputRowCount = Math.max(1, input.lines.length);
   const promptSeparatorRow = Math.max(3, rows - inputRowCount - bottomStatusRows - imageIndicatorRows);
@@ -576,7 +574,6 @@ export function render(state: AppState): void {
     emitMemberListCol(imageIndicatorRow);
   }
 
-  const offsets = wrappedLineOffsets(promptBuffer, maxInputWidth);
   const promptInVisual = !voicePromptText && promptFocused && (state.editor.mode === "visual" || state.editor.mode === "visual-line");
   const selection = promptInVisual
     ? getVisualRange(state.editor.buffer, state.editor.visualAnchor, state.editor.cursor, state.editor.mode)
@@ -594,17 +591,16 @@ export function render(state: AppState): void {
     if (selection) {
       lineContent = highlightPromptSelection(
         input.lines[i] ?? "",
-        input.scrollOffset + i,
+        input.lineStarts[i],
         selection.start,
         selection.endExclusive,
-        offsets,
       );
     } else {
       lineContent = `${theme.text}${input.lines[i] ?? ""}${theme.reset}`;
       if (voicePromptText) {
         lineContent = `${theme.accent}${input.lines[i] ?? ""}${theme.reset}`;
       } else if (state.editor.buffer.length > 0) {
-        lineContent = highlightPromptViewport(input.lines[i] ?? "", state.editor.buffer, offsets[input.scrollOffset + i] ?? 0, state);
+        lineContent = highlightPromptViewport(input.lines[i] ?? "", state.editor.buffer, input.lineStarts[i] ?? 0, state);
       }
     }
 
@@ -690,7 +686,8 @@ export function render(state: AppState): void {
       cursorPayload.push(
         state.editor.mode === "insert"
           ? cursorBar
-          : (state.editor.pendingOperator || state.editor.pendingReplace)
+          : (state.editor.pendingOperator || state.editor.pendingReplace
+            || state.editor.pendingKeys === "<" || state.editor.pendingKeys === ">")
             ? cursorUnderline
             : cursorBlock,
       );

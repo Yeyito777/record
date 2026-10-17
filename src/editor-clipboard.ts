@@ -14,6 +14,8 @@ type CommandLookup = (command: string) => string | null;
 const decoder = new TextDecoder();
 
 let clipboardCommands: ClipboardCommands | null | undefined;
+/** Text of the last linewise yank, while it is still what we last copied. */
+let lastLinewiseYank: string | null = null;
 
 /**
  * Resolve the native clipboard commands for the current platform.
@@ -69,7 +71,12 @@ export function editorTextFromClipboard(text: string): string {
   return replaceCustomEmojiTokens(text);
 }
 
-export function copyToClipboard(text: string): void {
+/**
+ * Copy text to the system clipboard. `linewise` marks a whole-line yank
+ * (yy, yj, Vy) so p/P put it back as lines.
+ */
+export function copyToClipboard(text: string, linewise = false): void {
+  lastLinewiseYank = linewise ? text : null;
   const commands = detectClipboardCommands();
   if (!commands) return;
 
@@ -80,6 +87,15 @@ export function copyToClipboard(text: string): void {
   } catch {
     // Clipboard is best-effort.
   }
+}
+
+/**
+ * Whether pasted text is still our last linewise yank. The clipboard only
+ * holds text, so this is how p/P know to put lines (wl-paste --no-newline
+ * drops the trailing newline, so accept the text without it too).
+ */
+export function isLinewiseClipboardText(text: string): boolean {
+  return lastLinewiseYank !== null && (text === lastLinewiseYank || text + "\n" === lastLinewiseYank);
 }
 
 export function pasteFromClipboard(): string {
