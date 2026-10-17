@@ -8,6 +8,7 @@ import { theme } from "./theme";
 import type { DiscordMessage } from "./discord";
 import { recordTypingStart } from "./typing";
 import { createLoginModalState } from "./whatsapp/loginmodal";
+import { openImageModalState } from "./imagemodal";
 import { customEmojiMarker } from "./customemoji";
 import { moveTo } from "./terminal";
 
@@ -46,6 +47,33 @@ function captureRender(state: ReturnType<typeof createInitialState>): string {
     (process.stdout as unknown as { write: typeof process.stdout.write }).write = originalWrite;
   }
   return output;
+}
+
+function captureRenderWrites(state: ReturnType<typeof createInitialState>): string[] {
+  const writes: string[] = [];
+  const originalWrite = process.stdout.write;
+  (process.stdout as unknown as { write: typeof process.stdout.write }).write = ((chunk: string | Uint8Array) => {
+    writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    render(state);
+  } finally {
+    (process.stdout as unknown as { write: typeof process.stdout.write }).write = originalWrite;
+  }
+  return writes;
+}
+
+/** Split one write into what lands before and inside its synchronized update. */
+function synchronizedParts(write: string): { before: string; frame: string } {
+  const begin = write.indexOf("\x1b[?2026h");
+  const end = write.indexOf("\x1b[?2026l");
+  if (begin < 0 || end < begin || end + "\x1b[?2026l".length !== write.length) return { before: write, frame: "" };
+  return { before: write.slice(0, begin), frame: write.slice(begin, end) };
+}
+
+function viewerPlacement(frame: string): string | undefined {
+  return /\x1b_Ga=p,i=\d+,p=\d+,(c=\d+,r=\d+),C=1,z=2/.exec(frame)?.[1];
 }
 
 function stateWithReadyInlineImage(): ReturnType<typeof createInitialState> {
@@ -160,6 +188,51 @@ describe("render", () => {
     expect(closing).not.toContain("a=p,");
     expect(closing).toContain(`a=d,d=i,i=${preview.imageId + 1}`);
     expect(closing).not.toContain(`a=d,d=i,i=${preview.imageId},`);
+  });
+
+  test("the viewer opens, upgrades, and closes in single synchronized frames at one size", () => {
+    const state = stateWithReadyInlineImage();
+    state.cols = 239;
+    state.rows = 51;
+    state.timeline.terminalCellWidthPixels = 8;
+    state.timeline.terminalCellHeightPixels = 20;
+    captureRender(state);
+    const inline = state.timeline.inlineImages.a1!;
+    if (inline.phase !== "ready") throw new Error("missing fixture");
+    // A bounded 384×256 preview of a 900×600 attachment.
+    const preview = { ...inline, pixelWidth: 384, pixelHeight: 256 };
+    state.imageModal = openImageModalState({ filename: "medium.png", width: 900, height: 600 }, preview);
+
+    const opening = captureRenderWrites(state);
+    expect(opening).toHaveLength(1);
+    const opened = synchronizedParts(opening[0]!);
+    expect(opened.before).toBe("");
+    expect(opened.frame).toContain("Loading full image");
+    expect(viewerPlacement(opened.frame)).toBe("c=113,r=30");
+
+    const full = { ...inline, attachmentId: "modal:a1", imageId: inline.imageId + 1, pixelWidth: 900, pixelHeight: 600, pngBase64: "ZnVsbA==" };
+    state.imageModal.image = full;
+    state.imageModal.preview = state.imageModal.loading = false;
+    const upgrading = captureRenderWrites(state);
+    expect(upgrading).toHaveLength(1);
+    const upgraded = synchronizedParts(upgrading[0]!);
+    // New pixels arrive before the frame; the swap itself is atomic and in place.
+    expect(upgraded.before).toContain(`a=t,t=d,f=100,i=${full.imageId}`);
+    expect(upgraded.frame).not.toContain("a=t,");
+    expect(upgraded.frame).toContain("Enter or Esc to close");
+    expect(upgraded.frame).toMatch(new RegExp(`a=d,d=i,i=${inline.imageId},p=\\d+.*a=p,i=${full.imageId},`));
+    expect(viewerPlacement(upgraded.frame)).toBe("c=113,r=30");
+
+    // Re-rendering an unchanged viewer sends no graphics at all.
+    expect(captureRenderWrites(state).join("")).not.toContain("\x1b_G");
+
+    state.imageModal = null;
+    const closing = captureRenderWrites(state);
+    expect(closing).toHaveLength(1);
+    const closed = synchronizedParts(closing[0]!);
+    expect(closed.before).toBe("");
+    expect(closed.frame).toContain(`a=d,d=i,i=${full.imageId}`);
+    expect(closed.frame).not.toContain("a=t,");
   });
 
   test("opening a new channel stays pinned to the bottom even with old history anchors", () => {

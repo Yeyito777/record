@@ -51,7 +51,7 @@ import {
 } from "./terminal";
 import { theme } from "./theme";
 import { renderTimelineLines, setTimelineRenderContext, type RenderedTimeline } from "./timeline";
-import { syncInlineTerminalImages, type InlineTerminalImagePlacement } from "./terminalimage";
+import { planInlineTerminalImages, type InlineTerminalImagePlacement } from "./terminalimage";
 import { renderTopbar } from "./topbar";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
 import { voiceMessagePromptText } from "./voice-message";
@@ -704,14 +704,6 @@ export function render(state: AppState): void {
     && !state.imageModal
     && bodyRows > 0;
 
-  flushFrame(state, {
-    rows: frameRows,
-    cursor: cursorPayload.join(""),
-    scrollRegion: canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null,
-    viewStart: state.timeline.scrollOffset,
-    graphics: customEmojiImages.finishFrame(customEmojiFrame),
-  });
-
   const inlinePlacements = state.whatsapp.loginModal
     ? []
     : visibleInlineImagePlacements(
@@ -723,11 +715,18 @@ export function render(state: AppState): void {
       state.imageModal ? null : selectedHistoryRows,
     );
   if (imageModal?.placement) inlinePlacements.push(imageModal.placement);
-  syncInlineTerminalImages(
+  const inlineImages = planInlineTerminalImages(
     state,
     readyInlineImages(state),
     inlinePlacements,
-    undefined,
     { allowPlacementUpdates: !state.autocomplete || !!state.imageModal },
   );
+
+  flushFrame(state, {
+    rows: frameRows,
+    cursor: cursorPayload.join(""),
+    scrollRegion: canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null,
+    viewStart: state.timeline.scrollOffset,
+    graphics: customEmojiImages.finishFrame(customEmojiFrame),
+  }, inlineImages);
 }

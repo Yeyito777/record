@@ -241,6 +241,8 @@ export interface DiscordAttachmentResponse {
   content_type?: string | null;
   size: number;
   url: string;
+  width?: number | null;
+  height?: number | null;
   duration_secs?: number;
   waveform?: string;
 }
@@ -419,6 +421,9 @@ export interface DiscordMessageAttachment {
   contentType: string | null;
   size: number;
   url: string;
+  /** Provider-reported image size, used to size the viewer before download. */
+  width?: number;
+  height?: number;
   durationSecs?: number;
   waveform?: string;
 }
@@ -1039,6 +1044,7 @@ function mapDiscordAttachment(attachment: DiscordAttachmentResponse): DiscordMes
     contentType: attachment.content_type ?? null,
     size: attachment.size,
     url: attachment.url,
+    ...(attachment.width && attachment.height ? { width: attachment.width, height: attachment.height } : {}),
     durationSecs: attachment.duration_secs,
     waveform: attachment.waveform,
   };

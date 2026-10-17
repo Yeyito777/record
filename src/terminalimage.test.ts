@@ -5,6 +5,7 @@ import {
   disposeInlineTerminalImages,
   handleInlineTerminalImageResponse,
   parseTerminalCellSize,
+  planInlineTerminalImages,
   queryTerminalCellSize,
   syncInlineTerminalImages,
   transmitInlinePng,
@@ -38,6 +39,33 @@ describe("inline terminal graphics", () => {
     expect(writes[1]).not.toContain("a=t");
     syncInlineTerminalImages(owner, [ready], [{ ...placement, z: 2 }], (payload) => writes.push(payload));
     expect(writes).toHaveLength(2);
+  });
+
+  test("separates invisible transmissions from placement updates", () => {
+    const owner = {};
+    const preview = image();
+    const full = image({ imageId: 0x40000002, pngBase64: "ZnVsbA==", pixelWidth: 1000, pixelHeight: 500 });
+    const viewer = { placementId: 7, row: 2, col: 3, columns: 40, rows: 20, z: 2 };
+    const first = planInlineTerminalImages(owner, [preview], [{ ...viewer, image: preview }]);
+    expect(first.transmit).toContain(`a=t,t=d,f=100,i=${preview.imageId}`);
+    expect(first.update).not.toContain("a=t,");
+    expect(first.update).toContain(`a=p,i=${preview.imageId},p=7,c=40,r=20`);
+
+    const swap = planInlineTerminalImages(owner, [preview, full], [{ ...viewer, image: full }]);
+    expect(swap.transmit).toContain(`a=t,t=d,f=100,i=${full.imageId}`);
+    expect(swap.update).not.toContain("a=t,");
+    expect(swap.update).toMatch(new RegExp(`a=d,d=i,i=${preview.imageId},p=7.*a=p,i=${full.imageId},p=7,c=40,r=20`));
+  });
+
+  test("replacing pixels of a placed image stays with its placement update", () => {
+    const owner = {};
+    const ready = image();
+    const placement = { image: ready, placementId: 1, row: 2, col: 3, columns: 10, rows: 5 };
+    planInlineTerminalImages(owner, [ready], [placement]);
+    const changed = { ...ready, pngBase64: "bmV3" };
+    const replaced = planInlineTerminalImages(owner, [changed], [{ ...placement, image: changed }]);
+    expect(replaced.transmit).toBe("");
+    expect(replaced.update).toMatch(/a=t,t=d,f=100,i=1073741825.*a=p,i=1073741825/);
   });
 
   test("chunks large direct PNG transmissions into Kitty APC frames", () => {

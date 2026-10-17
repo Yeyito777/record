@@ -55,6 +55,8 @@ export interface InlineChatImageReady extends InlineChatImageBase {
   pngBase64: string;
   pixelWidth: number;
   pixelHeight: number;
+  sourcePixelWidth?: number;
+  sourcePixelHeight?: number;
 }
 
 export type InlineChatImageState = InlineChatImageLoading | InlineChatImageWaiting | InlineChatImageError | InlineChatImageReady;
@@ -79,6 +81,9 @@ export interface PreparedInlineImage {
   pngBase64: string;
   pixelWidth: number;
   pixelHeight: number;
+  /** Original pixel size, present only when the encoded PNG was not bounded. */
+  sourcePixelWidth?: number;
+  sourcePixelHeight?: number;
 }
 
 export interface InlineImagePrepareOptions {
@@ -291,7 +296,11 @@ function convertWebpFrameToPng(frame: NonNullable<ReturnType<typeof firstAnimate
     `format=rgba,pad=${frame.width}:${frame.height}:${frame.x}:${frame.y}:color=black@0,`);
 }
 
-function preparedPng(png: Buffer, dimensions: { width: number; height: number } | null): PreparedInlineImage {
+function preparedPng(
+  png: Buffer,
+  dimensions: { width: number; height: number } | null,
+  exactSource: boolean,
+): PreparedInlineImage {
   if (!dimensions || !pngFitsTerminal(png, dimensions)) {
     throw new Error("Image could not be converted to a terminal-compatible PNG.");
   }
@@ -299,7 +308,14 @@ function preparedPng(png: Buffer, dimensions: { width: number; height: number } 
     pngBase64: png.toString("base64"),
     pixelWidth: dimensions.width,
     pixelHeight: dimensions.height,
+    ...(exactSource ? { sourcePixelWidth: dimensions.width, sourcePixelHeight: dimensions.height } : {}),
   };
+}
+
+/** ffmpeg output below both bounds was never scaled, so it is the source size. */
+function convertedAtSourceSize(dimensions: { width: number; height: number } | null, options: InlineImagePrepareOptions): boolean {
+  const bounds = normalizedPreviewBounds(options);
+  return !!dimensions && dimensions.width < bounds.width && dimensions.height < bounds.height;
 }
 
 function exceedsPreviewBounds(dimensions: { width: number; height: number }, options: InlineImagePrepareOptions): boolean {
@@ -314,9 +330,10 @@ export async function prepareInlineImage(path: string, options: InlineImagePrepa
   if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
     png = await convertLoadedImageToPng(path, png, options);
     dimensions = pngDimensions(png);
+    return preparedPng(png, dimensions, convertedAtSourceSize(dimensions, options));
   }
 
-  return preparedPng(png, dimensions);
+  return preparedPng(png, dimensions, true);
 }
 
 export async function prepareInlineImageBytes(data: Buffer, options: InlineImagePrepareOptions = {}): Promise<PreparedInlineImage> {
@@ -325,8 +342,9 @@ export async function prepareInlineImageBytes(data: Buffer, options: InlineImage
   if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
     png = await convertImageBytesToPng(data, options);
     dimensions = pngDimensions(png);
+    return preparedPng(png, dimensions, convertedAtSourceSize(dimensions, options));
   }
-  return preparedPng(png, dimensions);
+  return preparedPng(png, dimensions, true);
 }
 
 export function inlineImagePreviewPixelBounds(cellWidthPixels = 8, cellHeightPixels = 16): InlineImagePrepareOptions {

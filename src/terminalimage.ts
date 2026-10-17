@@ -105,24 +105,36 @@ function imageFingerprint(image: InlineChatImageReady): string {
   return image.pngBase64;
 }
 
+/** Terminal commands for one reconciliation, split by visibility. */
+export interface InlineTerminalImageUpdate {
+  /**
+   * Data for images with no current placement. Sending it changes nothing on
+   * screen, so it may precede a synchronized frame instead of stretching it.
+   */
+  transmit: string;
+  /** Placement changes, to present atomically with the frame's text. */
+  update: string;
+}
+
 /**
  * Reconcile terminal-owned image data and placements with the current chat
  * viewport. Recently used data survives chat switches; only placements are
  * removed. A bounded idle LRU keeps this from retaining every visited image.
+ * The returned commands are recorded as sent and must be written in order.
  */
-export function syncInlineTerminalImages(
+export function planInlineTerminalImages(
   owner: object,
   images: readonly InlineChatImageReady[],
   placements: readonly InlineTerminalImagePlacement[],
-  write: (payload: string) => void = (payload) => { process.stdout.write(payload); },
   options: InlineTerminalImageSyncOptions = {},
-): void {
+): InlineTerminalImageUpdate {
   let state = syncStates.get(owner);
   if (!state) {
     state = { images: new Map(), placements: new Map() };
     syncStates.set(owner, state);
   }
 
+  const transmit: string[] = [];
   const out: string[] = [];
   const desiredPlacements = new Map(placements.map((placement) => [placementKey(placement), placement]));
   const desiredImageIds = new Set(placements.map((placement) => placement.image.imageId));
@@ -137,7 +149,9 @@ export function syncInlineTerminalImages(
       state.images.set(image.imageId, resident);
       continue;
     }
-    out.push(transmitInlinePng(image));
+    const placed = [...state.placements.keys()].some((key) => key.startsWith(`${image.imageId}:`));
+    // Replacing a placed image's data is visible, so it stays in the frame.
+    (placed ? out : transmit).push(transmitInlinePng(image));
     state.images.delete(image.imageId);
     state.images.set(image.imageId, {
       fingerprint,
@@ -186,7 +200,19 @@ export function syncInlineTerminalImages(
     if (state.images.has(imageId)) evict(imageId, image.bytes);
   }
 
-  if (out.length > 0) write(`${SAVE_CURSOR}${out.join("")}${RESTORE_CURSOR}`);
+  const wrap = (commands: string[]) => commands.length > 0 ? `${SAVE_CURSOR}${commands.join("")}${RESTORE_CURSOR}` : "";
+  return { transmit: wrap(transmit), update: wrap(out) };
+}
+
+export function syncInlineTerminalImages(
+  owner: object,
+  images: readonly InlineChatImageReady[],
+  placements: readonly InlineTerminalImagePlacement[],
+  write: (payload: string) => void = (payload) => { process.stdout.write(payload); },
+  options: InlineTerminalImageSyncOptions = {},
+): void {
+  const { transmit, update } = planInlineTerminalImages(owner, images, placements, options);
+  if (transmit || update) write(transmit + update);
 }
 
 /**

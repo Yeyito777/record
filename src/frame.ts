@@ -108,7 +108,15 @@ function detectUpwardScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): num
   return bestShift;
 }
 
-export function flushFrame(owner: object, nextFrame: RenderFrame): void {
+/** Per-frame image commands that are reconciled outside the retained diff. */
+export interface FrameImageCommands {
+  /** Invisible data transfers, written before the synchronized update. */
+  transmit: string;
+  /** Placement changes, presented atomically with this frame's text. */
+  update: string;
+}
+
+export function flushFrame(owner: object, nextFrame: RenderFrame, images?: FrameImageCommands): void {
   const prevFrame = lastRenderedFrames.get(owner);
   const out: string[] = [];
   const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
@@ -136,14 +144,19 @@ export function flushFrame(owner: object, nextFrame: RenderFrame): void {
     // and the regular cursor payload below restores the application cursor.
     out.push(nextFrame.graphics.payload);
   }
+  // Chat and viewer images join the same update as the text they sit in, so
+  // no presented frame shows a resized box without its image or the reverse.
+  if (images?.update) out.push(images.update);
 
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
     out.push(nextFrame.cursor);
   }
 
-  if (out.length > 0) {
+  if (out.length > 0 || images?.transmit) {
     const payload = out.join("");
-    process.stdout.write(out.length > 2 ? beginSynchronizedUpdate + payload + endSynchronizedUpdate : payload);
+    const synchronized = out.length > 2 || !!images?.update;
+    process.stdout.write((images?.transmit ?? "")
+      + (synchronized ? beginSynchronizedUpdate + payload + endSynchronizedUpdate : payload));
   }
 
   lastRenderedFrames.set(owner, nextFrame);
