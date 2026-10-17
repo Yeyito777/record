@@ -431,6 +431,7 @@ function mediaAttachment(message: WhatsAppMessage): DiscordMessageAttachment[] {
     contentType: media.mimeType ? sanitizeTerminalLabel(media.mimeType) : media.mediaKind === "sticker" ? "image/webp" : null,
     size: media.sizeBytes ?? 0,
     url: "",
+    ...(media.width && media.height ? { width: media.width, height: media.height } : {}),
     ...(media.durationSeconds !== undefined ? { durationSecs: media.durationSeconds } : {}),
   };
   mediaMessagesByAttachment.set(attachment, message);

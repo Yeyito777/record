@@ -87,6 +87,9 @@ describe("inline chat images", () => {
       pngBase64: PNG.toString("base64"),
       pixelWidth: 1,
       pixelHeight: 1,
+      // Unbounded pass-through pixels are the source size the viewer reuses.
+      sourcePixelWidth: 1,
+      sourcePixelHeight: 1,
     });
     expect(await prepareInlineImageBytes(PNG)).toEqual(prepared);
   });

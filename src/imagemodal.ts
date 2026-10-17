@@ -1,5 +1,6 @@
 /** Centered full-resolution image viewer modal. */
 
+import type { DiscordMessageAttachment } from "./discord";
 import type { InlineChatImageReady } from "./inlineimage";
 import { inlineImagePlacementId } from "./inlineimage";
 import type { KeyEvent } from "./input";
@@ -13,11 +14,67 @@ const MARGIN_ROWS = 1;
 const MODAL_EXTRA_COLUMNS = 4; // border plus one cell of padding on each side
 const MODAL_EXTRA_ROWS = 4; // border, title, footer, border
 
+/**
+ * Pixel geometry the viewer is laid out for. It is chosen once when the viewer
+ * opens, so upgrading preview pixels to the full image never resizes the box.
+ */
+export interface ImageModalFrame {
+  pixelWidth: number;
+  pixelHeight: number;
+  /** Fill the viewer: the source size is unknown, only its aspect ratio. */
+  enlarge: boolean;
+}
+
 export interface ImageModalState {
   filename: string;
   image: InlineChatImageReady;
+  /** Defaults to the current image at native size. */
+  frame?: ImageModalFrame;
   loading?: boolean;
   preview?: boolean;
+}
+
+/** Accept provider metadata only if it describes the decoded preview's shape. */
+function metadataMatchesPreview(
+  width: number,
+  height: number,
+  preview: Pick<InlineChatImageReady, "pixelWidth" | "pixelHeight">,
+): boolean {
+  // Bounded previews round one axis to whole pixels. EXIF-rotated or otherwise
+  // stale metadata has a different shape and would stretch the image.
+  const tolerance = 2;
+  return width >= preview.pixelWidth
+    && height >= preview.pixelHeight
+    && (Math.abs((preview.pixelWidth * height) / width - preview.pixelHeight) <= tolerance
+      || Math.abs((preview.pixelHeight * width) / height - preview.pixelWidth) <= tolerance);
+}
+
+export function imageModalFrame(
+  preview: Pick<InlineChatImageReady, "pixelWidth" | "pixelHeight" | "sourcePixelWidth" | "sourcePixelHeight">,
+  metadata: Pick<DiscordMessageAttachment, "width" | "height"> = {},
+): ImageModalFrame {
+  if (preview.sourcePixelWidth && preview.sourcePixelHeight) {
+    return { pixelWidth: preview.sourcePixelWidth, pixelHeight: preview.sourcePixelHeight, enlarge: false };
+  }
+  const { width, height } = metadata;
+  if (width && height && metadataMatchesPreview(width, height, preview)) {
+    return { pixelWidth: width, pixelHeight: height, enlarge: false };
+  }
+  return { pixelWidth: preview.pixelWidth, pixelHeight: preview.pixelHeight, enlarge: true };
+}
+
+/** Show resident preview pixels at the size the full image will occupy. */
+export function openImageModalState(
+  attachment: Pick<DiscordMessageAttachment, "filename" | "width" | "height">,
+  preview: InlineChatImageReady,
+): ImageModalState {
+  return {
+    filename: attachment.filename,
+    image: preview,
+    frame: imageModalFrame(preview, attachment),
+    loading: true,
+    preview: true,
+  };
 }
 
 /** Upgrade only the still-open viewer; closing/reopening cannot revive stale work. */
@@ -92,12 +149,13 @@ export function imageModalLayout(
   const maxRows = outerMaxHeight - MODAL_EXTRA_ROWS;
   if (maxColumns < 1 || maxRows < 1) return null;
 
-  const pixelWidth = Math.max(1, state.image.pixelWidth);
-  const pixelHeight = Math.max(1, state.image.pixelHeight);
+  const frame = state.frame ?? { pixelWidth: state.image.pixelWidth, pixelHeight: state.image.pixelHeight, enlarge: false };
+  const pixelWidth = Math.max(1, frame.pixelWidth);
+  const pixelHeight = Math.max(1, frame.pixelHeight);
   const cellWidth = Math.max(1, cellWidthPixels);
   const cellHeight = Math.max(1, cellHeightPixels);
   const scale = Math.min(
-    state.preview ? Infinity : 1,
+    frame.enlarge ? Infinity : 1,
     (maxColumns * cellWidth) / pixelWidth,
     (maxRows * cellHeight) / pixelHeight,
   );
@@ -151,7 +209,8 @@ export function renderImageModal(
   const innerWidth = layout.width - 2;
   const border = theme.sidebarBg + theme.accent;
   const blank = " ".repeat(innerWidth);
-  const title = `${state.filename} · ${state.image.pixelWidth}×${state.image.pixelHeight}`;
+  const size = state.frame && !state.frame.enlarge ? state.frame : state.image;
+  const title = `${state.filename} · ${size.pixelWidth}×${size.pixelHeight}`;
   const out: string[] = [
     moveTo(layout.top, layout.left) + border + `╭${"─".repeat(innerWidth)}╮` + theme.reset,
     moveTo(layout.top + 1, layout.left) + border + "│"

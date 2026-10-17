@@ -34,7 +34,7 @@ import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./ch
 import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
 import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
-import { handleImageModalKey, upgradeImageModal, type ImageModalState } from "./imagemodal";
+import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
@@ -499,11 +499,9 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   const requestId = ++nextInlineImageRequestId;
   const channelId = state.timeline.channelId;
   const sourceUrl = attachment.url;
-  // Reuse resident preview pixels immediately, at viewer size, without waiting
-  // behind background thumbnail downloads/conversions.
-  const modal: ImageModalState = {
-    filename: attachment.filename, image: existing, loading: true, preview: true,
-  };
+  // Reuse resident preview pixels immediately, at the final viewer size, without
+  // waiting behind background thumbnail downloads/conversions.
+  const modal = openImageModalState(attachment, existing);
   state.imageModal = modal;
   scheduleRender();
   const isCurrent = () => running && state.imageModal === modal
