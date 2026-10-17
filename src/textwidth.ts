@@ -219,17 +219,35 @@ export function termWidth(text: string): number {
   return width;
 }
 
-export function sliceByWidth(text: string, maxWidth: number): [taken: string, rest: string] {
+/**
+ * End offset and width of the longest prefix of `text` from `start` that fits
+ * in `maxWidth` cells. Printable ASCII skips cluster parsing, which keeps long
+ * prompts cheap to wrap; zero-width trailers still attach on the next step.
+ */
+export function sliceByWidthFrom(text: string, start: number, maxWidth: number): [end: number, width: number] {
   let width = 0;
-  let index = 0;
+  let index = Math.max(0, Math.min(start, text.length));
 
   while (index < text.length) {
+    const code = text.charCodeAt(index);
+    if (code >= 0x20 && code <= 0x7e) {
+      if (width + 1 > maxWidth) break;
+      width++;
+      index++;
+      continue;
+    }
+
     const [clusterWidth, end] = nextCluster(text, index);
     if (width + clusterWidth > maxWidth) break;
     width += clusterWidth;
     index = end;
   }
 
+  return [index, width];
+}
+
+export function sliceByWidth(text: string, maxWidth: number): [taken: string, rest: string] {
+  const [index] = sliceByWidthFrom(text, 0, maxWidth);
   return [text.slice(0, index), text.slice(index)];
 }
 

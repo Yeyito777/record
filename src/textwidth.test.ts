@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import {
   getViewportByWidth,
+  nextWidthClusterEnd,
+  sliceByWidthFrom,
   hardBreak,
   padRight,
   termWidth,
@@ -52,5 +54,23 @@ describe("textwidth", () => {
     const viewport = getViewportByWidth("ab🦋cd", "ab🦋cd".length, 4);
     expect(viewport.visibleText).toBe("🦋cd");
     expect(viewport.cursorCol).toBe(4);
+  });
+
+  test("sliceByWidthFrom's ASCII fast path matches cluster-by-cluster wrapping", () => {
+    const text = "ab😀e\u0301 #\ufe0f\u20e3 x\u200dy 🇨🇦\ue000 end";
+    for (let width = 1; width <= 6; width++) {
+      for (let start = 0; start < text.length; start = nextWidthClusterEnd(text, start)) {
+        let end = start;
+        let used = 0;
+        while (end < text.length) {
+          const next = nextWidthClusterEnd(text, end);
+          const clusterWidth = termWidth(text.slice(end, next));
+          if (used + clusterWidth > width) break;
+          used += clusterWidth;
+          end = next;
+        }
+        expect(sliceByWidthFrom(text, start, width)).toEqual([end, used]);
+      }
+    }
   });
 });
