@@ -108,7 +108,7 @@ describe("render", () => {
     const state = createInitialState(null, "/tmp/config.json");
     state.cols = 100;
     state.rows = 24;
-    state.instagram.account = { id: "ig-self", username: "self", name: "Self" };
+    state.instagram.account = { id: "ig-self", fbid: "", username: "self", name: "Self" };
     state.channelList.activeChannel = {
       id: "ig:123", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "Group",
       topic: null, position: 0, type: 3, nsfw: false,

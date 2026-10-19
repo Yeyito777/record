@@ -174,6 +174,7 @@ import {
   downloadOpenableUrl,
   openTargetDetached,
   shouldDownloadTargetBeforeOpen,
+  type AttachmentDownloadOptions,
   type AttachmentDownloadProgress,
 } from "./openable";
 import { createVoiceMessageController } from "./voice-message-controller";
@@ -432,7 +433,9 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
       } else if (!prepared) {
         const downloaded = isWhatsAppChannelId(channelId)
           ? await whatsAppController.downloadAttachment(attachment)
-          : await downloadAttachment(attachment);
+          : isInstagramChannelId(channelId)
+            ? await instagramController.downloadAttachment(attachment)
+            : await downloadAttachment(attachment);
         const current = currentInlineImageRequest(requestId);
         if (!downloaded.ok || !downloaded.path) {
           if (!running || state.timeline.channelId !== channelId || !current) return;
@@ -516,7 +519,9 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
     } else {
       const downloaded = isWhatsAppChannelId(channelId)
         ? await whatsAppController.downloadAttachment(attachment)
-        : await downloadAttachment(attachment);
+        : isInstagramChannelId(channelId)
+          ? await instagramController.downloadAttachment(attachment)
+          : await downloadAttachment(attachment);
       if (!downloaded.ok || !downloaded.path) throw new Error(downloaded.error ?? "unknown download error");
       prepared = await prepareInlineImage(downloaded.path, { preserveSourceResolution: true });
     }
@@ -1316,6 +1321,13 @@ function deleteSelectedHistoryMessage(): void {
 
   const message = selectedHistoryMessage();
   if (!message) {
+    scheduleRender();
+    return;
+  }
+  if (isInstagramChannelId(message.channelId) && message.localStatus && message.localStatus !== "pending") {
+    // A failed/unconfirmed send is only local: discard it (never resent automatically).
+    state.messageDeletePending = null;
+    instagramController.discardLocalMessage(message.id);
     scheduleRender();
     return;
   }
@@ -2153,14 +2165,18 @@ function handleHistoryFocused(key: KeyEvent): boolean {
         setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true, chat: false });
         scheduleRender();
         void (async () => {
+          const progress: AttachmentDownloadOptions = {
+            onProgress: (progress) => {
+              if (!running) return;
+              showAttachmentDownloadProgress(attachment.filename, progress);
+            },
+          };
           const downloaded = isWhatsAppChannelId(state.timeline.channelId)
             ? await whatsAppController.downloadAttachment(attachment)
-            : await downloadAttachment(attachment, {
-              onProgress: (progress) => {
-                if (!running) return;
-                showAttachmentDownloadProgress(attachment.filename, progress);
-              },
-            });
+            : isInstagramChannelId(state.timeline.channelId)
+              // Shared reels resolve to their one video here, never Instagram's reel feed.
+              ? await instagramController.downloadAttachment(attachment, progress)
+              : await downloadAttachment(attachment, progress);
           if (!running) return;
           if (!downloaded.ok || !downloaded.path) {
             setNotice(state, `Could not open ${attachment.filename}: ${downloaded.error ?? "unknown error"}`, "warning");
@@ -2508,6 +2524,9 @@ const effects: AppEffects = {
   logoutWhatsApp,
   sendWhatsAppMessage: (content) => whatsAppController.sendMessage(content),
   reactWhatsAppMessage: (message, emoji) => whatsAppController.reactToMessage(message, emoji),
+  reactInstagramMessage: (message, emoji, remove) => instagramController.reactToMessage(message, emoji, remove),
+  acceptInstagramRequest: () => { void instagramController.acceptActiveRequest(); },
+  startInstagramDirectMessage: (username) => { void instagramController.startDirectMessage(username); },
 };
 
 voiceMessageController = createVoiceMessageController(state, scheduleRender, {

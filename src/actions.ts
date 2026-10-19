@@ -30,6 +30,8 @@ export interface AppEffects extends SessionEffects, ReactionEffects {
   logoutInstagram?: () => void;
   sendInstagramMessage?: (content: string) => boolean;
   refreshInstagram?: () => void;
+  acceptInstagramRequest?: () => void;
+  startInstagramDirectMessage?: (username: string) => void;
   logoutWhatsApp: () => void;
   sendWhatsAppMessage: (content: string) => boolean;
 }
@@ -185,6 +187,12 @@ function handleCommandSubmit(state: AppState, text: string, effects: AppEffects)
       return true;
     case "logout_instagram":
       effects.logoutInstagram?.();
+      return true;
+    case "instagram_accept":
+      effects.acceptInstagramRequest?.();
+      return true;
+    case "instagram_dm":
+      effects.startInstagramDirectMessage?.(result.username);
       return true;
     case "logout":
       logout(state, effects);

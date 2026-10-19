@@ -2,9 +2,10 @@
  * Per-account stale-while-revalidate cache for read-only Discord data.
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "fs";
+import { randomUUID } from "crypto";
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "fs";
 import { writeFile } from "fs/promises";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 
 import { configDir } from "./config";
 import { DIRECT_MESSAGES_GUILD_ID, isThreadChannel, normalizeDiscordMessageForDisplay, type DiscordChannel, type DiscordGuild, type DiscordGuildMember, type DiscordRole } from "./discord";
@@ -69,6 +70,10 @@ let saveInFlight = false;
 let saveAgain = false;
 let cacheDirty = false;
 let beforeExitFlushRegistered = false;
+/** Temp file of the async save in flight, so an exit mid-write can remove it. */
+let inFlightTempPath: string | null = null;
+let staleTempsSweptFor: string | null = null;
+const STALE_TEMP_MS = 10 * 60_000;
 
 function cachePath(): string {
   return join(configDir(), "cache.json");
@@ -105,9 +110,52 @@ function emptyCache(): DataCacheFile {
   return { version: CACHE_VERSION, accounts: {} };
 }
 
+/** A temp name no other writer (async save, exit flush, another instance) can share. */
+function atomicTempPath(path: string): string {
+  return `${path}.${process.pid}.${randomUUID()}.tmp`;
+}
+
+function processAlive(pid: number): boolean {
+  if (pid === process.pid) return true;
+  try { process.kill(pid, 0); return true; } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Remove `cache.json.<pid>.<…>.tmp` files left by writes that a quit or crash
+ * interrupted. Another live instance's in-flight temp file is left alone.
+ */
+export function sweepStaleCacheTemps(path = cachePath(), now = Date.now()): number {
+  let removed = 0;
+  const directory = dirname(path);
+  const prefix = `${basename(path)}.`;
+  let names: string[];
+  try { names = readdirSync(directory); } catch { return 0; }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+    const pid = Number(name.slice(prefix.length).split(".")[0]);
+    const file = join(directory, name);
+    try {
+      const age = now - statSync(file).mtimeMs;
+      if (Number.isInteger(pid) && pid > 0 && processAlive(pid) && age < STALE_TEMP_MS) continue;
+      if (file === inFlightTempPath) continue;
+      rmSync(file, { force: true });
+      removed++;
+    } catch {
+      // Raced with its writer finishing; nothing to clean.
+    }
+  }
+  return removed;
+}
+
 function loadCacheFile(): DataCacheFile {
   const path = cachePath();
   if (cacheMemo && cacheMemoPath === path) return cacheMemo;
+  if (staleTempsSweptFor !== path) {
+    staleTempsSweptFor = path;
+    sweepStaleCacheTemps(path);
+  }
 
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<DataCacheFile>;
@@ -175,7 +223,7 @@ async function flushCacheFile(): Promise<void> {
   saveInFlight = true;
   try {
     const compact = compactCacheForDisk(cache);
-    await writeJsonFileAtomic(path, `${JSON.stringify(compact)}\n`);
+    await writeJsonFileAtomic(path, `${JSON.stringify(compact)}\n`, (temp) => { inFlightTempPath = temp; });
   } catch {
     // Cache persistence is opportunistic; UI responsiveness is more important.
     cacheDirty = true;
@@ -188,15 +236,18 @@ async function flushCacheFile(): Promise<void> {
   }
 }
 
-async function writeJsonFileAtomic(path: string, contents: string): Promise<void> {
+async function writeJsonFileAtomic(path: string, contents: string, onTemp?: (temp: string | null) => void): Promise<void> {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = atomicTempPath(path);
+  onTemp?.(tempPath);
   try {
     await writeFile(tempPath, contents, { mode: 0o600 });
     renameSync(tempPath, path);
   } catch (error) {
     rmSync(tempPath, { force: true });
     throw error;
+  } finally {
+    onTemp?.(null);
   }
 }
 
@@ -205,7 +256,11 @@ export function flushDataCacheSync(): void {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  if (!cacheMemo || !cacheDirty) return;
+  // An async save clears cacheDirty when it starts. If Record exits before that
+  // write renames its temp file, the newest snapshot would be lost and the temp
+  // file orphaned: write the in-memory snapshot synchronously instead.
+  const interrupted = inFlightTempPath;
+  if (!cacheMemo || (!cacheDirty && !interrupted)) return;
 
   const path = cacheMemoPath ?? cachePath();
   try {
@@ -215,6 +270,8 @@ export function flushDataCacheSync(): void {
     saveAgain = false;
   } catch {
     cacheDirty = true;
+  } finally {
+    if (interrupted) rmSync(interrupted, { force: true });
   }
 }
 
@@ -320,7 +377,7 @@ export function saveCachedGuilds(accountId: string, guilds: DiscordGuild[]): voi
 
 function writeJsonFileAtomicSync(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = atomicTempPath(path);
   try {
     writeFileSync(tempPath, contents, { mode: 0o600 });
     renameSync(tempPath, path);

@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { flushDataCacheSync, loadCachedChannelMessages, loadCachedChannelPins, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, markCachedChannelActive, saveCachedChannelMessages, saveCachedChannelPins, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
+import { flushDataCacheSync, sweepStaleCacheTemps, loadCachedChannelMessages, loadCachedChannelPins, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, markCachedChannelActive, saveCachedChannelMessages, saveCachedChannelPins, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -30,6 +30,31 @@ function waitForCondition(predicate: () => boolean, timeoutMs = 1_000): Promise<
     check();
   });
 }
+
+describe("data cache temp files", () => {
+  test("startup sweep removes temps from dead or long-gone writers only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-cache-temps-"));
+    const path = join(dir, "cache.json");
+    const old = Date.now() - 60 * 60_000;
+    const dead = join(dir, "cache.json.999999999.1787475444932.tmp");
+    const liveRecent = join(dir, `cache.json.${process.pid}.abc.tmp`);
+    const liveOld = join(dir, `cache.json.${process.pid}.def.tmp`);
+    for (const file of [dead, liveRecent, liveOld, path, join(dir, "other.json.1.2.tmp")]) writeFileSync(file, "{}");
+    utimesSync(liveOld, old / 1000, old / 1000);
+    expect(sweepStaleCacheTemps(path)).toBe(2);
+    expect(readdirSync(dir).sort()).toEqual(["cache.json", `cache.json.${process.pid}.abc.tmp`, "other.json.1.2.tmp"].sort());
+  });
+
+  test("saves leave no temp files behind and the first load sweeps old ones", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-test-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    mkdirSync(join(xdg, "record"), { recursive: true });
+    writeFileSync(join(xdg, "record", "cache.json.999999999.1787475444932.tmp"), "{}");
+    saveCachedGuilds("account-temps", [{ id: "g", name: "G", icon: null }]);
+    flushDataCacheSync();
+    expect(readdirSync(join(xdg, "record")).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+});
 
 describe("data cache", () => {
   test("saves and loads member lists per account, guild, and channel", () => {

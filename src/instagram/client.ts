@@ -1,130 +1,175 @@
 import type { InstagramSession } from "./auth";
+import { INSTAGRAM_DOCS } from "./docids";
+import {
+  igMediaUrl, offlineThreadingId, parseInboxPage, parseMessage, parseRequestsPage, parseSearchUsers, parseThread,
+  type IgInboxPage, type IgMessage, type IgThread, type IgUser,
+} from "./model";
+import { InstagramApiError, InstagramTransport, type InstagramTransportOptions } from "./transport";
 
-export interface InstagramUser {
-  pk: string | number;
-  username?: string;
-  full_name?: string;
-}
+export { InstagramApiError } from "./transport";
 
-export interface InstagramItem {
-  item_id: string;
-  user_id: string | number;
-  timestamp: string | number;
-  item_type: string;
-  text?: string;
-  [key: string]: any;
-}
+/** The three gatekeeper providers every IGD thread-list query takes (the web's values). */
+const IGD_PROVIDERS = {
+  __relay_internal__pv__IGDIsProfessionalAccountGKrelayprovider: false,
+  __relay_internal__pv__IGDPinnedThreadsRenderEnabledGKrelayprovider: true,
+  __relay_internal__pv__IGDMaxUnreadMessagesCountrelayprovider: 5,
+  __relay_internal__pv__IGDThreadListActionsEnabledGKrelayprovider: true,
+};
 
-export interface InstagramThread {
-  thread_id: string;
-  thread_title?: string;
-  users: InstagramUser[];
-  items: InstagramItem[];
-  is_group?: boolean;
-  muted?: boolean;
-  last_activity_at?: string | number;
-  marked_as_unread?: boolean;
-  last_seen_at?: Record<string, { timestamp?: string | number; item_id?: string }>;
-  has_older?: boolean;
-  oldest_cursor?: string;
-  [key: string]: any;
-}
+export interface InstagramSendReceipt { messageId: string; timestampMs: number }
 
-export interface InstagramInbox {
-  viewer: InstagramUser;
-  inbox: { threads: InstagramThread[]; has_older: boolean; oldest_cursor?: string };
-}
+/** A shared reel's single video (never a reel feed). */
+export interface InstagramReelMedia { videoUrl: string; previewUrl: string | null; author: string; caption: string }
 
-export class InstagramApiError extends Error {
-  constructor(message: string, readonly fatal = false) { super(message); }
-}
+const numeric = (value: string) => /^\d{1,40}$/.test(value);
 
-/** Uses Instagram's web Direct API, not the browser DOM. No credential-bearing redirects. */
+/** Instagram Direct over IGD GraphQL (`/api/graphql`); Quiet docs/API.md §7. */
 export class InstagramClient {
-  constructor(private session: InstagramSession, private fetcher: typeof fetch = fetch) {}
+  readonly transport: InstagramTransport;
+  /** `device_id_for_iris_subscription`: a random lowercase UUID per client. */
+  private readonly deviceId = crypto.randomUUID().toLowerCase();
 
-  private async request(path: string, fields?: Record<string, string>): Promise<any> {
-    let response: Response;
-    try {
-      response = await this.fetcher(`https://www.instagram.com/api/v1/${path}`, {
-        method: fields ? "POST" : "GET",
-        redirect: "manual",
-        signal: AbortSignal.timeout(20_000),
-        headers: {
-          Cookie: Object.entries(this.session.cookies).map(([name, value]) => `${name}=${value}`).join("; "),
-          "X-CSRFToken": this.session.cookies.csrftoken!,
-          "X-IG-App-ID": "936619743392459",
-          "X-Requested-With": "XMLHttpRequest",
-          Origin: "https://www.instagram.com",
-          Referer: "https://www.instagram.com/direct/inbox/",
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-          ...(fields ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
-        },
-        ...(fields ? { body: new URLSearchParams(fields) } : {}),
-      });
-    } catch {
-      throw new InstagramApiError("Instagram request failed or timed out. Try /refresh.");
-    }
-    if (response.status === 429) throw new InstagramApiError("Instagram rate limit reached. Wait before /refresh.", true);
-    if (response.status >= 500 || response.status === 408) {
-      throw new InstagramApiError(`Instagram is temporarily unavailable (HTTP ${response.status}). Record will retry.`);
-    }
-    if ([301, 302, 303, 307, 308, 401, 403].includes(response.status)) {
-      throw new InstagramApiError("Instagram session expired or needs verification. Sign in in your browser, then /login instagram.", true);
-    }
-    let data: any;
-    try { data = await response.json(); } catch {
-      throw new InstagramApiError("Instagram returned an unreadable response. Check your session in your browser.", true);
-    }
-    if (!response.ok || data.status === "fail") {
-      const fatal = Boolean(data.challenge || data.checkpoint_url || data.message === "login_required" || data.message === "challenge_required");
-      // Never echo server payloads: they may contain credentials or arbitrary terminal controls.
-      throw new InstagramApiError(fatal
-        ? "Instagram needs verification. Open it in your browser, then /login instagram."
-        : `Instagram request was rejected (HTTP ${response.status}).`, fatal);
-    }
-    return data;
+  constructor(session: InstagramSession, options: InstagramTransportOptions | typeof fetch = {}) {
+    const resolved = typeof options === "function" ? { fetcher: options } : options;
+    this.transport = new InstagramTransport({ cookies: { ...session.cookies } }, resolved);
   }
 
-  async inbox(cursor?: string): Promise<InstagramInbox> {
-    // Match the web inbox's page size. Large pages can be multi-megabyte
-    // responses; polling 50 threads with 20 items needlessly strains this API.
-    const query = new URLSearchParams({ limit: "20", thread_message_limit: "10" });
-    if (cursor) query.set("cursor", cursor);
-    const data = await this.request(`direct_v2/inbox/?${query}`);
-    if (!Array.isArray(data.inbox?.threads) || !data.viewer?.pk) throw new InstagramApiError("Instagram inbox format is unsupported.", true);
-    return data;
+  get readOnly(): boolean { return this.transport.readOnly; }
+
+  /** First inbox page (15 threads, newest ≤5 messages each) + mailbox ids. */
+  async inbox(): Promise<IgInboxPage> {
+    const data = await this.transport.graphql(INSTAGRAM_DOCS.inbox, { device_id_for_iris_subscription: this.deviceId, ...IGD_PROVIDERS });
+    const page = parseInboxPage(data);
+    if (!page) throw new InstagramApiError("Instagram inbox format is unsupported.", false, "invalid");
+    return page;
   }
 
-  async thread(id: string, cursor?: string): Promise<InstagramThread> {
-    if (!/^\d+$/.test(id)) throw new Error("Invalid Instagram thread ID.");
-    const query = new URLSearchParams({ limit: "50" });
-    if (cursor) { query.set("cursor", cursor); query.set("direction", "older"); }
-    const data = await this.request(`direct_v2/threads/${id}/?${query}`);
-    if (!data.thread || !Array.isArray(data.thread.items)) throw new InstagramApiError("Instagram thread format is unsupported.", true);
-    return data.thread;
-  }
-
-  async sendText(id: string, text: string, reply?: string): Promise<InstagramItem> {
-    if (!/^\d+$/.test(id)) throw new Error("Invalid Instagram thread ID.");
-    const context = crypto.randomUUID();
-    const fields: Record<string, string> = {
-      action: "send_item", thread_ids: JSON.stringify([id]), text,
-      client_context: context, mutation_token: context, device_id: this.session.cookies.ig_did || context,
-    };
-    if (reply) fields.replied_to_item_id = reply;
-    const data = await this.request("direct_v2/threads/broadcast/text/", fields);
-    if (!data.payload?.item_id) throw new InstagramApiError("Instagram did not confirm sending. Refresh before retrying to avoid duplicates.");
-    return {
-      item_id: String(data.payload.item_id), user_id: this.session.cookies.ds_user_id!,
-      timestamp: data.payload.timestamp ?? Date.now() * 1000, item_type: "text", text,
-    };
-  }
-
-  async markSeen(id: string, itemId: string): Promise<void> {
-    if (!/^\d+$/.test(id) || !/^\d+$/.test(itemId)) return;
-    await this.request(`direct_v2/threads/${id}/items/${itemId}/seen/`, {
-      action: "mark_seen", thread_id: id, item_id: itemId,
+  async inboxPage(mailboxId: string, cursor: string): Promise<IgInboxPage> {
+    const data = await this.transport.graphql(INSTAGRAM_DOCS.inboxPage, {
+      count: 15, cursor, folder: "INBOX", id: mailboxId, newer_than_timestamp_ms: null, ...IGD_PROVIDERS,
     });
+    const page = parseInboxPage(data);
+    if (!page) throw new InstagramApiError("Instagram inbox format is unsupported.", false, "invalid");
+    return page;
   }
+
+  /** A thread's newest 20 messages with full content. Reading doesn't send a receipt. */
+  async thread(id: string, sequenceId: string): Promise<IgThread> {
+    if (!numeric(id)) throw new Error("Invalid Instagram thread ID.");
+    const data = await this.transport.graphql(INSTAGRAM_DOCS.thread, {
+      thread_fbid: id, min_uq_seq_id: sequenceId || "0",
+      __relay_internal__pv__IGDEnableOffMsysChatThemesQErelayprovider: false,
+      __relay_internal__pv__IGDInitialMessagePageCountrelayprovider: 20,
+    }, `/direct/t/${id}/`);
+    const thread = parseThread(data?.get_slide_thread_nullable?.as_ig_direct_thread ?? {});
+    if (!thread) throw new InstagramApiError("Instagram couldn't open this chat.", false, "invalid");
+    return thread;
+  }
+
+  /** 20 messages older than `cursor`. */
+  async olderMessages(id: string, cursor: string): Promise<{ messages: IgMessage[]; cursor: string | null; hasOlder: boolean }> {
+    if (!numeric(id)) throw new Error("Invalid Instagram thread ID.");
+    const data = await this.transport.graphql(INSTAGRAM_DOCS.olderMessages, {
+      id, after: cursor, before: null, first: 20, last: null, newer_than_message_id: null, older_than_message_id: null,
+      __relay_internal__pv__IGDInitialMessagePageCountrelayprovider: 20,
+    }, `/direct/t/${id}/`);
+    const thread = data?.fetch__SlideThread?.as_ig_direct_thread;
+    if (!thread) throw new InstagramApiError("Instagram history format is unsupported.", false, "invalid");
+    const connection = thread.slide_messages ?? {};
+    const messages = (Array.isArray(connection.edges) ? connection.edges : [])
+      .map((edge: any) => parseMessage(edge?.node ?? {})).filter((m: IgMessage | null): m is IgMessage => !!m);
+    const next = typeof connection.page_info?.end_cursor === "string" ? connection.page_info.end_cursor : null;
+    return { messages, cursor: next, hasOlder: Boolean(connection.page_info?.has_next_page) && !!next && messages.length > 0 };
+  }
+
+  /** Message requests (pending folder; hidden/spam are only counted). Reading accepts nothing. */
+  async requests(nowMs = Date.now()): Promise<{ pending: IgThread[]; spamCount: number }> {
+    const data = await this.transport.graphql(INSTAGRAM_DOCS.requests, {
+      device_id_for_iris_subscription: this.deviceId,
+      __relay_internal__pv__IGD30DayAgoTimestampMsrelayprovider: nowMs - 30 * 86_400_000, ...IGD_PROVIDERS,
+    }, "/direct/requests/");
+    const page = parseRequestsPage(data);
+    if (!page) throw new InstagramApiError("Instagram requests format is unsupported.", false, "invalid");
+    return page;
+  }
+
+  /** People search (Polaris top search; users only), for /dm. */
+  async searchUsers(query: string): Promise<IgUser[]> {
+    const data = await this.transport.graphql(INSTAGRAM_DOCS.search, {
+      data: { context: "blended", include_reel: "true", query, rank_token: "", search_session_id: crypto.randomUUID(), search_surface: "web_top_search" },
+      hasQuery: true,
+    }, "/");
+    return parseSearchUsers(data);
+  }
+
+  /**
+   * Send text. `threadId` for an existing chat, else `recipientIds` starts one.
+   * Success requires a real message id; anything else is failed or uncertain,
+   * and the caller never resubmits automatically (same otid on a manual retry).
+   */
+  async sendText(text: string, target: { threadId: string } | { recipientIds: string[] }, options: { replyTo?: string; otid?: string } = {}): Promise<InstagramSendReceipt> {
+    const threadId = "threadId" in target ? target.threadId : null;
+    if (threadId !== null && !numeric(threadId)) throw new Error("Invalid Instagram thread ID.");
+    const data = await this.transport.graphql(INSTAGRAM_DOCS.sendText, {
+      ig_thread_igid: threadId, recipient_igids: "recipientIds" in target ? target.recipientIds : null,
+      text: { sensitive_string_value: text }, offline_threading_id: options.otid ?? offlineThreadingId(),
+      reply_to_message_id: options.replyTo ?? null, replied_to_item_id: null, replied_to_client_context: null,
+      mentions: [], mentioned_user_ids: [], commands: null, forwarded_from_thread_id: null,
+      is_forwarded_from_own_message: null, send_attribution: null, sampled: null,
+    }, threadId ? `/direct/t/${threadId}/` : "/direct/new/");
+    const ack = data?.[INSTAGRAM_DOCS.sendText.root];
+    const messageId = typeof ack?.message_id === "string" ? ack.message_id : "";
+    if (!messageId) throw new InstagramApiError("Instagram did not confirm sending. Refresh before retrying to avoid duplicates.", false, "uncertain");
+    return { messageId, timestampMs: Number(ack.timestamp_ms) || Date.now() };
+  }
+
+  /** Add (`created`) or remove (`deleted`) the viewer's emoji reaction. */
+  async react(threadId: string, messageId: string, emoji: string, remove: boolean): Promise<void> {
+    if (!numeric(threadId)) throw new Error("Invalid Instagram thread ID.");
+    await this.transport.graphql(INSTAGRAM_DOCS.react, {
+      input: { emoji, item_id: "", message_id: messageId, reaction_status: remove ? "deleted" : "created", thread_id: threadId },
+    }, `/direct/t/${threadId}/`);
+  }
+
+  /** Read receipt up to `messageId` (takes the 39-digit legacy thread id). */
+  async markRead(threadId: string, legacyThreadId: string, messageId: string): Promise<number | null> {
+    if (!numeric(threadId) || !numeric(legacyThreadId)) return null;
+    const data = await this.transport.graphql(INSTAGRAM_DOCS.markRead, {
+      data: { item_id: "", message_id: messageId }, metadata: { ig_thread_igid: legacyThreadId },
+    }, `/direct/t/${threadId}/`);
+    const watermark = Number(data?.[INSTAGRAM_DOCS.markRead.root]?.watermark_timestamp_ms);
+    return Number.isFinite(watermark) && watermark > 0 ? watermark : null;
+  }
+
+  /** Accept a message request (moves it to the inbox). */
+  async acceptRequest(threadId: string): Promise<void> {
+    if (!numeric(threadId)) throw new Error("Invalid Instagram thread ID.");
+    await this.transport.graphql(INSTAGRAM_DOCS.acceptRequest, {
+      thread_fbid: threadId, offline_threading_id: offlineThreadingId(),
+    }, "/direct/requests/");
+  }
+
+  /** One shared reel's video by shortcode (`media/<pk>/info/`): a single item, never a feed. */
+  async reel(code: string): Promise<InstagramReelMedia> {
+    const pk = shortcodeToPk(code);
+    if (!pk) throw new InstagramApiError("This reel link isn't valid.", false, "invalid");
+    const json = await this.transport.rest(`media/${pk}/info/`, `/reel/${code}/`);
+    const item = Array.isArray(json?.items) ? json.items[0] : null;
+    const videoUrl = igMediaUrl(item?.video_versions?.[0]?.url);
+    if (!videoUrl) throw new InstagramApiError("This reel can't be played here (it may be private or gone).", false, "invalid");
+    return {
+      videoUrl, previewUrl: igMediaUrl(item?.image_versions2?.candidates?.[0]?.url),
+      author: typeof item?.user?.username === "string" ? item.user.username : "",
+      caption: typeof item?.caption?.text === "string" ? item.caption.text : "",
+    };
+  }
+}
+
+/** Shortcode → media pk: base64url digits; only the first 11 characters encode the pk. */
+export function shortcodeToPk(code: string): string | null {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(code)) return null;
+  let value = 0n;
+  for (const char of code.slice(0, 11)) value = value * 64n + BigInt(alphabet.indexOf(char));
+  return value > 0n && value < (1n << 64n) ? value.toString() : null;
 }
