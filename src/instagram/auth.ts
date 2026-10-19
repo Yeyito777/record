@@ -72,7 +72,9 @@ export async function importInstagramSession(tabId?: string): Promise<InstagramS
     }
     const { stdout } = await run("vimbrowser-cli", tabId
       ? ["cookies", tabId, "https://www.instagram.com/"]
-      : ["cookies", "--url", "https://www.instagram.com/"], { timeout: 15_000 });
+      : ["cookies", "--url", "https://www.instagram.com/"],
+      // vimbrowser-cli omits cookie values unless asked; the import needs them.
+      { timeout: 15_000, env: { ...process.env, VIMBROWSER_CLI_COOKIE_VALUES: "1" } });
     const result = JSON.parse(stdout);
     const cookies: Record<string, string> = {};
     for (const cookie of result.cookies ?? []) {
