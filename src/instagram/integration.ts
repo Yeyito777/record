@@ -203,7 +203,7 @@ function shareParts(state: InstagramUiState, thread: IgThread, message: IgMessag
       preview();
       break;
     default:
-      lines.push(`[${share.title ? label(share.title) : "Shared content"} — unavailable]`);
+      lines.push(`[${share.title ? label(share.title) : "Shared content unavailable"}]`);
   }
   if (share.text) lines.push(clean(share.text));
   return { content: lines.join("\n"), attachments, embeds, system: false };

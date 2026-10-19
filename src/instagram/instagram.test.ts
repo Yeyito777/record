@@ -144,6 +144,10 @@ describe("Instagram conversions", () => {
     } } }));
     expect(gone.content).toBe("↩ You replied to @friend's story (no longer available)");
     expect(gone.attachments).toHaveLength(0);
+    const placeholder = convert(state, igMessage("34", { content: { kind: "share", share: {
+      kind: "unavailable", title: "Post unavailable", caption: "", author: "", preview: null, previewWidth: 0, previewHeight: 0, text: "", expired: true,
+    } } }));
+    expect(placeholder.content).toBe("[Post unavailable]");
   });
 
   test("calls and system lines are compact rows; previews fall back to Instagram's snippet", () => {

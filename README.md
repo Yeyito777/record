@@ -139,14 +139,48 @@ Worktree logins remain isolated: after cleaning a test worktree, log in once
 in main if main was not already linked.
 
 Instagram has its own sidebar section, independent of Discord and WhatsApp.
-Open existing individual or group conversations, read/paginate history, send
-text and replies, view ordinary photo/video/voice attachments and shared posts,
-and locally pin/reorder chats with the usual sidebar keys. Opening a chat marks
-it read. The inbox is paginated at startup; new messages are polled every 30
-seconds. `/refresh` in an Instagram chat updates it immediately.
-Inbox requests use the browser's smaller page size to reduce response load.
-Temporary failures retry with backoff and resume unfinished inbox pagination;
-HTTP service errors show their status code without exposing response contents.
+It uses the same GraphQL API as instagram.com's own Direct inbox
+(`/api/graphql`, with page tokens taken from the signed-in homepage); requests
+identify as mobile Safari, the browser profile that API accepts without
+desktop client hints. The sidebar lists individual and group chats with
+Instagram's unread state and badges; the section badge counts unread chats.
+Opening a chat loads its recent history and marks it read; scroll up for older
+pages. Pin/reorder chats with the usual sidebar keys. The inbox is paginated at
+startup and polled every 30 seconds (message requests less often); `/refresh`
+updates immediately. Temporary failures retry with backoff and resume
+unfinished pagination; HTTP errors show their status code without exposing
+response contents.
+
+Every message type is shown: photos, GIFs and stickers inline (terminal
+graphics where supported), videos and voice notes as attachments you can open,
+shared posts with their author/caption/preview, story shares and story replies
+with their context ("Replied to your story"), links with previews, likes,
+reactions, reply quotes, and calls as compact rows (`✕ ☎ Missed call`,
+`☎ Video call ended`). Opening a shared reel plays just that one video, never a
+feed. Disappearing/view-once media show a placeholder instead of downloading.
+
+Type to send text; press `r` on a message to reply. `/react <emoji>` reacts to
+the selected message and `/unreact` removes your reaction (Instagram allows
+one reaction per person); double-space quick-reacts. Sends and reactions show
+immediately and roll back if Instagram rejects them. A send that fails stays
+in the chat as **failed** (the draft is restored); if the outcome is unknown
+(for example, the connection dropped mid-send) it is marked **unconfirmed**.
+Record never resends automatically; delete a failed/unconfirmed bubble with
+`d` and resend it yourself if needed. Later messages wait behind a failed one
+rather than overtaking it.
+
+Message requests appear below the inbox as **Request · name**; open one to
+read it without marking it seen, and `/accept` to move it into your inbox.
+`/dm <username>` opens a new chat with an exact username match (or suggests
+close matches); the first message creates the conversation.
+
+Chats and recent history are cached per account in
+`record/instagram/accounts/<user ID>/cache.json` (private permissions), so the
+sidebar appears instantly at launch and then resyncs; unsent messages come
+back as unconfirmed. If Instagram rotates its internal query IDs, Record
+re-reads them from Instagram's public scripts and saves them in
+`record/instagram/doc-ids.json`. Set `RECORD_INSTAGRAM_READONLY=1` to block
+every write (sends, reactions, accepts and read receipts) for safe testing.
 
 Press `m` on an Instagram chat, or use `;` → **Mute Locally / Unmute Locally**.
 The sidebar and unread badges update immediately, even while disconnected.
@@ -166,8 +200,8 @@ permissions. Worktree test sessions have their own config copy.
 This uses Instagram's **unofficial web API**, which can change or be rate-limited.
 If Instagram requests verification, complete it in your browser and log in again
 with fresh cookies (or use the optional vimbrowser import).
-Uploads, calls, starting new chats, message requests, editing/deleting messages,
-and changing server-side mute settings are not supported yet. Disappearing
-media and unsupported/encrypted items show an “open in Instagram” placeholder
-rather than being downloaded. Text-send tests are mocked; testing never sends
+Uploads, placing calls, declining requests, editing/unsending messages and
+changing server-side mute settings are not supported. Call outcomes (missed,
+declined, answered) are inferred from Instagram's wording of the call row.
+Send, reaction, accept and read-receipt tests are mocked; testing never sends
 messages to your contacts automatically.
