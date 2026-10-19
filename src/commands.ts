@@ -33,6 +33,8 @@ export type CommandResult =
   | { type: "login_whatsapp" }
   | { type: "login_instagram"; login: InstagramLogin }
   | { type: "logout_instagram" }
+  | { type: "instagram_accept" }
+  | { type: "instagram_dm"; username: string }
   | { type: "logout" }
   | { type: "logout_whatsapp" }
   | { type: "refresh" }
@@ -299,6 +301,25 @@ const commands: SlashCommand[] = [
       return { type: "logout" };
     },
     args: LOGOUT_PROVIDER_ARGS,
+  },
+  {
+    name: "/dm",
+    description: "Start or open an Instagram chat: /dm <username>",
+    handler: (text, state) => {
+      const username = text.slice("/dm".length).trim().replace(/^@/, "");
+      if (!/^[A-Za-z0-9._]{1,30}$/.test(username)) return usage(state, "Usage: /dm <instagram username>");
+      clearPrompt(state);
+      return { type: "instagram_dm", username };
+    },
+  },
+  {
+    name: "/accept",
+    description: "Accept the open Instagram message request",
+    handler: (text, state) => {
+      if (text.trim() !== "/accept") return usage(state, "Usage: /accept (in an Instagram message request)");
+      clearPrompt(state);
+      return { type: "instagram_accept" };
+    },
   },
   {
     name: "/refresh",

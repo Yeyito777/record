@@ -8,12 +8,13 @@ export const INSTAGRAM_GUILD_ID = "@me::instagram";
 export function instagramGuild(): DiscordGuild {
   return { id: INSTAGRAM_GUILD_ID, name: "Instagram", icon: null };
 }
+/** `ig:<thread fbid>`, or `ig:u<user pk>` for a "/dm" chat that doesn't exist on Instagram yet. */
 export function instagramChannelId(threadId: string): string {
-  if (!/^\d+$/.test(threadId)) throw new Error("Invalid Instagram thread ID");
+  if (!/^u?\d+$/.test(threadId)) throw new Error("Invalid Instagram thread ID");
   return `ig:${threadId}`;
 }
 export function isInstagramChannelId(channelId: string | null | undefined): boolean {
-  return Boolean(channelId && /^ig:\d+$/.test(channelId));
+  return Boolean(channelId && /^ig:u?\d+$/.test(channelId));
 }
 export function instagramThreadIdFromChannelId(channelId: string): string | null {
   return isInstagramChannelId(channelId) ? channelId.slice(3) : null;

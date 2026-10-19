@@ -4,36 +4,41 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { INSTAGRAM_GUILD_ID } from "../chatproviders";
 import { createInitialState } from "../state";
-import { InstagramClient, type InstagramInbox } from "./client";
+import type { InstagramClient } from "./client";
 import { InstagramController, type InstagramControllerOptions } from "./controller";
 import { instagramChannels } from "./integration";
+import type { IgInboxPage } from "./model";
 import { instagramMutePath, isInstagramThreadMuted, loadInstagramMutes, saveInstagramMutes, type InstagramMuteOverrides } from "./mute";
+import { igMessage, igPage, igThread } from "./testkit";
 
 async function tick() { await new Promise(resolve => setImmediate(resolve)); }
 
 function fixture(options: InstagramControllerOptions = {}) {
   const state = createInitialState(null, "test", {});
-  const remote: InstagramInbox = {
-    viewer: { pk: "1001", username: "self" },
-    inbox: { has_older: false, threads: [{
-      thread_id: "2001", thread_title: "Friend", users: [{ pk: "1002", username: "friend" }],
-      marked_as_unread: true, muted: false,
-      items: [{ item_id: "3001", user_id: "1002", timestamp: "1000000", item_type: "text", text: "hello" }],
-    }] },
+  const remote: IgInboxPage = {
+    ...igPage([igThread("2001", {
+      users: [{ id: "1002", fbid: "5002", username: "friend", name: "Friend" }], viewerFbid: "5001",
+      markedUnread: true, receipts: { "5001": 2_000_000 },
+      messages: [igMessage("3001", { senderFbid: "5002" })],
+    })]),
+    viewer: { id: "1001", fbid: "5001", username: "self", name: "" },
   };
   let requests = 0;
   let renders = 0;
   const saved: Record<string, InstagramMuteOverrides> = {};
   const auth = { cookies: { sessionid: "fake", csrftoken: "fake", ds_user_id: "1001" } };
   const client = {
+    readOnly: false,
     inbox: async () => { requests++; return structuredClone(remote); },
-    thread: async () => { requests++; return structuredClone(remote.inbox.threads[0]); },
-    markSeen: async () => { requests++; },
+    inboxPage: async () => { requests++; return { ...structuredClone(remote), threads: [] }; },
+    requests: async () => { requests++; return { pending: [], spamCount: 0 }; },
+    thread: async () => { requests++; return structuredClone(remote.threads[0]!); },
+    markRead: async () => { requests++; return null; },
     sendText: async () => { throw new Error("unexpected send"); },
   } as unknown as InstagramClient;
   const controller = new InstagramController(state, () => renders++, {
     clientFactory: () => client, loadSession: async () => auth, importSession: async () => auth,
-    saveSession: async () => {}, removeSession: async () => {},
+    saveSession: async () => {}, removeSession: async () => {}, saveCache: null, loadCache: () => null,
     loadMutes: id => ({ ...saved[id] }),
     saveMutes: async (id, overrides) => { saved[id] = { ...overrides }; },
     ...options,
@@ -130,7 +135,7 @@ describe("Instagram optimistic local mute", () => {
       await f.controller.logout();
       await f.controller.autoConnect();
       expect(instagramChannels(f.state.instagram)[0]?.muted).toBe(false);
-      f.remote.viewer.pk = "1003";
+      f.remote.viewer!.id = "1003";
       await f.controller.login({ source: "browser" });
       expect(f.state.instagram.muteOverridesByThreadId).toEqual({});
       expect(f.saved["1001"]).toEqual({ "2001": false });

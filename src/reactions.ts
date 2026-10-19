@@ -46,6 +46,8 @@ const pending = new WeakMap<AppState, Set<string>>();
 
 export interface ReactionEffects extends SessionEffects {
   reactWhatsAppMessage?: (message: DiscordMessage, emoji: string) => Promise<void>;
+  /** Instagram keeps one reaction per person; `remove` deletes yours. Optimistic with rollback. */
+  reactInstagramMessage?: (message: DiscordMessage, emoji: string, remove: boolean) => Promise<void>;
 }
 
 export async function reactToSelectedMessage(
@@ -58,8 +60,8 @@ export async function reactToSelectedMessage(
     effects.scheduleRender();
   };
   if (!message) return fail("Select a message in history before reacting.");
-  if (isInstagramChannelId(message.channelId)) return fail("Sending Instagram reactions is not supported yet.");
   if (message.localStatus || message.id.startsWith("local:")) return fail("Wait until the message is sent before reacting.");
+  if (isInstagramChannelId(message.channelId)) return reactToInstagramMessage(state, message, input, remove, effects, options);
   const whatsapp = isWhatsAppChannelId(message.channelId);
   // WhatsApp has one reaction per sender; no emoji is needed to remove it.
   const emoji = remove && whatsapp && !input ? null : parseReactionEmoji(input);
@@ -98,6 +100,42 @@ export async function reactToSelectedMessage(
   } catch (error) {
     optimistic?.finish(false);
     if (!whatsapp && state.auth.savedToken !== token) return;
+    fail(`Could not ${remove ? "remove" : "add"} reaction: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    requests.delete(key);
+    effects.scheduleRender();
+  }
+}
+
+async function reactToInstagramMessage(
+  state: AppState, message: DiscordMessage, input: string, remove: boolean, effects: ReactionEffects,
+  options: { preservePrompt?: boolean },
+): Promise<void> {
+  const fail = (text: string) => {
+    setNotice(state, text, "warning");
+    effects.scheduleRender();
+  };
+  // Instagram has one reaction per person: "/unreact" alone removes yours.
+  const emoji = remove && !input ? null : parseReactionEmoji(input);
+  if (!emoji && !(remove && !input)) return fail("Choose one emoji (type :name then Tab).");
+  if (emoji?.id) return fail("Instagram reactions require a standard emoji, not a Discord custom emoji.");
+  if (!effects.reactInstagramMessage) return fail("Instagram is unavailable.");
+  const key = `${message.channelId}/${message.id}`;
+  const requests = pending.get(state) ?? new Set<string>();
+  pending.set(state, requests);
+  if (requests.has(key)) return fail("A reaction is already being sent for this message.");
+  requests.add(key);
+  const buffer = state.editor.buffer;
+  const target = state.reactionTarget;
+  const composer = state.reactionComposer;
+  if (!options.preservePrompt && composer) restoreReactionDraft(state);
+  try {
+    const sending = effects.reactInstagramMessage(message, emoji?.name ?? "", remove);
+    effects.scheduleRender();
+    await sending;
+    if (!options.preservePrompt && state.editor.buffer === buffer && state.timeline.channelId === message.channelId
+      && state.reactionTarget === target && state.reactionComposer === composer) clearPrompt(state);
+  } catch (error) {
     fail(`Could not ${remove ? "remove" : "add"} reaction: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     requests.delete(key);

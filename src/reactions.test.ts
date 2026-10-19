@@ -43,9 +43,18 @@ describe("reactions", () => {
     }) as unknown as typeof fetch;
     const { state, message } = setup("ig:123");
     await reactToSelectedMessage(state, "👍", false, effects, { target: message });
-    await reactToSelectedMessage(state, "👍", true, effects, { target: message });
+    expect(state.notice.text).toContain("Instagram is unavailable");
+    const calls: Array<[string, string, boolean]> = [];
+    const instagram = { ...effects, reactInstagramMessage: async (target: typeof message, emoji: string, remove: boolean) => {
+      calls.push([target.id, emoji, remove]);
+    } };
+    await reactToSelectedMessage(state, "👍", false, instagram, { target: message });
+    await reactToSelectedMessage(state, "", true, instagram, { target: message });
+    await reactToSelectedMessage(state, "<a:dance:123>", false, instagram, { target: message });
+    expect(calls).toEqual([[message.id, "👍", false], [message.id, "", true]]);
+    expect(state.notice.text).toContain("standard emoji");
     expect(requests).toBe(0);
-    expect(state.notice.text).toContain("Instagram reactions");
+    // The Instagram controller owns optimistic state; the Discord path never touched it.
     expect(message.reactions?.[0]?.count).toBe(2);
   });
 

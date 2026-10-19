@@ -659,8 +659,11 @@ export function isMessageThreadParentChannel(channel: DiscordChannel | null): bo
   return channel ? MESSAGE_THREAD_PARENT_CHANNEL_TYPES.has(channel.type) : false;
 }
 
+/** Non-Discord providers' system lines (call logs, members added): rendered like compact system rows. */
+export const PROVIDER_SYSTEM_MESSAGE_TYPE = 1000;
+
 export function isCompactSystemMessageType(type: number): boolean {
-  return type === MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE;
+  return type === MESSAGE_TYPE_CHANNEL_PINNED_MESSAGE || type === PROVIDER_SYSTEM_MESSAGE_TYPE;
 }
 
 export function isMessageChannel(channel: DiscordChannel | null): boolean {
