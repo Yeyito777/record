@@ -57,6 +57,12 @@ export function parseInstagramJson(text: string): any {
   }
 }
 
+function deletesSessionCookie(response: Response): boolean {
+  const cookies = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];
+  return cookies.some(header => /^\s*sessionid=/i.test(header)
+    && (/^\s*sessionid=(""|deleted)?\s*(;|$)/i.test(header) || /max-age=0|expires=thu, 01[ -]jan[ -]1970/i.test(header)));
+}
+
 function looksStale(json: any): boolean {
   const parts = [String(json?.errorSummary ?? "")];
   for (const error of Array.isArray(json?.errors) ? json.errors : []) parts.push(String(error?.message ?? ""), String(error?.summary ?? ""));
@@ -140,6 +146,8 @@ export class InstagramTransport {
       const location = response.headers.get("location") ?? "";
       if (/\/accounts\/login/.test(location)) throw new InstagramApiError("Instagram session expired. Sign in in your browser, then /login instagram.", true, "auth");
       if (/challenge|checkpoint|suspended/.test(location)) throw new InstagramApiError("Instagram needs verification. Open it in your browser, then /login instagram.", true, "challenge");
+      // A revoked login: Instagram deletes sessionid and redirects to its home page.
+      if (deletesSessionCookie(response)) throw new InstagramApiError("Instagram session expired. Sign in in your browser, then /login instagram.", true, "auth");
       throw new InstagramApiError(`Instagram redirected the request (HTTP ${status}).`, false, "transient");
     }
     if (status >= 500 || status === 408) throw new InstagramApiError(`Instagram is temporarily unavailable (HTTP ${status}). Record will retry.`, false, "transient");

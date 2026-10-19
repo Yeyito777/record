@@ -123,6 +123,14 @@ describe("Instagram transport", () => {
     // A signed-out token page is an expired session, not a crash.
     const signedOut = fakeInstagram({}, () => new Response("<html>login</html>"));
     expect(((await new InstagramClient(session, options(signedOut.fetcher)).inbox().catch(e => e)) as InstagramApiError).kind).toBe("auth");
+    // A revoked session: Instagram deletes sessionid and redirects to its own home page.
+    const revoked = fakeInstagram({}, () => new Response(null, {
+      status: 302,
+      headers: [["location", "https://www.instagram.com/"], ["set-cookie", 'sessionid=""; Domain=.instagram.com; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/']],
+    }));
+    const revokedError = (await new InstagramClient(session, options(revoked.fetcher)).inbox().catch(e => e)) as InstagramApiError;
+    expect([revokedError.kind, revokedError.fatal]).toEqual(["auth", true]);
+    expect(revokedError.message).toContain("session expired");
   });
 
   test("a stale fb_dtsg (1357004) re-bootstraps and retries a read once", async () => {
