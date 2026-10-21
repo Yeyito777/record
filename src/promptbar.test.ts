@@ -48,6 +48,28 @@ describe("promptbar", () => {
     expect(line).toContain(`\x1b[38;2;1;2;3mOther: ${theme.text}original message that is definitely lon…${theme.reset}`);
   });
 
+  test("collapses a multi-line reply target onto the one-row prompt separator", () => {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.replyTarget = {
+      messageId: "message-1",
+      channelId: "channel-1",
+      guildId: "guild-1",
+      authorId: "user-2",
+      authorDisplayName: "Other",
+      authorColor: "\x1b[38;2;1;2;3m",
+      summary: "first line\n\nsecond line 🎉 and a long tail that will not fit",
+      timestamp: null,
+      mention: true,
+    };
+
+    const line = renderPromptSeparator(state, 120, theme.accent);
+    const plain = stripAnsi(line);
+
+    expect(line).not.toContain("\n");
+    expect(termWidth(plain)).toBe(120);
+    expect(plain).toContain("────↩ Replying: Other: first line second line 🎉 and a long ta…");
+  });
+
   test("embeds active edit target in the prompt separator", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.editTarget = {

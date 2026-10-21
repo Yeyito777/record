@@ -44,7 +44,9 @@ function renderReplySummary(state: AppState, target: ReplyTarget): string {
   const rolesById = new Map((guildId ? state.guildRolesByGuildId[guildId] ?? [] : []).map((role) => [role.id, role]));
   const usersById = new Map((target.mentionUsers ?? []).map((user) => [user.id, user]));
 
-  const withBroadcastMentions = target.summary.replace(/(^|[^\w@])@(everyone|here)\b/g, (_raw, prefix: string, mention: string) => (
+  // The bar is one row: a multi-line quoted message reads as one line.
+  const summary = target.summary.replace(/\s+/g, " ").trim();
+  const withBroadcastMentions = summary.replace(/(^|[^\w@])@(everyone|here)\b/g, (_raw, prefix: string, mention: string) => (
     `${prefix}${theme.accent}@${mention}${theme.text}`
   ));
   const withRoleMentions = withBroadcastMentions.replace(/<@&([^>]+)>/g, (raw, roleId: string) => {
