@@ -1498,7 +1498,11 @@ function wrapReplyPreview(
   if (!message.reply || width <= 0) return [];
 
   const prefix = "↪ ";
-  const preview = formatReplyPreview(message.reply, rolesByGuildId, message.guildId ?? activeGuildId);
+  // Like Discord, the quoted message is a one-row teaser: newlines collapse to
+  // spaces and anything past the row is ellipsized.
+  const preview = formatReplyPreview(message.reply, rolesByGuildId, message.guildId ?? activeGuildId)
+    .replace(/\s+/g, " ")
+    .trim();
   const colorize = (line: string) => colorizeReplyPreviewMentions(
     line,
     message,
@@ -1508,23 +1512,10 @@ function wrapReplyPreview(
     memberRoleIdsByGuildId,
     activeGuildId,
   );
-  if (width <= termWidth(prefix)) {
-    return wrapPlainText(`↪ ${preview}`, width).map((line, visualIndex) => ({
-      text: colorize(line),
-      wrapContinuation: visualIndex > 0,
-      visualIndex,
-    }));
-  }
-
-  const continuationPrefix = "  ";
-  const bodyWidth = width - termWidth(prefix);
-  const lines = wrapPlainText(preview, bodyWidth);
-
-  return lines.map((line, visualIndex) => ({
-    text: `${visualIndex === 0 ? prefix : continuationPrefix}${colorize(line)}`,
-    wrapContinuation: visualIndex > 0,
-    visualIndex,
-  }));
+  const text = width <= termWidth(prefix)
+    ? colorize(truncate(`${prefix}${preview}`, width))
+    : `${prefix}${colorize(truncate(preview, width - termWidth(prefix)))}`;
+  return [{ text, wrapContinuation: false, visualIndex: 0 }];
 }
 
 function formatReplyPreview(

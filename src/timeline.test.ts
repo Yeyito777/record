@@ -522,10 +522,79 @@ describe("timeline rendering", () => {
     );
 
     const plainLines = rendered.lines.map(stripAnsi);
-    expect(plainLines[0]).toContain("↪ Alice · hello there");
-    expect(plainLines[1]).toContain("[attachments] cat.png");
-    expect(plainLines.some((line) => line.includes(`Tester ${expectedLocalTime()}`))).toBe(true);
+    expect(plainLines[0]).toBe("↪ Alice · hello there [atta…");
+    expect(plainLines[1]).toContain(`Tester ${expectedLocalTime()}`);
     expect(plainLines.some((line) => line.includes("reply body"))).toBe(true);
+  });
+
+  test("ellipsizes a long multi-line quoted message to a single row", () => {
+    const timeline = createTimelineState();
+    const quoted = [
+      "🌙 **Overnight Exocortex: all merged, whale restarted, Mac pulled.** Just relaunch the TUI.",
+      "",
+      "1. 漢字 wide text and more emoji 🎉 so the row is measured in cells",
+      "2. a dozen more lines of detail that must never reach the timeline",
+    ].join("\n");
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "reply body", {
+      reply: {
+        messageId: "message-0",
+        authorId: "author-0",
+        authorDisplayName: "Paramount",
+        timestamp: Date.UTC(2026, 0, 1, 11, 59, 0),
+        summary: quoted,
+      },
+    })]);
+
+    for (const width of [60, 61, 80]) {
+      const rendered = renderTimelineLines(timeline, width, 20, { text: "", tone: "muted", loading: false }, 0);
+      const plainLines = rendered.lines.map(stripAnsi);
+
+      expect(plainLines[0]?.startsWith("↪ Paramount · 🌙 **Overnight Exocortex: all merged")).toBe(true);
+      expect(plainLines[0]?.endsWith("…")).toBe(true);
+      expect(termWidth(plainLines[0] ?? "")).toBeLessThanOrEqual(width);
+      expect(termWidth(plainLines[0] ?? "")).toBeGreaterThanOrEqual(width - 1);
+      expect(plainLines[1]).toContain(`Tester ${expectedLocalTime()}`);
+      expect(plainLines.join("\n")).not.toContain("a dozen more lines");
+      expect(rendered.lines[0]?.startsWith(theme.muted)).toBe(true);
+    }
+  });
+
+  test("keeps wide characters whole when ellipsizing a quoted message", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "reply body", {
+      reply: {
+        messageId: "message-0",
+        authorId: "author-0",
+        authorDisplayName: "Alice",
+        timestamp: Date.UTC(2026, 0, 1, 11, 59, 0),
+        summary: "漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字\n🎉🎉🎉🎉🎉🎉",
+      },
+    })]);
+
+    const rendered = renderTimelineLines(timeline, 20, 10, { text: "", tone: "muted", loading: false }, 0);
+    const plainLines = rendered.lines.map(stripAnsi);
+
+    expect(plainLines[0]).toBe("↪ Alice · 漢字漢字…");
+    expect(termWidth(plainLines[0] ?? "")).toBe(19);
+    expect(plainLines[1]).toContain(`Tester ${expectedLocalTime()}`);
+  });
+
+  test("leaves a short quoted message unchanged on one row", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "reply body", {
+      reply: {
+        messageId: "message-0",
+        authorId: "author-0",
+        authorDisplayName: "Alice",
+        timestamp: Date.UTC(2026, 0, 1, 11, 59, 0),
+        summary: "short reply",
+      },
+    })]);
+
+    const rendered = renderTimelineLines(timeline, 80, 10, { text: "", tone: "muted", loading: false }, 0);
+
+    expect(rendered.lines[0]).toBe(`${theme.muted}↪ Alice · short reply${theme.reset}`);
+    expect(stripAnsi(rendered.lines[1] ?? "")).toContain(`Tester ${expectedLocalTime()}`);
   });
 
   test("renders reply preview role mentions as muted colored role names", () => {
