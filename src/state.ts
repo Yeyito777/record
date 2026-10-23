@@ -160,6 +160,8 @@ export interface AppState {
   memberRoleCacheVersion: number;
   channelMuteSettings: Record<string, boolean>;
   showHiddenChannels: boolean;
+  /** Scroll the message pane with terminal scroll regions (config `scrollRegions`). */
+  scrollRegions: boolean;
   serverCommands: ServerCommandsState;
   whatsapp: WhatsAppUiState;
   instagram: InstagramUiState;
@@ -175,7 +177,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown; quickReactionEmoji?: string } = {},
+  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown; quickReactionEmoji?: string; scrollRegions?: boolean } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -230,6 +232,7 @@ export function createInitialState(
     memberRoleCacheVersion: 0,
     channelMuteSettings: {},
     showHiddenChannels: options.showHiddenChannels ?? false,
+    scrollRegions: options.scrollRegions ?? true,
     serverCommands: createServerCommandsState(),
     whatsapp: createWhatsAppUiState(),
     instagram: createInstagramUiState(),

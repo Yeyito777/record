@@ -109,6 +109,25 @@ Notes:
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`
 - this is intentionally small and modular so real Discord features can be layered on later
 
+### Scroll regions
+
+When the message pane scrolls by less than its height (keys, wheel, or a new
+message while following the bottom), Record tells the terminal to scroll just
+the pane's rows (`DECSTBM` + `SU`/`SD`) and then draws only the rows that
+scrolled into view, inside one synchronized update (mode 2026). Terminals that
+animate region scrolls, like st's smooth-scroll branch, glide the pane; every
+terminal gets fewer bytes. Inline images and custom emoji are re-placed at
+their new rows in the same update.
+
+A terminal region scroll moves whole rows (st has no left/right margins), so
+this applies only while the pane spans the full width: with the sidebar or
+member list open, or an overlay over the pane, Record repaints changed rows as
+before. Jumps of a pane height or more, resizes and full repaints are also
+unchanged.
+
+To turn it off, set `"scrollRegions": false` in `config.json` and restart.
+Record then emits exactly what it did before this feature.
+
 ### Instagram Direct
 
 Run `/login instagram` for instructions, then paste your Instagram cookies:

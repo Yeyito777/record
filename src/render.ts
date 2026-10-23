@@ -697,6 +697,10 @@ export function render(state: AppState): void {
     }
   }
 
+  // A terminal region scroll moves whole rows: st has no left/right margins
+  // (DECLRMM). The body rows qualify only while the pane spans the full width
+  // with nothing drawn over it; otherwise side columns would scroll with it
+  // (and glide under smooth scrolling) and need a full rewrite anyway.
   const canScrollMessageRegion = !sidebarOpen
     && !memberListOpen
     && !state.autocomplete
@@ -727,6 +731,7 @@ export function render(state: AppState): void {
     cursor: cursorPayload.join(""),
     scrollRegion: canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null,
     viewStart: state.timeline.scrollOffset,
+    regionScrolls: state.scrollRegions,
     graphics: customEmojiImages.finishFrame(customEmojiFrame),
   }, inlineImages);
 }

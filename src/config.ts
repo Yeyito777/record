@@ -59,6 +59,11 @@ export interface RecordConfig {
   audio?: AudioConfig;
   /** Unicode emoji used by the double-Space history shortcut. */
   quickReactionEmoji?: string;
+  /**
+   * Scroll the message pane with terminal scroll regions (DECSTBM + SU/SD) and
+   * draw only the exposed rows. Default true; false restores the previous renderer.
+   */
+  scrollRegions?: boolean;
   /** Preserve unknown future/user keys. */
   [key: string]: unknown;
 }
