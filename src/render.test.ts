@@ -11,6 +11,8 @@ import { createLoginModalState } from "./whatsapp/loginmodal";
 import { openImageModalState } from "./imagemodal";
 import { customEmojiMarker } from "./customemoji";
 import { moveTo } from "./terminal";
+import { invalidateFrame } from "./frame";
+import { VtScreen } from "./vtscreen.testutil";
 
 function message(id: string, content: string): DiscordMessage {
   const numericId = Number(id);
@@ -594,3 +596,136 @@ describe("render", () => {
     expect(output).toContain(theme.pingBg);
   });
 });
+
+describe("message pane region scrolls", () => {
+  const REGION_SCROLL = /\x1b\[(\d+);(\d+)r\x1b\[(\d+)([ST])\x1b\[r/;
+
+  function chatState(options: { messages?: number } = {}): ReturnType<typeof createInitialState> {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 60;
+    state.rows = 16;
+    setTimelineMessages(
+      state.timeline,
+      "channel-1",
+      Array.from({ length: options.messages ?? 30 }, (_, i) => message(String(i + 1), `line ${i + 1}`)),
+    );
+    return state;
+  }
+
+  /** Screen as a fresh full repaint of the current state would draw it. */
+  function fullRepaintSnapshot(state: ReturnType<typeof createInitialState>): string {
+    invalidateFrame(state);
+    const screen = new VtScreen(state.rows, state.cols);
+    screen.write(captureRender(state));
+    return screen.snapshot();
+  }
+
+  test("history scrolls become DECSTBM + SU/SD with exposed rows, matching a full repaint", () => {
+    const state = chatState();
+    const screen = new VtScreen(state.rows, state.cols);
+    screen.write(captureRender(state));
+    const maxScroll = state.timeline.maxScroll;
+    expect(maxScroll).toBeGreaterThan(10);
+
+    for (const [offset, direction, amount] of [
+      [maxScroll - 2, "T", 2],
+      [maxScroll - 5, "T", 3],
+      [maxScroll - 4, "S", 1],
+      [maxScroll - 1, "S", 3],
+    ] as const) {
+      state.timeline.scrollOffset = offset;
+      const out = captureRender(state);
+      const scroll = REGION_SCROLL.exec(out);
+      expect(scroll?.slice(3, 5)).toEqual([String(amount), direction]);
+      expect(out.startsWith("\x1b[?2026h")).toBe(true);
+      expect(out.endsWith("\x1b[?2026l")).toBe(true);
+      // Only the exposed rows of the pane are rewritten.
+      const [, top, bottom] = scroll!.map(Number);
+      const written = [...out.matchAll(/\x1b\[(\d+);1H(?:\x1b\[[\d;]*m)*\x1b\[2K/g)].map((match) => Number(match[1]));
+      const paneWrites = written.filter((row) => row >= top! && row <= bottom!);
+      expect(paneWrites).toEqual(direction === "S"
+        ? Array.from({ length: amount }, (_, i) => bottom! - amount + 1 + i)
+        : Array.from({ length: amount }, (_, i) => top! + i));
+      screen.write(out);
+      expect(screen.snapshot()).toBe(fullRepaintSnapshot(state));
+    }
+  });
+
+  test("a new message while following the bottom scrolls the pane up", () => {
+    const state = chatState();
+    const screen = new VtScreen(state.rows, state.cols);
+    screen.write(captureRender(state));
+
+    setTimelineMessages(state.timeline, "channel-1", [
+      ...state.timeline.messages,
+      message("31", "brand new"),
+    ]);
+    const out = captureRender(state);
+    expect(out).toMatch(REGION_SCROLL);
+    expect(REGION_SCROLL.exec(out)?.[4]).toBe("S");
+    screen.write(out);
+    expect(screen.text().join("\n")).toContain("brand new");
+    expect(screen.snapshot()).toBe(fullRepaintSnapshot(state));
+  });
+
+  test("with the sidebar sharing the rows, scrolls repaint instead of using regions", () => {
+    const state = chatState();
+    state.sidebar.open = true;
+    const screen = new VtScreen(state.rows, state.cols);
+    screen.write(captureRender(state));
+
+    state.timeline.scrollOffset = state.timeline.maxScroll - 2;
+    const out = captureRender(state);
+    expect(out).not.toMatch(REGION_SCROLL);
+    expect(out).not.toMatch(/\x1b\[\d+[ST]/);
+    screen.write(out);
+    expect(screen.snapshot()).toBe(fullRepaintSnapshot(state));
+  });
+
+  test("jumps of a pane height or more repaint the pane", () => {
+    const state = chatState({ messages: 60 });
+    captureRender(state);
+    state.timeline.scrollOffset = 0;
+    const out = captureRender(state);
+    expect(out).not.toMatch(REGION_SCROLL);
+  });
+
+  test("inline images are placed again at their scrolled rows", () => {
+    const state = stateWithReadyInlineImage();
+    setTimelineMessages(state.timeline, "channel-1", [
+      ...state.timeline.messages,
+      ...Array.from({ length: 30 }, (_, i) => message(String(i + 2), `after ${i}`)),
+    ]);
+    captureRender(state);
+    state.timeline.scrollOffset = 0;
+    const first = captureRender(state);
+    const placedAt = /\x1b\[(\d+);(\d+)H\x1b_Ga=p,i=1073741825/.exec(first);
+    expect(placedAt).not.toBeNull();
+
+    state.timeline.scrollOffset = 1;
+    const out = captureRender(state);
+    expect(out).toMatch(REGION_SCROLL);
+    const scrollAt = out.search(REGION_SCROLL);
+    const replace = /\x1b\[(\d+);(\d+)H\x1b_Ga=p,i=1073741825/.exec(out);
+    expect(replace).not.toBeNull();
+    expect(Number(replace![1])).toBe(Number(placedAt![1]) - 1);
+    // The placement follows the scroll, inside the same synchronized frame.
+    expect(out.indexOf(replace![0])).toBeGreaterThan(scrollAt);
+    expect(out.indexOf(replace![0])).toBeLessThan(out.indexOf("\x1b[?2026l"));
+  });
+
+  test("scrollRegions off keeps today's bytes (no SU/SD)", () => {
+    const state = chatState();
+    state.scrollRegions = false;
+    const screen = new VtScreen(state.rows, state.cols);
+    screen.write(captureRender(state));
+
+    state.timeline.scrollOffset = state.timeline.maxScroll - 3;
+    const out = captureRender(state);
+    expect(out).not.toMatch(/\x1b\[\d+[ST]/);
+    expect(out).not.toMatch(/\x1b\[\d+;\d+r/);
+    screen.write(out);
+    expect(screen.snapshot()).toBe(fullRepaintSnapshot(state));
+  });
+});
+

@@ -198,6 +198,7 @@ let initialMicGainDb = DEFAULT_LOCAL_GAIN_DB;
 let initialParticipantVolumes: ParticipantVolumes = {};
 let initialSavedLogins: Record<string, string> = {};
 let initialQuickReactionEmoji = DEFAULT_QUICK_REACTION;
+let initialScrollRegions = true;
 const startupWarnings: string[] = [];
 
 try {
@@ -209,6 +210,7 @@ try {
   initialMicGainDb = normalizeGainDb(config.audio?.micGainDb ?? DEFAULT_LOCAL_GAIN_DB);
   initialParticipantVolumes = normalizeParticipantVolumes(config.audio?.participantVolumes);
   initialQuickReactionEmoji = configuredQuickReaction(config.quickReactionEmoji);
+  initialScrollRegions = config.scrollRegions !== false;
 } catch (error) {
   const err = error as NodeJS.ErrnoException;
   if (err.code !== "ENOENT") {
@@ -226,7 +228,7 @@ try {
 }
 
 const savedStartingState = loadTuiStartingState();
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji, scrollRegions: initialScrollRegions });
 let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },

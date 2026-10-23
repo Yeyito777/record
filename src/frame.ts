@@ -3,6 +3,11 @@
  *
  * The renderer builds a full desired payload for each terminal row. This module
  * compares it with the last flushed frame and emits only changed rows.
+ *
+ * When the message pane's viewport moves by fewer rows than its height, the
+ * frame first tells the terminal to scroll just those rows (DECSTBM + SU/SD),
+ * then writes only the rows that scroll exposed or that otherwise changed.
+ * Terminals that animate region scrolls (st's smooth-scroll) glide the pane.
  */
 
 export const ESC = "\x1b[";
@@ -20,8 +25,18 @@ export interface ScrollRegion {
 export interface RenderFrame {
   rows: string[];
   cursor: string;
+  /**
+   * Rows (1-based, inclusive) holding nothing but the scrolling pane, across
+   * the terminal's full width. Null when other columns or overlays share them.
+   */
   scrollRegion: ScrollRegion | null;
+  /** Index of the pane's first visible line; its change is the scroll amount. */
   viewStart: number;
+  /**
+   * Scroll the region in both directions with SU/SD (config `scrollRegions`,
+   * default on). False keeps the older upward-only line-feed heuristic.
+   */
+  regionScrolls?: boolean;
   graphics?: { key: string; payload: string };
 }
 
@@ -108,6 +123,55 @@ function detectUpwardScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): num
   return bestShift;
 }
 
+function isBlankRow(row: string | undefined): boolean {
+  return !row || row.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").trim() === "";
+}
+
+/** Region scroll: set the margins, scroll the rows, restore full-screen margins. */
+function scrollRegionBy(region: ScrollRegion, shift: number): string {
+  const scroll = shift > 0 ? `${ESC}${shift}S` : `${ESC}${-shift}T`;
+  return `${ESC}${region.start};${region.end}r${scroll}${ESC}r`;
+}
+
+/**
+ * Signed row shift for a region scroll: positive moves content up (SU),
+ * negative moves it down (SD), 0 repaints instead.
+ *
+ * The viewport delta proposes the shift; the rows must confirm it. History
+ * prepends remap viewStart without moving content, and channel switches
+ * replace it, so the shift is used only when it keeps most comparable rows,
+ * keeps more than staying put would, and keeps at least one non-blank row.
+ */
+function detectRegionScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): number {
+  if (!sameScrollRegion(prevFrame.scrollRegion, nextFrame.scrollRegion)) return 0;
+  const region = nextFrame.scrollRegion;
+  if (!region) return 0;
+
+  const height = region.end - region.start + 1;
+  const shift = nextFrame.viewStart - prevFrame.viewStart;
+  if (height < 2 || shift === 0 || Math.abs(shift) >= height) return 0;
+
+  let shiftedMatches = 0;
+  let stayMatches = 0;
+  let nonBlankShiftedMatch = false;
+  for (let row = region.start - 1; row <= region.end - 1; row++) {
+    const nextRow = nextFrame.rows[row];
+    if (prevFrame.rows[row] === nextRow) stayMatches++;
+    const source = row + shift;
+    if (source < region.start - 1 || source > region.end - 1) continue;
+    if (sameRowContent(prevFrame.rows[source], nextRow)) {
+      shiftedMatches++;
+      if (!isBlankRow(nextRow)) nonBlankShiftedMatch = true;
+    }
+  }
+
+  const comparableRows = height - Math.abs(shift);
+  if (!nonBlankShiftedMatch) return 0;
+  if (shiftedMatches < Math.ceil(comparableRows * 0.6)) return 0;
+  if (shiftedMatches <= stayMatches) return 0;
+  return shift;
+}
+
 /** Per-frame image commands that are reconciled outside the retained diff. */
 export interface FrameImageCommands {
   /** Invisible data transfers, written before the synchronized update. */
@@ -120,10 +184,17 @@ export function flushFrame(owner: object, nextFrame: RenderFrame, images?: Frame
   const prevFrame = lastRenderedFrames.get(owner);
   const out: string[] = [];
   const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
-  const scrollShift = prevFrame ? detectUpwardScroll(prevFrame, nextFrame) : 0;
-  const scrollRegion = scrollShift > 0 ? nextFrame.scrollRegion : null;
+  const regionScrolls = nextFrame.regionScrolls === true;
+  const scrollShift = !prevFrame
+    ? 0
+    : regionScrolls
+      ? detectRegionScroll(prevFrame, nextFrame)
+      : detectUpwardScroll(prevFrame, nextFrame);
+  const scrollRegion = scrollShift !== 0 ? nextFrame.scrollRegion : null;
 
-  if (scrollRegion) out.push(scrollUpRegion(scrollRegion, scrollShift));
+  if (scrollRegion) {
+    out.push(regionScrolls ? scrollRegionBy(scrollRegion, scrollShift) : scrollUpRegion(scrollRegion, scrollShift));
+  }
 
   for (let i = 0; i < rowCount; i++) {
     const nextRow = nextFrame.rows[i];
@@ -131,7 +202,12 @@ export function flushFrame(owner: object, nextFrame: RenderFrame, images?: Frame
 
     let unchanged = prevFrame?.rows[i] === nextRow;
     if (scrollRegion && i >= scrollRegion.start - 1 && i <= scrollRegion.end - 1) {
-      const shiftedPrevRow = i + scrollShift <= scrollRegion.end - 1 ? prevFrame?.rows[i + scrollShift] : undefined;
+      // After the scroll this row shows what was `scrollShift` rows away, or
+      // blank if that source was outside the region (an exposed row).
+      const source = i + scrollShift;
+      const shiftedPrevRow = source >= scrollRegion.start - 1 && source <= scrollRegion.end - 1
+        ? prevFrame?.rows[source]
+        : undefined;
       unchanged = sameRowContent(shiftedPrevRow, nextRow);
     }
 
@@ -154,7 +230,7 @@ export function flushFrame(owner: object, nextFrame: RenderFrame, images?: Frame
 
   if (out.length > 0 || images?.transmit) {
     const payload = out.join("");
-    const synchronized = out.length > 2 || !!images?.update;
+    const synchronized = out.length > 2 || !!images?.update || (regionScrolls && !!scrollRegion);
     process.stdout.write((images?.transmit ?? "")
       + (synchronized ? beginSynchronizedUpdate + payload + endSynchronizedUpdate : payload));
   }
