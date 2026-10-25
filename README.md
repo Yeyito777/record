@@ -157,7 +157,8 @@ terminals never reply and see no difference.
   update. st then animates the whole glide itself at the display's refresh
   rate (100 ms ease-out, like st's own glides), drawing the rows the scroll
   pushed out in the strip it uncovers. Record keeps the same curve to know
-  where st is, sends nothing while it glides, and wakes once when it rests, so
+  where st is, sends nothing while it glides (one more frame only to crop an
+  image, see below), so
   over ssh the glide never waits on Record and the traffic is one frame per
   scroll. (Exocortex lays its history out a row at a time because rows beside
   its Tasks panel re-wrap as they glide; Record's never re-wrap.) A scroll
@@ -181,12 +182,19 @@ terminals never reply and see no difference.
   left/right margins (DECLRMM) to avoid it. If an overlay or the typing line
   changes the band's edge under a glide by more than a row, the rest of the
   glide snaps rather than uncover an empty strip.
-- Inline images and custom emoji glide with their text. While a glide runs an
-  image cut off by the pane's bottom is placed whole past the edge (st clips it
-  to the moving rectangle) and one more frame crops it again when the glide
-  ends; st keeps the rows of images leaving at the top. That whole-image
+- Inline images and custom emoji glide with their text. While a glide back in
+  history runs, an image cut off by the pane's bottom is placed whole past the
+  edge (st clips it to the moving rectangle while it moves), so its lower part
+  shows as it glides in from below. At rest st clips nothing, so Record crops
+  it again before st's glide ends: once less than 1/8 row of the glide is left
+  (13-50 ms before Record's own glide ends, and st's ends later still, after
+  the bytes' trip through the pty or ssh). The image's lowest pixels may be
+  missing for those last milliseconds; it never draws over the prompt. Glides
+  forward never need it, and a frame that moves the pane's bottom edge (the
+  typing line, the prompt's rows, an overlay) crops at once. That whole-image
   placement has its own placement id, so the prompt rows st saw under it are
-  never mistaken for the image's own cells once it rests. Custom emoji use one
+  never mistaken for the image's own cells once it rests. st keeps the rows of
+  images leaving at the top. Custom emoji use one
   placement id per cell and are deleted one by one, so emoji on the lines st
   keeps for the glide's edge are not erased mid-glide.
 - The sidebar and member list lists themselves do not glide: mode 2032 has one
@@ -425,6 +433,8 @@ environment variables: `RECORD_DEMO_OPEN=images` (channel name to open first;
 `dm` for the long DM, `none` for nothing), `RECORD_DEMO_INCOMING_SECONDS=N`,
 `RECORD_DEMO_OLDER_DELAY_MS`, `RECORD_DEMO_LATENCY_MS`, `RECORD_DEMO_NOW`
 (end of the synthetic history), `RECORD_DEMO_HOME=DIR` (keep and reuse a demo
-home) and `RECORD_DEMO_KEEP=1`. Each demo home has a `record/demo.log` of every
+home), `RECORD_DEMO_KEEP=1` and `RECORD_DEMO_FAIL_LEAVE=1` (Leave Server fails with a
+long error, to check the actions menu). Like discord.com, the fake server rejects
+requests that announce a JSON body without sending valid JSON. Each demo home has a `record/demo.log` of every
 request the fake server answered. The CDN serves PNG bytes for every image URL
 (icons, avatars, emoji, stickers, attachments), whatever the extension.

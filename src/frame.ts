@@ -512,13 +512,14 @@ function flushBandFrame(owner: object, nextFrame: RenderFrame, images?: FrameIma
     out.push(graphicsPayload);
     hasDrawingUpdates = true;
   }
+  // Images are planned after the glide's motion is known (it may restart or
+  // stop the glide; images then must not stay past the pane), but sent before it.
+  const smooth = nextFrame.afterScroll?.(scrollShift, scrolledIntact, scrollRegion);
   const imageCommands = typeof images === "function" ? images(scrollRegion) : images;
   if (imageCommands?.update) {
     out.push(imageCommands.update);
     hasDrawingUpdates = true;
   }
-
-  const smooth = nextFrame.afterScroll?.(scrollShift, scrolledIntact, scrollRegion);
   if (smooth) out.push(smooth);
 
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {

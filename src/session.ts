@@ -173,6 +173,7 @@ import {
   setSidebarChannelMuted,
   setSidebarGuildMuted,
   setSidebarGuilds,
+  preservingSidebarSelection,
   sidebarChannelsForGuild,
   sidebarCachedGuilds,
   sidebarChannelLayoutForGuild,
@@ -1206,8 +1207,14 @@ function rememberVoiceMemberHydrationTarget(guildId: string, userId: string, cha
   pendingVoiceMemberHydrationTargets.set(key, targets);
 }
 
+const answeredVoiceMemberHydrationAt = new Map<string, number>();
+
 function clearPendingVoiceMemberHydration(guildId: string, userId: string): void {
   const key = voiceMemberHydrationKey(guildId, userId);
+  if (pendingVoiceMemberHydrationKeys.has(key)) {
+    answeredVoiceMemberHydrationAt.set(key, Date.now());
+    if (answeredVoiceMemberHydrationAt.size > 2_000) answeredVoiceMemberHydrationAt.delete(answeredVoiceMemberHydrationAt.keys().next().value!);
+  }
   pendingVoiceMemberHydrationKeys.delete(key);
   pendingVoiceMemberHydrationTargets.delete(key);
   const timer = pendingVoiceMemberHydrationTimers.get(key);
@@ -1245,9 +1252,15 @@ function maybeRequestVoiceMemberHydration(state: AppState, guildId: string | nul
   if (uniqueUnknownUserIds.length === 0) return;
 
   const toRequest: string[] = [];
+  const now = Date.now();
   for (const userId of uniqueUnknownUserIds) {
     rememberVoiceMemberHydrationTarget(guildId, userId, channelId);
     const key = voiceMemberHydrationKey(guildId, userId);
+    // A member Discord already answered for (but who still lacks a name or
+    // avatar) is not asked for again right away: every voice-state event for
+    // them would otherwise re-request and re-apply the same member.
+    const answeredAt = answeredVoiceMemberHydrationAt.get(key);
+    if (answeredAt !== undefined && now - answeredAt < VOICE_MEMBER_HYDRATION_RETRY_MS) continue;
     if (!pendingVoiceMemberHydrationKeys.has(key)) toRequest.push(userId);
   }
   if (toRequest.length === 0) return;
@@ -1258,12 +1271,25 @@ function maybeRequestVoiceMemberHydration(state: AppState, guildId: string | nul
   for (const userId of toRequest) markVoiceMemberHydrationPending(guildId, userId);
 }
 
+/** True when merging `member` into `entry` would change nothing (role order aside). */
+function memberAddsNothing(entry: DiscordGuildMember, member: DiscordGuildMember): boolean {
+  for (const [key, value] of Object.entries(member) as Array<[keyof DiscordGuildMember, unknown]>) {
+    if (value === undefined) continue;
+    const current = entry[key];
+    if (key === "roleIds") {
+      if (!Array.isArray(current) || !sameRoleIds(current as string[], value as string[])) return false;
+    } else if (JSON.stringify(current) !== JSON.stringify(value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function mergeMemberIntoChannelMemberCache(state: AppState, guildId: string, channelId: string, member: DiscordGuildMember): boolean {
   const existing = getCachedMemberList(state.memberList, guildId, channelId) ?? [];
   const existingIndex = existing.findIndex((entry) => entry.id === member.id);
+  if (existingIndex >= 0 && memberAddsNothing(existing[existingIndex]!, member)) return false;
   const next = existingIndex >= 0 ? existing.map((entry, index) => index === existingIndex ? { ...entry, ...member } : entry) : [...existing, member];
-  const changed = existingIndex < 0 || JSON.stringify(existing[existingIndex]) !== JSON.stringify(next[existingIndex]);
-  if (!changed) return false;
 
   cacheMemberList(state.memberList, guildId, channelId, next);
   if (state.memberList.guildId === guildId && state.memberList.channelId === channelId) {
@@ -1284,32 +1310,40 @@ function channelIdsForHydratedVoiceMember(state: AppState, guildId: string, user
   return Array.from(targets);
 }
 
-export function handleGuildMembersChunk(state: AppState, effects: SessionEffects, guildId: string, members: readonly DiscordGuildMember[]): void {
+export function handleGuildMembersChunk(
+  state: AppState,
+  effects: SessionEffects,
+  guildId: string,
+  members: readonly DiscordGuildMember[],
+  source: "chunk" | "member_update" = "chunk",
+): void {
   let changed = false;
+  const changes = new Set<string>();
   for (const member of members) {
     const channelIds = channelIdsForHydratedVoiceMember(state, guildId, member.id);
     clearPendingVoiceMemberHydration(guildId, member.id);
-    changed = recordMemberRoleIds(state, guildId, member.id, member.roleIds) || changed;
+    if (recordMemberRoleIds(state, guildId, member.id, member.roleIds)) changes.add("roles");
 
     for (const channelId of channelIds) {
       const voiceState = callVoiceStatesByChannelId.get(channelId)?.get(member.id);
       if (voiceState && (!voiceState.displayName || isRawUserIdDisplayName(voiceState.displayName, member.id))) {
         voiceState.displayName = member.displayName;
-        changed = true;
+        changes.add("voice_name");
       }
-      if (voiceState && member.roleIds && JSON.stringify(voiceState.roleIds ?? []) !== JSON.stringify(member.roleIds)) {
+      if (voiceState && member.roleIds && !sameRoleIds(voiceState.roleIds ?? [], member.roleIds)) {
         voiceState.roleIds = [...member.roleIds];
-        changed = true;
+        changes.add("voice_roles");
       }
-      changed = mergeMemberIntoChannelMemberCache(state, guildId, channelId, member) || changed;
+      if (mergeMemberIntoChannelMemberCache(state, guildId, channelId, member)) changes.add("member_cache");
     }
+    changed ||= changes.size > 0;
   }
 
   if (!changed) return;
   syncAllSidebarVoiceMembers(state);
   const activeSession = voiceCallController?.activeSession;
   if (activeSession && activeSession.target.guildId === guildId) syncVoiceCallStatus(state, activeSession);
-  debugLog("voice.member_hydration.applied", { guildId, count: members.length });
+  debugLog("voice.member_hydration.applied", { guildId, count: members.length, source, changes: [...changes] });
   effects.scheduleRender();
 }
 
@@ -2111,12 +2145,20 @@ function persistNotifications(state: AppState): void {
   }
 }
 
+function sameRoleIds(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const set = new Set(left);
+  return right.every((roleId) => set.has(roleId));
+}
+
 function recordMemberRoleIds(state: AppState, guildId: string | null | undefined, userId: string, roleIds: readonly string[] | undefined): boolean {
   if (!guildId || guildId === DIRECT_MESSAGES_GUILD_ID || !roleIds) return false;
   const byUserId = state.memberRoleIdsByGuildId[guildId] ??= {};
   const hadPrevious = Object.hasOwn(byUserId, userId);
   const previous = byUserId[userId] ?? [];
-  if (hadPrevious && previous.length === roleIds.length && previous.every((roleId, index) => roleId === roleIds[index])) return false;
+  // Order-insensitive: the member list and member events list roles in
+  // different orders, which must not count as a change every time.
+  if (hadPrevious && sameRoleIds(previous, roleIds)) return false;
   byUserId[userId] = [...roleIds];
   noteGuildRoleChange(state, guildId);
   scheduleMemberRolesSave(state, guildId);
@@ -2811,7 +2853,11 @@ function mergeRestGuilds(
 export function removeSessionGuild(state: AppState, guildId: string): boolean {
   if (isFixedTopLevelGuildId(guildId) || !state.sidebar.guilds.some((guild) => guild.id === guildId)) return false;
   const nextGuilds = sidebarCachedGuilds(state.sidebar).filter((guild) => guild.id !== guildId);
-  setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, nextGuilds));
+  // setSidebarGuilds alone clamps the row to the number of servers, which
+  // jumped the selection into an expanded server's channels.
+  preservingSidebarSelection(state.sidebar, state.channelList.channels, () => {
+    setSidebarGuilds(state.sidebar, withCurrentDirectMessagesGuild(state, nextGuilds));
+  }, { showHiddenChannels: state.showHiddenChannels, currentUserId: state.auth.user?.id ?? null });
   persistSidebarGuilds(state);
   clearGuildNotifications(state.notifications, guildId);
   persistNotifications(state);
@@ -3233,7 +3279,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
     onVoiceServerUpdate: (update) => {
       voiceCallController?.handleVoiceServerUpdate(update);
     },
-    onGuildMemberUpdate: (guildId, member) => handleGuildMembersChunk(state, effects, guildId, [member]),
+    onGuildMemberUpdate: (guildId, member) => handleGuildMembersChunk(state, effects, guildId, [member], "member_update"),
     onGuildMembersChunk: (guildId, members) => handleGuildMembersChunk(state, effects, guildId, members),
     onGuildRoleUpdate: (guildId, role) => applyGatewayGuildRoleUpdate(state, effects, guildId, { role }),
     onGuildRoleDelete: (guildId, deletedRoleId) => applyGatewayGuildRoleUpdate(state, effects, guildId, { deletedRoleId }),

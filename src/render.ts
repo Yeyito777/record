@@ -499,6 +499,8 @@ function intersects(rect: CellRect, row: number, col: number, rows: number, colu
 
 /** Each state's maxScroll at its previous smooth-scroll layout. */
 const smoothMaxScroll = new WeakMap<object, number>();
+/** Each state's pane bottom and band end in its previous frame. */
+const lastPaneEdge = new WeakMap<object, string>();
 
 export function render(state: AppState): void {
   const cols = Math.max(1, state.cols);
@@ -963,21 +965,35 @@ export function render(state: AppState): void {
     : canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null;
   const smoothRects = smooth ? smoothScrollRects(scrollRegion, mainCol, mainW) : [];
 
-  const inlinePlacements = state.whatsapp.loginModal
-    ? []
-    : visibleInlineImagePlacements(
-      timeline,
-      viewStart,
-      bodyTop,
-      bodyRows,
-      mainCol + 1,
-      state.imageModal ? null : selectedHistoryRows,
-      // Only while gliding, and only at the band's bottom edge: at rest images
-      // are cropped to the pane exactly as without smooth scrolling.
-      !!smooth?.busy() && scrollRegion?.end === bodyTop + bodyRows - 1,
-    );
+  const paneBottom = bodyTop + bodyRows - 1;
+  // What lies below the pane changed (the typing line, the prompt's rows, an
+  // overlay taking the band's last rows): no image stays past the pane then.
+  const paneEdge = `${paneBottom}|${scrollRegion?.end ?? ""}`;
+  const paneEdgeMoved = lastPaneEdge.get(state) !== paneEdge;
+  lastPaneEdge.set(state, paneEdge);
   const viewerPlacement = imageModal?.placement ?? null;
-  if (viewerPlacement) inlinePlacements.push(viewerPlacement);
+  // Smooth scrolling: decided once the frame's motion is known (planImages
+  // runs after it), so a glide the frame stops never keeps an image placed
+  // past the pane. Only while st may still draw the content higher than
+  // laid out, and only at the band's bottom edge: otherwise images are
+  // cropped to the pane exactly as without smooth scrolling.
+  const imagePlacements = (): InlineTerminalImagePlacement[] => {
+    const extend = !!smooth?.extendBelow() && scrollRegion?.end === paneBottom && !paneEdgeMoved;
+    const placements = state.whatsapp.loginModal
+      ? []
+      : visibleInlineImagePlacements(
+        timeline,
+        viewStart,
+        bodyTop,
+        bodyRows,
+        mainCol + 1,
+        state.imageModal ? null : selectedHistoryRows,
+        extend,
+      );
+    smooth?.noteImagesExtended(placements.some((placement) => placement.row + placement.rows - 1 > paneBottom));
+    if (viewerPlacement) placements.push(viewerPlacement);
+    return placements;
+  };
   const inlineImageOptions = {
     covered: (placement: InlineTerminalImagePlacement) => placement !== viewerPlacement
       && overlays.some(({ rect }) => intersects(rect, placement.row, placement.col, placement.rows, placement.columns)),
@@ -995,7 +1011,7 @@ export function render(state: AppState): void {
     maxIdleBytes: SIDEBAR_ICON_MAX_IDLE_BYTES,
   };
   const planImages = (movedRows: ScrollRegion | null = null) => joinImageUpdates(
-    planInlineTerminalImages(state, readyInlineImages(state), inlinePlacements, { ...inlineImageOptions, movedRows }),
+    planInlineTerminalImages(state, readyInlineImages(state), imagePlacements(), { ...inlineImageOptions, movedRows }),
     planInlineTerminalImages(
       sidebarIconTerminalOwner,
       sidebarPlacements.map((placement) => placement.image),

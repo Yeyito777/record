@@ -11,6 +11,12 @@
  * placement remembers each cell under it, per line, the first time it is
  * drawn over it: if one changes later st draws it over the image (image
  * occlusion), see visiblePlacements() and occlusions().
+ *
+ * App-driven smooth scrolling (st mode 2032) is modelled on the screen's own
+ * clock (`now`, the time bytes arrive): the moving rectangles and the eased
+ * offset, so imageCellsOutside() can say which image cells st draws where at
+ * any moment: at rest unshifted and unclipped, while gliding shifted and
+ * clipped to the bounding box of the rectangles on the image's anchor row.
  */
 
 import { termWidth } from "./textwidth";
@@ -87,8 +93,12 @@ export class VtScreen {
   private saved = { row: 0, col: 0, sgr: "" };
   private readonly placementsByKey = new Map<string, VtPlacement>();
   private anonymousPlacements = 0;
+  /** Mode 2032: moving rectangles (0-based rows inclusive, columns [left, right)), base and easing terms. */
+  private glideRects: { top: number; bottom: number; left: number; right: number }[] = [];
+  private glideBase = 0;
+  private glideTerms: { rows: number; start: number; ms: number }[] = [];
 
-  constructor(public rows: number, public cols: number) {
+  constructor(public rows: number, public cols: number, private readonly now: () => number = () => 0) {
     this.bottom = rows - 1;
     this.grid = Array.from({ length: rows }, () => this.blankRow());
   }
@@ -230,6 +240,85 @@ export class VtScreen {
     return null;
   }
 
+  private glideClear(): void {
+    this.glideRects = [];
+    this.glideBase = 0;
+    this.glideTerms = [];
+  }
+
+  /** OSC 2032 ; r | m | o | c (st docs/app-smooth-scroll.md). */
+  private glideOsc(body: string): void {
+    const [kind, ...args] = body.split(";");
+    if (kind === "r") {
+      this.glideRects = args.map((arg) => arg.split(",").map(Number)).filter((rect) => rect.length === 4)
+        .map(([top, left, bottom, right]) => ({ top: top! - 1, bottom: bottom! - 1, left: left! - 1, right: right! }));
+    } else if (kind === "m") {
+      this.glideBase += Number(args[0] ?? 0) / 1000;
+      const ease = Number(args[1] ?? 0);
+      const ms = Number(args[2] ?? 0);
+      if (ease !== 0 && ms > 0) this.glideTerms.push({ rows: ease / 1000, start: this.now(), ms });
+    } else if (kind === "o") {
+      this.glideBase = Number(args[0] ?? 0) / 1000;
+      this.glideTerms = [];
+    } else if (kind === "c") {
+      this.glideClear();
+    }
+  }
+
+  /** st's offset at `time` (rows; positive draws the rectangles' content lower). */
+  glideOffset(time = this.now()): number {
+    let offset = this.glideBase;
+    for (const term of this.glideTerms) {
+      const progress = (time - term.start) / term.ms;
+      if (progress < 1) offset += term.rows * (1 - Math.max(0, progress)) ** 3;
+    }
+    return offset;
+  }
+
+  /**
+   * Image cells st draws outside `region` (1-based, inclusive) at `time`, as
+   * "imageId@row,col" (1-based). At rest an image draws whole where it is
+   * placed; while gliding an image anchored in a rectangle is shifted by the
+   * offset and clipped to the bounding box of the rectangles on its anchor
+   * row, and any other image draws whole and still.
+   */
+  imageCellsOutside(region: { top: number; left: number; bottom: number; right: number }, time = this.now()): string[] {
+    const offset = this.glideOffset(time);
+    const outside: string[] = [];
+    for (const placement of this.placementsByKey.values()) {
+      const field = (name: string) => Number(new RegExp(`(?:^|,)${name}=(\\d+)`).exec(placement.controls)?.[1] ?? 1);
+      const columns = field("c");
+      const rows = field("r");
+      let top = placement.row;
+      let bottom = placement.row + rows - 1;
+      let left = placement.col;
+      let right = placement.col + columns - 1;
+      if (offset !== 0) {
+        const onRow = this.glideRects.filter((rect) => placement.row >= rect.top && placement.row <= rect.bottom);
+        const box = onRow.length === 0 ? null : {
+          top: Math.min(...onRow.map((rect) => rect.top)),
+          bottom: Math.max(...onRow.map((rect) => rect.bottom)),
+          left: Math.min(...onRow.map((rect) => rect.left)),
+          right: Math.max(...onRow.map((rect) => rect.right)) - 1,
+        };
+        if (box && placement.col >= box.left && placement.col <= box.right) {
+          top = Math.max(box.top, Math.floor(top + offset));
+          bottom = Math.min(box.bottom, Math.ceil(bottom + offset));
+          left = Math.max(box.left, left);
+          right = Math.min(box.right, right);
+        }
+      }
+      for (let row = top; row <= bottom; row++) {
+        for (let col = left; col <= right; col++) {
+          if (row + 1 < region.top || row + 1 > region.bottom || col + 1 < region.left || col + 1 > region.right) {
+            outside.push(`${placement.imageId}@${row + 1},${col + 1}`);
+          }
+        }
+      }
+    }
+    return outside;
+  }
+
   /** Current placements, sorted by image, placement and position. */
   placements(): VtPlacement[] {
     return [...this.placementsByKey.values()]
@@ -256,6 +345,7 @@ export class VtScreen {
   }
 
   private csi(params: string, final: string): void {
+    if (params === "?2032" && final === "l") this.glideClear();
     if (params.startsWith("?") || params.endsWith(" ") || params.startsWith(">") || params.startsWith("<")) return;
     const args = params === "" ? [] : params.split(";").map((value) => Number(value));
     const n = Math.max(1, args[0] || 1);
@@ -309,6 +399,7 @@ export class VtScreen {
           const end = bel >= 0 && (st < 0 || bel < st) ? bel + 1 : st + 2;
           if (end <= i) throw new Error("VtScreen: unterminated string");
           if (next === "_" && data[i + 2] === "G") this.graphics(data.slice(i + 3, st));
+          if (next === "]" && data.startsWith("2032;", i + 2)) this.glideOsc(data.slice(i + 7, bel >= 0 && (st < 0 || bel < st) ? bel : st));
           i = end;
         } else if (next === "7") {
           this.saved = { row: this.row, col: this.col, sgr: this.sgr };
