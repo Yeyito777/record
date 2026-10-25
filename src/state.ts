@@ -162,6 +162,11 @@ export interface AppState {
   showHiddenChannels: boolean;
   /** Scroll the message pane with terminal scroll regions (config `scrollRegions`). */
   scrollRegions: boolean;
+  /**
+   * The terminal confirmed synchronized updates (DECRQM mode 2026): region
+   * scrolls may then run beside the side panels and around overlays.
+   */
+  synchronizedUpdates: boolean;
   serverCommands: ServerCommandsState;
   whatsapp: WhatsAppUiState;
   instagram: InstagramUiState;
@@ -248,6 +253,7 @@ export function createInitialState(
     channelMuteSettings: {},
     showHiddenChannels: options.showHiddenChannels ?? false,
     scrollRegions: options.scrollRegions ?? true,
+    synchronizedUpdates: false,
     serverCommands: createServerCommandsState(),
     whatsapp: createWhatsAppUiState(),
     instagram: createInstagramUiState(),

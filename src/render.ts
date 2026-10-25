@@ -917,11 +917,13 @@ export function render(state: AppState): void {
     && !state.whatsapp.loginModal
     && !state.imageModal
     && bodyRows > 0;
-  // With app-driven smooth scrolling the band is the longest run of message
-  // rows no overlay touches, beside the sidebar and member list too: their
-  // segments are repainted beside the moved rows in the same update, and
-  // the moving rectangle covers only the pane's columns.
-  const scrollRegion = smooth
+  // With smooth scrolling, or on a terminal that confirmed synchronized
+  // updates (so no frame shows the side panels displaced), the band is the
+  // longest run of message rows no overlay touches, beside the sidebar and
+  // member list too: their segments are repainted beside the moved rows in
+  // the same update, and a moving rectangle covers only the pane's columns.
+  const bands = !!smooth || (state.scrollRegions && state.synchronizedUpdates);
+  const scrollRegion = bands
     ? freeMessageBand(bodyTop, bodyTop + bodyRows - 1, overlayRows)
     : canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null;
   const smoothRects = smooth ? smoothScrollRects(scrollRegion, mainCol, mainW) : [];
@@ -958,9 +960,8 @@ export function render(state: AppState): void {
       { ...sidebarImageOptions, movedRows },
     ),
   );
-  // Under smooth scrolling the frame tells the planners which rows its
-  // region scroll moved.
-  const images: FrameImages = smooth ? planImages : planImages();
+  // Band frames tell the planners which rows their region scroll moved.
+  const images: FrameImages = bands ? planImages : planImages();
 
   flushFrame(state, {
     rows: frameRows,
@@ -969,6 +970,7 @@ export function render(state: AppState): void {
     scrollRegion,
     viewStart,
     regionScrolls: state.scrollRegions,
+    bands,
     graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
     afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled) : undefined,
   }, images);

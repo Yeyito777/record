@@ -127,11 +127,17 @@ scrolled into view, inside one synchronized update (mode 2026). Every terminal
 gets fewer bytes. Inline images and custom emoji are re-placed at their new
 rows in the same update.
 
-On other terminals a region scroll is used only while the pane spans the full
-width (a terminal region scroll moves whole rows; st has no left/right
-margins): with the sidebar or member list open, or an overlay over the pane,
-Record repaints changed rows. Jumps of a pane height or more, resizes and full
-repaints are also unchanged.
+A terminal region scroll moves whole rows (st, like most terminals, has no
+left/right margins), so beside the sidebar or member list the panels' segments
+of the moved rows are repainted in the same synchronized update. Record does
+that only when the terminal confirms synchronized updates: at startup it asks
+with DECRQM (`CSI ? 2026 $ p`), and on a reply of 1 or 2 region scrolls also
+run beside the side panels and around overlays (the band is the longest run of
+message rows no overlay touches; sidebar icons are placed back at their rows).
+Without that confirmation a region scroll is used only while the pane spans the
+full width with no overlay, and Record repaints changed rows otherwise, exactly
+as before. Jumps of a pane height or more, resizes and full repaints are
+unchanged either way.
 
 #### Smooth scrolling (st)
 
@@ -185,7 +191,9 @@ The pinned-messages view is the same pane and glides the same way.
 
 To turn region scrolls off (smooth scrolling included), set
 `"scrollRegions": false` in `config.json` and restart. Record then emits exactly
-what it did before region scrolls existed and never asks about mode 2032.
+what it did before region scrolls existed and never asks about modes 2026 or
+2032. For testing, `RECORD_SMOOTH_SCROLL=off` keeps region scrolls but never
+asks for st's mode 2032 (st then gets the plain region scrolls above).
 
 ### Sidebar icons
 
