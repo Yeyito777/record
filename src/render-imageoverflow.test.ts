@@ -8,6 +8,8 @@ import { appendTimelineMessage, setTimelineInlineImageState, setTimelineMessages
 import { recordTypingStart } from "./typing";
 import type { DiscordMessage } from "./discord";
 import { VtScreen } from "./vtscreen.testutil";
+import { openImageModalState } from "./imagemodal";
+import type { InlineChatImageReady } from "./inlineimage";
 
 // Owner report: "sometimes images clip into the prompt line while scrolling".
 // While a glide runs, Record places an image cut off by the pane's bottom
@@ -133,6 +135,9 @@ function input(change: () => void): void {
   renderFrame();
 }
 
+/** st reports image clip regions (DECRQM ? 2033) in this run. */
+let clipRegions = false;
+
 function setUp(options: { latency?: number; sidebar?: boolean } = {}): void {
   now = 1000;
   stNow = 1000;
@@ -153,6 +158,7 @@ function setUp(options: { latency?: number; sidebar?: boolean } = {}): void {
     requestId: 1, imageId: IMAGE_ID, pngBase64: PNG, pixelWidth: 40, pixelHeight: 120,
   });
   smooth = new SmoothScroller(100, () => now, 30);
+  smooth.useImageClip(clipRegions);
   setSmoothScroller(state, smooth);
   screen = new VtScreen(state.rows, state.cols, () => stNow);
   renderFrame();
@@ -182,7 +188,9 @@ function scroll(delta: number): void {
 beforeEach(() => { violations = []; });
 afterEach(() => { setSmoothScroller(state, null); });
 
-describe("no image cell is drawn outside the message pane (the prompt line stays clear)", () => {
+for (const clip of [false, true]) describe(`no image cell is drawn outside the message pane (the prompt line stays clear)${clip ? ", st clipping to clip regions" : ""}`, () => {
+  beforeEach(() => { clipRegions = clip; });
+
   for (const ms of [0, 2, 12, 40]) {
     test(`a glide back pushing a tall image out through the pane's bottom, ${ms} ms to st`, () => {
       setUp({ latency: ms });
@@ -245,7 +253,8 @@ describe("no image cell is drawn outside the message pane (the prompt line stays
     input(() => recordTypingStart(state.typing, "channel-1", { id: "user-9", displayName: "Cy" }, Date.now()));
     run(now + 1);
     const cropped = screen.placements().find((placement) => placement.imageId === IMAGE_ID)!;
-    expect(cropped.row + rowsOf(cropped.controls) - 1).toBeLessThanOrEqual(pane().bottom);
+    // With clip regions st clips it to the new pane instead (checked below).
+    if (!clipRegions) expect(cropped.row + rowsOf(cropped.controls) - 1).toBeLessThanOrEqual(pane().bottom);
     run(now + 300);
     expect(violations).toEqual([]);
   });
@@ -280,5 +289,56 @@ describe("no image cell is drawn outside the message pane (the prompt line stays
     }
     run(now + 400);
     expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe("with st's image clip regions (mode 2033)", () => {
+  beforeEach(() => { clipRegions = true; });
+  afterEach(() => { clipRegions = false; });
+
+  const clipPayloads = (out: string) => [...out.matchAll(/\x1b\]2032;k((?:;\d+,\d+,\d+,\d+)*)\x1b\\/g)].map((match) => match[1]);
+  const rowsOf = (controls: string) => Number(/(?:^|,)r=(\d+)/.exec(controls)?.[1] ?? 0);
+  const imagePlacement = () => screen.placements().find((placement) => placement.imageId === IMAGE_ID)!;
+  const sent = () => queue.map((entry) => entry.bytes).join("");
+
+  test("the message pane is declared as the clip region, and follows the typing line", () => {
+    setUp();
+    imageAtBottomEdge();
+    input(() => recordTypingStart(state.typing, "channel-1", { id: "user-9", displayName: "Cy" }, Date.now()));
+    const declared = clipPayloads(sent());
+    run(now + 5);
+    // Rows 3 to the pane's new bottom (above the typing line), the pane's columns beside the sidebar.
+    expect(declared).toEqual([`;3,29,${pane().bottom},${state.cols}`]);
+    run(now + 300);
+    expect(violations).toEqual([]);
+  });
+
+  test("an image cut off by the pane's bottom stays placed whole at rest, and no frame crops it", () => {
+    setUp({ latency: 3 });
+    imageAtBottomEdge();
+    scroll(-4);
+    const due = smooth.frameDueIn();
+    // Nothing to crop: st finishes the glide with no further frame.
+    expect(due).toBeNull();
+    run(now + 300);
+    const placed = imagePlacement();
+    expect(placed.row + rowsOf(placed.controls) - 1).toBeGreaterThan(pane().bottom);
+    expect(screen.imageCellsOutside(pane())).toEqual([]);
+    expect(violations).toEqual([]);
+  });
+
+  test("the image viewer opening clears the clip regions and crops images back to the pane", () => {
+    setUp();
+    imageAtBottomEdge();
+    run(now + 300);
+    input(() => {
+      const ready = state.timeline.inlineImages["a1"] as InlineChatImageReady;
+      state.imageModal = openImageModalState({ filename: "tall.png", width: 40, height: 120 }, ready);
+    });
+    const bytes = sent();
+    run(now + 300);
+    expect(clipPayloads(bytes)).toContain("");
+    const placed = imagePlacement();
+    expect(placed.row + rowsOf(placed.controls) - 1).toBeLessThanOrEqual(pane().bottom);
   });
 });

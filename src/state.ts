@@ -13,7 +13,7 @@ import { createHistoryCursor, type HistoryCursor } from "./historycursor";
 import { createMemberListState, type MemberListState } from "./memberlist";
 import { createNotificationState, type NotificationState } from "./notifications";
 import { createSidebarState, type SidebarPreferences, type SidebarState } from "./sidebar";
-import { createTimelineState, type TimelineMessageBound, type TimelineState } from "./timeline";
+import { createTimelineState, type TimelineInlineImagePlacement, type TimelineMessageBound, type TimelineState } from "./timeline";
 import { createTypingState, type TypingState } from "./typing";
 import { normalizeToken } from "./token";
 import type { ClipboardImageAttachment } from "./imageclipboard";
@@ -119,6 +119,10 @@ export interface AppState {
   historyLineBackgrounds: string[];
   historyWrapContinuation: boolean[];
   historyMessageBounds: TimelineMessageBound[];
+  /** Where the last frame drew inline images: clicks on an embed's side-by-side pictures. */
+  historyInlineImages: TimelineInlineImagePlacement[];
+  /** URL of the masked embed link under the mouse, shown in the status line. */
+  historyLinkHover: string | null;
   autocomplete: AutocompleteState | null;
   pendingImages: ClipboardImageAttachment[];
   imageDisplayMode: ImageDisplayMode;
@@ -220,6 +224,8 @@ export function createInitialState(
     historyLineBackgrounds: [],
     historyWrapContinuation: [],
     historyMessageBounds: [],
+    historyInlineImages: [],
+    historyLinkHover: null,
     autocomplete: null,
     pendingImages: [],
     imageDisplayMode: options.imageDisplayMode ?? "show",

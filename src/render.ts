@@ -237,12 +237,20 @@ function historyVisualSelectionRows(
   return { first, last };
 }
 
+/**
+ * Cells the images on a row cover, from the first one's left edge. A row with
+ * images ends where its first image starts (embed rows pad up to it).
+ */
 function inlineImageColumnsOnLine(timeline: RenderedTimeline, lineIndex: number): number {
-  return timeline.inlineImages.reduce((columns, placement) => (
-    lineIndex >= placement.lineIndex && lineIndex < placement.lineIndex + placement.rows
-      ? Math.max(columns, placement.columns)
-      : columns
-  ), 0);
+  let start = Infinity;
+  let end = 0;
+  for (const placement of timeline.inlineImages) {
+    if (lineIndex < placement.lineIndex || lineIndex >= placement.lineIndex + placement.rows) continue;
+    const offset = placement.columnOffset ?? 0;
+    start = Math.min(start, offset);
+    end = Math.max(end, offset + placement.columns);
+  }
+  return end > start ? end - start : 0;
 }
 
 function isHistoryLinePendingDelete(state: AppState, lineIndex: number): boolean {
@@ -376,7 +384,7 @@ function visibleInlineImagePlacements(
       image: placement.image,
       placementId,
       row: bodyTop + visibleStart - viewStart,
-      col: imageCol,
+      col: imageCol + (placement.columnOffset ?? 0),
       columns: placement.columns,
       rows: visibleRows,
       sourceY,
@@ -700,6 +708,7 @@ export function render(state: AppState): void {
   state.historyLineBackgrounds = timeline.lineBackgrounds;
   state.historyWrapContinuation = timeline.wrapContinuation;
   state.historyMessageBounds = timeline.messageBounds;
+  state.historyInlineImages = timeline.inlineImages;
   if (state.chatFocus === "history" && state.historyCursorPendingVisibleBottom && state.historyLines.length > 0) {
     const visibleBottom = state.timeline.scrollOffset + Math.max(0, Math.min(bodyRows, timeline.lines.length) - 1);
     state.historyCursor = { row: Math.min(visibleBottom, state.historyLines.length - 1), col: 0 };
@@ -977,8 +986,16 @@ export function render(state: AppState): void {
   // past the pane. Only while st may still draw the content higher than
   // laid out, and only at the band's bottom edge: otherwise images are
   // cropped to the pane exactly as without smooth scrolling.
+  // With st's image clip regions the pane is one: images there never draw
+  // outside it, so one cut off by the pane's bottom stays placed whole, at
+  // rest too, and slides in and out with no crop to race st's clock. Not
+  // while the image viewer is open (its placement is anchored in the pane).
+  const imageClips = smooth?.imageClipSupported && bodyRows > 0 && !state.imageModal
+    ? [{ top: bodyTop, left: mainCol, bottom: paneBottom, right: mainCol + mainW - 1 }]
+    : [];
   const imagePlacements = (): InlineTerminalImagePlacement[] => {
-    const extend = !!smooth?.extendBelow() && scrollRegion?.end === paneBottom && !paneEdgeMoved;
+    const extend = imageClips.length > 0
+      || (!!smooth?.extendBelow() && scrollRegion?.end === paneBottom && !paneEdgeMoved);
     // An image starts one column into the pane: a pane too narrow to hold
     // one (both side panels open on a narrow terminal) shows none rather
     // than placing it over the member list.
@@ -993,7 +1010,9 @@ export function render(state: AppState): void {
         state.imageModal ? null : selectedHistoryRows,
         extend,
       );
-    smooth?.noteImagesExtended(placements.some((placement) => placement.row + placement.rows - 1 > paneBottom));
+    // Clipped by st, nothing past the pane needs cropping again.
+    smooth?.noteImagesExtended(imageClips.length === 0
+      && placements.some((placement) => placement.row + placement.rows - 1 > paneBottom));
     if (viewerPlacement) placements.push(viewerPlacement);
     return placements;
   };
@@ -1036,6 +1055,6 @@ export function render(state: AppState): void {
     regionScrolls: state.scrollRegions,
     bands,
     graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
-    afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled) : undefined,
+    afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled, imageClips) : undefined,
   }, images);
 }

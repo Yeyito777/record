@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { customEmojiImages } from "./customemoji";
+import { embedImageSources } from "./embeds";
 
 import { invalidateFrame } from "./frame";
 import { openImageModalState } from "./imagemodal";
@@ -58,8 +59,20 @@ function message(index: number, options: { image?: boolean; channelId?: string; 
       ? [{ id: `a${index}`, filename: `img${index}.png`, contentType: "image/png", size: 68, url: `https://cdn.example/img${index}.png` }]
       : [],
     stickerNames: [],
-    embedsCount: 0,
+    ...embedsFor(index),
   };
+}
+
+/** Some messages carry embeds: a thumbnail beside text, or a two-picture gallery below it. */
+function embedsFor(index: number): Pick<DiscordMessage, "embeds" | "embedsCount"> {
+  const picture = (name: string) => ({ url: `https://cdn.example/${name}`, proxyUrl: null, width: 400, height: 300 });
+  const base = { type: "rich", title: `Embed ${index}`, url: `https://news.example/${index}`, description: "an embed description that wraps beside its thumbnail ".repeat(2), providerName: null, authorName: null };
+  const embeds = index % 7 === 3
+    ? [{ ...base, thumbnail: picture(`thumb${index}.png`) }]
+    : index % 11 === 6
+      ? [{ ...base, image: picture(`g${index}a.png`) }, { ...base, title: null, description: null, image: picture(`g${index}b.png`) }]
+      : [];
+  return { embeds, embedsCount: embeds.length };
 }
 
 function readyImage(attachmentId: string, url: string, index: number): InlineChatImageReady {
@@ -82,6 +95,9 @@ function showImages(state: AppState, messages: readonly DiscordMessage[]): void 
     for (const attachment of entry.attachments) {
       setTimelineInlineImageState(state.timeline, readyImage(attachment.id, attachment.url, Number(entry.id) - 10_000 + 1000));
     }
+    embedImageSources(entry).forEach((source, index) => {
+      setTimelineInlineImageState(state.timeline, readyImage(source.id, source.url, (Number(entry.id) - 10_000) * 10 + 5000 + index));
+    });
   }
 }
 

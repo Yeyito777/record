@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import {
+  imageClipPayload,
+  parseImageClipReport,
   SMOOTH_SCROLL_IMAGE_CROP_ROWS,
   SMOOTH_SCROLL_MARGIN_ROWS,
   SmoothScroller,
@@ -28,6 +30,23 @@ describe("mode 2032 protocol", () => {
     expect(control).toEqual(["\x1b[?2032;2$y"]);
     expect(input).toEqual(["j"]);
     buffer.dispose();
+  });
+
+  test("image clip regions: DECRQM 2033 replies, routing and the k payload", () => {
+    expect(parseImageClipReport("\x1b[?2033;3$y")).toBe(true);
+    expect(parseImageClipReport("\x1b[?2033;1$y")).toBe(true);
+    expect(parseImageClipReport("\x1b[?2033;4$y")).toBe(false);
+    expect(parseImageClipReport("\x1b[?2033;0$y")).toBe(false);
+    expect(parseImageClipReport("\x1b[?2032;3$y")).toBeNull();
+    const input: string[] = [];
+    const control: string[] = [];
+    const buffer = new TerminalControlBuffer((data) => input.push(data), (sequence) => control.push(sequence));
+    buffer.feed("\x1b[?2033;3$yj");
+    expect(control).toEqual(["\x1b[?2033;3$y"]);
+    expect(input).toEqual(["j"]);
+    buffer.dispose();
+    expect(imageClipPayload([{ top: 3, left: 29, bottom: 40, right: 140 }])).toBe("\x1b]2032;k;3,29,40,140\x1b\\");
+    expect(imageClipPayload([])).toBe("\x1b]2032;k\x1b\\");
   });
 
   test("payloads", () => {

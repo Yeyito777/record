@@ -9,7 +9,7 @@ import {
   type SidebarVisibilityOptions,
 } from "./sidebar";
 import { clampHistoryCol, stripAnsi } from "./historycursor";
-import { historyTargetAt, isInlineImageBodyRow } from "./historyopenable";
+import { embedMaskedLinkAt, historyTargetAt, inlineImageIdAtHistoryCell, isInlineImageBodyRow } from "./historyopenable";
 import { focusSidebar, type AppState } from "./state";
 import { mouseCursorHand, mouseCursorPointer, mouseCursorText } from "./terminal";
 import { nextWidthClusterEnd, termWidth } from "./textwidth";
@@ -71,9 +71,11 @@ function historyPositionAt(state: AppState, col: number, row: number): { row: nu
     width += size;
     offset = end;
   }
-  // Image rows have no text: anywhere on one is the image.
-  const exact = target >= 0 && (offset < plain.length || isInlineImageBodyRow(state, line));
-  return { row: line, col: clampHistoryCol(offset, state.historyLines, line), exact };
+  // Image rows have no text: anywhere on one is the image. An image beside
+  // text or another image (embeds) is hit by its own cells.
+  const onImage = target >= 0 && inlineImageIdAtHistoryCell(state, line, target) !== null;
+  const exact = target >= 0 && (offset < plain.length || isInlineImageBodyRow(state, line) || onImage);
+  return { row: line, col: onImage ? target : clampHistoryCol(offset, state.historyLines, line), exact };
 }
 
 /** I-beam over text; a hand over history images, attachments and links a click opens. */
@@ -89,6 +91,9 @@ function chatCursorShape(state: AppState, col: number, row: number): "hand" | "t
 
 function updateMouseCursor(ev: MouseEvent, state: AppState, writeCursor: CursorWriter): void {
   const inSidebar = state.sidebar.open && ev.col >= 1 && ev.col <= SIDEBAR_WIDTH;
+  // A masked embed link shows where it goes (statusblocks/linkhint.ts).
+  const position = !inSidebar && chatAreaAt(state, ev.col, ev.row) === "history" ? historyPositionAt(state, ev.col, ev.row) : null;
+  state.historyLinkHover = position?.exact ? embedMaskedLinkAt(state, position) : null;
   const shape = inSidebar && sidebarHitTest(
     state.sidebar,
     state.channelList.channels,

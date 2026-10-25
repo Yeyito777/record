@@ -97,6 +97,8 @@ export class VtScreen {
   private glideRects: { top: number; bottom: number; left: number; right: number }[] = [];
   private glideBase = 0;
   private glideTerms: { rows: number; start: number; ms: number }[] = [];
+  /** Image clip regions (OSC 2032 ; k, st mode 2033), same form as glideRects. */
+  private glideClips: { top: number; bottom: number; left: number; right: number }[] = [];
 
   constructor(public rows: number, public cols: number, private readonly now: () => number = () => 0) {
     this.bottom = rows - 1;
@@ -242,6 +244,7 @@ export class VtScreen {
 
   private glideClear(): void {
     this.glideRects = [];
+    this.glideClips = [];
     this.glideBase = 0;
     this.glideTerms = [];
   }
@@ -249,9 +252,11 @@ export class VtScreen {
   /** OSC 2032 ; r | m | o | c (st docs/app-smooth-scroll.md). */
   private glideOsc(body: string): void {
     const [kind, ...args] = body.split(";");
-    if (kind === "r") {
-      this.glideRects = args.map((arg) => arg.split(",").map(Number)).filter((rect) => rect.length === 4)
+    if (kind === "r" || kind === "k") {
+      const rects = args.map((arg) => arg.split(",").map(Number)).filter((rect) => rect.length === 4)
         .map(([top, left, bottom, right]) => ({ top: top! - 1, bottom: bottom! - 1, left: left! - 1, right: right! }));
+      if (kind === "r") this.glideRects = rects;
+      else this.glideClips = rects;
     } else if (kind === "m") {
       this.glideBase += Number(args[0] ?? 0) / 1000;
       const ease = Number(args[1] ?? 0);
@@ -280,7 +285,9 @@ export class VtScreen {
    * "imageId@row,col" (1-based). At rest an image draws whole where it is
    * placed; while gliding an image anchored in a rectangle is shifted by the
    * offset and clipped to the bounding box of the rectangles on its anchor
-   * row, and any other image draws whole and still.
+   * row, and any other image draws whole and still. An image anchored in an
+   * image clip region (OSC 2032 ; k) is also clipped, at rest and gliding, to
+   * the bounding box of the clip regions on its anchor row.
    */
   imageCellsOutside(region: { top: number; left: number; bottom: number; right: number }, time = this.now()): string[] {
     const offset = this.glideOffset(time);
@@ -307,6 +314,13 @@ export class VtScreen {
           left = Math.max(box.left, left);
           right = Math.min(box.right, right);
         }
+      }
+      const clipsOnRow = this.glideClips.filter((rect) => placement.row >= rect.top && placement.row <= rect.bottom);
+      if (clipsOnRow.some((rect) => placement.col >= rect.left && placement.col < rect.right)) {
+        top = Math.max(top, Math.min(...clipsOnRow.map((rect) => rect.top)));
+        bottom = Math.min(bottom, Math.max(...clipsOnRow.map((rect) => rect.bottom)));
+        left = Math.max(left, Math.min(...clipsOnRow.map((rect) => rect.left)));
+        right = Math.min(right, Math.max(...clipsOnRow.map((rect) => rect.right)) - 1);
       }
       for (let row = top; row <= bottom; row++) {
         for (let col = left; col <= right; col++) {

@@ -41,6 +41,25 @@ export function rectsPayload(rects: readonly ScrollRect[]): string {
   return `${ESC}]2032;r${list}${ST}`;
 }
 
+/**
+ * st's image clip regions (DECRQM ? 2033, OSC 2032 ; k): an image anchored
+ * in a clip region never draws outside it, at rest or while gliding, so an
+ * image cut off by the pane's edge can stay placed whole past it.
+ */
+export const IMAGE_CLIP_QUERY = `${ESC}[?2033$p`;
+
+/** DECRQM reply for mode 2033: true when st clips images to clip regions, null if not a reply. */
+export function parseImageClipReport(sequence: string): boolean | null {
+  const match = /^\x1b\[\?2033;([0-4])\$y$/.exec(sequence);
+  if (!match) return null;
+  return match[1] === "1" || match[1] === "3";
+}
+
+export function imageClipPayload(rects: readonly ScrollRect[]): string {
+  const list = rects.map((rect) => `;${rect.top},${rect.left},${rect.bottom},${rect.right}`).join("");
+  return `${ESC}]2032;k${list}${ST}`;
+}
+
 export function offsetPayload(thousandths: number): string {
   return `${ESC}]2032;o;${thousandths}${ST}`;
 }
@@ -124,6 +143,9 @@ export class SmoothScroller {
   /** The region the glide's last region scroll moved: the lines st keeps for it. */
   private keptRegion: { start: number; end: number } | null = null;
   private sentRects = "";
+  private sentClip = "";
+  /** st clips images to clip regions (mode 2033): images may stay placed past the pane. */
+  private imageClip = false;
   private context: string | null = null;
   /** The user scrolled since the last layout (markScrollIntent). */
   private intent = false;
@@ -289,6 +311,7 @@ export class SmoothScroller {
     rects: readonly ScrollRect[],
     intact = false,
     scrolled: { start: number; end: number } | null = null,
+    imageClips: readonly ScrollRect[] = [],
   ): string {
     const time = this.now();
     // The band (less 3 rows) is how far the next frames' region scrolls go.
@@ -333,6 +356,13 @@ export class SmoothScroller {
     if (rectKey !== this.sentRects) {
       out += rectKey;
       this.sentRects = rectKey;
+    }
+    if (this.imageClip) {
+      const clipKey = imageClipPayload(imageClips);
+      if (clipKey !== this.sentClip) {
+        out += clipKey;
+        this.sentClip = clipKey;
+      }
     }
     return out + this.takeMotion();
   }
@@ -445,9 +475,21 @@ export class SmoothScroller {
     this.relayout = true;
   }
 
+  /** st reported (true) image clip regions (mode 2033). */
+  useImageClip(supported: boolean): void {
+    this.imageClip = supported;
+    this.sentClip = "";
+  }
+
+  /** Images may be clipped to clip regions sent with afterFlush. */
+  get imageClipSupported(): boolean {
+    return this.imageClip;
+  }
+
   /** The terminal dropped its state (resize, screen switch): send it again. */
   terminalReset(): void {
     this.sentRects = "";
+    this.sentClip = "";
     this.terminalNonzero = false;
   }
 }
