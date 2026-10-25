@@ -909,6 +909,34 @@ describe("session", () => {
     expect(state.channelList.channels.map((channel) => channel.id)).toEqual(["channel-1", "joined-thread"]);
   });
 
+  test("fetches server roles two at a time and waits out a 429 instead of dropping it", async () => {
+    let running = 0;
+    let maxRunning = 0;
+    const attemptsByGuild = new Map<string, number>();
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const match = /\/guilds\/(guild-\d+)\/roles/.exec(String(input));
+      if (!match) throw new Error(`unexpected fetch ${String(input)}`);
+      const guildId = match[1]!;
+      const attempt = (attemptsByGuild.get(guildId) ?? 0) + 1;
+      attemptsByGuild.set(guildId, attempt);
+      running += 1;
+      maxRunning = Math.max(maxRunning, running);
+      await Bun.sleep(5);
+      running -= 1;
+      if (guildId === "guild-3" && attempt === 1) {
+        return new Response(JSON.stringify({ message: "You are being rate limited.", retry_after: 0.02, global: false }), { status: 429, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify([{ id: guildId, name: "@everyone", color: 0, position: 0, permissions: "1024" }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    for (let index = 1; index <= 6; index++) loadGuildRolesInBackground(state, "token-1", `guild-${index}`, { scheduleRender: () => {} });
+    for (let wait = 0; wait < 100 && Object.keys(state.guildRolesByGuildId).length < 6; wait++) await Bun.sleep(5);
+
+    expect(maxRunning).toBe(2);
+    expect(Object.keys(state.guildRolesByGuildId).sort()).toEqual(["guild-1", "guild-2", "guild-3", "guild-4", "guild-5", "guild-6"]);
+    expect(attemptsByGuild.get("guild-3")).toBe(2);
+  });
+
   test("refetches cached guild roles that lack names", async () => {
     let roleFetches = 0;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
