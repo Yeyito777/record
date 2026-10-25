@@ -67,6 +67,7 @@ function channel(state: InstagramUiState, thread: IgThread, position: number, re
     name: request ? `Request · ${name}` : name, topic: null, position, type: thread.isGroup ? 3 : 1, nsfw: false,
     muted: isInstagramThreadMuted(state.muteOverridesByThreadId, { thread_id: thread.id, muted: thread.muted }),
     recipients: thread.users.map(user => ({ ...author(user), bot: false })),
+    ...(!thread.isGroup && thread.users[0]?.picUrl ? { pictureUrl: thread.users[0].picUrl } : {}),
   };
 }
 

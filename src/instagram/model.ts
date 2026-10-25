@@ -12,6 +12,8 @@ export interface IgUser {
   username: string;
   name: string;
   verified?: boolean;
+  /** `profile_pic_url` from the payload (Instagram CDN), for sidebar avatars. */
+  picUrl?: string;
 }
 
 export interface IgMediaItem {
@@ -148,6 +150,7 @@ function user(json: Json): IgUser | null {
   return {
     id, fbid: str(json.interop_messaging_user_fbid), username: str(json.username),
     name: str(json.full_name), ...(json.is_verified ? { verified: true } : {}),
+    ...(igMediaUrl(json.profile_pic_url) ? { picUrl: igMediaUrl(json.profile_pic_url)! } : {}),
   };
 }
 

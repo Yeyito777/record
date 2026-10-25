@@ -16,6 +16,20 @@ const share = (xma: Record<string, unknown>, contentType = "MESSAGE_INLINE_SHARE
   return content.share;
 };
 
+describe("Instagram users", () => {
+  test("keep their CDN profile picture URL for sidebar avatars", () => {
+    const thread = parseThread({
+      thread_fbid: "340282366841710300", viewer: { id: "1" },
+      users: [
+        { id: "2", username: "ana", full_name: "Ana", profile_pic_url: cdn("ana.jpg") },
+        { id: "3", username: "bo", full_name: "Bo", profile_pic_url: "https://evil.example/bo.jpg" },
+        { id: "4", username: "cy", full_name: "Cy" },
+      ],
+    })!;
+    expect(thread.users.map(user => user.picUrl)).toEqual([cdn("ana.jpg"), undefined, undefined]);
+  });
+});
+
 describe("Instagram item parsing", () => {
   test("text, heart, system and unsent", () => {
     expect(parseContent(node({ __typename: "SlideMessageText", text_body: "hey" }))).toEqual({ kind: "text", text: "hey" });

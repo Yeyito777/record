@@ -191,18 +191,33 @@ between the expand marker and the name. Servers without an icon, and icons
 still loading or unavailable, show a tile with the server's initials in the
 same box. Direct-message rows show the other person's avatar (group DMs their
 group picture) in place of the `#` marker; the Direct Messages, WhatsApp and
-Instagram roots show DM / WA / IG tiles. WhatsApp and Instagram conversations
-show initials tiles: their pictures would need extra requests through the
-logged-in session, so Record does not fetch them. Elsewhere the sidebar looks
-exactly as before.
+Instagram roots show DM / WA / IG tiles. WhatsApp chats show their profile or
+group picture and Instagram one-to-one chats the other person's avatar;
+Instagram groups and anyone without a picture get initials. Elsewhere the
+sidebar looks exactly as before.
 
-- Icons and avatars are 64 px PNGs from Discord's CDN (animated ones show
-  their first frame). No login token is sent with these requests.
-- Only rows on screen and about a screen above and below are fetched, visible
-  rows first, four at a time. A failed download is retried after a minute.
-- Downloaded icons are kept in `~/.config/record/image-cache/sidebar/` (one
-  file per server or person; a changed picture replaces the old file) and reused after a
-  restart without a request.
+- Discord icons and avatars are 64 px PNGs from Discord's CDN (animated ones
+  show their first frame). No login token is sent with these requests.
+- A WhatsApp picture costs one normal profile-picture query (preview size)
+  through the logged-in session, then a download of the URL it returns. An
+  Instagram avatar is a download of the `profile_pic_url` the inbox already
+  carried; no extra Instagram API call is made. JPEGs are converted to a
+  small PNG with `ffmpeg` once, before caching.
+- Only rows on screen are fetched, visible rows first, plus a little
+  lookahead: about a screen for Discord, three rows for WhatsApp and
+  Instagram. At most four Discord, two Instagram and one WhatsApp request are
+  in flight at once.
+- Pictures and "has no picture" answers (404, or a WhatsApp picture hidden by
+  privacy) are kept in `~/.config/record/image-cache/sidebar/`, one file per
+  server or chat, and reused after a restart without a request. Discord
+  pictures are keyed by their hash and never go stale; WhatsApp and Instagram
+  pictures are asked for again after 7 days, "no picture" after 3 days
+  (WhatsApp) or 7 days (Instagram). A failed refresh keeps showing the old
+  picture.
+- After an error (offline, rate limit, server error) that platform pauses for
+  a minute, doubling up to 30 minutes, and only rows still on screen are
+  asked for again; nothing is retried in a loop. WhatsApp is never asked
+  while disconnected.
 - The terminal keeps icon data once sent (up to 256 off-screen icons /
   16 MiB), so scrolling, collapsing, toggling the sidebar or closing an
   overlay only places them again. An icon the terminal rejects three times
