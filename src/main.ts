@@ -61,7 +61,7 @@ import { cancelPromptReaction, handlePromptPrefixBackspace } from "./promptbacks
 import { clearPrompt, restoreReactionDraft } from "./promptstate";
 import { beginReactionComposer } from "./reactionprompt";
 import { configuredQuickReaction, DEFAULT_QUICK_REACTION, handleQuickReactionKey, resetQuickReaction } from "./quickreactions";
-import { invalidateFrame } from "./frame";
+import { SYNCHRONIZED_UPDATES_QUERY, invalidateFrame, parseSynchronizedUpdatesReport } from "./frame";
 import { render } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
@@ -366,6 +366,8 @@ function renderImmediately(): void {
   renderFrame();
 }
 
+/** RECORD_SMOOTH_SCROLL=off: never ask for st's mode 2032 (testing). */
+const smoothScrollAllowed = process.env.RECORD_SMOOTH_SCROLL !== "off";
 let smoothScrollTimer: ReturnType<typeof setTimeout> | null = null;
 let smoothScrollWasBusy = false;
 
@@ -2535,8 +2537,12 @@ function setupTerminal(): void {
     enterAlt
       + hideCursor
       + queryTerminalCellSize()
-      // App-driven smooth scrolling (st mode 2032) needs region scrolls.
-      + (state.scrollRegions ? SMOOTH_SCROLL_QUERY : "")
+      // Region scrolls beside the side panels need synchronized updates
+      // (mode 2026) confirmed; app-driven smooth scrolling (st mode 2032)
+      // needs region scrolls. RECORD_SMOOTH_SCROLL=off skips the latter
+      // (testing the plain region scrolls in st).
+      + (state.scrollRegions ? SYNCHRONIZED_UPDATES_QUERY : "")
+      + (state.scrollRegions && smoothScrollAllowed ? SMOOTH_SCROLL_QUERY : "")
       + enableBracketedPaste
       + queryClipboardPasteEvents
       + enableClipboardPasteEvents
@@ -2704,9 +2710,18 @@ async function main(): Promise<void> {
       if (ready !== null) processInput(ready);
     },
     (sequence) => {
+      const synchronized = parseSynchronizedUpdatesReport(sequence);
+      if (synchronized !== null) {
+        if (synchronized && state.scrollRegions && !state.synchronizedUpdates) {
+          state.synchronizedUpdates = true;
+          invalidateFrame(state);
+          scheduleRender();
+        }
+        return;
+      }
       const smoothSupported = parseSmoothScrollReport(sequence);
       if (smoothSupported !== null) {
-        if (smoothSupported && state.scrollRegions && !smoothScrollerFor(state)) {
+        if (smoothSupported && state.scrollRegions && smoothScrollAllowed && !smoothScrollerFor(state)) {
           process.stdout.write(SMOOTH_SCROLL_ON);
           setSmoothScroller(state, new SmoothScroller());
           invalidateFrame(state);
