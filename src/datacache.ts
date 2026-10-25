@@ -598,7 +598,11 @@ function parseSidebarFolderLayout(value: unknown): SidebarFolderLayout | null {
       };
     }
   }
-  return { folders, guildPlacements };
+  const folderIds = new Set(folders.map((folder) => folder.id));
+  const expandedFolderIds = Array.isArray(candidate.expandedFolderIds)
+    ? uniqueStringList(candidate.expandedFolderIds).filter((id) => folderIds.has(id))
+    : [];
+  return { folders, guildPlacements, expandedFolderIds };
 }
 
 export function loadCachedSidebarFolders(accountId: string): SidebarFolderLayout | null {
@@ -613,6 +617,36 @@ export function loadCachedSidebarFolders(accountId: string): SidebarFolderLayout
 
 export function saveCachedSidebarFolders(accountId: string, layout: SidebarFolderLayout): void {
   const file: SidebarFoldersCacheFile = { version: CACHE_VERSION, accountId, layout, savedAt: Date.now() };
+  writeJsonFileAtomicSync(sidebarFoldersPath(accountId), `${JSON.stringify(file)}\n`);
+}
+
+/**
+ * Record which tree-view folders are expanded without touching anything else
+ * in the saved layout. The file is rewritten only when it holds exactly the
+ * folders the caller has loaded (so a sidebar that has not loaded this
+ * account's layout yet never overwrites it), every other field kept as read.
+ */
+export function saveCachedSidebarFolderExpansion(
+  accountId: string,
+  loadedFolderIds: readonly string[],
+  expandedFolderIds: readonly string[],
+): void {
+  let parsed: Partial<SidebarFoldersCacheFile>;
+  try {
+    parsed = JSON.parse(readFileSync(sidebarFoldersPath(accountId), "utf8")) as Partial<SidebarFoldersCacheFile>;
+  } catch {
+    return;
+  }
+  if (parsed.version !== CACHE_VERSION || parsed.accountId !== accountId || typeof parsed.layout !== "object" || parsed.layout === null) return;
+  const layout = parseSidebarFolderLayout(parsed.layout);
+  if (!layout) return;
+  const folderIds = new Set(layout.folders.map((folder) => folder.id));
+  const loaded = new Set(loadedFolderIds);
+  if (loaded.size !== folderIds.size || [...loaded].some((id) => !folderIds.has(id))) return;
+  const next = uniqueStringList(expandedFolderIds).filter((id) => folderIds.has(id));
+  const current = layout.expandedFolderIds ?? [];
+  if (next.length === current.length && next.every((id) => current.includes(id))) return;
+  const file = { ...parsed, layout: { ...parsed.layout, expandedFolderIds: next }, savedAt: Date.now() };
   writeJsonFileAtomicSync(sidebarFoldersPath(accountId), `${JSON.stringify(file)}\n`);
 }
 
