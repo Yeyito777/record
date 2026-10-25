@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import {
+  SMOOTH_SCROLL_IMAGE_CROP_ROWS,
   SMOOTH_SCROLL_MARGIN_ROWS,
   SmoothScroller,
   easeRemaining,
@@ -291,6 +292,60 @@ describe("SmoothScroller", () => {
     smooth.layout(5, 100, 0, 20, "a");
     expect(moves(smooth.afterFlush(1, rects, true))).toEqual([]);
     expect(smooth.busy()).toBe(false);
+  });
+
+  test("images extend past the pane only while st may still draw the content higher, and are cropped before st rests", () => {
+    for (const rows of [1, 3, 10, 15]) {
+      const smooth = scroller();
+      smooth.layout(10, 100, 0, 30, "a");
+      smooth.afterFlush(0, rects, false, band);
+      // Back in history: the content eases down from drawn higher (offset < 0).
+      smooth.intend();
+      const grid = smooth.layout(10 + rows, 100, 0, 30, "a");
+      smooth.afterFlush(10 - grid, rects, true, band);
+      expect(smooth.extendBelow()).toBe(true);
+      smooth.noteImagesExtended(true);
+      const start = now;
+      const due = smooth.frameDueIn();
+      expect(due).not.toBeNull();
+      now += due!;
+      expect(smooth.frameDueIn()).toBe(0);
+      expect(smooth.extendBelow()).toBe(false);
+      // What st still draws higher then is at most the threshold, and its glide
+      // (which started no earlier than Record's) has at least 13 ms to go.
+      expect(-rows * easeRemaining((now - start) / 100)).toBeGreaterThanOrEqual(-SMOOTH_SCROLL_IMAGE_CROP_ROWS);
+      expect(start + 100 - now).toBeGreaterThanOrEqual(13);
+      smooth.noteImagesExtended(false);
+      // Nothing else is due: st finishes the glide on its own (no wake at rest).
+      expect(smooth.frameDueIn()).toBeNull();
+    }
+  });
+
+  test("a glide forward (content drawn lower) never extends images past the pane", () => {
+    const smooth = scroller();
+    smooth.layout(10, 100, 0, 30, "a");
+    smooth.afterFlush(0, rects, false, band);
+    smooth.intend();
+    const grid = smooth.layout(4, 100, 0, 30, "a");
+    smooth.afterFlush(10 - grid, rects, true, band);
+    expect(smooth.busy()).toBe(true);
+    expect(smooth.extendBelow()).toBe(false);
+    expect(smooth.frameDueIn()).toBeNull();
+  });
+
+  test("a glide the frame stops (offset reset) extends nothing", () => {
+    const smooth = scroller();
+    smooth.layout(10, 100, 0, 20, "a");
+    smooth.afterFlush(0, rects, false, band);
+    smooth.intend();
+    const grid = smooth.layout(14, 100, 0, 20, "a");
+    smooth.afterFlush(10 - grid, rects, true, band);
+    expect(smooth.extendBelow()).toBe(true);
+    now += 10;
+    // An overlay took the band's last rows: the rest of the glide snaps.
+    smooth.layout(14, 100, 0, 20, "a");
+    smooth.afterFlush(0, [{ ...rects[0]!, bottom: 15 }]);
+    expect(smooth.extendBelow()).toBe(false);
   });
 
   test("a resize makes it send its rectangles again", () => {
