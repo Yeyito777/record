@@ -116,6 +116,8 @@ export class CustomEmojiImageRenderer {
    * their row and selection. Null while placements are anonymous (finishFrame).
    */
   private tracked: Map<string, { imageId: number; placementId: number; row: number; selected: boolean }> | null = null;
+  /** Something may be placed: the next frame without emoji deletes it. */
+  private mayHavePlacements = false;
 
   constructor(options: CustomEmojiImageRendererOptions = {}) {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
@@ -252,6 +254,11 @@ export class CustomEmojiImageRenderer {
     const key = placements
       .map((placement) => `${placement.emoji.imageId}@${placement.row},${placement.col}:${placement.selected ? 1 : 0}`)
       .join(";");
+    this.tracked = null;
+    // A terminal without Kitty graphics gets no graphics commands (tmux, for
+    // one, shows them as the pane's title).
+    if (placements.length === 0 && !this.mayHavePlacements) return { key, payload: "" };
+    this.mayHavePlacements = placements.length > 0;
 
     let payload = this.transmitEntering(placements);
     payload += kittyGraphicsDeleteZ(EMOJI_Z_INDEX);
@@ -265,7 +272,6 @@ export class CustomEmojiImageRenderer {
       });
     }
 
-    this.tracked = null;
     return { key, payload };
   }
 
@@ -289,6 +295,7 @@ export class CustomEmojiImageRenderer {
   finishTrackedFrame(batch: CustomEmojiRenderBatch): (scrolled: { start: number; end: number } | null) => string {
     const placements = this.enabled ? batch.placements : [];
     return (scrolled) => {
+      if (placements.length === 0 && !this.mayHavePlacements) return "";
       let payload = this.transmitEntering(placements);
       if (!this.tracked) {
         // Anonymous placements from finishFrame (or none): start clean.
@@ -327,6 +334,7 @@ export class CustomEmojiImageRenderer {
           selected: placement.selected,
         });
       }
+      this.mayHavePlacements = this.tracked.size > 0;
       return payload;
     };
   }
@@ -334,6 +342,7 @@ export class CustomEmojiImageRenderer {
   cleanupSequence(): string {
     this.lastVisibleImageIds.clear();
     this.tracked = null;
+    this.mayHavePlacements = false;
     return kittyGraphicsDeleteImageRange(IMAGE_ID_FIRST, IMAGE_ID_LAST);
   }
 
