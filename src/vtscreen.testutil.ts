@@ -3,7 +3,9 @@
  *
  * Understands what Record's frames emit: CUP, EL, DECSTBM, SU/SD, LF at the
  * bottom margin, SGR (kept per cell as raw text), DECSC/DECRC, and skips
- * private modes, cursor styles, APC graphics and OSC strings.
+ * private modes, cursor styles and OSC strings. Kitty graphics placements
+ * (APC G a=p / a=d) are tracked like st does: anchored to their cell, moved by
+ * region scrolls and dropped when their anchor row scrolls out.
  */
 
 import { termWidth } from "./textwidth";
@@ -11,6 +13,16 @@ import { termWidth } from "./textwidth";
 interface Cell {
   ch: string;
   sgr: string;
+}
+
+/** A Kitty placement as the terminal holds it (zero-based anchor cell). */
+export interface VtPlacement {
+  imageId: number;
+  placementId: number;
+  row: number;
+  col: number;
+  /** The placement's other controls, e.g. `c=2,r=1,C=1,z=1478`. */
+  controls: string;
 }
 
 export class VtScreen {
@@ -21,6 +33,8 @@ export class VtScreen {
   private bottom: number;
   private sgr = "";
   private saved = { row: 0, col: 0, sgr: "" };
+  private readonly placementsByKey = new Map<string, VtPlacement>();
+  private anonymousPlacements = 0;
 
   constructor(readonly rows: number, readonly cols: number) {
     this.bottom = rows - 1;
@@ -40,6 +54,7 @@ export class VtScreen {
       this.grid.splice(this.top, 1);
       this.grid.splice(this.bottom, 0, this.blankRow());
     }
+    this.movePlacements(-n);
   }
 
   private scrollDown(n: number): void {
@@ -47,6 +62,47 @@ export class VtScreen {
       this.grid.splice(this.bottom, 1);
       this.grid.splice(this.top, 0, this.blankRow());
     }
+    this.movePlacements(n);
+  }
+
+  private movePlacements(rows: number): void {
+    for (const [key, placement] of this.placementsByKey) {
+      if (placement.row < this.top || placement.row > this.bottom) continue;
+      placement.row += rows;
+      if (placement.row < this.top || placement.row > this.bottom) this.placementsByKey.delete(key);
+    }
+  }
+
+  private graphics(body: string): void {
+    const controls = new Map(body.split(";", 1)[0]!.split(",").map((field) => {
+      const equals = field.indexOf("=");
+      return [field.slice(0, equals), field.slice(equals + 1)] as const;
+    }));
+    const action = controls.get("a");
+    const imageId = Number(controls.get("i") ?? 0);
+    const placementId = Number(controls.get("p") ?? 0);
+    if (action === "p") {
+      const rest = [...controls].filter(([name]) => !["a", "i", "p", "q"].includes(name)).map(([name, value]) => `${name}=${value}`).join(",");
+      const key = placementId ? `${imageId}:${placementId}` : `${imageId}:anon${++this.anonymousPlacements}`;
+      this.placementsByKey.set(key, { imageId, placementId, row: this.row, col: this.col, controls: rest });
+      return;
+    }
+    if (action !== "d") return;
+    const what = controls.get("d") ?? "a";
+    for (const [key, placement] of this.placementsByKey) {
+      const remove = what === "a" || what === "A"
+        || ((what === "i" || what === "I") && placement.imageId === imageId && (!placementId || placement.placementId === placementId))
+        || (what === "z" && placement.controls.split(",").includes(`z=${controls.get("z")}`))
+        || ((what === "r" || what === "R") && placement.imageId >= Number(controls.get("x")) && placement.imageId <= Number(controls.get("y")));
+      if (remove) this.placementsByKey.delete(key);
+    }
+  }
+
+  /** Current placements, sorted by image, placement and position. */
+  placements(): VtPlacement[] {
+    return [...this.placementsByKey.values()]
+      .map((placement) => ({ ...placement }))
+      .sort((a, b) => a.imageId - b.imageId || a.placementId - b.placementId || a.row - b.row || a.col - b.col);
   }
 
   private csi(params: string, final: string): void {
@@ -97,11 +153,12 @@ export class VtScreen {
           this.csi(match[1]!, match[2]!);
           i += match[0].length;
         } else if (next === "_" || next === "]") {
-          // APC/OSC: skip to ST (ESC \) or BEL.
+          // APC/OSC: skip to ST (ESC \) or BEL; track Kitty graphics placements.
           const st = data.indexOf("\x1b\\", i + 2);
           const bel = next === "]" ? data.indexOf("\x07", i + 2) : -1;
           const end = bel >= 0 && (st < 0 || bel < st) ? bel + 1 : st + 2;
           if (end <= i) throw new Error("VtScreen: unterminated string");
+          if (next === "_" && data[i + 2] === "G") this.graphics(data.slice(i + 3, st));
           i = end;
         } else if (next === "7") {
           this.saved = { row: this.row, col: this.col, sgr: this.sgr };

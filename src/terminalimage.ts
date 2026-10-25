@@ -35,6 +35,12 @@ interface TerminalImageSyncState {
 export interface InlineTerminalImageSyncOptions {
   /** Keep established placements but defer creating or moving them. */
   allowPlacementUpdates?: boolean;
+  /**
+   * Rows (1-based, inclusive) a region scroll moved in this frame. Placements
+   * anchored there moved (or left) with them, so they are placed again even
+   * when this frame wants them where they were.
+   */
+  movedRows?: { start: number; end: number } | null;
 }
 
 const syncStates = new WeakMap<object, TerminalImageSyncState>();
@@ -170,10 +176,13 @@ export function planInlineTerminalImages(
     state.placements.delete(key);
   }
 
+  const moved = options.movedRows;
   for (const placement of placements) {
     const key = placementKey(placement);
     const fingerprint = placementFingerprint(placement);
-    if (!retransmitted.has(placement.image.imageId) && state.placements.get(key) === fingerprint) continue;
+    const placedRow = Number(state.placements.get(key)?.split(":", 1)[0]);
+    const scrolled = !!moved && placedRow >= moved.start && placedRow <= moved.end;
+    if (!retransmitted.has(placement.image.imageId) && state.placements.get(key) === fingerprint && !scrolled) continue;
     if (options.allowPlacementUpdates === false) continue;
     out.push(placeImage(placement));
     state.placements.set(key, fingerprint);

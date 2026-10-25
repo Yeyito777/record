@@ -58,9 +58,10 @@ export function kittyGraphicsTransmitPng(imageId: number, pngBase64: string): st
 
 export function kittyGraphicsPlace(
   imageId: number,
-  options: { columns?: number; rows?: number; z?: number; selected?: boolean } = {},
+  options: { columns?: number; rows?: number; z?: number; selected?: boolean; placementId?: number } = {},
 ): string {
   const id = uint32(imageId, "imageId");
+  const placement = options.placementId === undefined ? "" : `,p=${uint32(options.placementId, "placementId")}`;
   const columns = Math.max(1, Math.floor(options.columns ?? 1));
   const rows = Math.max(1, Math.floor(options.rows ?? 1));
   const z = Math.trunc(options.z ?? 0);
@@ -69,7 +70,12 @@ export function kittyGraphicsPlace(
   // the same number of terminal columns in the underlying text row. V=1 is an
   // st extension: unknown Kitty implementations safely ignore it, while st
   // tints the complete placement as one selected visual object.
-  return `${APC}a=p,i=${id},c=${columns},r=${rows},C=1,z=${z}${selected},q=2${ST}`;
+  return `${APC}a=p,i=${id}${placement},c=${columns},r=${rows},C=1,z=${z}${selected},q=2${ST}`;
+}
+
+/** Delete one placement; leaves other placements of the image (and st's kept copies) alone. */
+export function kittyGraphicsDeletePlacement(imageId: number, placementId: number): string {
+  return `${APC}a=d,d=i,i=${uint32(imageId, "imageId")},p=${uint32(placementId, "placementId")},q=2${ST}`;
 }
 
 export function kittyGraphicsDeleteZ(z: number): string {
