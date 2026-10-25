@@ -9,7 +9,7 @@ import {
   displayCursor,
   getInputLines,
   getVisualRange,
-  MAX_PROMPT_ROWS,
+  promptRowLimit,
   PROMPT_PREFIX_WIDTH,
 } from "./editor";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
@@ -553,7 +553,7 @@ export function render(state: AppState): void {
     promptBuffer,
     promptCursor,
     maxInputWidth,
-    Math.max(1, Math.min(MAX_PROMPT_ROWS, rows - 3 - bottomStatusRows - imageIndicatorRows)),
+    promptRowLimit(rows - 3 - bottomStatusRows - imageIndicatorRows),
     state.editor.scroll,
   );
   state.editor.scroll = input.scrollOffset;
@@ -577,6 +577,14 @@ export function render(state: AppState): void {
   const bodyRows = Math.max(0, promptSeparatorRow - bodyTop - typingRowCount);
   const typingRow = promptSeparatorRow - typingRowCount;
   const bodyInnerWidth = Math.max(0, mainW - 2);
+  state.chatMouseLayout = {
+    firstCol: mainCol,
+    lastCol: mainCol + mainW - 1,
+    bodyTop,
+    bodyRows,
+    firstInputRow,
+    inputRows: inputRowCount,
+  };
 
   const oldAnchors = state.historyLineAnchors;
   const oldViewStart = state.timeline.scrollOffset;

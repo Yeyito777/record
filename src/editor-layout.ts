@@ -6,7 +6,16 @@ import type { EditorViewport, InputLinesResult } from "./editor-types";
 import { nextWidthClusterEnd, sliceByWidth, sliceByWidthFrom, termWidth } from "./textwidth";
 
 export const PROMPT_PREFIX_WIDTH = 4;
-export const MAX_PROMPT_ROWS = 8;
+export const MAX_PROMPT_ROWS = 10;
+
+/**
+ * Rows the prompt may grow to, given the rows left for history and prompt:
+ * up to MAX_PROMPT_ROWS, but never more than half of them, so a long draft on
+ * a short terminal still leaves the conversation visible (like Exocortex).
+ */
+export function promptRowLimit(availableRows: number): number {
+  return Math.max(1, Math.min(MAX_PROMPT_ROWS, Math.floor(availableRows / 2)));
+}
 
 interface WrappedChunk {
   text: string;

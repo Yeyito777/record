@@ -11,13 +11,13 @@ import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
 import { configPath, loadConfig, loadSavedLogins, type ImageDisplayMode } from "./config";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
-import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
+import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, handleAutocompleteArrow, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
 import {
   displayCursor,
   getInputLines,
   handleEditorKey,
-  MAX_PROMPT_ROWS,
+  promptRowLimit,
   PROMPT_PREFIX_WIDTH,
   replaceEditorText,
   resetEditor,
@@ -806,7 +806,7 @@ function timelinePageSize(): number {
     state.editor.buffer,
     displayCursor(state.editor),
     maxInputWidth,
-    Math.max(1, Math.min(MAX_PROMPT_ROWS, state.rows - 3 - bottomStatusRows - imageIndicatorRows)),
+    promptRowLimit(state.rows - 3 - bottomStatusRows - imageIndicatorRows),
     state.editor.scroll,
   );
   const inputRowCount = Math.max(1, input.lines.length);
@@ -2377,6 +2377,11 @@ function handlePromptFocused(key: KeyEvent): void {
     return;
   }
 
+  if (handleAutocompleteArrow(state, key)) {
+    scheduleRender();
+    return;
+  }
+
   if (key.type === "escape" && state.autocomplete) {
     acceptAutocomplete(state);
   }
@@ -2519,6 +2524,21 @@ function handleMouse(event: MouseEvent): void {
 
   if (result.type === "scroll_chat") {
     scrollTimeline(result.delta);
+    return;
+  }
+
+  if (result.type === "focus_prompt") {
+    if (state.panelFocus !== "chat" || state.chatFocus !== "prompt" || state.editor.mode !== "insert") {
+      focusPromptInsert(false);
+    }
+    return;
+  }
+
+  if (result.type === "focus_history") {
+    if (state.chatFocus !== "history") focusHistory(state);
+    state.historyCursor = { ...state.historyCursor, row: result.row, col: result.col };
+    syncPromptAutocomplete();
+    scheduleRender();
     return;
   }
 

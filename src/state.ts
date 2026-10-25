@@ -175,7 +175,22 @@ export interface AppState {
   loadingFrameIndex: number;
   configPath: string;
   /** Desktop mouse cursor shape, cached to avoid redundant OSC writes. */
-  mouseCursor: "pointer" | "hand";
+  mouseCursor: "pointer" | "hand" | "text";
+  /** Where the last frame drew the history body and the prompt, for mouse hit tests. */
+  chatMouseLayout: ChatMouseLayout | null;
+}
+
+/** Screen rows/columns (1-based) of the last frame's chat column. */
+export interface ChatMouseLayout {
+  /** First and last screen column of the chat column. */
+  firstCol: number;
+  lastCol: number;
+  /** History body: rows [bodyTop, bodyTop + bodyRows), content from column firstCol + 1. */
+  bodyTop: number;
+  bodyRows: number;
+  /** Prompt input rows [firstInputRow, firstInputRow + inputRows). */
+  firstInputRow: number;
+  inputRows: number;
 }
 
 export function createInitialState(
@@ -259,6 +274,7 @@ export function createInitialState(
     loadingFrameIndex: 0,
     configPath: path,
     mouseCursor: "pointer",
+    chatMouseLayout: null,
   };
 }
 
