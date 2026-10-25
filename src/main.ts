@@ -9,7 +9,7 @@ import { AsyncWorkQueue } from "./asyncwork";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
-import { configPath, loadConfig, loadSavedLogins, type ImageDisplayMode } from "./config";
+import { configPath, loadConfig, loadSavedLogins, saveConfig, type ImageDisplayMode } from "./config";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, handleAutocompleteArrow, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
@@ -167,7 +167,7 @@ import {
 import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize, terminalImageNotFoundId } from "./terminalimage";
 import { sidebarIconTerminalOwner, sidebarIcons } from "./sidebaricons";
 import { dmAuthorColor, theme } from "./theme";
-import { clearTimeline, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
+import { clearTimeline, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
@@ -209,6 +209,7 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 let initialToken: string | null = null;
 let initialShowHiddenChannels = false;
 let initialImageDisplayMode: ImageDisplayMode = "show";
+let initialImageDetails = false;
 let initialNoiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE;
 let initialMicGainDb = DEFAULT_LOCAL_GAIN_DB;
 let initialParticipantVolumes: ParticipantVolumes = {};
@@ -222,6 +223,7 @@ try {
   initialToken = config.token ? normalizeToken(config.token) : null;
   initialShowHiddenChannels = config.channels?.showHidden === true;
   initialImageDisplayMode = config.images?.mode === "hide" ? "hide" : "show";
+  initialImageDetails = config.images?.details === true;
   initialNoiseSuppression = parseNoiseSuppressionMode(config.audio?.noiseSuppression) ?? DEFAULT_NOISE_SUPPRESSION_MODE;
   initialMicGainDb = normalizeGainDb(config.audio?.micGainDb ?? DEFAULT_LOCAL_GAIN_DB);
   initialParticipantVolumes = normalizeParticipantVolumes(config.audio?.participantVolumes);
@@ -244,7 +246,7 @@ try {
 }
 
 const savedStartingState = loadTuiStartingState();
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji, scrollRegions: initialScrollRegions });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, imageDetails: initialImageDetails, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji, scrollRegions: initialScrollRegions });
 let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
@@ -1102,6 +1104,19 @@ function toggleSidebar(): void {
   scheduleRender();
 }
 
+/** Ctrl+O: show or hide the name rows above inline images; a sticky preference. */
+function toggleImageDetails(): void {
+  // A re-layout (handleKey marked it): the view keeps its anchor and snaps.
+  const show = !state.timeline.showImageDetails;
+  setTimelineImageDetails(state.timeline, show);
+  try {
+    saveConfig({ images: { details: show } });
+  } catch (error) {
+    debugLog("images.details_save_failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+  scheduleRender();
+}
+
 function toggleMemberList(): void {
   state.memberList.open = !state.memberList.open;
   if (state.memberList.open) {
@@ -1602,6 +1617,9 @@ function handleGlobalAction(key: KeyEvent): boolean {
       return true;
     case "paste_image":
       pasteImageFromClipboard();
+      return true;
+    case "toggle_image_details":
+      toggleImageDetails();
       return true;
     case "reply_toggle":
       startReplyToSelectedHistoryMessage();

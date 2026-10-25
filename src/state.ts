@@ -201,7 +201,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown; quickReactionEmoji?: string; scrollRegions?: boolean } = {},
+  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; imageDetails?: boolean; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown; quickReactionEmoji?: string; scrollRegions?: boolean } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -229,7 +229,7 @@ export function createInitialState(
     sidebar: createSidebarState(),
     memberList: createMemberListState(),
     channelList: createChannelListState(),
-    timeline: createTimelineState(),
+    timeline: { ...createTimelineState(), showImageDetails: options.imageDetails === true },
     messageCacheByChannelId: {},
     channelPinCacheByChannelId: {},
     typing: createTypingState(),
