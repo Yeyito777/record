@@ -152,23 +152,57 @@ export function inlineImageSourcesForMessage(
   ];
 }
 
+type InlineImageMessage = Pick<DiscordMessage, "id" | "attachments" | "stickers" | "forwarded">;
+
+/** id -> index per messages array; validated on use, rebuilt when stale. */
+const messageIndexes = new WeakMap<readonly InlineImageMessage[], Map<string, number>>();
+
+function findMessage(messages: readonly InlineImageMessage[], id: string): InlineImageMessage | undefined {
+  let index = messageIndexes.get(messages);
+  let position = index?.get(id);
+  if (position === undefined || messages[position]?.id !== id) {
+    // Appends keep indexes valid; prepends, removals or a new id rebuild once.
+    index = new Map(messages.map((message, messageIndex) => [message.id, messageIndex]));
+    messageIndexes.set(messages, index);
+    position = index.get(id);
+  }
+  return position === undefined ? undefined : messages[position];
+}
+
+/** Index of the first bound starting at or after `row` (bounds are in row order). */
+function firstBoundAtOrAfter(bounds: readonly { start: number }[], row: number): number {
+  let low = 0;
+  let high = bounds.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (bounds[middle]!.start < row) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
 export function visibleInlineImageSources(
-  messages: readonly Pick<DiscordMessage, "id" | "attachments" | "stickers" | "forwarded">[],
+  messages: readonly InlineImageMessage[],
   bounds: readonly { messageId: string; start: number; end: number }[],
   viewStart: number,
   viewRows: number,
 ): DiscordMessageAttachment[] {
   const viewEnd = viewStart + Math.max(0, viewRows);
-  const messagesById = new Map(messages.map((message) => [message.id, message]));
   const seen = new Set<string>();
   const visible: DiscordMessageAttachment[] = [];
   // Chats are normally anchored at the newest content beside the prompt. Load
   // from the bottom of the viewport upward so the images nearest that reading
   // position become usable first. Reverse sources within one message too,
-  // matching their visual bottom-to-top order.
-  for (const bound of bounds.toReversed()) {
-    if (bound.end <= viewStart || bound.start >= viewEnd) continue;
-    const message = messagesById.get(bound.messageId);
+  // matching their visual bottom-to-top order. Only bounds near the viewport
+  // are visited: this runs after every frame.
+  for (let boundIndex = firstBoundAtOrAfter(bounds, viewEnd) - 1; boundIndex >= 0; boundIndex--) {
+    const bound = bounds[boundIndex]!;
+    if (bound.end <= viewStart) {
+      // Bounds do not overlap, so earlier ones end even higher up.
+      break;
+    }
+    if (bound.start >= viewEnd) continue;
+    const message = findMessage(messages, bound.messageId);
     if (!message) continue;
     for (const source of inlineImageSourcesForMessage(message).toReversed()) {
       if (seen.has(source.id) || !isImageAttachment(source)) continue;

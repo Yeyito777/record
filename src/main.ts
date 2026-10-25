@@ -305,7 +305,20 @@ function hasActiveLoadingIndicator(): boolean {
     || Boolean(state.whatsapp.loginModal && state.whatsapp.loginModal.phase !== "qr" && state.whatsapp.loginModal.phase !== "error")
     || hasActiveTimelineCall(state.timeline)
     || Boolean(state.voiceCall)
-    || Object.keys(state.typing.byChannelId).length > 0;
+    || typingIndicatorVisible();
+}
+
+/**
+ * Typing dots animate in the open chat's typing row and beside sidebar rows.
+ * Typing in other chats with the sidebar closed draws nothing, so it must not
+ * keep the 80 ms frame timer running (expired entries are pruned on render).
+ */
+function typingIndicatorVisible(): boolean {
+  const byChannelId = state.typing.byChannelId;
+  if (Object.keys(byChannelId).length === 0) return false;
+  if (state.sidebar.open) return true;
+  const channelId = state.timeline.channelId ?? state.channelList.activeChannelId;
+  return Boolean(channelId && byChannelId[channelId]?.length);
 }
 
 function syncLoadingAnimation(): void {
