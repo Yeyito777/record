@@ -516,6 +516,14 @@ export function render(state: AppState): void {
   const bodyRows = Math.max(0, promptSeparatorRow - bodyTop - typingRowCount);
   const typingRow = promptSeparatorRow - typingRowCount;
   const bodyInnerWidth = Math.max(0, mainW - 2);
+  state.chatMouseLayout = {
+    firstCol: mainCol,
+    lastCol: mainCol + mainW - 1,
+    bodyTop,
+    bodyRows,
+    firstInputRow,
+    inputRows: inputRowCount,
+  };
 
   const oldAnchors = state.historyLineAnchors;
   const oldViewStart = state.timeline.scrollOffset;

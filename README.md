@@ -60,6 +60,9 @@ Controls:
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
 - `Enter` in the prompt: submit the current message or slash command. In normal mode `Enter` never submits a half-typed command: `r<Enter>` splits the line and a pending find, operator, count or `g` is cancelled (as are other non-character keys like `Tab`)
+- `Up` / `Down` in insert mode with the autocomplete popup open: choose from it like `Tab` / `Shift+Tab`
+- Mouse: a click in the prompt focuses it (insert mode); a click in history focuses history with the cursor on the clicked character. The pointer is an I-beam over text
+- The prompt grows to 10 rows as you type, but never past half of the space it shares with history
 - `Tab` / `Shift+Tab`: cycle autocomplete, including custom emoji choices; with nothing to complete, `Tab` in insert mode inserts a four-space soft tab, which `Backspace`/`Delete` remove in one press
 - `>>` / `<<` in prompt normal or visual mode: shift the line (a count shifts that many lines) or the selected lines right/left by four spaces
 - Prompt vim keys follow Vim: `j`/`k` (and `Up`/`Down`) move by displayed rows of wrapped lines, counts work before operators (`3dd`, `2d3w`), `f`/`F`/`t`/`T` with `;`/`,`, `^`, `o` in visual mode, and `yy`/`Vy` put back as whole lines with `p`/`P`. A bare `t` in normal mode stays the next-notification shortcut; after a count or operator it is the till motion
