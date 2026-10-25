@@ -84,6 +84,7 @@ import {
   loadNewerChannelMessages,
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
+  persistSidebarFolderExpansion,
   persistSidebarFolders,
   removeSessionChannel,
   removeSessionGuild,
@@ -112,6 +113,7 @@ import {
   handleSidebarSearchBarKey,
   jumpSidebarSelectionToVisibleMiddle,
   jumpToSidebarSearchMatch,
+  enterSidebarFolder,
   leaveSidebarFolder,
   moveSidebarSelection,
   moveSidebarSelectionOut,
@@ -136,6 +138,7 @@ import {
   moveSidebarSelectionToPrevDirectMessage,
   moveSidebarSelectionToPrevGuild,
   SIDEBAR_WIDTH,
+  type SidebarPreferences,
 } from "./sidebar";
 import { createChannelActionModal, createServerActionModal, createVoiceMemberActionModal, handleServerActionModalKey, type ServerAction } from "./serveractions";
 import {
@@ -208,6 +211,7 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 
 let initialToken: string | null = null;
 let initialShowHiddenChannels = false;
+let initialSidebarPreferences: SidebarPreferences = {};
 let initialImageDisplayMode: ImageDisplayMode = "show";
 let initialImageDetails = false;
 let initialNoiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE;
@@ -222,6 +226,10 @@ try {
   const config = loadConfig();
   initialToken = config.token ? normalizeToken(config.token) : null;
   initialShowHiddenChannels = config.channels?.showHidden === true;
+  initialSidebarPreferences = {
+    folderView: config.sidebar?.folders === "navigate" ? "navigate" : "tree",
+    arrows: config.sidebar?.arrows === "show" ? "show" : "hide",
+  };
   initialImageDisplayMode = config.images?.mode === "hide" ? "hide" : "show";
   initialImageDetails = config.images?.details === true;
   initialNoiseSuppression = parseNoiseSuppressionMode(config.audio?.noiseSuppression) ?? DEFAULT_NOISE_SUPPRESSION_MODE;
@@ -246,7 +254,7 @@ try {
 }
 
 const savedStartingState = loadTuiStartingState();
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, imageDetails: initialImageDetails, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji, scrollRegions: initialScrollRegions });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, sidebar: initialSidebarPreferences, imageDisplayMode: initialImageDisplayMode, imageDetails: initialImageDetails, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji, scrollRegions: initialScrollRegions });
 let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
@@ -1976,7 +1984,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 
   if (key.type === "backspace") {
     state.navigationPendingKeys = "";
-    leaveSidebarFolder(state.sidebar);
+    leaveSidebarFolder(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
     scheduleRender();
     return true;
   }
@@ -2046,13 +2054,14 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     }
     if (key.char === "h") {
-      leaveSidebarFolder(state.sidebar);
+      leaveSidebarFolder(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       scheduleRender();
       return true;
     }
     if (key.char === "l") {
       const before = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
-      if (before.kind === "folder" || before.kind === "up") activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      if (before.kind === "folder") enterSidebarFolder(state.sidebar, before.id, state.channelList.channels, sidebarVisibilityOptions());
+      else if (before.kind === "up") activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       scheduleRender();
       return true;
     }
@@ -2911,6 +2920,8 @@ function processInput(input: string): void {
     else handleKey(event);
     if (!running) break;
   }
+  // Folders expand from keys, clicks and jumps alike; save the set once per batch.
+  bestEffort("sidebar_folder_expansion", () => persistSidebarFolderExpansion(state));
 }
 
 let startingStatePersisted = false;
@@ -2930,6 +2941,7 @@ function persistStartingStateOnce(): void {
 process.on("exit", (code) => {
   debugLog("shutdown.exit", { code, childrenRunning: trackedChildProcessCount() });
   bestEffort("starting_state", persistStartingStateOnce);
+  bestEffort("sidebar_folder_expansion", () => persistSidebarFolderExpansion(state));
   restoreTerminal();
   bestEffort("data_cache", flushDataCacheSync);
   killTrackedChildProcesses("SIGTERM");

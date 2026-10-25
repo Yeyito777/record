@@ -12,7 +12,7 @@ import { createEditorState, enterInsertMode, leaveInsertMode, type EditorState }
 import { createHistoryCursor, type HistoryCursor } from "./historycursor";
 import { createMemberListState, type MemberListState } from "./memberlist";
 import { createNotificationState, type NotificationState } from "./notifications";
-import { createSidebarState, type SidebarState } from "./sidebar";
+import { createSidebarState, type SidebarPreferences, type SidebarState } from "./sidebar";
 import { createTimelineState, type TimelineMessageBound, type TimelineState } from "./timeline";
 import { createTypingState, type TypingState } from "./typing";
 import { normalizeToken } from "./token";
@@ -201,7 +201,7 @@ export function createInitialState(
   initialToken: string | null,
   path: string,
   initialSavedLogins: SavedLogins = {},
-  options: { showHiddenChannels?: boolean; imageDisplayMode?: ImageDisplayMode; imageDetails?: boolean; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown; quickReactionEmoji?: string; scrollRegions?: boolean } = {},
+  options: { showHiddenChannels?: boolean; sidebar?: SidebarPreferences; imageDisplayMode?: ImageDisplayMode; imageDetails?: boolean; noiseSuppression?: NoiseSuppressionMode; micGainDb?: number; participantVolumes?: unknown; quickReactionEmoji?: string; scrollRegions?: boolean } = {},
 ): AppState {
   const savedToken = initialToken ? normalizeToken(initialToken) : null;
   return {
@@ -226,7 +226,7 @@ export function createInitialState(
     inlineImageHiddenAttachmentIds: new Set(),
     localAttachmentImages: {},
     imageModal: null,
-    sidebar: createSidebarState(),
+    sidebar: createSidebarState(options.sidebar),
     memberList: createMemberListState(),
     channelList: createChannelListState(),
     timeline: { ...createTimelineState(), showImageDetails: options.imageDetails === true },
