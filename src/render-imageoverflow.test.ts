@@ -234,6 +234,22 @@ describe("no image cell is drawn outside the message pane (the prompt line stays
     expect(violations).toEqual([]);
   });
 
+  test("a frame that moves the pane's bottom edge (the typing line) crops at once, even mid-glide", () => {
+    setUp({ latency: 0 });
+    imageAtBottomEdge();
+    scroll(-3);
+    run(now + 20);
+    const extended = screen.placements().find((placement) => placement.imageId === IMAGE_ID)!;
+    const rowsOf = (controls: string) => Number(/(?:^|,)r=(\d+)/.exec(controls)?.[1] ?? 0);
+    expect(extended.row + rowsOf(extended.controls) - 1).toBeGreaterThan(pane().bottom);
+    input(() => recordTypingStart(state.typing, "channel-1", { id: "user-9", displayName: "Cy" }, Date.now()));
+    run(now + 1);
+    const cropped = screen.placements().find((placement) => placement.imageId === IMAGE_ID)!;
+    expect(cropped.row + rowsOf(cropped.controls) - 1).toBeLessThanOrEqual(pane().bottom);
+    run(now + 300);
+    expect(violations).toEqual([]);
+  });
+
   test("the prompt growing mid-glide", () => {
     setUp({ latency: 1 });
     imageAtBottomEdge();

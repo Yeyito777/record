@@ -469,6 +469,8 @@ function payloadRows(payload: string): { top: number; bottom: number } | null {
 
 /** Each state's maxScroll at its previous smooth-scroll layout. */
 const smoothMaxScroll = new WeakMap<object, number>();
+/** Each state's pane bottom and band end in its previous frame. */
+const lastPaneEdge = new WeakMap<object, string>();
 
 export function render(state: AppState): void {
   const cols = Math.max(1, state.cols);
@@ -932,13 +934,18 @@ export function render(state: AppState): void {
   const smoothRects = smooth ? smoothScrollRects(scrollRegion, mainCol, mainW) : [];
 
   const paneBottom = bodyTop + bodyRows - 1;
+  // What lies below the pane changed (the typing line, the prompt's rows, an
+  // overlay taking the band's last rows): no image stays past the pane then.
+  const paneEdge = `${paneBottom}|${scrollRegion?.end ?? ""}`;
+  const paneEdgeMoved = lastPaneEdge.get(state) !== paneEdge;
+  lastPaneEdge.set(state, paneEdge);
   // Smooth scrolling: decided once the frame's motion is known (planImages
   // runs after it), so a glide the frame stops never keeps an image placed
   // past the pane. Only while st may still draw the content higher than
   // laid out, and only at the band's bottom edge: otherwise images are
   // cropped to the pane exactly as without smooth scrolling.
   const imagePlacements = (): InlineTerminalImagePlacement[] => {
-    const extend = !!smooth?.extendBelow() && scrollRegion?.end === paneBottom;
+    const extend = !!smooth?.extendBelow() && scrollRegion?.end === paneBottom && !paneEdgeMoved;
     const placements = state.whatsapp.loginModal
       ? []
       : visibleInlineImagePlacements(
