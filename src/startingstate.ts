@@ -13,7 +13,7 @@ import { basename, dirname, join } from "node:path";
 
 import { configDir } from "./config";
 import type { DiscordGuild } from "./discord";
-import type { SidebarSelectableItem } from "./sidebar";
+import { isTreeFolderView, revealSidebarFolder, type SidebarSelectableItem } from "./sidebar";
 import type { AppState } from "./state";
 
 const TUI_STARTING_STATE_VERSION = 1;
@@ -196,6 +196,14 @@ export function applyTuiStartingState(state: AppState, startingState: TuiStartin
   state.sidebar.selectedItem = copySidebarItem(startingState.sidebar.selectedItem);
   state.sidebar.selectedIndex = 0;
   state.sidebar.scrollOffset = startingState.sidebar.scrollOffset;
+  if (isTreeFolderView(state.sidebar)) {
+    // A folder left open in the navigate view opens in place; its ".." row
+    // becomes the folder itself.
+    if (state.sidebar.selectedItem?.type === "up" && state.sidebar.currentFolderId) {
+      state.sidebar.selectedItem = { type: "folder", id: state.sidebar.currentFolderId };
+    }
+    revealSidebarFolder(state.sidebar, state.sidebar.currentFolderId);
+  }
 }
 
 /** Only restore a saved channel after authentication confirms its account and guild still exist. */

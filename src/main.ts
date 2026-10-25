@@ -36,12 +36,12 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
-import { isEmbedSourceId, type EmbedVideoTarget } from "./embeds";
+import type { EmbedVideoTarget } from "./embeds";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { handleMouseEvent } from "./mouse";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
@@ -85,6 +85,7 @@ import {
   loadNewerChannelMessages,
   loadOlderChannelMessages,
   moveSelectedGuildOrder,
+  persistSidebarFolderExpansion,
   persistSidebarFolders,
   removeSessionChannel,
   removeSessionGuild,
@@ -113,6 +114,7 @@ import {
   handleSidebarSearchBarKey,
   jumpSidebarSelectionToVisibleMiddle,
   jumpToSidebarSearchMatch,
+  enterSidebarFolder,
   leaveSidebarFolder,
   moveSidebarSelection,
   moveSidebarSelectionOut,
@@ -137,6 +139,7 @@ import {
   moveSidebarSelectionToPrevDirectMessage,
   moveSidebarSelectionToPrevGuild,
   SIDEBAR_WIDTH,
+  type SidebarPreferences,
 } from "./sidebar";
 import { createChannelActionModal, createServerActionModal, createVoiceMemberActionModal, handleServerActionModalKey, type ServerAction } from "./serveractions";
 import {
@@ -168,7 +171,7 @@ import {
 import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize, terminalImageNotFoundId } from "./terminalimage";
 import { sidebarIconTerminalOwner, sidebarIcons } from "./sidebaricons";
 import { dmAuthorColor, theme } from "./theme";
-import { clearTimeline, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
+import { clearTimeline, clearTimelineInlineImageStates, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
@@ -209,6 +212,7 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 
 let initialToken: string | null = null;
 let initialShowHiddenChannels = false;
+let initialSidebarPreferences: SidebarPreferences = {};
 let initialImageDisplayMode: ImageDisplayMode = "show";
 let initialImageDetails = false;
 let initialNoiseSuppression: NoiseSuppressionMode = DEFAULT_NOISE_SUPPRESSION_MODE;
@@ -223,6 +227,10 @@ try {
   const config = loadConfig();
   initialToken = config.token ? normalizeToken(config.token) : null;
   initialShowHiddenChannels = config.channels?.showHidden === true;
+  initialSidebarPreferences = {
+    folderView: config.sidebar?.folders === "navigate" ? "navigate" : "tree",
+    arrows: config.sidebar?.arrows === "show" ? "show" : "hide",
+  };
   initialImageDisplayMode = config.images?.mode === "hide" ? "hide" : "show";
   initialImageDetails = config.images?.details === true;
   initialNoiseSuppression = parseNoiseSuppressionMode(config.audio?.noiseSuppression) ?? DEFAULT_NOISE_SUPPRESSION_MODE;
@@ -247,7 +255,7 @@ try {
 }
 
 const savedStartingState = loadTuiStartingState();
-const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, imageDisplayMode: initialImageDisplayMode, imageDetails: initialImageDetails, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji, scrollRegions: initialScrollRegions });
+const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, sidebar: initialSidebarPreferences, imageDisplayMode: initialImageDisplayMode, imageDetails: initialImageDetails, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji, scrollRegions: initialScrollRegions });
 let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
@@ -372,7 +380,6 @@ function renderImmediately(): void {
 /** RECORD_SMOOTH_SCROLL=off: never ask for st's mode 2032 (testing). */
 const smoothScrollAllowed = process.env.RECORD_SMOOTH_SCROLL !== "off";
 let smoothScrollTimer: ReturnType<typeof setTimeout> | null = null;
-let smoothScrollWasBusy = false;
 
 /**
  * While a smooth scroll moves, lay out each row it is about to cross: st
@@ -387,15 +394,12 @@ function scheduleSmoothScrollFrame(): void {
     smoothScrollTimer = null;
   }
   if (!smooth) return;
-  if (!smooth.busy()) {
-    // At rest again: one more frame crops images back to the pane.
-    if (smoothScrollWasBusy) {
-      smoothScrollWasBusy = false;
-      renderImmediately();
-    }
+  const due = smooth.frameDueIn();
+  if (due === null) return;
+  if (due <= 0) {
+    renderImmediately();
     return;
   }
-  smoothScrollWasBusy = true;
   smoothScrollTimer = setTimeout(() => {
     smoothScrollTimer = null;
     if (!running || smoothScrollerFor(state) !== smooth) return;
@@ -404,7 +408,7 @@ function scheduleSmoothScrollFrame(): void {
       return;
     }
     scheduleSmoothScrollFrame();
-  }, Math.max(1, smooth.nextWakeMs()));
+  }, due);
 }
 
 let voiceMessageController: ReturnType<typeof createVoiceMessageController> | null = null;
@@ -564,7 +568,8 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
 }
 
 function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
-  if (!isImageAttachment(attachment)) return false;
+  // Without Kitty graphics the caller opens it with the configured opener.
+  if (!isImageAttachment(attachment) || !inlineImagesDrawable(terminalGraphicsClient?.isSupported())) return false;
 
   const existing = state.timeline.inlineImages[attachment.id];
   if (existing?.phase === "ready" || existing?.phase === "loading" || existing?.phase === "waiting") {
@@ -643,14 +648,12 @@ function autoShowVisibleInlineImages(): void {
     viewportStart,
     timelinePageSize(),
   );
-  // Embed pictures stay text where the terminal cannot draw images.
-  const embedPictures = terminalGraphicsClient?.isSupported() !== false;
   for (const attachment of attachments) {
     if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
-    if (!embedPictures && isEmbedSourceId(attachment.id)) continue;
     const existing = state.timeline.inlineImages[attachment.id];
     if (!shouldLoadInlineImage(existing, attachment.url, state.imageDisplayMode === "show",
-      !isWhatsAppChannelId(state.timeline.channelId) || whatsAppController.isConnected)) continue;
+      !isWhatsAppChannelId(state.timeline.channelId) || whatsAppController.isConnected,
+      inlineImagesDrawable(terminalGraphicsClient?.isSupported()))) continue;
     startInlineAttachmentImage(attachment);
   }
 }
@@ -1722,6 +1725,8 @@ function toggleSelectedMute(): void {
 
 function serverActionErrorMessage(error: unknown, fallback: string): string {
   const detail = error instanceof Error ? error.message.trim() : "";
+  // HTTP failures are also logged with status and Discord code by discord.ts.
+  debugLog("server_action.failed", { action: fallback, error: detail || String(error) });
   return detail ? `${fallback}: ${detail}` : fallback;
 }
 
@@ -1980,7 +1985,7 @@ function handleSidebarFocused(key: KeyEvent): boolean {
 
   if (key.type === "backspace") {
     state.navigationPendingKeys = "";
-    leaveSidebarFolder(state.sidebar);
+    leaveSidebarFolder(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
     scheduleRender();
     return true;
   }
@@ -2050,13 +2055,14 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     }
     if (key.char === "h") {
-      leaveSidebarFolder(state.sidebar);
+      leaveSidebarFolder(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       scheduleRender();
       return true;
     }
     if (key.char === "l") {
       const before = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
-      if (before.kind === "folder" || before.kind === "up") activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
+      if (before.kind === "folder") enterSidebarFolder(state.sidebar, before.id, state.channelList.channels, sidebarVisibilityOptions());
+      else if (before.kind === "up") activateSelectedEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions());
       scheduleRender();
       return true;
     }
@@ -2834,6 +2840,11 @@ async function main(): Promise<void> {
     onSupportChanged: (supported) => {
       customEmojiImages.setEnabled(supported);
       sidebarIcons.setEnabled(supported);
+      if (!supported) {
+        // Nothing can draw them: back to their name rows.
+        clearTimelineInlineImageStates(state.timeline);
+        state.imageModal = null;
+      }
       invalidateFrame(state);
       scheduleRender();
     },
@@ -2931,6 +2942,8 @@ function processInput(input: string): void {
     else handleKey(event);
     if (!running) break;
   }
+  // Folders expand from keys, clicks and jumps alike; save the set once per batch.
+  bestEffort("sidebar_folder_expansion", () => persistSidebarFolderExpansion(state));
 }
 
 let startingStatePersisted = false;
@@ -2950,6 +2963,7 @@ function persistStartingStateOnce(): void {
 process.on("exit", (code) => {
   debugLog("shutdown.exit", { code, childrenRunning: trackedChildProcessCount() });
   bestEffort("starting_state", persistStartingStateOnce);
+  bestEffort("sidebar_folder_expansion", () => persistSidebarFolderExpansion(state));
   restoreTerminal();
   bestEffort("data_cache", flushDataCacheSync);
   killTrackedChildProcesses("SIGTERM");

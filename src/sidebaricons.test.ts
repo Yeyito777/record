@@ -22,6 +22,7 @@ import {
   discordGroupIconSource,
   discordGuildIconSource,
   discordUserAvatarSource,
+  bundledSidebarIconSource,
   instagramUserPictureSource,
   SidebarIconStore,
   whatsappChatPictureSource,
@@ -209,6 +210,22 @@ describe("SidebarIconStore", () => {
     expect(urls).toHaveLength(2);
   });
 
+  test("provider root logos come from the repo: 64 px PNGs, no network, no cache files", async () => {
+    const dir = tempDir();
+    const { urls, fetch } = recordingFetch();
+    const store = new SidebarIconStore({ fetch, cacheDir: dir });
+    store.setEnabled(true);
+    const logos = (["direct-messages", "whatsapp", "instagram"] as const).map(bundledSidebarIconSource);
+    store.want(logos);
+    await store.idle();
+    expect(urls).toEqual([]);
+    expect(readdirSync(dir)).toEqual([]);
+    for (const logo of logos) {
+      const image = store.get(logo)!;
+      expect([image.pixelWidth, image.pixelHeight]).toEqual([64, 64]);
+    }
+  });
+
   test("WhatsApp asks through the session one chat at a time and remembers chats without a picture", async () => {
     const dir = tempDir();
     const asked: string[] = [];
@@ -350,7 +367,8 @@ function padTo(text: string): string {
 
 describe("sidebar rows with icons", () => {
   function sidebarWith(guilds: ReturnType<typeof guild>[]) {
-    const sidebar = createSidebarState();
+    // These pin today's look with arrows; sidebar-tree.test.ts covers both modes.
+    const sidebar = createSidebarState({ arrows: "show" });
     sidebar.open = true;
     setSidebarGuilds(sidebar, guilds);
     return sidebar;
@@ -402,7 +420,7 @@ describe("sidebar rows with icons", () => {
     expect(rows.some((row) => row.startsWith("    Al alice"))).toBe(true);
     expect(rows.some((row) => row.startsWith("    TG the group"))).toBe(true);
     expect(rows.some((row) => row.startsWith("    Bo bob"))).toBe(true);
-    expect(frame.visible.map((iconSource) => iconSource.key).sort()).toEqual(["group-12-grp", "guild-1-hash1", "user-u1-ava"]);
+    expect(frame.visible.map((iconSource) => iconSource.key).sort()).toEqual(["bundled-direct-messages", "group-12-grp", "guild-1-hash1", "user-u1-ava"]);
   });
 
   test("WhatsApp and Instagram rows ask for their pictures, a few rows ahead only", () => {
@@ -424,9 +442,10 @@ describe("sidebar rows with icons", () => {
     const rows = renderSidebar(sidebar, [], 10, false, null, 0, new Set(), "⋯", new Map(), new Map(), {}, frame).map(stripAnsi);
     expect(rows[2]).toStartWith("▸ ▾ WA WhatsApp");
     expect(rows[3]).toStartWith("    C0 Chat 0");
-    // Eight list rows: the root plus seven chats on screen, three more ahead.
-    expect(frame.visible).toHaveLength(7);
-    expect(frame.visible[0]).toEqual(whatsappChatPictureSource("15550000000@s.whatsapp.net"));
+    // Eight list rows: the root's bundled logo plus seven chats on screen, three more ahead.
+    expect(frame.visible).toHaveLength(8);
+    expect(frame.visible[0]).toEqual(bundledSidebarIconSource("whatsapp"));
+    expect(frame.visible[1]).toEqual(whatsappChatPictureSource("15550000000@s.whatsapp.net"));
     expect(frame.nearby).toHaveLength(3);
     expect(frame.nearby.every((iconSource) => iconSource.platform === "whatsapp")).toBe(true);
 
@@ -440,7 +459,8 @@ describe("sidebar rows with icons", () => {
     const igFrame = createSidebarIconFrame(() => null);
     renderSidebar(sidebar, [], 10, false, null, 0, new Set(), "⋯", new Map(), new Map(), {}, igFrame);
     // Groups keep their initials tile.
-    expect(igFrame.visible).toEqual([instagramUserPictureSource("77", "https://scontent.cdninstagram.com/a.jpg")!]);
+    expect(igFrame.visible.filter((iconSource) => iconSource.platform !== "bundled"))
+      .toEqual([instagramUserPictureSource("77", "https://scontent.cdninstagram.com/a.jpg")!]);
   });
 
   test("prefetches about a screen around the viewport, nearest first", () => {
@@ -489,6 +509,7 @@ describe("rendering sidebar icons", () => {
     state.rows = 12;
     state.cols = 80;
     state.sidebar.open = true;
+    state.sidebar.arrows = "show";
     setSidebarGuilds(state.sidebar, Array.from({ length: count }, (_, index) => guild(`9${index}`, `Server ${index}`)));
     capture(state);
     await sidebarIcons.idle();

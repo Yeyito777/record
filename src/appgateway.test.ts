@@ -89,25 +89,30 @@ describe("app gateway helpers", () => {
     ]);
   });
 
-  test("requests specific guild members over the gateway", () => {
-    const sent: unknown[] = [];
+  test("merges member lookups per server and paces them (a READY burst no longer trips 4008)", async () => {
+    const sent: any[] = [];
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }) as any;
     client.ready = true;
-    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)), close: () => {}, removeEventListener: () => {} };
 
-    expect(client.requestGuildMembers("guild-1", ["user-1", "user-1", "user-2"])).toBe(true);
-
+    // What READY's voice states used to trigger: one call per user, many servers.
+    expect(client.requestGuildMembers("guild-1", ["user-1", "user-1"])).toBe(true);
+    client.requestGuildMembers("guild-1", ["user-2"]);
+    for (let index = 0; index < 150; index++) client.requestGuildMembers("guild-2", [`member-${index}`]);
+    client.requestGuildMembers("guild-3", ["user-9"]);
+    expect(sent).toHaveLength(0);
+    await Bun.sleep(20);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({
-      op: 8,
-      d: {
-        guild_id: ["guild-1"],
-        query: null,
-        limit: 2,
-        presences: false,
-        user_ids: ["user-1", "user-2"],
-      },
-    });
+    expect(sent[0]).toMatchObject({ op: 8, d: { guild_id: ["guild-1"], query: null, limit: 2, presences: false, user_ids: ["user-1", "user-2"] } });
+    await Bun.sleep(1_050);
+    expect(sent).toHaveLength(2);
+    expect(sent[1].d.guild_id).toEqual(["guild-2"]);
+    expect(sent[1].d.user_ids).toHaveLength(100);
+
+    // Closing the socket drops what is left.
+    client.closeSocket();
+    await Bun.sleep(1_100);
+    expect(sent).toHaveLength(2);
   });
 
   test("sends stream create, watch, ping, pause, and delete requests over the gateway", () => {

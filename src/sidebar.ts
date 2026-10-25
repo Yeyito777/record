@@ -16,6 +16,7 @@ import {
   discordGroupIconSource,
   discordGuildIconSource,
   discordUserAvatarSource,
+  bundledSidebarIconSource,
   instagramUserPictureSource,
   SIDEBAR_ICON_COLUMNS,
   sidebarIconInitials,
@@ -38,6 +39,10 @@ export type SidebarEntryKind = "guild" | "folder" | "up" | "category" | "channel
 export type SidebarSearchDirection = "forward" | "backward";
 export type SidebarSearchBarMode = "search" | "command";
 export type SidebarFolderPromptPurpose = "create_folder" | "move_items" | "rename_folder";
+/** How folders open: expand in place ("tree") or replace the list with their contents ("navigate"). */
+export type SidebarFolderView = "tree" | "navigate";
+/** Whether servers, categories and the selected row show their ▸/▾ arrows. */
+export type SidebarArrowMode = "show" | "hide";
 
 export interface SidebarFolder {
   id: string;
@@ -64,6 +69,8 @@ export type SidebarChannelLayout = Record<string, Record<string, SidebarChannelP
 export interface SidebarFolderLayout {
   folders: SidebarFolder[];
   guildPlacements: Record<string, SidebarGuildPlacement>;
+  /** Folders expanded in the tree view. Older files have none. */
+  expandedFolderIds?: string[];
 }
 
 export type SidebarItemRef = { type: "guild" | "folder"; id: string };
@@ -156,7 +163,15 @@ export interface SidebarState {
   expandedGuildId: string | null;
   collapsedCategoryIds: string[];
   folders: SidebarFolder[];
+  /**
+   * The open folder in the navigate view. In the tree view it follows the
+   * cursor: the folder that lists the selected row, where folder actions act.
+   */
   currentFolderId: string | null;
+  folderView: SidebarFolderView;
+  /** Folders expanded in the tree view. */
+  expandedFolderIds: Set<string>;
+  arrows: SidebarArrowMode;
   guildPlacements: Record<string, SidebarGuildPlacement>;
   channelPlacementsByGuildId: SidebarChannelLayout;
   selectedItem: SidebarSelectableItem | null;
@@ -176,7 +191,12 @@ export interface SidebarState {
   serverActionModal: ServerActionModalState | null;
 }
 
-export function createSidebarState(): SidebarState {
+export interface SidebarPreferences {
+  folderView?: SidebarFolderView;
+  arrows?: SidebarArrowMode;
+}
+
+export function createSidebarState(preferences: SidebarPreferences = {}): SidebarState {
   return {
     open: false,
     guilds: [],
@@ -187,6 +207,9 @@ export function createSidebarState(): SidebarState {
     collapsedCategoryIds: [],
     folders: [],
     currentFolderId: null,
+    folderView: preferences.folderView ?? "tree",
+    expandedFolderIds: new Set(),
+    arrows: preferences.arrows ?? "hide",
     guildPlacements: {},
     channelPlacementsByGuildId: {},
     selectedItem: null,
@@ -277,6 +300,9 @@ function normalizeSidebarPlacement(sidebar: SidebarState): void {
     };
   }
   if (sidebar.currentFolderId && !validFolderIds.has(sidebar.currentFolderId)) sidebar.currentFolderId = null;
+  for (const folderId of sidebar.expandedFolderIds) {
+    if (!validFolderIds.has(folderId)) sidebar.expandedFolderIds.delete(folderId);
+  }
   if (sidebar.visualAnchor && itemParent(sidebar, sidebar.visualAnchor) === undefined) sidebar.visualAnchor = null;
 }
 
@@ -285,6 +311,7 @@ export function sidebarFolderLayout(sidebar: SidebarState): SidebarFolderLayout 
   return {
     folders: sidebar.folders.map((folder) => ({ ...folder })),
     guildPlacements: Object.fromEntries(Object.entries(sidebar.guildPlacements).map(([guildId, placement]) => [guildId, { ...placement }])),
+    expandedFolderIds: [...sidebar.expandedFolderIds],
   };
 }
 
@@ -321,6 +348,7 @@ export function applySidebarFolderLayout(sidebar: SidebarState, layout: SidebarF
     pinned: Boolean(placement.pinned),
     sortOrder: Number.isFinite(placement.sortOrder) ? placement.sortOrder : 0,
   }]));
+  sidebar.expandedFolderIds = new Set(layout?.expandedFolderIds ?? []);
   normalizeSidebarPlacement(sidebar);
 }
 
@@ -360,6 +388,89 @@ function descendantFolderIds(sidebar: SidebarState, folderId: string): Set<strin
   return ids;
 }
 
+export function isTreeFolderView(sidebar: Pick<SidebarState, "folderView">): boolean {
+  return sidebar.folderView === "tree";
+}
+
+/** The folder a row is listed in (null at the top level), or undefined when it no longer exists. */
+function sidebarItemContainer(sidebar: SidebarState, item: SidebarSelectableItem): string | null | undefined {
+  switch (item.type) {
+    case "guild":
+      if (!sidebar.guilds.some((guild) => guild.id === item.id)) return undefined;
+      return isFixedTopLevelGuildId(item.id) ? null : guildPlacement(sidebar, item.id).folderId ?? null;
+    case "folder":
+      return sidebar.folders.some((folder) => folder.id === item.id) ? itemParent(sidebar, item) : undefined;
+    case "channel":
+      return sidebarItemContainer(sidebar, { type: "guild", id: item.guildId });
+    case "up":
+      return undefined;
+  }
+}
+
+/** Whether a folder's contents are on screen in the tree view: it and every folder above it are expanded. */
+function isSidebarFolderOpenInTree(sidebar: SidebarState, folderId: string | null): boolean {
+  const seen = new Set<string>();
+  let currentId = folderId;
+  while (currentId) {
+    if (seen.has(currentId) || !sidebar.expandedFolderIds.has(currentId)) return false;
+    seen.add(currentId);
+    const folder = sidebar.folders.find((candidate) => candidate.id === currentId);
+    if (!folder) return false;
+    currentId = folder.parentId ?? null;
+  }
+  return true;
+}
+
+/** Expand a folder and every folder above it so its contents are on screen. */
+export function revealSidebarFolder(sidebar: SidebarState, folderId: string | null): void {
+  const seen = new Set<string>();
+  let currentId = folderId;
+  while (currentId && !seen.has(currentId)) {
+    seen.add(currentId);
+    sidebar.expandedFolderIds.add(currentId);
+    currentId = sidebar.folders.find((candidate) => candidate.id === currentId)?.parentId ?? null;
+  }
+}
+
+/** Keep the tree view's folder context on the folder that lists the selected row. */
+function syncTreeFolderContext(sidebar: SidebarState): void {
+  if (!isTreeFolderView(sidebar) || !sidebar.selectedItem) return;
+  const container = sidebarItemContainer(sidebar, sidebar.selectedItem);
+  if (container !== undefined) sidebar.currentFolderId = container;
+}
+
+/** Switch folder views, keeping the cursor on the same row. */
+export function setSidebarFolderView(sidebar: SidebarState, view: SidebarFolderView): void {
+  if (sidebar.folderView === view) return;
+  sidebar.visualAnchor = null;
+  sidebar.pendingDeleteItem = null;
+  // The tree view has no ".." row; land on the folder it would have left.
+  const upFrom = sidebar.selectedItem?.type === "up" ? sidebar.currentFolderId : null;
+  sidebar.folderView = view;
+  if (view === "tree") revealSidebarFolder(sidebar, sidebar.currentFolderId);
+  if (upFrom) sidebar.selectedItem = { type: "folder", id: upFrom };
+  syncTreeFolderContext(sidebar);
+}
+
+/**
+ * A tree-view visual block can span a folder and rows inside it. Those rows
+ * move with their folder, so only act on the outermost selected items.
+ */
+function outermostSelectedItems(sidebar: SidebarState, items: SidebarItemRef[]): SidebarItemRef[] {
+  if (!isTreeFolderView(sidebar)) return items;
+  const selectedFolderIds = new Set(items.filter((item) => item.type === "folder").map((item) => item.id));
+  return items.filter((item) => {
+    const seen = new Set<string>();
+    let parentId = itemParent(sidebar, item) ?? null;
+    while (parentId && !seen.has(parentId)) {
+      if (selectedFolderIds.has(parentId)) return false;
+      seen.add(parentId);
+      parentId = sidebar.folders.find((folder) => folder.id === parentId)?.parentId ?? null;
+    }
+    return true;
+  });
+}
+
 function clampSelectedIndex(sidebar: SidebarState, entries: SidebarEntry[]): number {
   if (entries.length === 0) return 0;
 
@@ -394,6 +505,7 @@ export function clearSidebarData(sidebar: SidebarState): void {
   sidebar.collapsedCategoryIds = [];
   sidebar.folders = [];
   sidebar.currentFolderId = null;
+  sidebar.expandedFolderIds = new Set();
   sidebar.guildPlacements = {};
   sidebar.channelPlacementsByGuildId = {};
   sidebar.selectedItem = null;
@@ -509,6 +621,7 @@ export function revealSidebarChannel(
 
   const guildParent = itemParent(sidebar, { type: "guild", id: guildId });
   sidebar.currentFolderId = guildParent === undefined ? null : guildParent;
+  if (isTreeFolderView(sidebar)) revealSidebarFolder(sidebar, sidebar.currentFolderId);
   sidebar.expandedGuildId = guildId;
   sidebar.focusedGuildId = guildId;
   sidebar.selectedItem = { type: "channel", id: channelId, guildId };
@@ -623,7 +736,7 @@ function topLevelCurrentFolderRef(sidebar: SidebarState): SidebarItemRef | undef
 }
 
 function siblingMovableItems(sidebar: SidebarState, parentId: string | null, pinned?: boolean): SidebarItemRef[] {
-  return folderVisibleItems({ ...sidebar, currentFolderId: parentId }).map(({ item }) => item)
+  return folderVisibleItems(sidebar, parentId).map(({ item }) => item)
     .filter((item) => item.type !== "guild" || !isFixedTopLevelGuildId(item.id))
     .filter((item) => pinned === undefined || itemPinned(sidebar, item) === pinned);
 }
@@ -644,7 +757,7 @@ export function selectedSidebarItems(sidebar: SidebarState, channels: DiscordCha
   if (anchorIndex < 0 || selectedIndex < 0) return [selected];
   const start = Math.min(anchorIndex, selectedIndex);
   const end = Math.max(anchorIndex, selectedIndex);
-  return entries.slice(start, end + 1).map((entry) => entry.item as SidebarItemRef);
+  return outermostSelectedItems(sidebar, entries.slice(start, end + 1).map((entry) => entry.item as SidebarItemRef));
 }
 
 function nextItemAfterRemovingItems(
@@ -1094,6 +1207,8 @@ function pushFolderEntry(
   sidebar: SidebarState,
   guildNotificationCounts: ReadonlyMap<string, number>,
   searchMatched = false,
+  depth = 0,
+  expanded = false,
 ): void {
   const descendants = descendantFolderIds(sidebar, folder.id);
   const childGuilds = sidebar.guilds.filter((guild) => !isFixedTopLevelGuildId(guild.id) && descendants.has(guildPlacement(sidebar, guild.id).folderId ?? ""));
@@ -1103,11 +1218,11 @@ function pushFolderEntry(
     id: folder.id,
     guildId: folder.id,
     label: folder.name,
-    depth: 0,
+    depth,
     notificationCount,
     selected: false,
     active: false,
-    expanded: false,
+    expanded,
     item: { type: "folder", id: folder.id },
     childCount: childGuilds.length,
     searchMatched,
@@ -1206,13 +1321,13 @@ function pushChannelAndThreads(
   }
 }
 
-function pushChannelSectionDelimiter(entries: SidebarEntry[], guildId: string): void {
+function pushChannelSectionDelimiter(entries: SidebarEntry[], guildId: string, depth: number): void {
   entries.push({
     kind: "delimiter",
     id: `${guildId}::pinned-delimiter`,
     guildId,
     label: "",
-    depth: 1,
+    depth,
     selected: false,
     active: false,
     expanded: false,
@@ -1342,6 +1457,7 @@ function pushPrivateConversationChannels(
   typingFrame: string,
   channelNotificationCounts: ReadonlyMap<string, number>,
   searchMatched = false,
+  depth = 1,
 ): void {
   const ordered = sortChannelsForSidebar(sidebar, guildId, channels);
   const stored = sidebar.channelPlacementsByGuildId[guildId] ?? {};
@@ -1352,12 +1468,12 @@ function pushPrivateConversationChannels(
 
   if (pinned.length > 0) {
     for (const channel of pinned) {
-      pushChannelEntry(entries, guildId, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, searchMatched);
+      pushChannelEntry(entries, guildId, channel, depth, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, searchMatched);
     }
-    if (unpinned.length > 0) pushChannelSectionDelimiter(entries, guildId);
+    if (unpinned.length > 0) pushChannelSectionDelimiter(entries, guildId, depth);
   }
   for (const channel of unpinned) {
-    pushChannelEntry(entries, guildId, channel, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, searchMatched);
+    pushChannelEntry(entries, guildId, channel, depth, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId, searchMatched);
   }
 }
 
@@ -1490,6 +1606,8 @@ function pushExpandedGuildChildren(
   typingFrame: string,
   channelNotificationCounts: ReadonlyMap<string, number>,
   options: SidebarVisibilityOptions,
+  /** Folder nesting of the server row in the tree view. */
+  guildDepth = 0,
 ): void {
   const visibleGuildChannels = sidebarChannelsForGuild(sidebar, channels, guild.id);
   const loadingExpandedGuild = sidebar.loadingGuildId === guild.id
@@ -1501,7 +1619,7 @@ function pushExpandedGuildChildren(
       id: `${guild.id}::loading`,
       guildId: guild.id,
       label: loadingLabel("Loading…", loadingFrameIndex),
-      depth: 1,
+      depth: guildDepth + 1,
       selected: false,
       active: false,
       expanded: false,
@@ -1511,7 +1629,7 @@ function pushExpandedGuildChildren(
 
   const visibleChannelRows = visibleGuildChannels.filter((channel) => isVisibleSidebarChannelRow(channel, options));
   if (isFixedTopLevelGuildId(guild.id)) {
-    pushPrivateConversationChannels(entries, sidebar, guild.id, visibleChannelRows, typingChannelIds, typingFrame, channelNotificationCounts);
+    pushPrivateConversationChannels(entries, sidebar, guild.id, visibleChannelRows, typingChannelIds, typingFrame, channelNotificationCounts, false, guildDepth + 1);
     return;
   }
   const guildCategories = visibleGuildChannels
@@ -1532,12 +1650,12 @@ function pushExpandedGuildChildren(
     .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
   for (const channel of uncategorized) {
-    pushChannelAndThreads(entries, guild.id, channel, threadRows, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+    pushChannelAndThreads(entries, guild.id, channel, threadRows, guildDepth + 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
   }
 
   const parentIds = new Set(parentRows.map((channel) => channel.id));
   for (const thread of sortThreadRows(threadRows.filter((candidate) => !candidate.parentId || !parentIds.has(candidate.parentId)))) {
-    pushChannelEntry(entries, guild.id, thread, 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+    pushChannelEntry(entries, guild.id, thread, guildDepth + 1, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
   }
 
   for (const category of guildCategories) {
@@ -1547,7 +1665,7 @@ function pushExpandedGuildChildren(
       id: category.id,
       guildId: guild.id,
       label: category.name,
-      depth: 1,
+      depth: guildDepth + 1,
       muted: Boolean(category.muted),
       hidden: Boolean(category.hidden),
       selected: false,
@@ -1562,13 +1680,15 @@ function pushExpandedGuildChildren(
       .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
     for (const channel of categoryChannels) {
-      pushChannelAndThreads(entries, guild.id, channel, threadRows, 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
+      pushChannelAndThreads(entries, guild.id, channel, threadRows, guildDepth + 2, typingChannelIds, typingFrame, channelNotificationCounts, sidebar.voiceMembersByChannelId);
     }
   }
 }
 
-function folderVisibleItems(sidebar: SidebarState): Array<{ item: SidebarItemRef; pinned: boolean; sortOrder: number; name: string }> {
-  const parentId = sidebar.currentFolderId;
+function folderVisibleItems(
+  sidebar: SidebarState,
+  parentId: string | null = sidebar.currentFolderId,
+): Array<{ item: SidebarItemRef; pinned: boolean; sortOrder: number; name: string }> {
   const folders = sidebar.folders
     .filter((folder) => (folder.parentId ?? null) === parentId)
     .map((folder) => ({ item: { type: "folder" as const, id: folder.id }, pinned: folder.pinned, sortOrder: folder.sortOrder, name: folder.name }));
@@ -1603,23 +1723,35 @@ export function buildSidebarEntries(
 
   if (!query) {
     normalizeSidebarPlacement(sidebar);
-    if (sidebar.currentFolderId) pushUpEntry(entries);
+    const treeView = isTreeFolderView(sidebar);
+    if (!treeView && sidebar.currentFolderId) pushUpEntry(entries);
 
-    for (const { item } of folderVisibleItems(sidebar)) {
-      if (item.type === "folder") {
-        const folder = sidebar.folders.find((candidate) => candidate.id === item.id);
-        if (folder) pushFolderEntry(entries, folder, sidebar, guildNotificationCounts);
-        continue;
-      }
+    // The tree view lists every level, expanded folders' contents right below them.
+    const listedFolderIds = new Set<string>();
+    const pushLevel = (parentId: string | null, depth: number): void => {
+      for (const { item } of folderVisibleItems(sidebar, parentId)) {
+        if (item.type === "folder") {
+          const folder = sidebar.folders.find((candidate) => candidate.id === item.id);
+          if (!folder) continue;
+          const open = treeView && sidebar.expandedFolderIds.has(folder.id) && !listedFolderIds.has(folder.id);
+          pushFolderEntry(entries, folder, sidebar, guildNotificationCounts, false, depth, open);
+          if (open) {
+            listedFolderIds.add(folder.id);
+            pushLevel(folder.id, depth + 1);
+          }
+          continue;
+        }
 
-      const guild = sidebar.guilds.find((candidate) => candidate.id === item.id);
-      if (!guild) continue;
-      const isExpanded = guild.id === sidebar.expandedGuildId;
-      pushGuildEntry(entries, guild, sidebar, guildNotificationCounts, isExpanded);
-      if (isExpanded) {
-        pushExpandedGuildChildren(entries, sidebar, channels, guild, loadingFrameIndex, typingChannelIds, typingFrame, channelNotificationCounts, options);
+        const guild = sidebar.guilds.find((candidate) => candidate.id === item.id);
+        if (!guild) continue;
+        const isExpanded = guild.id === sidebar.expandedGuildId;
+        pushGuildEntry(entries, guild, sidebar, guildNotificationCounts, isExpanded, depth);
+        if (isExpanded) {
+          pushExpandedGuildChildren(entries, sidebar, channels, guild, loadingFrameIndex, typingChannelIds, typingFrame, channelNotificationCounts, options, depth);
+        }
       }
-    }
+    };
+    pushLevel(treeView ? null : sidebar.currentFolderId, 0);
   }
 
   const requestedKey = sidebarItemKey(sidebar.selectedItem);
@@ -1630,6 +1762,7 @@ export function buildSidebarEntries(
   const clampedIndex = clampSelectedIndex(sidebar, entries);
   sidebar.selectedIndex = clampedIndex;
   sidebar.selectedItem = entries[clampedIndex]?.item ?? null;
+  syncTreeFolderContext(sidebar);
 
   return entries.map((entry, index) => ({
     ...entry,
@@ -1798,6 +1931,7 @@ function revealFocusedGuildAfterSearch(sidebar: SidebarState): void {
 
   const parentId = itemParent(sidebar, { type: "guild", id: guildId });
   sidebar.currentFolderId = parentId === undefined ? null : parentId;
+  if (isTreeFolderView(sidebar)) revealSidebarFolder(sidebar, sidebar.currentFolderId);
   sidebar.expandedGuildId = guildId;
   sidebar.selectedItem = { type: "guild", id: guildId };
   sidebar.selectedIndex = 0;
@@ -1984,6 +2118,29 @@ export function getSidebarSearchBarViewport(search: SidebarSearchState, width: n
       + textStyle + displayText,
     cursorCol: 2 + viewport.cursorCol,
   };
+}
+
+/**
+ * Run a change to the sidebar's servers without losing the selection: the
+ * selected row keeps its item, or, when that item is gone (the server just
+ * left), stays at the same row so the next server moves up into it.
+ */
+export function preservingSidebarSelection(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  change: () => void,
+  options: SidebarVisibilityOptions = {},
+): void {
+  const build = () => buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  build();
+  const row = sidebar.selectedIndex;
+  const selectedKey = sidebarItemKey(sidebar.selectedItem);
+  change();
+  const entries = build();
+  if (selectedKey && entries.some((entry) => sidebarItemKey(entry.item) === selectedKey)) return;
+  sidebar.selectedIndex = row;
+  sidebar.selectedItem = null;
+  build();
 }
 
 export function getSelectedSidebarEntry(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): SidebarEntry {
@@ -2446,7 +2603,76 @@ function jumpSidebarSelectionToAnyNotification(
   }
 }
 
-export function enterSidebarFolder(sidebar: SidebarState, folderId: string): boolean {
+function resetFolderViewTransientState(sidebar: SidebarState): void {
+  sidebar.visualAnchor = null;
+  sidebar.pendingDeleteItem = null;
+}
+
+/**
+ * A folder found by search opens where it lives: clear the filter and expand
+ * the folder along with every folder above it.
+ */
+function openSearchResultFolderInTree(sidebar: SidebarState, folderId: string): boolean {
+  if (!getActiveSidebarSearchQuery(sidebar) || !sidebar.search) return false;
+  sidebar.search.highlightsVisible = false;
+  revealSidebarFolder(sidebar, folderId);
+  resetFolderViewTransientState(sidebar);
+  sidebar.selectedItem = { type: "folder", id: folderId };
+  return true;
+}
+
+/** Tree view Enter/click: expand a collapsed folder or collapse an expanded one. */
+export function toggleSidebarTreeFolder(sidebar: SidebarState, folderId: string): boolean {
+  if (!sidebar.folders.some((folder) => folder.id === folderId)) return false;
+  if (openSearchResultFolderInTree(sidebar, folderId)) return true;
+  resetFolderViewTransientState(sidebar);
+  if (!sidebar.expandedFolderIds.delete(folderId)) sidebar.expandedFolderIds.add(folderId);
+  sidebar.selectedItem = { type: "folder", id: folderId };
+  return true;
+}
+
+/** Tree view `l`: expand the folder, or step onto its first row when it is already expanded. */
+function expandSidebarTreeFolder(sidebar: SidebarState, channels: DiscordChannel[], folderId: string, options: SidebarVisibilityOptions): boolean {
+  if (!sidebar.folders.some((folder) => folder.id === folderId)) return false;
+  if (openSearchResultFolderInTree(sidebar, folderId)) return true;
+  resetFolderViewTransientState(sidebar);
+  if (!sidebar.expandedFolderIds.has(folderId)) {
+    sidebar.expandedFolderIds.add(folderId);
+    return true;
+  }
+  const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  const folderIndex = entries.findIndex((entry) => entry.kind === "folder" && entry.id === folderId);
+  const child = entries[folderIndex + 1];
+  if (folderIndex >= 0 && child && isSelectableEntry(child) && child.depth > entries[folderIndex]!.depth) {
+    sidebar.selectedIndex = folderIndex + 1;
+    sidebar.selectedItem = child.item ?? null;
+  }
+  return true;
+}
+
+/** Tree view `h`/Backspace: collapse an expanded folder, otherwise the folder listing the cursor's row. */
+function collapseSidebarTreeFolder(sidebar: SidebarState, item: SidebarSelectableItem | null): boolean {
+  if (item?.type === "folder" && sidebar.expandedFolderIds.has(item.id)) {
+    resetFolderViewTransientState(sidebar);
+    sidebar.expandedFolderIds.delete(item.id);
+    return true;
+  }
+  const container = item ? sidebarItemContainer(sidebar, item) : sidebar.currentFolderId;
+  if (!container) return false;
+  resetFolderViewTransientState(sidebar);
+  sidebar.expandedFolderIds.delete(container);
+  sidebar.selectedItem = { type: "folder", id: container };
+  sidebar.currentFolderId = itemParent(sidebar, { type: "folder", id: container }) ?? null;
+  return true;
+}
+
+export function enterSidebarFolder(
+  sidebar: SidebarState,
+  folderId: string,
+  channels: DiscordChannel[] = [],
+  options: SidebarVisibilityOptions = {},
+): boolean {
+  if (isTreeFolderView(sidebar)) return expandSidebarTreeFolder(sidebar, channels, folderId, options);
   if (!sidebar.folders.some((folder) => folder.id === folderId)) return false;
   sidebar.currentFolderId = folderId;
   sidebar.expandedGuildId = null;
@@ -2456,7 +2682,10 @@ export function enterSidebarFolder(sidebar: SidebarState, folderId: string): boo
   return true;
 }
 
-export function leaveSidebarFolder(sidebar: SidebarState): boolean {
+export function leaveSidebarFolder(sidebar: SidebarState, channels: DiscordChannel[] = [], options: SidebarVisibilityOptions = {}): boolean {
+  if (isTreeFolderView(sidebar)) {
+    return collapseSidebarTreeFolder(sidebar, getSelectedSidebarEntry(sidebar, channels, options).item ?? null);
+  }
   if (!sidebar.currentFolderId) return false;
   const leaving = sidebar.currentFolderId;
   sidebar.currentFolderId = parentOfCurrentFolder(sidebar);
@@ -2476,8 +2705,8 @@ export function toggleSidebarVisualSelection(sidebar: SidebarState, channels: Di
 }
 
 export function moveSidebarSelectionOut(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): boolean {
-  if (!sidebar.currentFolderId) return false;
   const items = selectedSidebarItems(sidebar, channels, options).filter((item) => item.type !== "guild" || !isFixedTopLevelGuildId(item.id));
+  if (!sidebar.currentFolderId) return false;
   const before = currentFolderRef(sidebar);
   if (items.length === 0 || !before) return false;
   sidebar.visualAnchor = null;
@@ -2570,7 +2799,9 @@ function updateMovePromptAutocomplete(sidebar: SidebarState): void {
 }
 
 export function openSidebarCreateFolderPrompt(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): void {
-  sidebar.prompt = { purpose: "create_folder", input: "", cursorPos: 0, items: sidebar.visualAnchor ? selectedSidebarItems(sidebar, channels, options) : [] };
+  const items = sidebar.visualAnchor ? selectedSidebarItems(sidebar, channels, options) : [];
+  getSelectedSidebarEntry(sidebar, channels, options);
+  sidebar.prompt = { purpose: "create_folder", input: "", cursorPos: 0, items };
   sidebar.pendingDeleteItem = null;
 }
 
@@ -2601,6 +2832,7 @@ export function unwrapSelectedSidebarFolder(sidebar: SidebarState, channels: Dis
   const fallback = nextItemAfterRemovingItems(sidebar, channels, [item], options);
   if (children.length > 0) moveSidebarItems(sidebar, children, parentId, item);
   sidebar.folders = sidebar.folders.filter((candidate) => candidate.id !== folder.id);
+  sidebar.expandedFolderIds.delete(folder.id);
   sidebar.visualAnchor = null;
   sidebar.pendingDeleteItem = null;
   sidebar.selectedItem = children[0] ?? (fallback?.type === "up" ? null : fallback);
@@ -2630,6 +2862,7 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent, cha
     const input = prompt.input.trim();
     sidebar.prompt = null;
     sidebar.visualAnchor = null;
+    syncTreeFolderContext(sidebar);
     if (prompt.purpose === "create_folder") {
       if (!input) return true;
       const parentId = sidebar.currentFolderId;
@@ -2663,7 +2896,9 @@ export function handleSidebarPromptKey(sidebar: SidebarState, key: KeyEvent, cha
         : (!raw || raw === "/")
           ? topLevelCurrentFolderRef(sidebar)
           : undefined;
-      if (destination !== undefined && destination !== sidebar.currentFolderId) {
+      // The tree view keeps the cursor on moved rows that stay on screen.
+      const staysVisible = destination !== undefined && isTreeFolderView(sidebar) && isSidebarFolderOpenInTree(sidebar, destination);
+      if (destination !== undefined && destination !== sidebar.currentFolderId && !staysVisible) {
         requestFocusAfterMovingItemsOutOfView(sidebar, channels, prompt.items, options);
       }
       if (destination !== undefined) moveSidebarItems(sidebar, prompt.items, destination, before);
@@ -2727,7 +2962,8 @@ export function activateSelectedEntry(sidebar: SidebarState, channels: DiscordCh
   }
 
   if (entry.kind === "folder") {
-    enterSidebarFolder(sidebar, entry.id);
+    if (isTreeFolderView(sidebar)) toggleSidebarTreeFolder(sidebar, entry.id);
+    else enterSidebarFolder(sidebar, entry.id);
     return entry;
   }
 
@@ -2800,6 +3036,13 @@ interface SidebarEntryIcon {
   replacesMarker?: boolean;
 }
 
+/** Bundled logo tiles (assets/sidebar/) for the provider roots; the initials stay as their fallback. */
+const FIXED_ROOT_LOGOS: Record<string, "direct-messages" | "whatsapp" | "instagram"> = {
+  [DIRECT_MESSAGES_GUILD_ID]: "direct-messages",
+  [WHATSAPP_GUILD_ID]: "whatsapp",
+  [INSTAGRAM_GUILD_ID]: "instagram",
+};
+
 const FIXED_ROOT_INITIALS: Record<string, string> = {
   [DIRECT_MESSAGES_GUILD_ID]: "DM",
   [WHATSAPP_GUILD_ID]: "WA",
@@ -2819,7 +3062,9 @@ interface SidebarIconLookup {
 function entryIcon(entry: SidebarEntry, lookup: SidebarIconLookup): SidebarEntryIcon | null {
   if (entry.kind === "guild") {
     const guild = lookup.guildsById.get(entry.id);
-    return { source: guild ? discordGuildIconSource(guild) : null, initials: FIXED_ROOT_INITIALS[entry.id] };
+    const logo = FIXED_ROOT_LOGOS[entry.id];
+    if (logo) return { source: bundledSidebarIconSource(logo), initials: FIXED_ROOT_INITIALS[entry.id] };
+    return { source: guild ? discordGuildIconSource(guild) : null };
   }
   if (entry.kind === "channel" && Object.hasOwn(FIXED_ROOT_INITIALS, entry.guildId)) {
     const channel = lookup.conversation(entry.guildId, entry.id);
@@ -2865,7 +3110,8 @@ export function renderSidebar(
   const borderFg = focused ? theme.borderFocused : theme.borderUnfocused;
   const borderBg = theme.appBg ?? "";
 
-  const folder = currentSidebarFolder(sidebar);
+  // The tree view shows every level at once.
+  const folder = isTreeFolderView(sidebar) ? null : currentSidebarFolder(sidebar);
   const header = folder ? ` ${folder.name}/` : " Servers";
   rows.push(
     theme.sidebarBg + theme.text + theme.bold + padRight(header, innerWidth)
@@ -2922,7 +3168,7 @@ export function renderSidebar(
       if (!entry) break;
       const icon = iconLookup ? entryIcon(entry, iconLookup) : null;
       if (icons && icon?.source) icons.visible.push(icon.source);
-      rows.push(renderEntryRow(entry, visualKeys, innerWidth, borderBg, borderFg, activeChannelId, icon && icons ? {
+      rows.push(renderEntryRow(entry, visualKeys, innerWidth, borderBg, borderFg, activeChannelId, sidebar.arrows, icon && icons ? {
         ...icon,
         row: rows.length + 1,
         image: icon.source ? icons.lookup(icon.source) : null,
@@ -2985,10 +3231,14 @@ function renderEntryRow(
   borderBg: string,
   borderFg: string,
   activeChannelId: string | null,
+  arrows: SidebarArrowMode,
   icon: SidebarEntryIcon & { row: number; image: InlineChatImageReady | null; placements: SidebarIconPlacement[] } | null = null,
 ): string {
+  // Without arrows every row starts one column in, indented two per level;
+  // servers, categories and the cursor lose their arrow columns.
+  const showArrows = arrows === "show";
+  const indent = (showArrows ? "" : " ") + "  ".repeat(entry.depth);
   if (entry.kind === "delimiter") {
-    const indent = "  ".repeat(entry.depth);
     const ruleWidth = Math.max(0, innerWidth - termWidth(indent) - 1);
     return theme.reset + theme.sidebarBg + theme.muted
       + padRight(`${indent}${"─".repeat(ruleWidth)}`, innerWidth)
@@ -2996,7 +3246,7 @@ function renderEntryRow(
   }
 
   if (entry.kind === "loading") {
-    const prefix = "  ".repeat(entry.depth);
+    const prefix = indent;
     const labelWidth = Math.max(0, innerWidth - termWidth(prefix));
     const title = padRight(entry.label, labelWidth);
 
@@ -3011,21 +3261,24 @@ function renderEntryRow(
   const fg = entry.kind === "voice-member" && entry.color
     ? entry.color
     : entry.selected || isActive ? theme.text : theme.muted;
-  const indent = "  ".repeat(entry.depth);
-  const selectPrefix = entry.selected ? "▸ " : isVisual ? "│ " : "  ";
-  const marker = entry.kind === "guild"
-    ? entry.expanded ? "▾ " : "▸ "
-    : entry.kind === "category"
-      ? entry.expanded ? "▾ " : "▸ "
-      : entry.kind === "channel"
-        ? channelEntryMarker(entry.channelType)
-        : entry.kind === "voice-member"
-          ? "• "
+  const disclosure = entry.expanded ? "▾ " : "▸ ";
+  const marker = entry.kind === "guild" || entry.kind === "category"
+    ? showArrows ? disclosure : ""
+    : entry.kind === "channel"
+      ? channelEntryMarker(entry.channelType)
+      : entry.kind === "voice-member"
+        ? "• "
         : "";
-  // A conversation's picture takes its marker's place, lined up under the
-  // parent's icon so the names line up too.
-  const rowMarker = icon?.replacesMarker ? " ".repeat(termWidth(marker)) : marker;
-  const basePrefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${rowMarker}` : `${selectPrefix}${rowMarker}`;
+  // A conversation's picture takes its marker's place: with arrows it lines up
+  // under the parent's icon so the names line up too; without them it is
+  // indented under the parent like every other child row.
+  const rowMarker = icon?.replacesMarker ? showArrows ? " ".repeat(termWidth(marker)) : "" : marker;
+  // Server, folder and ".." rows carry the cursor marker in front of their
+  // tree indent when arrows are shown; other rows are indented past it.
+  const selectPrefix = !showArrows ? "" : entry.selected ? "▸ " : isVisual ? "│ " : "  ";
+  const basePrefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member"
+    ? `${indent}${rowMarker}`
+    : `${selectPrefix}${indent}${rowMarker}`;
   // The icon box sits between the marker and the name. A ready picture leaves
   // blank cells for the Kitty placement; anything else shows initials there.
   let prefix = basePrefix;
@@ -3062,10 +3315,13 @@ function renderEntryRow(
       + theme.reset + borderBg + borderFg + "│" + theme.reset;
   }
 
+  // An open tree folder's servers are listed right below it with their own
+  // badges, so its count and aggregate badge would only repeat them.
+  const openFolder = entry.kind === "folder" && entry.expanded;
   const rawLabel = entry.kind === "folder"
-    ? `📁 ${entry.label}/ ${entry.childCount ?? 0}`
+    ? openFolder ? `📂 ${entry.label}/` : `📁 ${entry.label}/ ${entry.childCount ?? 0}`
     : entry.label || "unnamed";
-  const badge = renderNotificationBadge(entry.notificationCount ?? 0);
+  const badge = renderNotificationBadge(openFolder ? 0 : entry.notificationCount ?? 0);
   const muteIcon = (entry.kind === "guild" || entry.kind === "category" || entry.kind === "channel") && entry.muted ? " 🔕" : "";
   const badgeGap = badge ? 1 : 0;
   const badgeWidth = badge?.width ?? 0;

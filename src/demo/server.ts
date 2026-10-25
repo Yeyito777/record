@@ -112,6 +112,10 @@ export class DemoDiscordServer {
     const isOlderPage = method === "GET" && url.searchParams.has("before") && /\/messages$/.test(path);
     await delay(isOlderPage ? this.olderPageDelayMs : this.latencyMs, signal);
     const body = init?.body ?? (request ? await request.arrayBuffer() : null);
+    // Like discord.com: a request that announces JSON must carry valid JSON.
+    if (headerValue(init?.headers, "content-type")?.includes("application/json") && !validJsonBody(body)) {
+      return json({ message: "The request body contains invalid JSON.", code: 50109 }, 400);
+    }
     return this.api(method, path, url.searchParams, body, headerValue(init?.headers, "authorization"));
   }) as typeof fetch;
 
@@ -335,10 +339,23 @@ export class DemoDiscordServer {
     if (method === "POST" && route("channels/:id/threads")) return this.createThread(parts[1]!, null, body);
     if (method === "POST" && route("channels/:id/messages/:mid/threads")) return this.createThread(parts[1]!, parts[3]!, body);
 
+    if (method === "DELETE" && route("users/@me/guilds/:id")) return this.leaveGuild(parts[3]!);
+
     // Settings, mutes, membership, moderation: accept and do nothing.
     this.log(`UNHANDLED ${method} ${path}`);
     if (method === "GET") return notFound();
     return method === "PATCH" ? json({}) : empty();
+  }
+
+  private leaveGuild(guildId: string): Response {
+    if (process.env.RECORD_DEMO_FAIL_LEAVE === "1") {
+      return json({ message: "Missing Permissions. This demo server refuses Leave Server because RECORD_DEMO_FAIL_LEAVE=1 is set.", code: 50013 }, 400);
+    }
+    const index = this.world.guilds.findIndex((guild) => guild.id === guildId);
+    if (index < 0) return notFound();
+    this.world.guilds.splice(index, 1);
+    setTimeout(() => this.dispatch("GUILD_DELETE", { id: guildId, unavailable: false }), 15);
+    return empty();
   }
 
   private guild(id: string): DemoGuild | null {
@@ -1003,6 +1020,16 @@ function safeJson(text: string): Record<string, any> {
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validJsonBody(body: unknown): boolean {
+  if (typeof body !== "string") return false;
+  try {
+    JSON.parse(body);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function json(value: unknown, status = 200): Response {

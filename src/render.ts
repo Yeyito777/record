@@ -273,6 +273,8 @@ function sameLineAnchors(left: string[], right: string[]): boolean {
   return true;
 }
 
+const IMAGE_ROW_ANCHOR_RE = /:image:[^:]+:\d+$/;
+
 function renderHistoryViewportLine(
   state: AppState,
   rawLine: string,
@@ -280,6 +282,10 @@ function renderHistoryViewportLine(
   historyFocused: boolean,
 ): string {
   const inVisual = historyFocused && (state.editor.mode === "visual" || state.editor.mode === "visual-line");
+  // An image row is the image: selected, the whole placement is tinted (V=1).
+  // A selection or cursor cell under it would change the cells st compares
+  // the image against, and hide that part of it once they change back.
+  if (inVisual && IMAGE_ROW_ANCHOR_RE.test(state.historyLineAnchors[lineIndex] ?? "")) return rawLine;
   let rendered = rawLine;
   const plain = stripAnsi(rawLine);
 
@@ -335,6 +341,9 @@ function readyInlineImages(state: AppState): InlineChatImageReady[] {
   return images;
 }
 
+/** Flipped in the placement id of an image placed past the pane while gliding. */
+const EXTENDED_PLACEMENT_BIT = 0x10000000;
+
 function visibleInlineImagePlacements(
   timeline: RenderedTimeline,
   viewStart: number,
@@ -358,6 +367,12 @@ function visibleInlineImagePlacements(
     const visibleEnd = extendBelow && visibleStart < viewEnd ? imageEnd : Math.min(imageEnd, viewEnd);
     const visibleRows = visibleEnd - visibleStart;
     if (visibleRows <= 0) continue;
+    // Placed past the pane, st remembers the prompt rows' cells under the
+    // image as its own, per line, for as long as the placement lasts: one
+    // that later covers those lines again (the prompt shrank, or a glide
+    // passes the same way) would be hidden there. A placement of its own,
+    // replaced by the ordinary one at rest, keeps those cells to itself.
+    const placementId = visibleEnd > viewEnd ? placement.placementId ^ EXTENDED_PLACEMENT_BIT : placement.placementId;
 
     const clippedTopRows = visibleStart - imageStart;
     const sourceY = Math.floor((placement.image.pixelHeight * clippedTopRows) / placement.rows);
@@ -367,7 +382,7 @@ function visibleInlineImagePlacements(
     );
     placements.push({
       image: placement.image,
-      placementId: placement.placementId,
+      placementId,
       row: bodyTop + visibleStart - viewStart,
       col: imageCol + (placement.columnOffset ?? 0),
       columns: placement.columns,
@@ -463,20 +478,37 @@ export function freeMessageBand(
   return best;
 }
 
-/** Rows a cursor-positioned overlay payload draws on. */
-function payloadRows(payload: string): { top: number; bottom: number } | null {
-  let top = Infinity;
-  let bottom = -Infinity;
-  for (const match of payload.matchAll(/\x1b\[(\d+);\d+H/g)) {
+interface CellRect {
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+}
+
+/** The cells a cursor-positioned overlay payload draws on (its bounding box). */
+function payloadRect(payload: string): CellRect | null {
+  let rect: CellRect | null = null;
+  const moves = [...payload.matchAll(/\x1b\[(\d+);(\d+)H/g)];
+  moves.forEach((match, index) => {
     const row = Number(match[1]);
-    top = Math.min(top, row);
-    bottom = Math.max(bottom, row);
-  }
-  return top <= bottom ? { top, bottom } : null;
+    const col = Number(match[2]);
+    const text = payload.slice(match.index! + match[0].length, moves[index + 1]?.index ?? payload.length);
+    const right = col + Math.max(1, termWidth(stripAnsi(text))) - 1;
+    rect = rect
+      ? { top: Math.min(rect.top, row), left: Math.min(rect.left, col), bottom: Math.max(rect.bottom, row), right: Math.max(rect.right, right) }
+      : { top: row, left: col, bottom: row, right };
+  });
+  return rect;
+}
+
+function intersects(rect: CellRect, row: number, col: number, rows: number, columns: number): boolean {
+  return row <= rect.bottom && row + rows - 1 >= rect.top && col <= rect.right && col + columns - 1 >= rect.left;
 }
 
 /** Each state's maxScroll at its previous smooth-scroll layout. */
 const smoothMaxScroll = new WeakMap<object, number>();
+/** Each state's pane bottom and band end in its previous frame. */
+const lastPaneEdge = new WeakMap<object, string>();
 
 export function render(state: AppState): void {
   const cols = Math.max(1, state.cols);
@@ -770,16 +802,18 @@ export function render(state: AppState): void {
     emitMemberListCol(typingRow);
   }
 
-  // Overlays drawn over the message rows; a smooth-scroll band avoids them.
-  const overlayRows: { top: number; bottom: number }[] = [];
-  const addOverlay = (payload: string): void => {
+  // Overlays drawn over the message rows; a smooth-scroll band avoids them,
+  // and images under them are not placed or moved there (see `covered`).
+  const overlays: { rect: CellRect; emoji: { start: number; end: number } }[] = [];
+  const addOverlay = (payload: string, emojiStart = customEmojiFrame.placements.length): void => {
     appendPositionedPayload(frameRows, payload);
-    const covered = payloadRows(payload);
-    if (covered) overlayRows.push(covered);
+    const rect = payloadRect(payload);
+    if (rect) overlays.push({ rect, emoji: { start: emojiStart, end: customEmojiFrame.placements.length } });
   };
 
   if (state.autocomplete) {
-    addOverlay(renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol, customEmojiFrame));
+    const emojiStart = customEmojiFrame.placements.length;
+    addOverlay(renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol, customEmojiFrame), emojiStart);
   }
 
   emitSidebarCol(promptSeparatorRow);
@@ -936,25 +970,49 @@ export function render(state: AppState): void {
   // the same update, and a moving rectangle covers only the pane's columns.
   const bands = !!smooth || (state.scrollRegions && state.synchronizedUpdates);
   const scrollRegion = bands
-    ? freeMessageBand(bodyTop, bodyTop + bodyRows - 1, overlayRows)
+    ? freeMessageBand(bodyTop, bodyTop + bodyRows - 1, overlays.map(({ rect }) => rect))
     : canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null;
   const smoothRects = smooth ? smoothScrollRects(scrollRegion, mainCol, mainW) : [];
 
-  const inlinePlacements = state.whatsapp.loginModal
-    ? []
-    : visibleInlineImagePlacements(
-      timeline,
-      viewStart,
-      bodyTop,
-      bodyRows,
-      mainCol + 1,
-      state.imageModal ? null : selectedHistoryRows,
-      // Only while gliding, and only at the band's bottom edge: at rest images
-      // are cropped to the pane exactly as without smooth scrolling.
-      !!smooth?.busy() && scrollRegion?.end === bodyTop + bodyRows - 1,
-    );
-  if (imageModal?.placement) inlinePlacements.push(imageModal.placement);
-  const inlineImageOptions = { allowPlacementUpdates: !state.autocomplete || !!state.imageModal };
+  const paneBottom = bodyTop + bodyRows - 1;
+  // What lies below the pane changed (the typing line, the prompt's rows, an
+  // overlay taking the band's last rows): no image stays past the pane then.
+  const paneEdge = `${paneBottom}|${scrollRegion?.end ?? ""}`;
+  const paneEdgeMoved = lastPaneEdge.get(state) !== paneEdge;
+  lastPaneEdge.set(state, paneEdge);
+  const viewerPlacement = imageModal?.placement ?? null;
+  // Smooth scrolling: decided once the frame's motion is known (planImages
+  // runs after it), so a glide the frame stops never keeps an image placed
+  // past the pane. Only while st may still draw the content higher than
+  // laid out, and only at the band's bottom edge: otherwise images are
+  // cropped to the pane exactly as without smooth scrolling.
+  const imagePlacements = (): InlineTerminalImagePlacement[] => {
+    const extend = !!smooth?.extendBelow() && scrollRegion?.end === paneBottom && !paneEdgeMoved;
+    const placements = state.whatsapp.loginModal
+      ? []
+      : visibleInlineImagePlacements(
+        timeline,
+        viewStart,
+        bodyTop,
+        bodyRows,
+        mainCol + 1,
+        state.imageModal ? null : selectedHistoryRows,
+        extend,
+      );
+    smooth?.noteImagesExtended(placements.some((placement) => placement.row + placement.rows - 1 > paneBottom));
+    if (viewerPlacement) placements.push(viewerPlacement);
+    return placements;
+  };
+  const inlineImageOptions = {
+    covered: (placement: InlineTerminalImagePlacement) => placement !== viewerPlacement
+      && overlays.some(({ rect }) => intersects(rect, placement.row, placement.col, placement.rows, placement.columns)),
+    // A repaint from scratch (a resize) may have moved or dropped placements.
+    replacePlacements: !hasRetainedFrame(state),
+  };
+  // Custom emoji under an overlay are not drawn there (the overlay's own are).
+  customEmojiFrame.placements = customEmojiFrame.placements.filter((placement, index) => !overlays.some(({ rect, emoji }) => (
+    (index < emoji.start || index >= emoji.end) && intersects(rect, placement.row, placement.col, 1, 2)
+  )));
   const sidebarPlacements = visibleSidebarIconPlacements(state, sidebarIconFrame, rows, cols);
   const sidebarImageOptions = {
     replacePlacements: !hasRetainedFrame(state),
@@ -962,7 +1020,7 @@ export function render(state: AppState): void {
     maxIdleBytes: SIDEBAR_ICON_MAX_IDLE_BYTES,
   };
   const planImages = (movedRows: ScrollRegion | null = null) => joinImageUpdates(
-    planInlineTerminalImages(state, readyInlineImages(state), inlinePlacements, { ...inlineImageOptions, movedRows }),
+    planInlineTerminalImages(state, readyInlineImages(state), imagePlacements(), { ...inlineImageOptions, movedRows }),
     planInlineTerminalImages(
       sidebarIconTerminalOwner,
       sidebarPlacements.map((placement) => placement.image),
@@ -972,8 +1030,8 @@ export function render(state: AppState): void {
       { ...sidebarImageOptions, movedRows },
     ),
   );
-  // Band frames tell the planners which rows their region scroll moved.
-  const images: FrameImages = bands ? planImages : planImages();
+  // The planners are told which rows the frame's region scroll moved.
+  const images: FrameImages = planImages;
 
   flushFrame(state, {
     rows: frameRows,
