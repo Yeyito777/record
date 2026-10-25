@@ -1986,6 +1986,29 @@ export function getSidebarSearchBarViewport(search: SidebarSearchState, width: n
   };
 }
 
+/**
+ * Run a change to the sidebar's servers without losing the selection: the
+ * selected row keeps its item, or, when that item is gone (the server just
+ * left), stays at the same row so the next server moves up into it.
+ */
+export function preservingSidebarSelection(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  change: () => void,
+  options: SidebarVisibilityOptions = {},
+): void {
+  const build = () => buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
+  build();
+  const row = sidebar.selectedIndex;
+  const selectedKey = sidebarItemKey(sidebar.selectedItem);
+  change();
+  const entries = build();
+  if (selectedKey && entries.some((entry) => sidebarItemKey(entry.item) === selectedKey)) return;
+  sidebar.selectedIndex = row;
+  sidebar.selectedItem = null;
+  build();
+}
+
 export function getSelectedSidebarEntry(sidebar: SidebarState, channels: DiscordChannel[], options: SidebarVisibilityOptions = {}): SidebarEntry {
   const entries = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options);
   return entries[Math.max(0, Math.min(sidebar.selectedIndex, Math.max(0, entries.length - 1)))] ?? {

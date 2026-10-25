@@ -9,6 +9,7 @@ import {
 } from "./serveractions";
 import { theme } from "./theme";
 import { INSTAGRAM_GUILD_ID } from "./chatproviders";
+import { VtScreen } from "./vtscreen.testutil";
 
 function stripAnsi(text: string): string {
   return text
@@ -94,16 +95,35 @@ describe("server actions modal", () => {
     expect(rendered).toContain("Unmute Server");
   });
 
-  test("grows right to show the full error instead of ellipsizing it", () => {
+  test("wraps a long error inside the box: every word readable, nothing past the screen edge", () => {
     const modal = createServerActionModal("guild-1", "Example");
-    const error = "Could not leave server: Discord returned 404. Missing Access";
+    const error = "Could not leave server: Discord returned 400. The request body contains invalid JSON. (50109)";
     modal.error = error;
+    for (const cols of [80, 60, 45]) {
+      const payload = renderServerActionModal(modal, 3, 29, 20, cols);
+      const screen = new VtScreen(20, cols);
+      screen.write(payload);
+      const text = screen.text().join("\n");
+      // The whole message is there (wrapped), with no ellipsis.
+      expect(text.replace(/[│\s]+/g, " ")).toContain(error);
+      expect(text).not.toContain("…");
+      // Each painted row stays within the screen: one box, no wrapped stray edges.
+      const rows = text.split("\n").filter((row) => row.trim());
+      const tops = rows.filter((row) => row.includes("┌")).length;
+      const bottoms = rows.filter((row) => row.includes("└")).length;
+      expect([tops, bottoms]).toEqual([1, 1]);
+      for (const match of payload.matchAll(/\x1b\[(\d+);(\d+)H([^\x1b]*(?:\x1b\[[0-9;]*m[^\x1b]*)*)/g)) {
+        const visible = match[3]!.replace(/\x1b\[[0-9;]*m/g, "");
+        expect(Number(match[2]) - 1 + [...visible].length).toBeLessThanOrEqual(cols);
+      }
+    }
+  });
 
-    const rendered = stripAnsi(renderServerActionModal(modal, 3, 29, 20, 80));
-
-    expect(rendered).toContain(error);
-    expect(rendered).not.toContain("…");
-    expect(rendered).toContain(`┌${"─".repeat(error.length + 3)}┐`);
+  test("a short error keeps the box at the actions' width", () => {
+    const modal = createServerActionModal("guild-1", "Example");
+    const plain = stripAnsi(renderServerActionModal(modal, 3, 29, 20, 120));
+    modal.error = "Failed";
+    expect(stripAnsi(renderServerActionModal(modal, 3, 29, 20, 120)).split("\n")[1]).toBe(plain.split("\n")[1]);
   });
 
   test("shows only the relevant title-cased mute action for categories and channels", () => {
