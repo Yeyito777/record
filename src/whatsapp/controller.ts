@@ -115,7 +115,9 @@ export interface WhatsAppControllerOptions {
 }
 
 const DEFAULT_SUCCESS_MODAL_DELAY_MS = 900;
-const DEFAULT_CACHE_SAVE_DELAY_MS = 250;
+const DEFAULT_CACHE_SAVE_DELAY_MS = 1_000;
+/** Steady traffic keeps re-arming the debounce; still save at least this often. */
+const CACHE_SAVE_MAX_WAIT_MS = 10_000;
 const DEFAULT_HISTORY_PAGE_DELAY_MS = 250;
 const DEFAULT_HISTORY_REQUEST_TIMEOUT_MS = 20_000;
 const DEFAULT_RECENT_HISTORY_INTERVAL_MS = 60_000;
@@ -175,6 +177,7 @@ export class WhatsAppController {
   private backendResetPromise: Promise<void> | null = null;
   private cacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private cacheWrites: Promise<void> = Promise.resolve();
+  private firstUnsavedChangeAt: number | null = null;
   private cacheEnabled = true;
   private shuttingDown = false;
   private restoreScheduled = false;
@@ -1682,28 +1685,51 @@ export class WhatsAppController {
     }
   }
 
+  /**
+   * Each save snapshots and stringifies every cached chat on the UI thread
+   * (22 ms at 60 chats x 300 messages, ~90 ms at 300 chats), so saves are
+   * debounced by a second, but never postponed past CACHE_SAVE_MAX_WAIT_MS.
+   */
   private queueCacheSave(): void {
     if (!this.cacheEnabled) return;
     this.clearCacheSaveTimer();
+    const now = Date.now();
+    this.firstUnsavedChangeAt ??= now;
+    const delay = Math.max(0, Math.min(this.cacheSaveDelayMs, this.firstUnsavedChangeAt + Math.max(this.cacheSaveDelayMs, CACHE_SAVE_MAX_WAIT_MS) - now));
     this.cacheSaveTimer = setTimeout(() => {
       this.cacheSaveTimer = null;
       this.enqueueCacheWrite();
-    }, this.cacheSaveDelayMs);
+    }, delay);
   }
 
   private enqueueCacheWrite(): void {
     if (!this.cacheEnabled) return;
+    this.firstUnsavedChangeAt = null;
     const snapshot = snapshotWhatsAppUiState(this.state.whatsapp);
     this.cacheWrites = this.cacheWrites.then(
       () => saveWhatsAppCache(this.cacheFile, snapshot),
       () => saveWhatsAppCache(this.cacheFile, snapshot),
     ).then(() => {
-      const persisted = new Set(Object.values(snapshot.messagesByChatId).flat()
-        .map(message => JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, message.chatId), message.id])));
-      for (const [id, send] of this.outboxEntries) {
-        if (send.confirmedIds.size !== send.messageIds.length || !send.confirmedMessages.length) continue;
-        if (!send.confirmedMessages.every(message =>
-          persisted.has(JSON.stringify([canonicalWhatsAppJid(this.state.whatsapp, message.chatId), message.id])))) continue;
+      // Only confirmed sends wait for the cache; most saves have none, and
+      // indexing every cached message for them cost as much as the save.
+      const removable = [...this.outboxEntries].filter(([, send]) =>
+        send.confirmedIds.size === send.messageIds.length && send.confirmedMessages.length > 0);
+      if (!removable.length) return;
+      const key = (message: WhatsAppMessage) => `${canonicalWhatsAppJid(this.state.whatsapp, message.chatId)}\u0000${message.id}`;
+      const persistedByChat = new Map<string, Set<string>>();
+      const persisted = (message: WhatsAppMessage): boolean => {
+        const chatId = canonicalWhatsAppJid(this.state.whatsapp, message.chatId);
+        let ids = persistedByChat.get(chatId);
+        if (!ids) {
+          ids = new Set(Object.entries(snapshot.messagesByChatId)
+            .filter(([snapshotChatId]) => canonicalWhatsAppJid(this.state.whatsapp, snapshotChatId) === chatId)
+            .flatMap(([, messages]) => messages.map(key)));
+          persistedByChat.set(chatId, ids);
+        }
+        return ids.has(key(message));
+      };
+      for (const [id, send] of removable) {
+        if (!send.confirmedMessages.every(persisted)) continue;
         removeWhatsAppOutgoingSend(this.outboxDirectory, id);
         this.outboxEntries.delete(id);
       }

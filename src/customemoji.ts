@@ -136,7 +136,10 @@ export class CustomEmojiImageRenderer {
     if (existing) return existing.marker;
 
     const offset = this.byKey.size;
-    if (MARKER_FIRST + offset > MARKER_LAST) return LOADING_GLYPH;
+    // All 6400 private-use markers are taken (a long session across many
+    // emoji-heavy servers): show the emoji's name instead of a loading glyph
+    // that would never resolve.
+    if (MARKER_FIRST + offset > MARKER_LAST) return `:${emoji.name}:`;
     const registered: RegisteredCustomEmoji = {
       ...emoji,
       key,

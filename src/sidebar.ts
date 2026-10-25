@@ -1280,17 +1280,50 @@ function effectiveChannelPlacement(
   };
 }
 
+/**
+ * effectiveChannelPlacement for every channel at once: the stored placements
+ * are scanned once per section instead of once per sort comparison (500 DMs
+ * with 400 saved placements took ~5 ms per sidebar frame).
+ */
+function effectiveChannelPlacements(
+  sidebar: SidebarState,
+  guildId: string,
+  channels: readonly DiscordChannel[],
+): Map<string, SidebarChannelPlacement> {
+  const stored = sidebar.channelPlacementsByGuildId[guildId] ?? {};
+  const minimumBySection = new Map<boolean, number>();
+  for (const placement of Object.values(stored)) {
+    const current = minimumBySection.get(placement.pinned);
+    if (current === undefined || placement.sortOrder < current) minimumBySection.set(placement.pinned, placement.sortOrder);
+  }
+  const placements = new Map<string, SidebarChannelPlacement>();
+  channels.forEach((channel, sourceIndex) => {
+    const own = stored[channel.id];
+    if (own) {
+      placements.set(channel.id, own);
+      return;
+    }
+    const pinned = Boolean(channel.pinned);
+    const minimum = minimumBySection.get(pinned);
+    placements.set(channel.id, minimum === undefined
+      ? { pinned, sortOrder: channel.position }
+      : { pinned, sortOrder: minimum - channels.length + sourceIndex });
+  });
+  return placements;
+}
+
 function sortChannelsForSidebar(sidebar: SidebarState, guildId: string, channels: DiscordChannel[]): DiscordChannel[] {
   if (!isFixedTopLevelGuildId(guildId)) {
     return channels.slice().sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
   }
 
   const sourceIndex = new Map(channels.map((channel, index) => [channel.id, index]));
+  const placements = effectiveChannelPlacements(sidebar, guildId, channels);
   return channels.slice().sort((a, b) => {
     const aIndex = sourceIndex.get(a.id) ?? 0;
     const bIndex = sourceIndex.get(b.id) ?? 0;
-    const aPlacement = effectiveChannelPlacement(sidebar, guildId, a, aIndex, channels);
-    const bPlacement = effectiveChannelPlacement(sidebar, guildId, b, bIndex, channels);
+    const aPlacement = placements.get(a.id)!;
+    const bPlacement = placements.get(b.id)!;
     if (aPlacement.pinned !== bPlacement.pinned) return aPlacement.pinned ? -1 : 1;
     return aPlacement.sortOrder - bPlacement.sortOrder || aIndex - bIndex || a.name.localeCompare(b.name);
   });
@@ -1307,8 +1340,11 @@ function pushPrivateConversationChannels(
   searchMatched = false,
 ): void {
   const ordered = sortChannelsForSidebar(sidebar, guildId, channels);
-  const pinned = ordered.filter((channel, index) => effectiveChannelPlacement(sidebar, guildId, channel, index, ordered).pinned);
-  const unpinned = ordered.filter((channel, index) => !effectiveChannelPlacement(sidebar, guildId, channel, index, ordered).pinned);
+  const stored = sidebar.channelPlacementsByGuildId[guildId] ?? {};
+  // Only .pinned is needed here, which never depends on the sort position.
+  const isPinned = (channel: DiscordChannel): boolean => (stored[channel.id] ?? { pinned: Boolean(channel.pinned) }).pinned;
+  const pinned = ordered.filter(isPinned);
+  const unpinned = ordered.filter((channel) => !isPinned(channel));
 
   if (pinned.length > 0) {
     for (const channel of pinned) {

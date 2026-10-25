@@ -3,6 +3,9 @@ import { formatMarkdown, stripMarkdown, termWidth, hardBreak, isHorizontalRule }
 import { FENCE_OPEN_RE, isFenceClose, renderCodeBlock } from "./codeblocks";
 import { isTableLine, renderTableBlock } from "./tables";
 
+/** The only inline markers stripMarkdown removes (bold/italic and code spans). */
+const MARKDOWN_MARKER_RE = /[*`]/;
+
 export interface MarkdownWrapResult {
   lines: string[];
   /** true for visual lines that are continuations of the previous logical line. */
@@ -115,18 +118,42 @@ function wrapParagraph(
     ? (s: string) => termWidth(stripMarkdown(s))
     : termWidth;
 
-  // First pass: word-wrap with correct measurement
+  // First pass: word-wrap with correct measurement. Widths are kept as a
+  // running sum (re-measuring the growing line per word was quadratic); that
+  // is exact unless a markdown marker could pair across words, in which case
+  // the line is measured as a whole like before.
   const wrapped: string[] = [];
   const words = paragraph.split(/\s+/);
+  const markdown = bgRestore != null;
   let line = "";
+  let lineWidth = 0;
+  let lineHasMarkers = false;
+  const startLine = (word: string, wordWidth: number, wordHasMarkers: boolean): void => {
+    if (wordWidth > width) {
+      line = hardBreak(word, width, wrapped);
+      lineWidth = measure(line);
+    } else {
+      line = word;
+      lineWidth = wordWidth;
+    }
+    lineHasMarkers = wordHasMarkers;
+  };
   for (const word of words) {
+    const wordHasMarkers = markdown && MARKDOWN_MARKER_RE.test(word);
+    const wordWidth = wordHasMarkers ? measure(word) : termWidth(word);
     if (line === "") {
-      line = measure(word) > width ? hardBreak(word, width, wrapped) : word;
-    } else if (measure(line) + 1 + measure(word) <= width) {
+      startLine(word, wordWidth, wordHasMarkers);
+      continue;
+    }
+    const exact = !lineHasMarkers && !wordHasMarkers;
+    const joinedWidth = exact ? lineWidth + 1 + wordWidth : measure(line) + 1 + measure(word);
+    if (joinedWidth <= width) {
       line += " " + word;
+      lineHasMarkers ||= wordHasMarkers;
+      lineWidth = exact ? joinedWidth : measure(line);
     } else {
       wrapped.push(line);
-      line = measure(word) > width ? hardBreak(word, width, wrapped) : word;
+      startLine(word, wordWidth, wordHasMarkers);
     }
   }
   if (line !== "") wrapped.push(line);

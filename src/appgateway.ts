@@ -150,6 +150,11 @@ export interface AppGatewayCallbacks {
   onThreadMembershipUpdate?: (threadId: string, joined: boolean) => void;
   onTypingStart: (channelId: string, userId: string, displayName: string) => void;
   onReconnect?: (attempt: number, delayMs: number) => void;
+  /**
+   * A READY after an earlier one: the session could not be resumed, so events
+   * missed while disconnected (sleep, network loss) were not replayed.
+   */
+  onSessionReset?: () => void;
   onError?: (error: Error) => void;
 }
 
@@ -161,6 +166,9 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private seq: number | null = null;
   private lastHeartbeatAckAt: number | null = null;
+  /** A heartbeat went out and Discord has not acknowledged it yet. */
+  private heartbeatAwaitingAck = false;
+  private hasBeenReady = false;
   private sessionId: string | null = null;
   private manualDisconnect = false;
   private connecting = false;
@@ -373,6 +381,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
         return;
       case 11:
         this.lastHeartbeatAckAt = Date.now();
+        this.heartbeatAwaitingAck = false;
         return;
       case 7:
         debugLog("app_gateway.reconnect_requested", { hasSessionId: Boolean(this.sessionId), hasResumeGatewayUrl: Boolean(this.resumeGatewayUrl), seq: this.seq, heartbeatAckAgeMs: this.heartbeatAckAgeMs() });
@@ -409,6 +418,9 @@ export class AppGatewayClient implements VoiceSignalingClient {
       this.sendPresenceUpdate();
       this.sendGuildSubscriptions();
       this.sendGuildChannelSubscription();
+      const sessionReset = this.hasBeenReady;
+      this.hasBeenReady = true;
+      if (sessionReset) this.callbacks.onSessionReset?.();
       return;
     }
 
@@ -823,7 +835,17 @@ export class AppGatewayClient implements VoiceSignalingClient {
 
   private startHeartbeat(intervalMs: number): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatAwaitingAck = false;
     this.heartbeatTimer = setInterval(() => {
+      if (this.heartbeatAwaitingAck) {
+        // No ACK since the previous heartbeat: the connection is a zombie
+        // (wake from sleep, Wi-Fi change) even if the socket looks open.
+        // Discord's docs: close with a non-1000 code and resume.
+        debugLog("app_gateway.heartbeat_timeout", { heartbeatAckAgeMs: this.heartbeatAckAgeMs() });
+        this.scheduleReconnect(0, GATEWAY_RECONNECT_CLOSE_CODE);
+        return;
+      }
+      this.heartbeatAwaitingAck = true;
       this.sendHeartbeat();
     }, Math.max(1_000, intervalMs));
   }

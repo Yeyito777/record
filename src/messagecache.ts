@@ -15,6 +15,14 @@ export interface CachedChannelMessages {
 export type ChannelMessageCache = Record<string, CachedChannelMessages>;
 
 const MAX_CACHED_MESSAGES_PER_CHANNEL = 300;
+/**
+ * Channels kept in memory. Gateway traffic creates an entry for every channel
+ * that receives a message, each holding up to 300 messages, for the whole
+ * session; the least recently updated ones beyond this are dropped (they are
+ * refetched when opened, and the 30 most recent are also on disk).
+ */
+export const MAX_IN_MEMORY_MESSAGE_CHANNELS = 200;
+const PRUNE_SLACK = 20;
 
 interface StoreOptions {
   hasOlder?: boolean;
@@ -200,4 +208,28 @@ function snowflakeToBigInt(id: string): bigint | null {
 function findMatchingPendingLocalMessageIndex(messages: readonly DiscordMessage[], message: DiscordMessage): number {
   if (message.localStatus) return -1;
   return messages.findIndex((existing) => isPendingLocalMessageEcho(existing, message));
+}
+
+/**
+ * Drop the least recently updated channels once the cache holds more than
+ * maxChannels (+ slack, so this sorts rarely). Channels in `keep` and ones with
+ * unsent local messages are never dropped.
+ */
+export function pruneChannelMessageCache(
+  cache: ChannelMessageCache,
+  keep: ReadonlySet<string>,
+  maxChannels = MAX_IN_MEMORY_MESSAGE_CHANNELS,
+): number {
+  const channelIds = Object.keys(cache);
+  if (channelIds.length <= maxChannels + PRUNE_SLACK) return 0;
+  const evictable = channelIds
+    .filter((channelId) => !keep.has(channelId) && !cache[channelId]!.messages.some((message) => message.localStatus))
+    .sort((left, right) => cache[left]!.updatedAt - cache[right]!.updatedAt);
+  let removed = 0;
+  for (const channelId of evictable) {
+    if (channelIds.length - removed <= maxChannels) break;
+    delete cache[channelId];
+    removed++;
+  }
+  return removed;
 }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   cachedChannelMessagesAreFresh,
+  pruneChannelMessageCache,
   setCachedChannelMessages,
   upsertCachedChannelMessage,
   type ChannelMessageCache,
@@ -86,5 +87,23 @@ describe("message cache", () => {
 
     expect(cache["channel-1"]?.messages.map((entry) => entry.id)).toEqual(["2"]);
     expect(cache["channel-1"]?.messages[0]?.attachments[0]?.filename).toBe("image.png");
+  });
+});
+
+describe("in-memory channel bound", () => {
+  test("drops the least recently updated channels, never kept ones or ones with unsent messages", () => {
+    const cache: ChannelMessageCache = {};
+    const entry = (channelId: string, updatedAt: number, localStatus?: "pending") => ({
+      channelId,
+      messages: localStatus ? [{ id: "l", channelId, localStatus } as any] : [],
+      hasOlder: false,
+      updatedAt,
+      latestFetchedAt: null,
+    });
+    for (let index = 0; index < 30; index++) cache[`c${index}`] = entry(`c${index}`, index);
+    cache.c0 = entry("c0", 0, "pending");
+    expect(pruneChannelMessageCache(cache, new Set(["c1"]), 5)).toBe(25);
+    expect(Object.keys(cache).sort()).toEqual(["c0", "c1", "c27", "c28", "c29"].sort());
+    expect(pruneChannelMessageCache(cache, new Set(), 5)).toBe(0);
   });
 });
