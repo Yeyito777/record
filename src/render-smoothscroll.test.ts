@@ -1,11 +1,13 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
+import { customEmojiImages, customEmojiMarker } from "./customemoji";
 import { invalidateFrame, retainedFrameRows } from "./frame";
 import { render } from "./render";
 import { MEMBER_LIST_WIDTH, setMemberListMembers } from "./memberlist";
 import { setSidebarGuilds } from "./sidebar";
 import { SmoothScroller, markRelayout, markScrollIntent, setSmoothScroller, smoothScrollerFor } from "./smoothscroll";
 import { createInitialState, focusHistory, type AppState } from "./state";
+import { scrollHistoryWithCursor } from "./historycursor";
 import { appendTimelineMessage, prependTimelineMessages, setTimelineInlineImageState, setTimelineMessages } from "./timeline";
 import { disposeInlineTerminalImages } from "./terminalimage";
 import { recordTypingStart } from "./typing";
@@ -541,6 +543,147 @@ describe("any sequence of glides, arrivals and history pages", () => {
     animate(state);
     expect(crossings).toBeGreaterThan(50);
     expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+  });
+});
+
+describe("images on rows rewritten in place (st hides an image whose cells change under it)", () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==";
+  const KE = { id: "990001", name: "KE", animated: false };
+  const NC = { id: "990002", name: "NC", animated: false };
+  const isEmoji = (imageId: number) => imageId >= 0x72000000 && imageId < 0x73000000;
+  const visibleEmoji = () => screen.visiblePlacements().filter((placement) => isEmoji(placement.imageId)).length;
+  const placedEmoji = () => screen.placements().filter((placement) => isEmoji(placement.imageId)).length;
+
+  beforeAll(async () => {
+    customEmojiImages.configure({
+      fetch: (async (_url: string | URL | Request) => new Response(Buffer.from(PNG, "base64"))) as typeof fetch,
+      onUpdate: () => {},
+    });
+    customEmojiImages.setEnabled(true);
+  });
+  afterAll(() => customEmojiImages.setEnabled(false));
+
+  async function emojiState(): Promise<AppState> {
+    // A fresh terminal: forget what earlier tests placed.
+    customEmojiImages.setEnabled(false);
+    customEmojiImages.setEnabled(true);
+    const state = chatState({ sidebar: true, messages: 40 });
+    const messages = state.timeline.messages.map((entry) => ({ ...entry }));
+    const ke = customEmojiMarker(KE);
+    messages[30] = { ...messages[30]!, content: `<:KE:${KE.id}> <:KE:${KE.id}> <:KE:${KE.id}>` };
+    messages[34] = { ...messages[34]!, content: `that's so <:NC:${NC.id}>` };
+    messages[36] = { ...messages[36]!, reactions: [{ emoji: { id: KE.id, name: "KE", animated: false }, count: 1, me: false }] } as DiscordMessage;
+    void ke;
+    setTimelineMessages(state.timeline, "channel-1", messages);
+    frame(state);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    settle(state);
+    focusHistory(state);
+    settle(state);
+    return state;
+  }
+
+  /** Puts the history cursor on `row` (a history line) and renders. */
+  function cursorTo(state: AppState, row: number): void {
+    state.historyCursor = { row, col: 0 };
+    frame(state);
+  }
+
+  const lineWith = (state: AppState, text: string) => state.historyLines.findIndex((line) => line.includes(text));
+
+  test("the cursor line moving onto and off emoji rows keeps every emoji shown", async () => {
+    const state = await emojiState();
+    const total = placedEmoji();
+    expect(total).toBeGreaterThanOrEqual(5);
+    expect(visibleEmoji()).toBe(total);
+    const ke = customEmojiMarker(KE);
+    const kRow = state.historyLines.findIndex((line) => line.split(ke).length === 4);
+    const ncRow = lineWith(state, "that's so");
+    const reactionRow = state.historyLines.findIndex((line) => line.includes("╰─"));
+    expect(Math.min(kRow, ncRow, reactionRow)).toBeGreaterThanOrEqual(0);
+    for (const row of [kRow + 1, kRow, kRow - 1, ncRow, ncRow + 1, reactionRow, reactionRow - 1]) {
+      cursorTo(state, row);
+      expect(visibleEmoji()).toBe(placedEmoji());
+      expect(placedEmoji()).toBe(total);
+    }
+  });
+
+  test("visual-mode selection and a pending delete over emoji rows keep them shown", async () => {
+    const state = await emojiState();
+    const total = placedEmoji();
+    const ncRow = lineWith(state, "that's so");
+    cursorTo(state, ncRow);
+    state.editor.mode = "visual-line";
+    state.historyVisualAnchor = { row: ncRow - 6, col: 0 };
+    frame(state);
+    expect(visibleEmoji()).toBe(total);
+    state.editor.mode = "normal";
+    frame(state);
+    expect(visibleEmoji()).toBe(total);
+    const bound = state.historyMessageBounds.find((entry) => ncRow >= entry.start && ncRow < entry.end)!;
+    state.messageDeletePending = { messageId: bound.messageId, channelId: "channel-1" } as AppState["messageDeletePending"];
+    frame(state);
+    expect(visibleEmoji()).toBe(total);
+    state.messageDeletePending = null;
+    frame(state);
+    expect(visibleEmoji()).toBe(total);
+  });
+
+  test("a reaction count changing on a reactions row keeps its emoji shown", async () => {
+    const state = await emojiState();
+    const total = placedEmoji();
+    const reactionRow = state.historyLines.findIndex((line) => line.includes("╰─"));
+    cursorTo(state, reactionRow);
+    const messages = state.timeline.messages.map((entry) => ({ ...entry }));
+    messages[36] = { ...messages[36]!, reactions: [{ emoji: { id: KE.id, name: "KE", animated: false }, count: 2, me: true }] } as DiscordMessage;
+    setTimelineMessages(state.timeline, "channel-1", messages, { preserveScroll: true });
+    frame(state);
+    now += 300;
+    animate(state);
+    expect(placedEmoji()).toBe(total);
+    expect(visibleEmoji()).toBe(total);
+  });
+
+  test("an emoji row that scrolls and is rewritten in the same frame keeps its emoji shown", async () => {
+    const state = await emojiState();
+    const ncRow = lineWith(state, "that's so");
+    cursorTo(state, ncRow);
+    // One frame: the view scrolls a row (cursor motion at the edge) and the cursor line moves.
+    const before = state.timeline.scrollOffset;
+    state.historyCursor = { row: before, col: 0 };
+    frame(state);
+    scrollHistoryWithCursor(state, 1, 2, 25);
+    const out = frame(state);
+    expect(regionScrolls(out).length).toBe(1);
+    now += 300;
+    animate(state);
+    expect(visibleEmoji()).toBe(placedEmoji());
+    cursorTo(state, lineWith(state, "that's so"));
+    expect(visibleEmoji()).toBe(placedEmoji());
+  });
+
+  test("an inline image row the cursor moves onto keeps its image shown", () => {
+    const state = chatState({ sidebar: true });
+    const messages = state.timeline.messages.map((entry) => ({ ...entry }));
+    messages[55] = {
+      ...messages[55]!,
+      attachments: [{ id: "a1", filename: "cat.png", contentType: "image/png", size: 68, url: "https://cdn.example/cat.png" }],
+    };
+    setTimelineMessages(state.timeline, "channel-1", messages);
+    setTimelineInlineImageState(state.timeline, {
+      phase: "ready", attachmentId: "a1", filename: "cat.png", sourceUrl: "https://cdn.example/cat.png",
+      requestId: 1, imageId: 0x40000001, pngBase64: PNG, pixelWidth: 40, pixelHeight: 80,
+    });
+    settle(state);
+    focusHistory(state);
+    settle(state);
+    const isImage = (placement: { imageId: number }) => placement.imageId === 0x40000001;
+    expect(screen.visiblePlacements().filter(isImage)).toHaveLength(1);
+    const bound = state.historyMessageBounds.find((entry) => entry.messageId === messages[55]!.id)!;
+    for (let row = bound.end - 1; row >= bound.start; row--) {
+      cursorTo(state, row);
+      expect(screen.visiblePlacements().filter(isImage)).toHaveLength(1);
+    }
   });
 });
 

@@ -5,7 +5,10 @@
  * bottom margin, SGR (kept per cell as raw text), DECSC/DECRC, and skips
  * private modes, cursor styles and OSC strings. Kitty graphics placements
  * (APC G a=p / a=d) are tracked like st does: anchored to their cell, moved by
- * region scrolls and dropped when their anchor row scrolls out.
+ * region scrolls and dropped when their anchor row scrolls out. Like st, the
+ * second cell of a wide character keeps its previous attributes, and a
+ * placement remembers the cells under it when it is first shown: if they
+ * change later it is hidden (st's image occlusion), see visiblePlacements().
  */
 
 import { termWidth } from "./textwidth";
@@ -23,6 +26,8 @@ export interface VtPlacement {
   col: number;
   /** The placement's other controls, e.g. `c=2,r=1,C=1,z=1478`. */
   controls: string;
+  /** The cells under it when first shown (st's occlusion baseline). */
+  baseline?: string;
 }
 
 export class VtScreen {
@@ -84,7 +89,10 @@ export class VtScreen {
     if (action === "p") {
       const rest = [...controls].filter(([name]) => !["a", "i", "p", "q"].includes(name)).map(([name, value]) => `${name}=${value}`).join(",");
       const key = placementId ? `${imageId}:${placementId}` : `${imageId}:anon${++this.anonymousPlacements}`;
-      this.placementsByKey.set(key, { imageId, placementId, row: this.row, col: this.col, controls: rest });
+      const previous = this.placementsByKey.get(key);
+      // st keeps a placement's baseline while its identity (ids, cell, size) stays the same.
+      const same = previous && previous.row === this.row && previous.col === this.col && previous.controls === rest;
+      this.placementsByKey.set(key, { imageId, placementId, row: this.row, col: this.col, controls: rest, baseline: same ? previous.baseline : undefined });
       return;
     }
     if (action !== "d") return;
@@ -98,10 +106,40 @@ export class VtScreen {
     }
   }
 
+  private cellsUnder(placement: VtPlacement): string {
+    const field = (name: string, fallback: number) => {
+      const match = new RegExp(`(?:^|,)${name}=(\\d+)`).exec(placement.controls);
+      return match ? Number(match[1]) : fallback;
+    };
+    const columns = field("c", 1);
+    const rows = field("r", 1);
+    let cells = "";
+    for (let row = placement.row; row < Math.min(this.rows, placement.row + rows); row++) {
+      for (let col = placement.col; col < Math.min(this.cols, placement.col + columns); col++) {
+        const cell = this.grid[row]![col]!;
+        cells += `${cell.sgr}\u0000${cell.ch}\u0001`;
+      }
+    }
+    return cells;
+  }
+
+  /** Placements first shown now remember the cells under them (st's occlusion baseline). */
+  private snapshotPlacements(): void {
+    for (const placement of this.placementsByKey.values()) placement.baseline ??= this.cellsUnder(placement);
+  }
+
   /** Current placements, sorted by image, placement and position. */
   placements(): VtPlacement[] {
     return [...this.placementsByKey.values()]
-      .map((placement) => ({ ...placement }))
+      .map(({ baseline: _baseline, ...placement }) => ({ ...placement }))
+      .sort((a, b) => a.imageId - b.imageId || a.placementId - b.placementId || a.row - b.row || a.col - b.col);
+  }
+
+  /** Placements st would draw: the cells under them are still the ones they were first shown over. */
+  visiblePlacements(): VtPlacement[] {
+    const visible = [...this.placementsByKey.values()].filter((placement) => placement.baseline === this.cellsUnder(placement));
+    return visible
+      .map(({ baseline: _baseline, ...placement }) => ({ ...placement }))
       .sort((a, b) => a.imageId - b.imageId || a.placementId - b.placementId || a.row - b.row || a.col - b.col);
   }
 
@@ -189,10 +227,12 @@ export class VtScreen {
       if (width === 0) continue;
       if (this.col < this.cols) {
         this.grid[this.row]![this.col] = { ch: glyph, sgr: this.sgr };
-        if (width === 2 && this.col + 1 < this.cols) this.grid[this.row]![this.col + 1] = { ch: "", sgr: this.sgr };
+        // Like st, the dummy half of a wide character keeps its previous attributes.
+        if (width === 2 && this.col + 1 < this.cols) this.grid[this.row]![this.col + 1] = { ch: "", sgr: this.grid[this.row]![this.col + 1]!.sgr };
       }
       this.col = Math.min(this.cols, this.col + width);
     }
+    this.snapshotPlacements();
   }
 
   /** Visible text per row, trailing spaces trimmed. */
