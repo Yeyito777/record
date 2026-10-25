@@ -18,6 +18,15 @@ describe("Discord custom emoji images", () => {
     expect(renderer.markerFor({ id: "999999", name: "late_emoji", animated: false })).toBe(":late_emoji:");
   });
 
+  test("without Kitty graphics no graphics command is sent at all", () => {
+    const renderer = new CustomEmojiImageRenderer({ fetch: (async () => new Response(PNG)) as unknown as typeof fetch });
+    const marked = renderer.replaceTokens("hi <:wave:123>");
+    const batch = renderer.beginFrame();
+    renderer.renderLine(marked, 3, 1, batch);
+    expect(renderer.finishFrame(batch).payload).toBe("");
+    expect(renderer.finishTrackedFrame(renderer.beginFrame())(null)).toBe("");
+  });
+
   test("replaces static and animated syntax with atomic two-column markers", () => {
     const renderer = new CustomEmojiImageRenderer();
     const source = "x <:aliencat_stare_2:1478284001298087936> <a:dance:1478284001298087937> y";
