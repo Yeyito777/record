@@ -1325,6 +1325,40 @@ describe("session", () => {
     expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["from rest", "from gateway"]);
   });
 
+  test("a refresh that does not reach back to the cached messages replaces them instead of hiding a gap", async () => {
+    const restPage = Array.from({ length: 50 }, (_unused, index) => ({
+      id: String(1000 + index), channel_id: "channel-1", guild_id: "guild-1", type: 0, content: `new ${index}`,
+      timestamp: new Date(Date.UTC(2026, 0, 2, 12, index)).toISOString(), edited_timestamp: null,
+      author: { id: "user-1", username: "tester", global_name: "Tester" }, attachments: [], embeds: [],
+    })).reverse();
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/channels/channel-1/messages?")) return new Response(JSON.stringify(restPage), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.includes("/guilds/guild-1/roles")) return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.includes("/ack")) return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.messageCacheByChannelId["channel-1"] = {
+      channelId: "channel-1",
+      messages: Array.from({ length: 20 }, (_unused, index) => message(String(index + 1), `old ${index + 1}`)),
+      hasOlder: true,
+      updatedAt: 0,
+      latestFetchedAt: 0,
+    };
+
+    await loadChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
+    await flushTimers();
+
+    const contents = state.timeline.messages.map((entry) => entry.content);
+    expect(contents).toHaveLength(50);
+    expect(contents[0]).toBe("new 0");
+    expect(contents).not.toContain("old 20");
+  });
+
   test("refreshing stale cached messages preserves manual timeline scroll", async () => {
     let resolveMessages: (response: Response) => void = () => {};
     globalThis.fetch = (async (input: RequestInfo | URL) => {

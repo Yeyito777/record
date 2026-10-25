@@ -68,6 +68,7 @@ import {
   type DiscordMessagePatch,
   type DiscordCustomStatus,
   type DiscordPresenceStatus,
+  compareSnowflakesDesc,
 } from "./discord";
 import { isFixedTopLevelGuildId, isExternalChannel, isExternalChannelId, isInstagramChannelId, instagramGuild, INSTAGRAM_GUILD_ID, whatsappGuild, whatsappSidebarLayoutScope, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { instagramChannels, instagramTimelineMessages } from "./instagram/integration";
@@ -3024,6 +3025,23 @@ function ensureWatchStreamService(state: AppState, effects: SessionEffects): Wat
   return watchStreamService;
 }
 
+/**
+ * The gateway logged in fresh instead of resuming, so messages sent while
+ * Record was disconnected never arrived as events: refetch the open channel
+ * and treat every other cached channel as stale until it is opened again.
+ */
+function handleGatewaySessionReset(state: AppState, effects: SessionEffects): void {
+  for (const entry of Object.values(state.messageCacheByChannelId)) {
+    if (entry.latestFetchedAt !== null) entry.latestFetchedAt = 0;
+  }
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+  if (!token || !channelId || isExternalChannelId(channelId) || state.timeline.view === "pinned") return;
+  const guildId = channelById(state, channelId)?.guildId ?? state.channelList.activeChannel?.guildId ?? null;
+  debugLog("app_gateway.session_reset_refresh", { channelId });
+  void refreshLatestChannelMessages(state, token, channelId, guildId, state.timeline.requestId, effects, { hadCachedMessages: true });
+}
+
 function startAppGateway(state: AppState, token: string, effects: SessionEffects): void {
   if (appGateway && appGatewayToken === token) return;
   state.voiceCall = null;
@@ -3071,6 +3089,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       applyGuildMuteSettings(state, { [guildId]: muted });
       effects.scheduleRender();
     },
+    onSessionReset: () => handleGatewaySessionReset(state, effects),
     onReadyGuilds: (guilds) => {
       if (mergeGatewayGuilds(state, guilds)) {
         for (const guild of guilds) loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects);
@@ -4230,6 +4249,17 @@ export async function loadChannelMessages(
   await refreshLatestChannelMessages(state, token, channelId, guildId, requestId, effects, { hadCachedMessages: false });
 }
 
+function latestPageLeavesGap(page: readonly DiscordMessage[], cached: readonly DiscordMessage[]): boolean {
+  if (page.length < MESSAGE_PAGE_LIMIT) return false;
+  const newestCached = [...cached].reverse().find((message) => !message.localStatus);
+  if (!newestCached) return false;
+  if (page.some((message) => message.id === newestCached.id)) return false;
+  const oldestFetched = page.reduce<string | null>((oldest, message) => (
+    oldest === null || compareSnowflakesDesc(message.id, oldest) > 0 ? message.id : oldest
+  ), null);
+  return oldestFetched !== null && compareSnowflakesDesc(oldestFetched, newestCached.id) < 0;
+}
+
 async function refreshLatestChannelMessages(
   state: AppState,
   token: string,
@@ -4244,10 +4274,17 @@ async function refreshLatestChannelMessages(
     const withGuildIds = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
     const { messages } = hydrateMissingReplyPreviewsFromKnownMessages(state, withGuildIds);
     recordMessagesRoleIds(state, messages, guildId);
-    const cacheEntry = setCachedChannelMessages(state.messageCacheByChannelId, channelId, messages, {
+    // A full page that does not reach back to the newest cached message leaves
+    // an unknown gap; merging would show it as continuous history and "load
+    // older" would page back from the old messages, never filling it.
+    const cachedMessages = state.messageCacheByChannelId[channelId]?.messages ?? [];
+    const gap = latestPageLeavesGap(messages, cachedMessages);
+    const cacheEntry = setCachedChannelMessages(state.messageCacheByChannelId, channelId, gap
+      ? [...messages, ...cachedMessages.filter((message) => message.localStatus)]
+      : messages, {
       hasOlder: messages.length >= MESSAGE_PAGE_LIMIT,
       updatedAt: Date.now(),
-      replace: false,
+      replace: gap,
     });
     persistChannelMessageCache(state, channelId);
 
@@ -4431,8 +4468,8 @@ export async function loadChannelMessagesAround(
     const hasOlder = messages.length >= MESSAGE_PAGE_LIMIT;
     const hasNewer = messages.length >= MESSAGE_PAGE_LIMIT;
     recordMessagesRoleIds(state, messages, guildId);
-    setCachedChannelMessages(state.messageCacheByChannelId, channelId, messages, { hasOlder, updatedAt: Date.now(), replace: false, latestFetched: false });
-    persistChannelMessageCache(state, channelId);
+    // A jumped-to page is not merged into the channel cache: reopening the
+    // channel would show it glued onto recent messages with no gap marker.
     setTimelineMessages(state.timeline, channelId, messages, { hasOlder, hasNewer });
     messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
     return messages.some((message) => message.id === messageId);
