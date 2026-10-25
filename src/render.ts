@@ -237,12 +237,20 @@ function historyVisualSelectionRows(
   return { first, last };
 }
 
+/**
+ * Cells the images on a row cover, from the first one's left edge. A row with
+ * images ends where its first image starts (embed rows pad up to it).
+ */
 function inlineImageColumnsOnLine(timeline: RenderedTimeline, lineIndex: number): number {
-  return timeline.inlineImages.reduce((columns, placement) => (
-    lineIndex >= placement.lineIndex && lineIndex < placement.lineIndex + placement.rows
-      ? Math.max(columns, placement.columns)
-      : columns
-  ), 0);
+  let start = Infinity;
+  let end = 0;
+  for (const placement of timeline.inlineImages) {
+    if (lineIndex < placement.lineIndex || lineIndex >= placement.lineIndex + placement.rows) continue;
+    const offset = placement.columnOffset ?? 0;
+    start = Math.min(start, offset);
+    end = Math.max(end, offset + placement.columns);
+  }
+  return end > start ? end - start : 0;
 }
 
 function isHistoryLinePendingDelete(state: AppState, lineIndex: number): boolean {
@@ -361,7 +369,7 @@ function visibleInlineImagePlacements(
       image: placement.image,
       placementId: placement.placementId,
       row: bodyTop + visibleStart - viewStart,
-      col: imageCol,
+      col: imageCol + (placement.columnOffset ?? 0),
       columns: placement.columns,
       rows: visibleRows,
       sourceY,
@@ -668,6 +676,7 @@ export function render(state: AppState): void {
   state.historyLineBackgrounds = timeline.lineBackgrounds;
   state.historyWrapContinuation = timeline.wrapContinuation;
   state.historyMessageBounds = timeline.messageBounds;
+  state.historyInlineImages = timeline.inlineImages;
   if (state.chatFocus === "history" && state.historyCursorPendingVisibleBottom && state.historyLines.length > 0) {
     const visibleBottom = state.timeline.scrollOffset + Math.max(0, Math.min(bodyRows, timeline.lines.length) - 1);
     state.historyCursor = { row: Math.min(visibleBottom, state.historyLines.length - 1), col: 0 };

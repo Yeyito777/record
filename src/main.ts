@@ -40,7 +40,8 @@ import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepar
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
-import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
+import { isEmbedSourceId, type EmbedVideoTarget } from "./embeds";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { handleMouseEvent } from "./mouse";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
@@ -642,8 +643,11 @@ function autoShowVisibleInlineImages(): void {
     viewportStart,
     timelinePageSize(),
   );
+  // Embed pictures stay text where the terminal cannot draw images.
+  const embedPictures = terminalGraphicsClient?.isSupported() !== false;
   for (const attachment of attachments) {
     if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
+    if (!embedPictures && isEmbedSourceId(attachment.id)) continue;
     const existing = state.timeline.inlineImages[attachment.id];
     if (!shouldLoadInlineImage(existing, attachment.url, state.imageDisplayMode === "show",
       !isWhatsAppChannelId(state.timeline.channelId) || whatsAppController.isConnected)) continue;
@@ -2241,8 +2245,19 @@ function openHistoryLink(target: string, joinInvites: boolean): void {
   }
 }
 
+/** A video embed plays like a video attachment (a media file) or opens its page (YouTube, Tenor). */
+function openEmbedVideo(target: EmbedVideoTarget): void {
+  if (target.kind === "file") downloadAndOpenAttachment(target.attachment);
+  else openHistoryLink(target.url, false);
+}
+
 /** A click in history: open the image, attachment or link under the cursor. Returns whether one was there. */
 function openHistoryTargetAtCursor(): boolean {
+  const video = embedVideoAtHistoryCursor(state);
+  if (video) {
+    openEmbedVideo(video);
+    return true;
+  }
   const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
   if (imageBodyAttachment) {
     openInlineImageModal(imageBodyAttachment);
@@ -2339,6 +2354,11 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_select": {
+      const video = embedVideoAtHistoryCursor(state);
+      if (video) {
+        openEmbedVideo(video);
+        return true;
+      }
       const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
       if (imageBodyAttachment && openInlineImageModal(imageBodyAttachment)) return true;
 

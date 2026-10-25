@@ -11,6 +11,7 @@ import { isBufferSpace, isWORDChar, isWordChar } from "./editor-chars";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
 import type { KeyEvent } from "./input";
 import { copyImageToClipboard, type ClipboardImageAttachment } from "./imageclipboard";
+import { isEmbedSourceId } from "./embeds";
 import { inlineImageSourcesForMessage } from "./inlineimage";
 import { formatAttachmentSummary } from "./messageparts";
 import type { AppState } from "./state";
@@ -539,7 +540,8 @@ function hiddenImageNameRow(state: AppState, row: number): string | null | undef
   }
   const message = state.timeline.messages.find((entry) => entry.id === match[1]);
   const attachment = message ? inlineImageSourcesForMessage(message).find((source) => source.id === attachmentId) : undefined;
-  if (!message || !attachment) return null;
+  // Embed pictures have no name row: their rows yank as nothing.
+  if (!message || !attachment || isEmbedSourceId(attachment.id)) return null;
   const sticker = [...(message.stickers ?? []), ...(message.forwarded?.stickers ?? [])]
     .find((item) => item.attachment?.id === attachment.id);
   if (sticker || attachment.id.startsWith("sticker:")) {
