@@ -28,6 +28,13 @@ describe("input parser", () => {
     expect(parseInput(String.fromCharCode(14))).toEqual([{ type: "ctrl-n" }]);
   });
 
+  test("parses Ctrl+O from the raw control byte and the kitty keyboard protocol", () => {
+    expect(parseInput(String.fromCharCode(15))).toEqual([{ type: "ctrl-o" }]);
+    expect(parseInput("\x1b[111;5u")).toEqual([{ type: "ctrl-o" }]);
+    // All-keys mode with event types, as Record asks st for.
+    expect(parseInput("\x1b[111;5:1u")).toEqual([{ type: "ctrl-o", event: "press" }]);
+  });
+
   test("parses Ctrl+Q from raw control byte", () => {
     expect(parseInput(String.fromCharCode(17))).toEqual([{ type: "ctrl-q" }]);
   });

@@ -4,7 +4,7 @@
 
 import { applyDiscordMessagePatch, isCompactSystemMessageType, isPendingLocalMessageEcho, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { customEmojiMarker, replaceCustomEmojiTokens } from "./customemoji";
-import { inlineImageCellLayout, inlineImageId, inlineImagePlacementId, inlineImageSourcesForMessage, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
+import { inlineImageCellLayout, inlineImageId, inlineImagePlacementId, inlineImageSourcesForMessage, stickerImageAttachment, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { summarizeDisplayMessageParts } from "./messageparts";
@@ -40,6 +40,11 @@ export interface TimelineState {
   inlineImages: Record<string, InlineChatImageState>;
   terminalCellWidthPixels: number;
   terminalCellHeightPixels: number;
+  /**
+   * Show the "📎 name • size" row above images drawn inline (Ctrl+O). Off,
+   * a shown image is its own row; images not drawn keep their name row.
+   */
+  showImageDetails: boolean;
 }
 
 export interface TimelineSystemMessage {
@@ -148,6 +153,7 @@ export function createTimelineState(): TimelineState {
     memberRoleCacheVersion: 0,
     activeGuildId: null,
     inlineImages: {},
+    showImageDetails: false,
     terminalCellWidthPixels: 8,
     terminalCellHeightPixels: 16,
   };
@@ -234,6 +240,14 @@ export function setTimelineTerminalCellSize(timeline: TimelineState, width: numb
   }
   timeline.terminalCellWidthPixels = normalizedWidth;
   timeline.terminalCellHeightPixels = normalizedHeight;
+  resetTimelineRenderCaches(timeline);
+  return true;
+}
+
+/** Ctrl+O: show or hide the name rows of images drawn inline. Returns whether it changed. */
+export function setTimelineImageDetails(timeline: TimelineState, show: boolean): boolean {
+  if (timeline.showImageDetails === show) return false;
+  timeline.showImageDetails = show;
   resetTimelineRenderCaches(timeline);
   return true;
 }
@@ -1062,6 +1076,7 @@ function renderMessageCached(
     inlineImages,
     timeline.terminalCellWidthPixels,
     timeline.terminalCellHeightPixels,
+    timeline.showImageDetails,
   );
   cacheState.messageRenderCache.set(cacheKey, { width, fingerprint, rendered });
   return rendered;
@@ -1160,6 +1175,7 @@ function renderMessage(
   inlineImages: readonly InlineChatImageState[] = [],
   terminalCellWidthPixels = 8,
   terminalCellHeightPixels = 16,
+  showImageDetails = true,
 ): RenderedMessage {
   const time = formatLocalMessageTime(message.timestamp);
   const author = message.author.bot
@@ -1192,8 +1208,9 @@ function renderMessage(
   const messageBackground = messagePingsViewer(message, viewerId, memberRoleIdsByGuildId, activeGuildId) ? theme.pingBg : "";
 
   const contentColor = message.localStatus ? theme.muted : theme.text;
+  const summarized = showImageDetails ? message : withoutShownImageNames(message, inlineImages);
   const content = summarizeMessage(
-    message,
+    summarized,
     viewerId,
     accentViewerInDirectMessages,
     rolesByGuildId,
@@ -1217,6 +1234,8 @@ function renderMessage(
   }
   const reactionLines = wrapReactionSummary(message, width);
   if (content === "") {
+    // Nothing but images drawn below: they are the message, not "(empty message)".
+    const emptyLines = summarized === message ? [`${theme.dim}(empty message)${theme.reset}`] : [];
     const extras = renderInlineImageExtras(
       message.id,
       inlineImages,
@@ -1224,12 +1243,12 @@ function renderMessage(
       loadingFrameIndex,
       terminalCellWidthPixels,
       terminalCellHeightPixels,
-      replyPreview.length + headerLines.length + 1,
+      replyPreview.length + headerLines.length + emptyLines.length,
     );
     const lines = [
       ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
       ...headerLines,
-      `${theme.dim}(empty message)${theme.reset}`,
+      ...emptyLines,
       ...extras.lines,
       ...reactionLines.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ];
@@ -1238,7 +1257,7 @@ function renderMessage(
       lineAnchors: [
         ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
         ...headerAnchors,
-        `msg:${message.id}:empty`,
+        ...emptyLines.map(() => `msg:${message.id}:empty`),
         ...extras.lineAnchors,
         ...reactionLines.map((line) => `msg:${message.id}:reactions:${line.visualIndex}`),
       ],
@@ -1246,7 +1265,7 @@ function renderMessage(
       wrapContinuation: [
         ...replyPreview.map((line) => line.wrapContinuation),
         ...headerWrapContinuation,
-        false,
+        ...emptyLines.map(() => false),
         ...extras.wrapContinuation,
         ...reactionLines.map((line) => line.wrapContinuation),
       ],
@@ -1294,6 +1313,36 @@ function renderMessage(
       ...failureLines.map((line) => line.wrapContinuation),
     ],
     inlineImages: extras.inlineImages,
+  };
+}
+
+/**
+ * The message as its text rows show it when image details are off: without
+ * the name rows of images drawn inline (attachments and stickers whose
+ * preview is ready). The same object when nothing is drawn inline.
+ */
+function withoutShownImageNames(message: DiscordMessage, images: readonly InlineChatImageState[]): DiscordMessage {
+  const shown = new Set(images.filter((image) => image.phase === "ready").map((image) => image.attachmentId));
+  if (shown.size === 0) return message;
+  const attachments = (list: DiscordMessage["attachments"]) => list.filter((attachment) => !shown.has(attachment.id));
+  const stickerNames = (names: readonly string[], stickers: DiscordMessage["stickers"]) => {
+    const remaining = [...names];
+    for (const sticker of stickers ?? []) {
+      const source = stickerImageAttachment(sticker, message.id);
+      if (!source || !shown.has(source.id)) continue;
+      const index = remaining.indexOf(sticker.name);
+      if (index >= 0) remaining.splice(index, 1);
+    }
+    return remaining;
+  };
+  const forwarded = message.forwarded;
+  return {
+    ...message,
+    attachments: attachments(message.attachments),
+    stickerNames: stickerNames(message.stickerNames, message.stickers),
+    forwarded: forwarded
+      ? { ...forwarded, attachments: attachments(forwarded.attachments), stickerNames: stickerNames(forwarded.stickerNames, forwarded.stickers) }
+      : forwarded,
   };
 }
 

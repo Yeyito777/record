@@ -11,6 +11,8 @@ import { isBufferSpace, isWORDChar, isWordChar } from "./editor-chars";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
 import type { KeyEvent } from "./input";
 import { copyImageToClipboard, type ClipboardImageAttachment } from "./imageclipboard";
+import { inlineImageSourcesForMessage } from "./inlineimage";
+import { formatAttachmentSummary } from "./messageparts";
 import type { AppState } from "./state";
 import type { TimelineMessageBound } from "./timeline";
 import { markScrollIntent } from "./smoothscroll";
@@ -517,6 +519,35 @@ function normalizeSelection(anchor: HistoryCursor, cursor: HistoryCursor): { sta
   return { start: forward ? anchor : cursor, end: forward ? cursor : anchor };
 }
 
+const IMAGE_ROW_ANCHOR_RE = /^msg:(.+):image:([^:]+):(\d+)$/;
+
+/**
+ * With image details off (Ctrl+O) an image drawn inline has no name row, so
+ * a yank across its rows gives that name row ("📎 cat.png • 12 KB") once, in
+ * place of its blank rows: null drops a row, undefined is not such a row.
+ */
+function hiddenImageNameRow(state: AppState, row: number): string | null | undefined {
+  if (state.timeline.showImageDetails) return undefined;
+  const match = IMAGE_ROW_ANCHOR_RE.exec(state.historyLineAnchors[row] ?? "");
+  if (!match) return undefined;
+  if (match[3] !== "0") return null;
+  let attachmentId: string;
+  try {
+    attachmentId = decodeURIComponent(match[2]!);
+  } catch {
+    return null;
+  }
+  const message = state.timeline.messages.find((entry) => entry.id === match[1]);
+  const attachment = message ? inlineImageSourcesForMessage(message).find((source) => source.id === attachmentId) : undefined;
+  if (!message || !attachment) return null;
+  const sticker = [...(message.stickers ?? []), ...(message.forwarded?.stickers ?? [])]
+    .find((item) => item.attachment?.id === attachment.id);
+  if (sticker || attachment.id.startsWith("sticker:")) {
+    return `[sticker] ${sticker?.name ?? attachment.filename.replace(/\.[^.]+$/, "")}`;
+  }
+  return formatAttachmentSummary(attachment);
+}
+
 function getHistoryVisualSelectionRaw(state: AppState): string {
   const { start, end } = normalizeSelection(state.historyVisualAnchor, state.historyCursor);
   const lines = state.historyLines;
@@ -526,6 +557,11 @@ function getHistoryVisualSelectionRaw(state: AppState): string {
     const last = logicalLineRange(end.row, state.historyWrapContinuation).last;
     const parts: string[] = [];
     for (let row = first; row <= last; row++) {
+      const imageName = hiddenImageNameRow(state, row);
+      if (imageName !== undefined) {
+        if (imageName !== null) parts.push(imageName);
+        continue;
+      }
       const text = stripAnsi(lines[row] ?? "").trimEnd();
       if (row === first || !state.historyWrapContinuation[row] || parts.length === 0) {
         parts.push(text);
@@ -543,6 +579,11 @@ function getHistoryVisualSelectionRaw(state: AppState): string {
 
   const parts: string[] = [];
   for (let row = start.row; row <= end.row; row++) {
+    const imageName = hiddenImageNameRow(state, row);
+    if (imageName !== undefined) {
+      if (imageName !== null) parts.push(imageName);
+      continue;
+    }
     const plain = stripAnsi(lines[row] ?? "");
     const bounds = contentBounds(plain);
     const sliceStart = row === start.row ? start.col : bounds.start;
@@ -673,8 +714,12 @@ function rowsToHistoryRange(state: AppState, startRow: number, endRowExclusive: 
   let end = endRowExclusive;
 
   if (trimBlankEdges) {
-    while (start < end && stripAnsi(lines[start] ?? "").trim() === "") start++;
-    while (end > start && stripAnsi(lines[end - 1] ?? "").trim() === "") end--;
+    const blank = (row: number) => {
+      const imageName = hiddenImageNameRow(state, row);
+      return imageName === undefined ? stripAnsi(lines[row] ?? "").trim() === "" : imageName === null;
+    };
+    while (start < end && blank(start)) start++;
+    while (end > start && blank(end - 1)) end--;
   }
 
   if (start >= end) return null;
@@ -694,7 +739,9 @@ function resolveMessageTextRange(state: AppState): HistoryRange | null {
     .map((anchor, row) => ({ anchor, row }))
     .filter(({ anchor, row }) => row >= bounds.start
       && row < bounds.end
-      && anchor.startsWith(`msg:${bounds.messageId}:content:`))
+      && (anchor.startsWith(`msg:${bounds.messageId}:content:`)
+        // Images drawn without their name row (Ctrl+O) yank as that row.
+        || (!state.timeline.showImageDetails && anchor.startsWith(`msg:${bounds.messageId}:image:`))))
     .map(({ row }) => row);
 
   if (contentRows.length > 0) {

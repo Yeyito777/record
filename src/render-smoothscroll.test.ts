@@ -9,7 +9,7 @@ import { setSidebarGuilds } from "./sidebar";
 import { SmoothScroller, markRelayout, markScrollIntent, setSmoothScroller, smoothScrollerFor } from "./smoothscroll";
 import { createInitialState, focusHistory, type AppState } from "./state";
 import { scrollHistoryWithCursor } from "./historycursor";
-import { appendTimelineMessage, prependTimelineMessages, setTimelineInlineImageState, setTimelineMessages } from "./timeline";
+import { appendTimelineMessage, prependTimelineMessages, setTimelineImageDetails, setTimelineInlineImageState, setTimelineMessages } from "./timeline";
 import { disposeInlineTerminalImages } from "./terminalimage";
 import { recordTypingStart } from "./typing";
 import type { DiscordMessage } from "./discord";
@@ -106,7 +106,7 @@ function animate(state: AppState): string[] {
 function settle(state: AppState): void {
   frame(state);
   now += 500;
-  animate(state);
+  if (smoothScrollerFor(state)) animate(state);
   frame(state);
 }
 
@@ -460,6 +460,33 @@ describe("inline images while gliding", () => {
     expect(rest?.[3]).toBeDefined();
     expect(screen.placements()).toEqual(fullRepaint(state).placements());
   });
+
+  for (const smoothOn of [true, false]) {
+    test(`Ctrl+O (image details) re-lays out in place: no glide, same top line, placements as a full repaint (smooth ${smoothOn ? "on" : "off"})`, () => {
+      const state = imageState();
+      if (!smoothOn) setSmoothScroller(state, null);
+      settle(state);
+      // The image's message in the middle of the pane.
+      const imageLine = () => state.historyLineAnchors.findIndex((anchor) => anchor.startsWith("msg:1040:image:"));
+      state.timeline.scrollOffset = Math.max(0, imageLine() - 10);
+      settle(state);
+      expect(screen.placements().length).toBe(1);
+      for (const details of [true, false, true]) {
+        const top = state.historyLineAnchors[state.timeline.scrollOffset];
+        markRelayout(state);
+        setTimelineImageDetails(state.timeline, details);
+        const out = frame(state);
+        expect(glides(out)).toEqual([]);
+        expect(state.historyLineAnchors[state.timeline.scrollOffset]).toBe(top);
+        expect(state.historyLines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).includes("📎 cat.png • 68 B")).toBe(details);
+        now += 500;
+        if (smoothOn) animate(state);
+        expect(screen.placements()).toEqual(fullRepaint(state).placements());
+        expect(screen.visiblePlacements()).toEqual(screen.placements());
+        expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+      }
+    });
+  }
 
   test("after scrolls past images their placements equal a full repaint's", () => {
     const state = imageState();
