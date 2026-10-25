@@ -482,7 +482,7 @@ describe("sidebar state", () => {
   });
 
   test("creating folders uses Exocortex placement semantics", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState({ folderView: "navigate" });
     setSidebarGuilds(sidebar, [
       { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
       { id: "guild-1", name: "One", icon: null },
@@ -513,7 +513,7 @@ describe("sidebar state", () => {
   });
 
   test("server folders are local, navigable, movable, and persisted", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState({ folderView: "navigate" });
     setSidebarGuilds(sidebar, [
       { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
       { id: "guild-1", name: "One", icon: null },
@@ -544,7 +544,7 @@ describe("sidebar state", () => {
     handleSidebarPromptKey(sidebar, { type: "enter" });
     expect(buildSidebarEntries(sidebar, []).map((entry) => entry.id)).toEqual(["..", "guild-2"]);
 
-    const restored = createSidebarState();
+    const restored = createSidebarState({ folderView: "navigate" });
     setSidebarGuilds(restored, sidebar.guilds);
     applySidebarFolderLayout(restored, sidebarFolderLayout(sidebar));
     expect(buildSidebarEntries(restored, []).map((entry) => entry.id).sort()).toEqual([DIRECT_MESSAGES_GUILD_ID, "guild-1", sidebar.folders[0]?.id].sort());
@@ -586,7 +586,7 @@ describe("sidebar state", () => {
   });
 
   test("moving items out preserves the source folder slot", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState({ folderView: "navigate" });
     setSidebarGuilds(sidebar, [
       { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
       { id: "guild-before", name: "Before", icon: null },
@@ -611,7 +611,7 @@ describe("sidebar state", () => {
   });
 
   test("moving from a nested folder to root inserts before the top-level source folder", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState({ folderView: "navigate" });
     setSidebarGuilds(sidebar, [
       { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
       { id: "guild-root", name: "Root", icon: null },
@@ -1196,7 +1196,7 @@ describe("sidebar state", () => {
   });
 
   test(":noh reveals the focused server in its folder and keeps it open", () => {
-    const sidebar = createSidebarState();
+    const sidebar = createSidebarState({ folderView: "navigate" });
     setSidebarGuilds(sidebar, [
       { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
       { id: "guild-root", name: "Root", icon: null },

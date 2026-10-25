@@ -350,7 +350,8 @@ function padTo(text: string): string {
 
 describe("sidebar rows with icons", () => {
   function sidebarWith(guilds: ReturnType<typeof guild>[]) {
-    const sidebar = createSidebarState();
+    // These pin today's look with arrows; sidebar-tree.test.ts covers both modes.
+    const sidebar = createSidebarState({ arrows: "show" });
     sidebar.open = true;
     setSidebarGuilds(sidebar, guilds);
     return sidebar;
@@ -489,6 +490,7 @@ describe("rendering sidebar icons", () => {
     state.rows = 12;
     state.cols = 80;
     state.sidebar.open = true;
+    state.sidebar.arrows = "show";
     setSidebarGuilds(state.sidebar, Array.from({ length: count }, (_, index) => guild(`9${index}`, `Server ${index}`)));
     capture(state);
     await sidebarIcons.idle();
