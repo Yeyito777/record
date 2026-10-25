@@ -542,6 +542,23 @@ describe("rendering sidebar icons", () => {
     expect(sidebarPlacements(idle)).toEqual([]);
   });
 
+  test("a row turning active or inactive keeps its icon shown (st hides an image whose cells change)", async () => {
+    const { state } = await iconState();
+    const screen = new VtScreen(state.rows, state.cols);
+    invalidateFrame(state);
+    screen.write(capture(state));
+    const icons = () => screen.placements().filter((placement) => placement.imageId >= 0x73000000).length;
+    const hidden = () => screen.occlusions().filter((placement) => placement.imageId >= 0x73000000);
+    expect(icons()).toBe(3);
+    // The cursor stays on the first server while the open server changes.
+    for (const active of ["91", "92", "91", null]) {
+      state.sidebar.activeGuildId = active;
+      screen.write(capture(state));
+      expect(icons()).toBe(3);
+      expect(hidden()).toEqual([]);
+    }
+  });
+
   test("moving the selection re-places only the two rows involved", async () => {
     const { state } = await iconState();
     capture(state);
