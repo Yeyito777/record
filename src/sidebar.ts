@@ -3001,6 +3001,8 @@ function sidebarVisualKeys(sidebar: SidebarState, entries: SidebarEntry[]): Set<
   return new Set(movableEntries.slice(start, end + 1).map((entry) => sidebarItemKey(entry.item)));
 }
 
+const DEFAULT_FOREGROUND = "\x1b[39m";
+
 export interface SidebarIconPlacement {
   image: InlineChatImageReady;
   /** 1-based terminal row and column of the icon's first cell. */
@@ -3288,7 +3290,11 @@ function renderEntryRow(
     const highlighted = entry.selected || isVisual;
     if (icon.image) {
       icon.placements.push({ image: icon.image, row: icon.row, col: 1 + termWidth(basePrefix), highlighted });
-      prefix += `${" ".repeat(SIDEBAR_ICON_COLUMNS)} `;
+      // st hides an image whose cells change after it is shown, colors
+      // included: the cells under it keep one foreground whether the row is
+      // active, muted or neither (the selection's background is a placement
+      // of its own).
+      prefix += `${DEFAULT_FOREGROUND}${" ".repeat(SIDEBAR_ICON_COLUMNS)}${fg} `;
     } else {
       const tileFg = entry.muted ? theme.muted : entry.selected || isActive ? theme.text : theme.command;
       prefix += `${theme.userBg}${tileFg}${icon.initials ?? sidebarIconInitials(entry.label)}${bg}${fg} `;
