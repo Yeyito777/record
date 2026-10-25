@@ -1872,12 +1872,9 @@ function wrapPlainText(text: string, width: number): string[] {
 function wrapFirstWord(word: string, width: number, lines: string[]): string {
   let remaining = word;
   while (termWidth(remaining) > width) {
-    const [taken, rest] = sliceByWidth(remaining, width);
-    if (!taken) {
-      lines.push(remaining[0] ?? "");
-      remaining = remaining.slice(1);
-      continue;
-    }
+    let [taken, rest] = sliceByWidth(remaining, width);
+    // A character wider than the line gets a line of its own, whole.
+    if (!taken) [taken, rest] = sliceByWidth(remaining, 2);
     lines.push(taken);
     remaining = rest;
   }

@@ -15,7 +15,10 @@ import {
   prepareInlineImage,
   prepareInlineImageBytes,
   stickerImageAttachment,
+  INLINE_IMAGE_ID_FIRST,
+  INLINE_IMAGE_ID_LAST,
   inlineImagesDrawable,
+  nextInlineImageId,
   shouldLoadInlineImage,
   visibleInlineImageSources,
 } from "./inlineimage";
@@ -78,6 +81,21 @@ describe("inline chat images", () => {
       expect(shouldLoadInlineImage(waiting, "", true, true, inlineImagesDrawable(graphics))).toBe(false);
     }
     expect(inlineImagesDrawable(true)).toBe(true);
+  });
+
+  test("chat image ids never fall in the ranges custom emoji, sidebar icons and the graphics query use", () => {
+    const reserved = (id: number) => (id >= 0x6ffffffe && id <= 0x6fffffff) // graphics query
+      || (id >= 0x72000000 && id <= 0x72ffffff) // custom emoji
+      || (id >= 0x73000000 && id <= 0x73ffffff); // sidebar icons
+    for (let index = 0; index < 200_000; index++) {
+      const id = inlineImageId({ id: `attachment-${index}`, url: `https://cdn.example/${index}.png` });
+      expect(id >= INLINE_IMAGE_ID_FIRST && id <= INLINE_IMAGE_ID_LAST).toBe(true);
+    }
+    expect(reserved(INLINE_IMAGE_ID_FIRST) || reserved(INLINE_IMAGE_ID_LAST)).toBe(false);
+    expect(INLINE_IMAGE_ID_LAST).toBeLessThan(0x6ffffffe);
+    // Probing for a free id wraps within the range.
+    expect(nextInlineImageId(INLINE_IMAGE_ID_LAST)).toBe(INLINE_IMAGE_ID_FIRST);
+    expect(nextInlineImageId(INLINE_IMAGE_ID_FIRST)).toBe(INLINE_IMAGE_ID_FIRST + 1);
   });
 
   test("recognizes image MIME types and filename fallbacks", () => {

@@ -33,6 +33,8 @@ const SIZES = [[64, 64], [128, 2048], [2000, 200], [300, 10], [400, 300]] as con
 let now = 0;
 let screen: VtScreen;
 
+let withEmoji = false;
+
 function message(index: number, options: { image?: boolean; channelId?: string; timestamp?: number } = {}): DiscordMessage {
   const author = Math.floor(index / 3) % 2 === 0
     ? { id: "user-1", username: "ada", displayName: "Ada", bot: false }
@@ -44,7 +46,8 @@ function message(index: number, options: { image?: boolean; channelId?: string; 
     type: 0,
     timestamp: options.timestamp ?? Date.UTC(2026, 0, 1, 12, 0, 0) + index * 60_000,
     editedTimestamp: null,
-    content: index % 5 === 0 ? "" : `m${index} ${"words that wrap ".repeat(index % 4 === 0 ? 6 : 1)}`.trim(),
+    content: index % 5 === 0 ? "" : `m${index} ${withEmoji && index % 2 === 0 ? "<:KE:990001> " : ""}${"words that wrap ".repeat(index % 4 === 0 ? 6 : 1)}`.trim(),
+    reactions: withEmoji && index % 3 === 0 ? [{ emoji: { id: "990002", name: "NC", animated: false }, count: 2, me: false }] : [],
     mentionEveryone: false,
     mentionRoleIds: [],
     mentionUserIds: [],
@@ -103,8 +106,8 @@ function frame(state: AppState): string {
   return out;
 }
 
-function imageChatState(options: { smooth?: boolean; sidebar?: boolean; members?: boolean; messages?: number } = {}): AppState {
-  const state = createInitialState(null, "/tmp/record-config.json");
+function imageChatState(options: { smooth?: boolean; sidebar?: boolean; members?: boolean; messages?: number; scrollRegions?: boolean; emoji?: boolean } = {}): AppState {
+  const state = createInitialState(null, "/tmp/record-config.json", {}, { scrollRegions: options.scrollRegions ?? true });
   state.cols = 110;
   state.rows = 34;
   setSidebarGuilds(state.sidebar, Array.from({ length: 30 }, (_, i) => ({ id: `g${i}`, name: `Guild ${i}`, icon: null })));
@@ -134,21 +137,34 @@ function rest(state: AppState): void {
 
 /** What a fresh Record would draw for the same state, on a fresh terminal. */
 function reference(state: AppState): VtScreen {
-  const copy = structuredClone(state);
-  const fresh = new VtScreen(copy.rows, copy.cols);
-  fresh.write(capture(copy));
-  return fresh;
+  // The emoji renderer is shared: the reference frame must not disturb what
+  // it remembers placing on the real screen.
+  const emoji = customEmojiImages as unknown as Record<string, unknown>;
+  const saved = { tracked: emoji.tracked, lastVisibleImageIds: emoji.lastVisibleImageIds, mayHavePlacements: emoji.mayHavePlacements };
+  try {
+    const copy = structuredClone(state);
+    const fresh = new VtScreen(copy.rows, copy.cols);
+    fresh.write(capture(copy));
+    return fresh;
+  } finally {
+    Object.assign(emoji, saved);
+  }
 }
 
 const isChatImage = (imageId: number) => imageId >= 0x40000000 && imageId < 0x40000000 + 0x100000;
+const isEmojiImage = (imageId: number) => imageId >= 0x72000000 && imageId < 0x73000000;
 
 function expectImagesAtRest(state: AppState, context: string): void {
   const expected = reference(state);
   const placed = screen.placements().filter((placement) => isChatImage(placement.imageId));
   const wanted = expected.placements().filter((placement) => isChatImage(placement.imageId));
   expect({ context, placed }).toEqual({ context, placed: wanted });
-  const hidden = screen.occlusions().filter((placement) => isChatImage(placement.imageId));
+  const hidden = screen.occlusions().filter((placement) => isChatImage(placement.imageId) || isEmojiImage(placement.imageId));
   expect({ context, hidden }).toEqual({ context, hidden: [] });
+  // Emoji placement ids differ with smooth scrolling; their cells must not.
+  const emojiCells = (screenToRead: VtScreen) => screenToRead.placements().filter((placement) => isEmojiImage(placement.imageId))
+    .map(({ imageId, row, col }) => `${imageId}@${row},${col}`).sort();
+  expect({ context, emoji: emojiCells(screen) }).toEqual({ context, emoji: emojiCells(expected) });
   expect({ context, text: screen.snapshot() }).toEqual({ context, text: expected.snapshot() });
 }
 
@@ -274,6 +290,27 @@ describe("cells under images", () => {
   });
 });
 
+describe("narrow panes", () => {
+  test("an image is never placed outside the message pane's columns", () => {
+    for (const cols of [30, 31, 32, 33, 40, 60]) {
+      for (const [sidebar, members] of [[true, true], [true, false], [false, true]] as const) {
+        const state = imageChatState({ smooth: false, sidebar, members });
+        state.cols = cols;
+        state.rows = 14;
+        screen = new VtScreen(state.rows, state.cols);
+        rest(state);
+        const layout = state.chatMouseLayout!;
+        for (const placement of screen.placements().filter((entry) => isChatImage(entry.imageId))) {
+          const columns = Number(/(?:^|,)c=(\d+)/.exec(placement.controls)![1]);
+          // Zero-based screen columns of the pane: firstCol..lastCol are one-based.
+          expect({ cols, sidebar, members, left: placement.col + 1 >= layout.firstCol, right: placement.col + columns <= layout.lastCol })
+            .toEqual({ cols, sidebar, members, left: true, right: true });
+        }
+      }
+    }
+  });
+});
+
 describe("images placed past the pane for a glide", () => {
   test("an image that fits exactly once the prompt shrinks mid-glide is whole at rest", () => {
     let found = false;
@@ -364,16 +401,26 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
     ["smooth scrolling, full width", { smooth: true, sidebar: false }],
     ["no smooth scrolling, full width", { smooth: false, sidebar: false }],
     ["no smooth scrolling, sidebar", { smooth: false, sidebar: true }],
+    ["scrollRegions off", { smooth: false, sidebar: false, scrollRegions: false }],
+    ["custom emoji, smooth scrolling, sidebar", { smooth: true, sidebar: true, emoji: true }],
+    ["custom emoji, no smooth scrolling, full width", { smooth: false, sidebar: false, emoji: true }],
   ] as const) {
-    test(`at rest every image is placed and shown as a fresh start would (${label})`, () => {
+    test(`at rest every image is placed and shown as a fresh start would (${label})`, async () => {
+      withEmoji = "emoji" in options;
+      customEmojiImages.configure({ fetch: (async () => new Response(Buffer.from(PNG, "base64"))) as unknown as typeof fetch, onUpdate: () => {} });
+      // A fresh terminal: forget what earlier tests placed.
+      customEmojiImages.setEnabled(false);
+      customEmojiImages.setEnabled(withEmoji);
       const state = imageChatState(options);
       frame(state);
+      await new Promise((resolve) => setTimeout(resolve, 30));
       rest(state);
       let seed = Number(process.env.IMG_FUZZ_SEED ?? 0) + 7 + label.length;
       const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
       const pick = <T,>(items: readonly T[]) => items[Math.floor(random() * items.length)]!;
       let next = 90;
       let older = 0;
+      let emojiSeen = 0;
       const log: string[] = [];
       for (let step = 0; step < Number(process.env.IMG_FUZZ_STEPS ?? 220); step++) {
         const roll = random();
@@ -437,8 +484,10 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
         } else if (roll < 0.77) {
           op = "resize";
           markRelayout(state);
-          state.rows = 18 + Math.floor(random() * 22);
-          state.cols = 70 + Math.floor(random() * 60);
+          // Sometimes tiny: the pane shorter than a tall image, or gone.
+          const tiny = random() < 0.25;
+          state.rows = tiny ? 4 + Math.floor(random() * 10) : 18 + Math.floor(random() * 22);
+          state.cols = tiny ? 30 + Math.floor(random() * 30) : 70 + Math.floor(random() * 60);
           invalidateFrame(state);
           smoothScrollerFor(state)?.terminalReset();
           screen.resize(state.rows, state.cols);
@@ -470,9 +519,27 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
             const image = pick(Object.values(state.timeline.inlineImages).filter((entry): entry is InlineChatImageReady => entry.phase === "ready"));
             if (image) state.imageModal = openImageModalState({ filename: image.filename }, image);
           }
-        } else {
+        } else if (roll < 0.96) {
           op = "follow";
           state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+        } else if (roll < 0.98) {
+          op = "channel switch";
+          markRelayout(state);
+          const channelId = state.timeline.channelId === "channel-1" ? "channel-2" : "channel-1";
+          const messages = Array.from({ length: 40 + Math.floor(random() * 40) }, (_, i) => message(i + (channelId === "channel-2" ? 7000 : 0), { channelId }));
+          setTimelineMessages(state.timeline, channelId, messages);
+          showImages(state, messages);
+          state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+        } else {
+          op = "loading then ready";
+          markRelayout(state);
+          const withImage = state.timeline.messages.filter((entry) => entry.attachments.length > 0);
+          const target = pick(withImage);
+          const attachment = target.attachments[0]!;
+          setTimelineInlineImageState(state.timeline, { phase: "loading", attachmentId: attachment.id, filename: attachment.filename, sourceUrl: attachment.url, requestId: 1 });
+          frame(state);
+          markRelayout(state);
+          showImages(state, [target]);
         }
         log.push(op);
         frame(state);
@@ -485,6 +552,7 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
         }
         if (random() < 0.35 && !state.autocomplete && !state.imageModal) {
           rest(state);
+          emojiSeen += screen.placements().filter((placement) => isEmojiImage(placement.imageId)).length;
           expectImagesAtRest(state, `${label}: step ${step} after ${log.slice(-6).join(", ")}`);
         }
       }
@@ -492,6 +560,9 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
       state.imageModal = null;
       rest(state);
       expectImagesAtRest(state, `${label}: end after ${log.slice(-6).join(", ")}`);
+      if (withEmoji) expect(emojiSeen).toBeGreaterThan(0);
+      withEmoji = false;
+      customEmojiImages.setEnabled(false);
     });
   }
 });

@@ -310,23 +310,17 @@ function activeSgrPrefix(text: string): string {
   return active;
 }
 
-function closeIfStyled(text: string): string {
-  return activeSgrPrefix(text) ? `${text}${ANSI_RESET}` : text;
-}
-
 export function hardBreak(word: string, width: number, result: string[]): string {
   let remaining = word;
   for (;;) {
-    const [taken, rest] = sliceByWidth(remaining, width);
+    let [taken, rest] = sliceByWidth(remaining, width);
     if (!rest) return remaining;
-    if (taken === "") {
-      result.push(closeIfStyled(remaining.slice(0, 1)));
-      remaining = remaining.slice(1);
-    } else {
-      const active = activeSgrPrefix(taken);
-      result.push(active ? `${taken}${ANSI_RESET}` : taken);
-      remaining = active ? `${active}${rest}` : rest;
-    }
+    // Nothing visible fits (a wide character on a one-column line; the slice
+    // took only its color): the character gets a line of its own, whole.
+    if (termWidth(taken) === 0) [taken, rest] = sliceByWidth(remaining, 2);
+    const active = activeSgrPrefix(taken);
+    result.push(active ? `${taken}${ANSI_RESET}` : taken);
+    remaining = active ? `${active}${rest}` : rest;
   }
 }
 

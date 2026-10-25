@@ -979,7 +979,10 @@ export function render(state: AppState): void {
   // cropped to the pane exactly as without smooth scrolling.
   const imagePlacements = (): InlineTerminalImagePlacement[] => {
     const extend = !!smooth?.extendBelow() && scrollRegion?.end === paneBottom && !paneEdgeMoved;
-    const placements = state.whatsapp.loginModal
+    // An image starts one column into the pane: a pane too narrow to hold
+    // one (both side panels open on a narrow terminal) shows none rather
+    // than placing it over the member list.
+    const placements = state.whatsapp.loginModal || bodyInnerWidth < 1
       ? []
       : visibleInlineImagePlacements(
         timeline,
