@@ -549,7 +549,9 @@ export function render(state: AppState): void {
     : { ...state.notice, chat: false };
   const timeline = renderTimelineLines(state.timeline, bodyInnerWidth, bodyRows, timelineNotice, state.loadingFrameIndex);
 
-  if (oldAnchors.length > 0 && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom && !pinPromptChromeToBottom && !pinTypingToBottom) {
+  // Same anchors array = the cached content was reused and no row moved;
+  // indexing every row of a long channel per frame was 40% of a scroll step.
+  if (oldAnchors.length > 0 && timeline.lineAnchors !== oldAnchors && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom && !pinPromptChromeToBottom && !pinTypingToBottom) {
     const anchorIndex = buildLineAnchorIndex(timeline.lineAnchors);
     state.timeline.scrollOffset = Math.max(0, Math.min(remapRenderedRow(oldViewStart, oldAnchors, anchorIndex), timeline.maxScroll));
     state.historyCursor = { ...state.historyCursor, row: remapRenderedRow(oldCursorRow, oldAnchors, anchorIndex) };

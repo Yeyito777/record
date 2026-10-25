@@ -2111,10 +2111,42 @@ function recordMemberRoleIds(state: AppState, guildId: string | null | undefined
   const previous = byUserId[userId] ?? [];
   if (hadPrevious && previous.length === roleIds.length && previous.every((roleId, index) => roleId === roleIds[index])) return false;
   byUserId[userId] = [...roleIds];
-  state.memberRoleCacheVersion += 1;
-  const accountId = currentAccountId(state);
-  if (accountId) saveCachedMemberRoles(accountId, guildId, byUserId);
+  noteGuildRoleChange(state, guildId);
+  scheduleMemberRolesSave(state, guildId);
   return true;
+}
+
+/**
+ * Role data of a server only changes how the open timeline looks when it is
+ * that timeline's server; a bump re-wraps every visible message, so member
+ * chunks and list syncs for other servers no longer trigger it.
+ */
+function noteGuildRoleChange(state: AppState, guildId: string): void {
+  const timelineGuildId = state.channelList.activeChannel?.guildId ?? state.channelList.guildId ?? null;
+  if (guildId === timelineGuildId) state.memberRoleCacheVersion += 1;
+}
+
+const pendingMemberRoleSaves = new WeakMap<AppState, Set<string>>();
+
+/**
+ * Save a server's member roles once per batch: saving copies the whole
+ * member->roles map, and member chunks record thousands of members in a loop
+ * (a 1000-member chunk into a 10k-member server stalled for over a second).
+ */
+function scheduleMemberRolesSave(state: AppState, guildId: string): void {
+  let pending = pendingMemberRoleSaves.get(state);
+  if (!pending) {
+    pending = new Set();
+    pendingMemberRoleSaves.set(state, pending);
+  }
+  if (pending.has(guildId)) return;
+  pending.add(guildId);
+  queueMicrotask(() => {
+    pending!.delete(guildId);
+    const accountId = currentAccountId(state);
+    const byUserId = state.memberRoleIdsByGuildId[guildId];
+    if (accountId && byUserId) saveCachedMemberRoles(accountId, guildId, byUserId);
+  });
 }
 
 function withMessageGuildId(message: DiscordMessage, guildId: string | null | undefined): DiscordMessage {
@@ -2319,7 +2351,7 @@ export function loadGuildRolesInBackground(
     refreshHiddenChannelFlags(state, guildId);
     const accountId = currentAccountId(state);
     if (accountId) saveCachedGuildRoles(accountId, guildId, roles);
-    state.memberRoleCacheVersion += 1;
+    noteGuildRoleChange(state, guildId);
     syncAllSidebarVoiceMembers(state);
     effects.scheduleRender();
   }).catch(() => {
@@ -2352,7 +2384,7 @@ function applyGatewayGuildRoleUpdate(
   refreshHiddenChannelFlags(state, guildId);
   const accountId = currentAccountId(state);
   if (accountId) saveCachedGuildRoles(accountId, guildId, next);
-  state.memberRoleCacheVersion += 1;
+  noteGuildRoleChange(state, guildId);
   syncAllSidebarVoiceMembers(state);
   effects.scheduleRender();
 }
