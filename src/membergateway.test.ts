@@ -279,3 +279,19 @@ describe("member gateway member-list ops", () => {
     }
   });
 });
+
+describe("member lists on the main gateway", () => {
+  test("subscribes through the transport, resends only on retry, applies dispatched updates, opens no socket", async () => {
+    const calls: Array<[string, string, boolean]> = [];
+    const client = new MemberListGatewayClient("token", { transport: { subscribe: (guildId, channelId, resend) => { calls.push([guildId, channelId, resend]); } } }) as any;
+    client.ensureConnected = async () => { throw new Error("must not open its own gateway"); };
+    const seen: unknown[] = [];
+    await client.subscribe("g", "c", { onMembers: (members: unknown) => seen.push(members), onError: () => {} });
+    await client.subscribe("g", "c", { onMembers: (members: unknown) => seen.push(members), onError: () => {} });
+    expect(calls).toEqual([["g", "c", false], ["g", "c", true]]);
+    client.handleDispatch({ guild_id: "g", id: "everyone", ops: [{ op: "SYNC", range: [0, 99], items: [{ member: { user: { id: "1", username: "a", global_name: "A" }, nick: null } }] }] });
+    expect(seen).toEqual([[{ id: "1", username: "a", displayName: "A", bot: false }]]);
+    client.disconnect();
+    expect(client.ws).toBeNull();
+  });
+});

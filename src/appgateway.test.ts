@@ -680,3 +680,27 @@ describe("app gateway helpers", () => {
     }]);
   });
 });
+
+describe("startup data from READY", () => {
+  const callbacks = () => ({ onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} });
+
+  test("guild roles arrive with READY", () => {
+    const seen: any[] = [];
+    const client = new AppGatewayClient("token", { ...callbacks(), onReadyGuilds: (guilds) => seen.push(...guilds) }) as any;
+    client.ws = { readyState: WebSocket.OPEN, send: () => {} };
+    client.handleMessage({ data: JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "s", user: { id: "me" }, guilds: [{ id: "g1", properties: { id: "g1", name: "One" }, roles: [{ id: "r1", name: "Mod", color: 255, position: 2, permissions: "8" }] }] } }) });
+    expect(seen[0].roles).toEqual([{ id: "r1", name: "Mod", color: 255, position: 2, permissions: "8" }]);
+  });
+
+  test("the same channel subscription is not re-sent unless asked to", () => {
+    const sent: any[] = [];
+    const client = new AppGatewayClient("token", callbacks()) as any;
+    client.ready = true;
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+    client.subscribeToGuildChannel("g", "c");
+    client.subscribeToGuildChannel("g", "c");
+    client.subscribeToGuildChannel("g", "c", true);
+    client.subscribeToGuildChannel("g", "d");
+    expect(sent.filter((payload) => payload.op === 37).map((payload) => Object.keys(payload.d.subscriptions.g.channels)[0])).toEqual(["c", "c", "d"]);
+  });
+});

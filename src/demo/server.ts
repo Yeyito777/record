@@ -9,7 +9,7 @@
 
 import { appendFileSync } from "node:fs";
 
-import type { DiscordChannelResponse, DiscordMessageResponse } from "../discord";
+import type { DiscordChannelResponse, DiscordEmbedResponse, DiscordMessageResponse } from "../discord";
 import {
   buildDemoWorld,
   buildHistory,
@@ -27,11 +27,14 @@ import {
   type DemoWorld,
   type Rng,
 } from "./data";
+import { DEMO_MEDIA_PROXY_HOSTS, demoMediaVariant, demoReleaseEmbed } from "./embeds";
 import { hexColor, renderIcon, renderPicture } from "./png";
 
 export const DEMO_API_HOST = "discord.com";
 export const DEMO_GATEWAY_URL = "wss://gateway.discord.gg";
-const CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net"]);
+const CDN_HOSTS = new Set(["cdn.discordapp.com", "media.discordapp.net", ...DEMO_MEDIA_PROXY_HOSTS]);
+/** How long after a channel opens its pending link previews unfurl. */
+const DEMO_UNFURL_DELAY_MS = 1500;
 const API_PREFIX = "/api/v9";
 
 export interface DemoServerOptions {
@@ -69,6 +72,8 @@ export class DemoDiscordServer {
   private readonly variantBytes = new Map<number, Buffer>();
   private readonly uploads = new Map<string, StoredUpload>();
   private readonly cdnCache = new Map<string, Buffer>();
+  /** Message id -> embeds that arrive by MESSAGE_UPDATE once its channel is opened. */
+  private readonly lateEmbeds = new Map<string, DiscordEmbedResponse[]>();
   private readonly sockets = new Set<FakeGatewaySocket>();
   private readonly incomingRng: Rng = seededRng(hashString("incoming"));
   private incomingCounter = 0;
@@ -218,6 +223,7 @@ export class DemoDiscordServer {
       world: this.world,
       guild: this.guildForChannel(channelId),
       registerImage: (attachmentId, variant) => this.registerImage(attachmentId, variant),
+      registerLateEmbeds: (messageId, embeds) => this.lateEmbeds.set(messageId, embeds),
     });
     this.histories.set(channelId, built);
     // A few pinned messages per channel.
@@ -377,6 +383,7 @@ export class DemoDiscordServer {
     } else {
       this.openChannelId = channelId;
       page = history.slice(-limit);
+      this.scheduleUnfurls(channelId, page);
     }
     // Discord returns newest first.
     return json([...page].reverse());
@@ -461,7 +468,69 @@ export class DemoDiscordServer {
       setTimeout(() => this.emitIncoming(1, channelId), 2500);
     } else if (command === "every") {
       this.startIncomingTimer((value ?? 0) * 1000);
+    } else if (command === "unfurl") {
+      setTimeout(() => this.emitUnfurlingLink(channelId), 400);
+    } else if (command === "suppress") {
+      this.suppressNewestEmbeds(channelId);
     }
+  }
+
+  /** Like Discord unfurling a link: the embeds come as a partial MESSAGE_UPDATE. */
+  private unfurl(channelId: string, messageId: string, embeds: DiscordEmbedResponse[]): void {
+    const message = this.messageById(channelId, messageId);
+    if (!message) return;
+    message.embeds = embeds;
+    const guild = this.guildForChannel(channelId);
+    this.dispatch("MESSAGE_UPDATE", { id: message.id, channel_id: channelId, ...(guild ? { guild_id: guild.id } : {}), embeds });
+  }
+
+  private scheduleUnfurls(channelId: string, page: readonly DiscordMessageResponse[]): void {
+    for (const message of page) {
+      const embeds = this.lateEmbeds.get(message.id);
+      if (!embeds) continue;
+      this.lateEmbeds.delete(message.id);
+      setTimeout(() => this.unfurl(channelId, message.id, embeds), DEMO_UNFURL_DELAY_MS).unref?.();
+    }
+  }
+
+  /** `!demo unfurl`: someone posts a link; its preview arrives a moment later. */
+  private emitUnfurlingLink(channelId: string): void {
+    const history = this.history(channelId);
+    if (!history) return;
+    const guild = this.guildForChannel(channelId);
+    const author = this.speakersFor(channelId)[0]!;
+    this.incomingCounter += 1;
+    const tag = `v2.${this.incomingCounter}`;
+    const url = `https://github.com/example/record/releases/tag/${tag}`;
+    const now = Math.max(Date.now(), snowflakeMs(history.at(-1)?.id) + 1);
+    const message: DiscordMessageResponse = {
+      id: snowflake(now, this.incomingCounter),
+      channel_id: channelId,
+      ...(guild ? { guild_id: guild.id } : {}),
+      content: `new release ${url}`,
+      timestamp: new Date(now).toISOString(),
+      edited_timestamp: null,
+      type: 0,
+      mentions: [],
+      mention_roles: [],
+      attachments: [],
+      embeds: [],
+      ...buildMessageAuthor(this.world, guild, author.id),
+    };
+    history.push(message);
+    this.bumpLastMessage(channelId, message.id);
+    this.dispatch("MESSAGE_CREATE", message);
+    setTimeout(() => this.unfurl(channelId, message.id, [demoReleaseEmbed(url, tag)]), DEMO_UNFURL_DELAY_MS).unref?.();
+  }
+
+  /** `!demo suppress`: the newest message with embeds loses them (flag 4), as when its author removes the preview. */
+  private suppressNewestEmbeds(channelId: string): void {
+    const history = this.history(channelId);
+    const message = history?.findLast((entry) => (entry.embeds?.length ?? 0) > 0 && !entry.content.startsWith("!demo"));
+    if (!message) return;
+    message.flags = (message.flags ?? 0) | 4;
+    message.embeds = [];
+    setTimeout(() => this.dispatch("MESSAGE_UPDATE", message), 15);
   }
 
   private async editMessage(channelId: string, messageId: string, body: unknown): Promise<Response> {
@@ -551,6 +620,10 @@ export class DemoDiscordServer {
     } else if ((parts[0] === "avatars" && parts.length === 3) || (parts[0] === "guilds" && parts[2] === "users")) {
       const user = world.users.get(parts[0] === "avatars" ? parts[1]! : parts[3]!);
       if (user?.avatar) bytes = renderIcon(user.initials, user.color, 128, true);
+    } else if (DEMO_MEDIA_PROXY_HOSTS.includes(url.hostname)) {
+      // Embed pictures (and video posters, `format=jpeg`) through the media proxy.
+      const variant = demoMediaVariant(url.pathname);
+      if (variant !== null) return png(this.variantPng(variant));
     } else if (parts[0] === "embed" && parts[1] === "avatars") {
       const index = Number(stem) || 0;
       bytes = renderIcon("", hexColor([0x5865f2, 0x757e8a, 0x3ba55c, 0xfaa61a, 0xed4245, 0xeb459e][index % 6]!), 128, true);
@@ -592,6 +665,7 @@ export class DemoDiscordServer {
   }
 
   handleClientPayload(socket: FakeGatewaySocket, payload: { op?: number; d?: any }): void {
+    this.log(`GATEWAY op ${payload.op}${payload.op === 8 ? ` guild ${payload.d?.guild_id} users ${payload.d?.user_ids?.length ?? 0}` : ""}`);
     switch (payload.op) {
       case 1:
         socket.deliver({ op: 11 });

@@ -443,6 +443,11 @@ function getMemberListGateway(state: AppState, token: string, effects: SessionEf
   if (!memberListGateway || memberListGatewayToken !== token) {
     disconnectMemberListGateway();
     memberListGateway = new MemberListGatewayClient(token, {
+      // Member lists ride on the main gateway, as in the web client: a second
+      // Discord session (its own IDENTIFY on every start) is not opened.
+      transport: {
+        subscribe: (guildId, channelId, resend) => appGateway?.subscribeToGuildChannel(guildId, channelId, resend),
+      },
       onAuthTokenRefresh: (refreshedToken) => handleGatewayAuthTokenRefresh(state, effects, refreshedToken),
       // Same fail-closed default as the main gateway: never appear online by accident.
       presenceStatus: () => state.auth.presenceStatus ?? "invisible",
@@ -1244,9 +1249,28 @@ function needsVoiceMemberHydration(state: AppState, channelId: string, userId: s
   return !hasName || (!hasAvatar && !hasHydratedMember);
 }
 
+function voiceMembersVisible(state: AppState, guildId: string): boolean {
+  return guildId === state.sidebar.expandedGuildId
+    || guildId === state.channelList.guildId
+    || guildId === voiceCallController?.activeSession?.target.guildId;
+}
+
+/** Look up the unknown voice members of a server that just became visible. */
+function hydrateGuildVoiceMembers(state: AppState, guildId: string): void {
+  for (const [channelId, voiceStates] of callVoiceStatesByChannelId) {
+    if (voiceStates.size === 0 || guildIdForChannelId(state, channelId) !== guildId) continue;
+    maybeRequestVoiceMemberHydration(state, guildId, channelId, [...voiceStates.keys()]);
+  }
+}
+
 function maybeRequestVoiceMemberHydration(state: AppState, guildId: string | null | undefined, channelId: string, userIds: readonly string[]): void {
   const token = state.auth.savedToken;
   if (!token || !guildId || guildId === DIRECT_MESSAGES_GUILD_ID || userIds.length === 0) return;
+  // Names and avatars of voice members only show for the open or expanded
+  // server and the current call. Looking up every server's voice members at
+  // start (READY lists them all) is a burst the web client never makes; other
+  // servers are looked up when opened (hydrateGuildVoiceMembers).
+  if (!voiceMembersVisible(state, guildId)) return;
   const uniqueUnknownUserIds = Array.from(new Set(userIds.filter((userId) => userId && userId !== state.auth.user?.id)))
     .filter((userId) => needsVoiceMemberHydration(state, channelId, userId));
   if (uniqueUnknownUserIds.length === 0) return;
@@ -2415,6 +2439,32 @@ export function loadGuildRolesInBackground(
   });
 }
 
+function withoutGatewayRoles(guild: DiscordGuild): DiscordGuild {
+  if (!guild.roles) return guild;
+  const { roles: _roles, ...rest } = guild;
+  return rest;
+}
+
+/** Store the roles READY/GUILD_CREATE sent; returns whether any changed. */
+function applyGatewayGuildRoles(state: AppState, guilds: readonly DiscordGuild[]): boolean {
+  const fetchState = roleFetchStateFor(state);
+  const accountId = currentAccountId(state);
+  let changed = false;
+  for (const guild of guilds) {
+    if (!guild.roles || guild.roles.length === 0) continue;
+    fetchState.fresh.add(guild.id);
+    const current = state.guildRolesByGuildId[guild.id];
+    if (current && JSON.stringify(current) === JSON.stringify(guild.roles)) continue;
+    state.guildRolesByGuildId[guild.id] = guild.roles;
+    refreshHiddenChannelFlags(state, guild.id);
+    if (accountId) saveCachedGuildRoles(accountId, guild.id, guild.roles);
+    noteGuildRoleChange(state, guild.id);
+    changed = true;
+  }
+  if (changed) syncAllSidebarVoiceMembers(state);
+  return changed;
+}
+
 function applyGatewayGuildRoleUpdate(
   state: AppState,
   effects: SessionEffects,
@@ -3229,18 +3279,20 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       applyGuildMuteSettings(state, { [guildId]: muted });
       effects.scheduleRender();
     },
-    onSessionReset: () => handleGatewaySessionReset(state, effects),
+    onSessionReset: () => {
+      memberListGateway?.resetForNewSession();
+      handleGatewaySessionReset(state, effects);
+    },
+    onGuildMemberListUpdate: (data) => memberListGateway?.handleDispatch(data),
+    // READY and GUILD_CREATE carry every server's roles for user accounts, and
+    // GUILD_ROLE_* keeps them current: no REST role fetch per server at start.
     onReadyGuilds: (guilds) => {
-      if (mergeGatewayGuilds(state, guilds)) {
-        for (const guild of guilds) loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects);
-        effects.scheduleRender();
-      }
+      const rolesChanged = applyGatewayGuildRoles(state, guilds);
+      if (mergeGatewayGuilds(state, guilds.map(withoutGatewayRoles)) || rolesChanged) effects.scheduleRender();
     },
     onGuildCreate: (guild) => {
-      if (mergeGatewayGuilds(state, [guild])) {
-        loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects);
-        effects.scheduleRender();
-      }
+      const rolesChanged = applyGatewayGuildRoles(state, [guild]);
+      if (mergeGatewayGuilds(state, [withoutGatewayRoles(guild)]) || rolesChanged) effects.scheduleRender();
     },
     onGuildUpdate: (guild) => {
       if (mergeGatewayGuilds(state, [guild])) effects.scheduleRender();
@@ -3904,9 +3956,9 @@ export async function bootstrapReadOnlyClient(
       saveCachedDirectMessages(accountId, state.sidebar.cachedChannelsByGuildId[DIRECT_MESSAGES_GUILD_ID] ?? directMessages);
       persistSidebarGuilds(state, { order: currentGuildOrderNeedsSave(sidebarCachedGuilds(state.sidebar).map((guild) => guild.id), guildOrder) });
     }
-    for (const guild of guilds) {
-      loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects, { revalidate: true });
-    }
+    // Roles arrive with READY (and are refreshed per opened server only when
+    // missing); refetching all ~50 servers' roles here on every start was
+    // a burst no official client makes.
     startAppGateway(state, currentAuthToken(state, token), effects);
 
     if (state.sidebar.guilds.length === 0) {
@@ -3944,6 +3996,7 @@ export async function loadGuildChannels(
   if (options.focusGuild !== false) {
     state.sidebar.focusedGuildId = guildId;
     state.sidebar.expandedGuildId = guildId;
+    hydrateGuildVoiceMembers(state, guildId);
   }
   state.sidebar.loadingGuildId = guildId;
   state.channelList.loading = true;
