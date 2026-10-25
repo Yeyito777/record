@@ -543,3 +543,32 @@ describe("any sequence of glides, arrivals and history pages", () => {
     expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
   });
 });
+
+describe("reloading the open channel while scrolled up", () => {
+  for (const smoothOn of [true, false]) {
+    test(`keeps the view on the same messages with the prompt focused, no glide (smooth ${smoothOn ? "on" : "off"})`, () => {
+      const state = chatState({ smooth: smoothOn });
+      expect(state.chatFocus).toBe("prompt");
+      frame(state);
+      if (smoothOn) settle(state);
+      state.timeline.scrollOffset = state.timeline.maxScroll - 25;
+      if (smoothOn) settle(state); else frame(state);
+      const topAnchor = state.historyLineAnchors[state.timeline.scrollOffset];
+      const before = screen.snapshot();
+
+      // A REST revalidation brings the same history plus newer messages.
+      const reloaded = [...Array.from({ length: 60 }, (_, i) => message(i)), ...Array.from({ length: 5 }, (_, i) => message(60 + i))];
+      setTimelineMessages(state.timeline, "channel-1", reloaded, { preserveScroll: true });
+      const out = frame(state);
+
+      expect(state.timeline.scrollOffset).toBeLessThan(state.timeline.maxScroll);
+      expect(state.historyLineAnchors[state.timeline.scrollOffset]).toBe(topAnchor);
+      expect(glides(out)).toEqual([]);
+      if (smoothOn) {
+        settle(state);
+        expect(state.historyLineAnchors[state.timeline.scrollOffset]).toBe(topAnchor);
+      }
+      expect(screen.snapshot()).toBe(before);
+    });
+  }
+});

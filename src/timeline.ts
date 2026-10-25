@@ -274,7 +274,10 @@ export function setTimelineMessages(
   timeline.systemMessages = [];
   timeline.emptyText = options.emptyText !== undefined ? options.emptyText : previousEmptyText;
   timeline.scrollOffset = preserveScroll ? previousScrollOffset : Number.MAX_SAFE_INTEGER;
-  timeline.maxScroll = 0;
+  // A preserving refresh keeps the previous maxScroll until the next render
+  // measures the new rows: with 0, the renderer took any scrolled-up view
+  // with the prompt focused for "following the bottom" and jumped there.
+  if (!preserveScroll) timeline.maxScroll = 0;
   timeline.loading = false;
   timeline.loadingOlder = false;
   timeline.loadingNewer = false;
