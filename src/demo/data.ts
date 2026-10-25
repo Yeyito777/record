@@ -14,6 +14,7 @@ import type {
   DiscordMessageReactionResponse,
   DiscordMessageResponse,
 } from "../discord";
+import { demoEmbedShowcase, QUICKVIDS_BOT } from "./embeds";
 import { DEMO_TOKEN } from "./env";
 import { hexColor, type Rgb } from "./png";
 
@@ -115,7 +116,7 @@ export interface DemoGuild {
   voiceStates: Array<{ channelId: string; userId: string; selfMute: boolean; selfDeaf: boolean }>;
 }
 
-export type HistoryStyle = "chat" | "images" | "code" | "long" | "emoji" | "announce" | "dm";
+export type HistoryStyle = "chat" | "images" | "code" | "long" | "emoji" | "announce" | "dm" | "embeds";
 
 export interface HistorySpec {
   channelId: string;
@@ -455,6 +456,26 @@ export function buildDemoWorld(anchorMs = DEFAULT_DEMO_ANCHOR_MS): DemoWorld {
 
   const lounge = guilds[0]!;
   const general = lounge.channels.find((channel) => channel.name === "general")!;
+
+  // Created last, so every id above stays what it was before #embeds existed.
+  const quickVids: DemoUser = {
+    id: entityId(), username: QUICKVIDS_BOT[0], globalName: QUICKVIDS_BOT[1], avatar: hexHash(`bot:${QUICKVIDS_BOT[0]}`),
+    color: hexColor(0xeb459e), initials: "QV", bot: true, status: "online",
+  };
+  users.set(quickVids.id, quickVids);
+  lounge.memberIds.push(quickVids.id);
+  lounge.memberRoles[quickVids.id] = [lounge.roles[4]!.id];
+  const images = lounge.channels.find((channel) => channel.name === "images")!;
+  const embedsId = entityId();
+  const embedsLastMs = anchorMs - 20 * 60_000;
+  lounge.channels.push({
+    id: embedsId, guild_id: lounge.id, parent_id: images.parent_id ?? null, name: "embeds", type: 0,
+    // Same position as #images, after it by id.
+    position: images.position, topic: "Link previews and bot embeds", last_message_id: snowflake(embedsLastMs),
+    permission_overwrites: [],
+  });
+  histories.set(embedsId, { channelId: embedsId, guildId: lounge.id, count: 40, style: "embeds", lastMs: embedsLastMs, authorIds: [...lounge.memberIds] });
+
   return {
     anchorMs, self, users, guilds, directMessages, histories, mentionCounts, unreadDirectMessages, emojisById,
     defaultChannel: { guildId: lounge.id, channelId: general.id },
@@ -557,6 +578,8 @@ export interface HistoryContext {
   guild: DemoGuild | null;
   /** Image attachment id -> variant index, filled as histories are built. */
   registerImage: (attachmentId: string, variantIndex: number) => number;
+  /** Embeds a message gets a moment after its channel opens (a link unfurling). */
+  registerLateEmbeds?: (messageId: string, embeds: DiscordEmbedResponse[]) => void;
 }
 
 export function buildMessageAuthor(world: DemoWorld, guild: DemoGuild | null, userId: string): Pick<DiscordMessageResponse, "author" | "member"> {
@@ -710,7 +733,40 @@ export function buildHistory(spec: HistorySpec, context: HistoryContext): Discor
     if (rng() < 0.03) message.edited_timestamp = new Date(times[i]! + int(rng, 10, 600) * 1000).toISOString();
     out.push(message);
   }
+  if (spec.style === "embeds") placeEmbedShowcase(out, spec, context);
   return out;
+}
+
+/** The newest messages of #embeds become one embed of each kind (demo/embeds.ts). */
+function placeEmbedShowcase(out: DiscordMessageResponse[], spec: HistorySpec, context: HistoryContext): void {
+  const showcase = demoEmbedShowcase();
+  const first = Math.max(0, out.length - showcase.length);
+  showcase.forEach((entry, index) => {
+    const message = out[first + index];
+    if (!message) return;
+    const author = [...context.world.users.values()].find((user) => user.username === entry.author);
+    Object.assign(message, buildMessageAuthor(context.world, context.guild, author?.id ?? context.world.self.id));
+    message.type = 0;
+    message.content = entry.content;
+    message.embeds = entry.embeds;
+    message.attachments = [];
+    delete message.sticker_items;
+    delete message.reactions;
+    delete message.message_reference;
+    delete message.referenced_message;
+    message.edited_timestamp = null;
+    const target = entry.replyBack ? out[first + index - entry.replyBack] : undefined;
+    if (target) {
+      message.type = 19;
+      message.message_reference = { type: 0, message_id: target.id, channel_id: target.channel_id, ...(spec.guildId ? { guild_id: spec.guildId } : {}) };
+      message.referenced_message = {
+        id: target.id, content: target.content, timestamp: target.timestamp, author: target.author,
+        ...(target.member ? { member: target.member } : {}),
+        attachments: target.attachments, embeds: target.embeds, mentions: target.mentions,
+      };
+    }
+    if (entry.lateEmbeds) context.registerLateEmbeds?.(message.id, entry.lateEmbeds);
+  });
 }
 
 export function imageAttachment(channelId: string, attachmentId: string, filename: string, width: number, height: number, size: number): DiscordAttachmentResponse {
