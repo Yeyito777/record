@@ -1,7 +1,7 @@
 /** Inline Discord custom emoji backed by Kitty terminal graphics. */
 
 import { moveTo } from "./terminal";
-import { termWidth } from "./textwidth";
+import { setPrivateUseWidth, termWidth } from "./textwidth";
 import { theme } from "./theme";
 import type { DiscordCustomEmoji } from "./discord";
 import type { ClipboardImageAttachment } from "./imageclipboard";
@@ -29,6 +29,7 @@ const LOADING_GLYPH = "◇";
 const IMAGE_PLACEHOLDER = "　";
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const SGR_RE = /\x1b\[([0-9;]*)m/g;
+const SGR_RESET = "\x1b[0m";
 
 function selectionStateAfter(text: string, initiallySelected: boolean): boolean {
   let selected = initiallySelected;
@@ -118,6 +119,8 @@ export class CustomEmojiImageRenderer {
   private tracked: Map<string, { imageId: number; placementId: number; row: number; selected: boolean }> | null = null;
   /** Something may be placed: the next frame without emoji deletes it. */
   private mayHavePlacements = false;
+  /** The terminal has no Kitty graphics: emoji are their muted `:name:`. */
+  private namesWithoutGraphics = false;
 
   constructor(options: CustomEmojiImageRendererOptions = {}) {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
@@ -139,6 +142,23 @@ export class CustomEmojiImageRenderer {
 
   isEnabled(): boolean {
     return this.enabled;
+  }
+
+  /**
+   * Without Kitty graphics an emoji is drawn as its muted `:name:`, and every
+   * layout (wrapping, the prompt, the history cursor) measures its marker as
+   * that wide; the marker stays the emoji for sending and yanking. Returns
+   * whether it changed: laid-out text must then be laid out again.
+   */
+  setNamesWithoutGraphics(on: boolean): boolean {
+    if (this.namesWithoutGraphics === on) return false;
+    this.namesWithoutGraphics = on;
+    setPrivateUseWidth(on ? (codePoint) => {
+      const emoji = this.byMarker.get(String.fromCharCode(codePoint));
+      return emoji ? termWidth(nameText(emoji)) : undefined;
+    } : null);
+    this.onUpdate();
+    return true;
   }
 
   replaceTokens(text: string): string {
@@ -226,10 +246,15 @@ export class CustomEmojiImageRenderer {
         result += `${options.imageBackground ?? ""}${IMAGE_PLACEHOLDER}${options.restoreBackground ?? ""}`;
         batch.placements.push({ emoji, row, col, selected, cells: `${attributes}|${options.imageBackground ?? ""}` });
         attributes += `${options.imageBackground ?? ""}${options.restoreBackground ?? ""}`;
+        col += EMOJI_COLUMNS;
+      } else if (!this.enabled && this.namesWithoutGraphics) {
+        // Muted, then every attribute of the line so far again.
+        result += `${theme.muted}${nameText(emoji)}${SGR_RESET}${attributes}`;
+        col += termWidth(nameText(emoji));
       } else {
         result += `${LOADING_GLYPH} `;
+        col += EMOJI_COLUMNS;
       }
-      col += EMOJI_COLUMNS;
       chunkStart = index + 1;
     }
 
@@ -368,6 +393,10 @@ export class CustomEmojiImageRenderer {
       emoji.pngBase64 = null;
     });
   }
+}
+
+function nameText(emoji: Pick<RegisteredCustomEmoji, "name">): string {
+  return `:${emoji.name}:`;
 }
 
 export const customEmojiImages = new CustomEmojiImageRenderer();

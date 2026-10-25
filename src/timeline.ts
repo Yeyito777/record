@@ -248,6 +248,11 @@ export function setTimelineTerminalCellSize(timeline: TimelineState, width: numb
   return true;
 }
 
+/** Lay every message out again (something every layout measures changed, such as emoji widths). */
+export function invalidateTimelineLayout(timeline: TimelineState): void {
+  resetTimelineRenderCaches(timeline);
+}
+
 /** Ctrl+O: show or hide the name rows of images drawn inline. Returns whether it changed. */
 export function setTimelineImageDetails(timeline: TimelineState, show: boolean): boolean {
   if (timeline.showImageDetails === show) return false;
