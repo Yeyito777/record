@@ -52,6 +52,8 @@ export interface EmbedLayoutOptions {
   urlShown: boolean;
 }
 
+/** Widest an embed gets (bar included), like Discord's fixed-width card. */
+const EMBED_MAX_WIDTH = 80;
 const BAR = "▎";
 const BAR_WIDTH = 2;
 const DESCRIPTION_MAX_LINES = 6;
@@ -149,7 +151,7 @@ export function formatEmbedTimestamp(timestamp: number, nowMs = Date.now()): str
 
 function statusLabel(state: InlineChatImageState | undefined, source: EmbedMediaSource, embed: DiscordMessageEmbed, loadingFrameIndex: number): { text: string; color: string } {
   const host = embedHost(embed.url) || embedHost(source.media.url);
-  const what = source.role === "poster" ? "video" : source.role === "thumbnail" ? "thumbnail" : "image";
+  const what = source.role === "poster" ? (embed.type === "gifv" ? "GIF" : "video") : source.role === "thumbnail" ? "thumbnail" : "image";
   if (state?.phase === "loading") return { text: loadingLabel(`Loading ${what}…`, loadingFrameIndex), color: theme.muted };
   if (state?.phase === "waiting") return { text: `Waiting for connection to load ${what}…`, color: theme.muted };
   if (state?.phase === "error" && source.role !== "poster") {
@@ -190,12 +192,13 @@ function fieldRows(
         group.push(fields[fieldIndex + group.length]!);
       }
     }
-    // As many side by side as fit at a readable width; the rest start a new row.
-    let perRow = group.length;
+    // Inline fields take a third of the width each, as in Discord; fewer
+    // columns when a third is too narrow to read (the rest start a new row).
+    let perRow = MAX_INLINE_FIELDS_PER_ROW;
     while (perRow > 1 && Math.floor((width - INLINE_FIELD_GAP * (perRow - 1)) / perRow) < INLINE_FIELD_MIN_WIDTH) perRow--;
     group = group.slice(0, perRow);
     fieldIndex += group.length;
-    const columnWidth = group.length === 1 ? width : Math.floor((width - INLINE_FIELD_GAP * (group.length - 1)) / group.length);
+    const columnWidth = field.inline ? Math.floor((width - INLINE_FIELD_GAP * (perRow - 1)) / perRow) : width;
     const columns = group.map((entry) => renderField(entry, columnWidth));
     const height = Math.max(0, ...columns.map((column) => column.length));
     for (let line = 0; line < height; line++) {
@@ -216,7 +219,7 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
   const anchor = (part: string, index: number): string => `${anchorBase}:${part}:${index}`;
   const bare = isBareMediaEmbed(embed);
   const indent = bare ? 0 : BAR_WIDTH;
-  const contentWidth = Math.max(1, options.width - indent);
+  const contentWidth = Math.max(1, Math.min(options.width, EMBED_MAX_WIDTH) - indent);
   const restore = options.restore;
   const barColor = typeof embed.color === "number" ? ansiTrueColor(embed.color) : theme.muted;
   const bar = bare ? "" : `${barColor}${BAR}${theme.reset}${restore} `;
@@ -259,7 +262,8 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
   const provider = oneLine(embed.providerName);
   const author = oneLine(embed.authorName);
   const title = oneLine(embed.title);
-  if (provider && (options.showDetails || (!author && !title))) {
+  // The provider names the source only when nothing else does (a bare gif needs none).
+  if (provider && (options.showDetails || (!author && !title && !bare))) {
     text.push({ text: `${theme.muted}${truncate(provider, textWidth)}${theme.reset}${restore}`, anchor: anchor("provider", 0), cont: false });
   }
   if (author) {
@@ -291,10 +295,9 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
   const footerText = oneLine(embed.footer?.text);
   const timestamp = options.showDetails && typeof embed.timestamp === "number" ? formatEmbedTimestamp(embed.timestamp) : "";
   const footer = [footerText, timestamp].filter(Boolean).join(" • ");
-  if (footer) text.push({ text: `${theme.muted}${truncate(footer, textWidth)}${theme.reset}${restore}`, anchor: anchor("footer", 0), cont: false });
 
   // Nothing of its own but its link: name the host, unless the link is right above.
-  if (text.length === 0 && group.media.length === 0 && !isVideoEmbed(embed)) {
+  if (text.length === 0 && !footer && group.media.length === 0 && !isVideoEmbed(embed)) {
     const host = embedHost(embed.url);
     if (!host || options.urlShown) return out;
     text.push({ text: `${theme.muted}${truncate(host, textWidth)}${theme.reset}${restore}`, anchor: anchor("host", 0), cont: false });
@@ -356,7 +359,8 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
     for (let row = 0; row < cells.rows; row++) push({ text: "", anchor: `msg:${options.messageId}:image:${sourceId}:${row}`, cont: false });
     if (source.role === "poster") {
       const duration = formatVideoDuration(embed.video?.durationSecs);
-      const label = `${theme.accent}▶ Play${theme.reset}${restore}${duration ? `${theme.muted} · ${duration}${theme.reset}${restore}` : ""}`;
+      const play = embed.type === "gifv" ? "▶ GIF" : "▶ Play";
+      const label = `${theme.accent}${play}${theme.reset}${restore}${duration ? `${theme.muted} · ${duration}${theme.reset}${restore}` : ""}`;
       push({ text: label, anchor: anchor("video", 0), cont: false });
     }
   }
@@ -368,6 +372,8 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
     const label = `${theme.accent}▶ Play video${theme.reset}${restore}${details ? `${theme.muted} · ${details}${theme.reset}${restore}` : ""}`;
     push({ text: label, anchor: anchor("video", 0), cont: false });
   }
+  // Last, under the pictures, as in Discord.
+  if (footer) push({ text: `${theme.muted}${truncate(footer, contentWidth)}${theme.reset}${restore}`, anchor: anchor("footer", 0), cont: false });
   return out;
 }
 

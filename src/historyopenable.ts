@@ -162,7 +162,11 @@ export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttach
 
 /** The image drawn under the cursor's cell, for pictures beside text or each other (embeds). */
 function inlineImageIdUnderHistoryCursor(state: AppState): string | null {
-  const { row, col } = state.historyCursor;
+  return inlineImageIdAtHistoryCell(state, state.historyCursor.row, state.historyCursor.col);
+}
+
+/** The inline image drawn over a history cell (row, column from the line's start), if any. */
+export function inlineImageIdAtHistoryCell(state: AppState, row: number, col: number): string | null {
   for (const placement of state.historyInlineImages) {
     const offset = placement.columnOffset ?? 0;
     if (row >= placement.lineIndex && row < placement.lineIndex + placement.rows && col >= offset && col < offset + placement.columns) {
