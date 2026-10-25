@@ -439,6 +439,8 @@ function getMemberListGateway(state: AppState, token: string, effects: SessionEf
     disconnectMemberListGateway();
     memberListGateway = new MemberListGatewayClient(token, {
       onAuthTokenRefresh: (refreshedToken) => handleGatewayAuthTokenRefresh(state, effects, refreshedToken),
+      // Same fail-closed default as the main gateway: never appear online by accident.
+      presenceStatus: () => state.auth.presenceStatus ?? "invisible",
     });
     memberListGatewayToken = token;
   }
@@ -3564,22 +3566,28 @@ export function syncMemberListForCurrentChannel(state: AppState, effects: Sessio
     debugLog("member_list.subscribe_attempt", { guildId, channelId, requestId, attempt });
     timeoutId = setTimeout(retryOrTimeout, MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS);
     void gateway.subscribe(guildId, channelId, {
-      onMembers: (members) => {
-        if (settled) {
-          debugLog("member_list.members_ignored", { guildId, channelId, requestId, attempt, reason: "settled", count: members.length });
-          return;
-        }
-        clearPending();
+      // Every update for the current target applies: the first one only ends
+      // the retry timer. (Ignoring later ones froze the list after its first
+      // load and let another channel's replayed list stand in for this one.)
+      onMembers: (members, info) => {
         if (!isCurrentTarget()) {
+          clearPending();
           debugLog("member_list.members_ignored", { guildId, channelId, requestId, attempt, reason: "stale_target", count: members.length, activeChannelId: state.channelList.activeChannelId, currentRequestId: state.memberList.requestId });
           return;
         }
-        debugLog("member_list.members", { guildId, channelId, requestId, attempt, count: members.length });
+        clearPending();
+        const provisional = info?.provisional === true;
+        if (provisional && getCachedMemberList(state.memberList, guildId, channelId)) {
+          // This channel's own cached list beats another channel's live rows.
+          debugLog("member_list.members_ignored", { guildId, channelId, requestId, attempt, reason: "provisional_with_cache", count: members.length });
+          return;
+        }
+        debugLog("member_list.members", { guildId, channelId, requestId, attempt, count: members.length, provisional });
         const roleIdsChanged = recordMemberListRoleIds(state, guildId, members);
-        cacheMemberList(state.memberList, guildId, channelId, members);
+        if (!provisional) cacheMemberList(state.memberList, guildId, channelId, members);
         syncAllSidebarVoiceMembers(state);
         const accountId = currentAccountId(state);
-        if (accountId) saveCachedMemberList(accountId, guildId, channelId, members);
+        if (accountId && !provisional) saveCachedMemberList(accountId, guildId, channelId, members);
         if (state.memberList.open) {
           setMemberListMembers(state.memberList, guildId, channelId, members, state.auth.user?.id ?? null);
           effects.scheduleRender();
@@ -5681,6 +5689,7 @@ export function setCurrentUserPresenceStatus(
   state.auth.presenceStatus = status;
   if (!appGateway || appGatewayToken !== token) startAppGateway(state, token, effects);
   appGateway?.updatePresenceStatus(status);
+  memberListGateway?.updatePresenceStatus(status);
   effects.scheduleRender();
 
   void persistPresenceStatusWithRetries(token, status, persistStatus, {
