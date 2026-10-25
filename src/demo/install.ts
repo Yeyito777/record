@@ -47,6 +47,8 @@ export function installDemoMode(env: Env = process.env): DemoInstall {
   env.XDG_STATE_HOME = join(home, "state");
   env.XDG_DATA_HOME = join(home, "data");
   env.RECORD_DEBUG_LOG = join(configDir, "debug.log");
+  delete env.RECORD_WHATSAPP_AUTH_DIR;
+  delete env.RECORD_PLAYBACK_TRACE_DIR;
   env.RECORD_DEMO = "1";
   env.RECORD_DEMO_HOME = home;
 
