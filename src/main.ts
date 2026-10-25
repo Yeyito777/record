@@ -11,13 +11,13 @@ import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
 import { configPath, loadConfig, loadSavedLogins, type ImageDisplayMode } from "./config";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
-import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
+import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, handleAutocompleteArrow, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
 import {
   displayCursor,
   getInputLines,
   handleEditorKey,
-  MAX_PROMPT_ROWS,
+  promptRowLimit,
   PROMPT_PREFIX_WIDTH,
   replaceEditorText,
   resetEditor,
@@ -731,7 +731,7 @@ function timelinePageSize(): number {
     state.editor.buffer,
     displayCursor(state.editor),
     maxInputWidth,
-    Math.max(1, Math.min(MAX_PROMPT_ROWS, state.rows - 3 - bottomStatusRows - imageIndicatorRows)),
+    promptRowLimit(state.rows - 3 - bottomStatusRows - imageIndicatorRows),
     state.editor.scroll,
   );
   const inputRowCount = Math.max(1, input.lines.length);
@@ -2295,6 +2295,11 @@ function handlePromptFocused(key: KeyEvent): void {
     if (state.autocomplete) {
       cycleAutocomplete(state, -1);
     }
+    scheduleRender();
+    return;
+  }
+
+  if (handleAutocompleteArrow(state, key)) {
     scheduleRender();
     return;
   }

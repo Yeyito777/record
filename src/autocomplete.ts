@@ -274,6 +274,17 @@ export function cycleAutocomplete(state: AppState, direction: 1 | -1): void {
   );
 }
 
+/**
+ * Up/Down in insert mode choose from a visible autocomplete popup instead of
+ * moving the cursor (like Exocortex). Returns whether the key was used.
+ */
+export function handleAutocompleteArrow(state: AppState, key: { type: string }): boolean {
+  if (!state.autocomplete || state.editor.mode !== "insert") return false;
+  if (key.type !== "up" && key.type !== "down") return false;
+  cycleAutocomplete(state, key.type === "down" ? 1 : -1);
+  return true;
+}
+
 export function dismissAutocomplete(state: AppState): void {
   const autocomplete = state.autocomplete;
   if (!autocomplete) return;
