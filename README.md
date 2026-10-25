@@ -59,10 +59,13 @@ Controls:
 - `-` / `+` / `=` on a selected voice member: lower/raise that user's playback volume by 10% directly
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
-- `Enter` in the prompt: submit the current message or slash command
+- `Enter` in the prompt: submit the current message or slash command. In normal mode `Enter` never submits a half-typed command: `r<Enter>` splits the line and a pending find, operator, count or `g` is cancelled (as are other non-character keys like `Tab`)
 - `Tab` / `Shift+Tab`: cycle autocomplete, including custom emoji choices; with nothing to complete, `Tab` in insert mode inserts a four-space soft tab, which `Backspace`/`Delete` remove in one press
 - `>>` / `<<` in prompt normal or visual mode: shift the line (a count shifts that many lines) or the selected lines right/left by four spaces
 - Prompt vim keys follow Vim: `j`/`k` (and `Up`/`Down`) move by displayed rows of wrapped lines, counts work before operators (`3dd`, `2d3w`), `f`/`F`/`t`/`T` with `;`/`,`, `^`, `o` in visual mode, and `yy`/`Vy` put back as whole lines with `p`/`P`. A bare `t` in normal mode stays the next-notification shortcut; after a count or operator it is the till motion
+- Word motions (`w`/`b`/`e`, `iw`) treat letters and accents in any script as word characters; `V c` leaves an empty line like `cc`
+- Yank and put use the system clipboard (pbcopy, wl-copy, xclip or xsel); without a working one (for example over SSH with no `DISPLAY`) they fall back to an in-memory register. A put never reads an image on the clipboard as text, and put or pasted text is cleaned of terminal control sequences, carriage returns and hard tabs (which become four spaces)
+- A bracketed paste is its own undo step between the typing around it; `e` on a sent message replaces the draft, which `u` brings back
 - `Ctrl+C` or `q` in normal mode: quit
 
 ### App/bot commands
