@@ -977,8 +977,16 @@ export function render(state: AppState): void {
   // past the pane. Only while st may still draw the content higher than
   // laid out, and only at the band's bottom edge: otherwise images are
   // cropped to the pane exactly as without smooth scrolling.
+  // With st's image clip regions the pane is one: images there never draw
+  // outside it, so one cut off by the pane's bottom stays placed whole, at
+  // rest too, and slides in and out with no crop to race st's clock. Not
+  // while the image viewer is open (its placement is anchored in the pane).
+  const imageClips = smooth?.imageClipSupported && bodyRows > 0 && !state.imageModal
+    ? [{ top: bodyTop, left: mainCol, bottom: paneBottom, right: mainCol + mainW - 1 }]
+    : [];
   const imagePlacements = (): InlineTerminalImagePlacement[] => {
-    const extend = !!smooth?.extendBelow() && scrollRegion?.end === paneBottom && !paneEdgeMoved;
+    const extend = imageClips.length > 0
+      || (!!smooth?.extendBelow() && scrollRegion?.end === paneBottom && !paneEdgeMoved);
     const placements = state.whatsapp.loginModal
       ? []
       : visibleInlineImagePlacements(
@@ -990,7 +998,9 @@ export function render(state: AppState): void {
         state.imageModal ? null : selectedHistoryRows,
         extend,
       );
-    smooth?.noteImagesExtended(placements.some((placement) => placement.row + placement.rows - 1 > paneBottom));
+    // Clipped by st, nothing past the pane needs cropping again.
+    smooth?.noteImagesExtended(imageClips.length === 0
+      && placements.some((placement) => placement.row + placement.rows - 1 > paneBottom));
     if (viewerPlacement) placements.push(viewerPlacement);
     return placements;
   };
@@ -1033,6 +1043,6 @@ export function render(state: AppState): void {
     regionScrolls: state.scrollRegions,
     bands,
     graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
-    afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled) : undefined,
+    afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled, imageClips) : undefined,
   }, images);
 }
