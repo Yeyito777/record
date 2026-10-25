@@ -9,7 +9,7 @@ import {
   displayCursor,
   getInputLines,
   getVisualRange,
-  MAX_PROMPT_ROWS,
+  promptRowLimit,
   PROMPT_PREFIX_WIDTH,
 } from "./editor";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
@@ -36,6 +36,7 @@ import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
 import { imageModalLayout, renderImageModal } from "./imagemodal";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
+import type { CompletionItem } from "./commands";
 import { highlightPromptViewport, promptHighlightRegions, type PromptHighlightRegion } from "./prompthighlight";
 import {
   SIDEBAR_WIDTH,
@@ -101,6 +102,27 @@ function renderImageIndicator(state: AppState, width: number): string {
   return `${theme.accent}│${theme.reset} ${theme.dim}${padded}${theme.reset} ${theme.accent}│${theme.reset}`;
 }
 
+/** Pad an autocomplete name, accenting the matched characters that survive truncation. */
+export function renderAutocompleteName(item: CompletionItem, displayName: string, width: number, nameColor: string): string {
+  const padded = padRight(displayName, width);
+  const ranges = item.matchRanges;
+  // Ranges index the raw name; skip them for custom emoji markers.
+  if (!ranges?.length || displayName !== item.name) return padded;
+
+  let visible = 0;
+  while (visible < displayName.length && padded[visible] === displayName[visible]) visible++;
+  let result = "";
+  let pos = 0;
+  for (const { start, end } of ranges) {
+    const from = Math.max(start, pos);
+    const to = Math.min(end, visible);
+    if (from >= to) continue;
+    result += padded.slice(pos, from) + theme.accent + theme.bold + padded.slice(from, to) + theme.boldOff + nameColor;
+    pos = to;
+  }
+  return result + padded.slice(pos);
+}
+
 function renderAutocompletePopup(
   state: AppState,
   width: number,
@@ -138,9 +160,9 @@ function renderAutocompletePopup(
     const marker = selected ? "▸ " : "  ";
     const item = matches[index];
     const displayName = item.customEmoji ? customEmojiMarker(item.customEmoji) : item.name;
-    const name = padRight(displayName, nameWidth);
-    const desc = padRight(item.desc, descWidth);
     const nameColor = item.color ?? theme.text;
+    const name = renderAutocompleteName(item, displayName, nameWidth, nameColor);
+    const desc = padRight(item.desc, descWidth);
     const line = `${bg}${theme.accent}${marker}${nameColor}${name}${theme.muted}${desc}${theme.reset}`;
     out.push(moveTo(row, mainCol) + customEmojiImages.renderLine(line, row, mainCol, customEmojiFrame));
   }
@@ -553,7 +575,7 @@ export function render(state: AppState): void {
     promptBuffer,
     promptCursor,
     maxInputWidth,
-    Math.max(1, Math.min(MAX_PROMPT_ROWS, rows - 3 - bottomStatusRows - imageIndicatorRows)),
+    promptRowLimit(rows - 3 - bottomStatusRows - imageIndicatorRows),
     state.editor.scroll,
   );
   state.editor.scroll = input.scrollOffset;
@@ -577,6 +599,14 @@ export function render(state: AppState): void {
   const bodyRows = Math.max(0, promptSeparatorRow - bodyTop - typingRowCount);
   const typingRow = promptSeparatorRow - typingRowCount;
   const bodyInnerWidth = Math.max(0, mainW - 2);
+  state.chatMouseLayout = {
+    firstCol: mainCol,
+    lastCol: mainCol + mainW - 1,
+    bodyTop,
+    bodyRows,
+    firstInputRow,
+    inputRows: inputRowCount,
+  };
 
   const oldAnchors = state.historyLineAnchors;
   const oldViewStart = state.timeline.scrollOffset;
@@ -887,11 +917,13 @@ export function render(state: AppState): void {
     && !state.whatsapp.loginModal
     && !state.imageModal
     && bodyRows > 0;
-  // With app-driven smooth scrolling the band is the longest run of message
-  // rows no overlay touches, beside the sidebar and member list too: their
-  // segments are repainted beside the moved rows in the same update, and
-  // the moving rectangle covers only the pane's columns.
-  const scrollRegion = smooth
+  // With smooth scrolling, or on a terminal that confirmed synchronized
+  // updates (so no frame shows the side panels displaced), the band is the
+  // longest run of message rows no overlay touches, beside the sidebar and
+  // member list too: their segments are repainted beside the moved rows in
+  // the same update, and a moving rectangle covers only the pane's columns.
+  const bands = !!smooth || (state.scrollRegions && state.synchronizedUpdates);
+  const scrollRegion = bands
     ? freeMessageBand(bodyTop, bodyTop + bodyRows - 1, overlayRows)
     : canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null;
   const smoothRects = smooth ? smoothScrollRects(scrollRegion, mainCol, mainW) : [];
@@ -928,9 +960,8 @@ export function render(state: AppState): void {
       { ...sidebarImageOptions, movedRows },
     ),
   );
-  // Under smooth scrolling the frame tells the planners which rows its
-  // region scroll moved.
-  const images: FrameImages = smooth ? planImages : planImages();
+  // Band frames tell the planners which rows their region scroll moved.
+  const images: FrameImages = bands ? planImages : planImages();
 
   flushFrame(state, {
     rows: frameRows,
@@ -939,6 +970,7 @@ export function render(state: AppState): void {
     scrollRegion,
     viewStart,
     regionScrolls: state.scrollRegions,
+    bands,
     graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
     afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled) : undefined,
   }, images);

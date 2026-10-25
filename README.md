@@ -60,6 +60,10 @@ Controls:
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
 - `Enter` in the prompt: submit the current message or slash command. In normal mode `Enter` never submits a half-typed command: `r<Enter>` splits the line and a pending find, operator, count or `g` is cancelled (as are other non-character keys like `Tab`)
+- `Up` / `Down` in insert mode with the autocomplete popup open: choose from it like `Tab` / `Shift+Tab`
+- Mouse: a click in the prompt focuses it (insert mode); a click in history focuses history with the cursor on the clicked character. The pointer is an I-beam over text
+- The prompt grows to 10 rows as you type, but never past half of the space it shares with history
+- Slash autocomplete matches anywhere in Record's command and macro names, and later words search their arguments: `/supp` finds `/noise-suppression`, `/stat idl` finds `/status idle`; the matched letters are accented. `Enter` on such a shorthand sends the popup's first row (`/stat idl` sets `/status idle`). Text that matches nothing (a thread name, an emoji, a status quote) is sent as typed, a lone one-letter `/s` stays a message, and `/quit`, `/hangup`, `/login` and `/logout` only run when typed out. App commands (`/@app …`) complete as before
 - `Tab` / `Shift+Tab`: cycle autocomplete, including custom emoji choices; with nothing to complete, `Tab` in insert mode inserts a four-space soft tab, which `Backspace`/`Delete` remove in one press
 - `>>` / `<<` in prompt normal or visual mode: shift the line (a count shifts that many lines) or the selected lines right/left by four spaces
 - Prompt vim keys follow Vim: `j`/`k` (and `Up`/`Down`) move by displayed rows of wrapped lines, counts work before operators (`3dd`, `2d3w`), `f`/`F`/`t`/`T` with `;`/`,`, `^`, `o` in visual mode, and `yy`/`Vy` put back as whole lines with `p`/`P`. A bare `t` in normal mode stays the next-notification shortcut; after a count or operator it is the till motion
@@ -123,11 +127,17 @@ scrolled into view, inside one synchronized update (mode 2026). Every terminal
 gets fewer bytes. Inline images and custom emoji are re-placed at their new
 rows in the same update.
 
-On other terminals a region scroll is used only while the pane spans the full
-width (a terminal region scroll moves whole rows; st has no left/right
-margins): with the sidebar or member list open, or an overlay over the pane,
-Record repaints changed rows. Jumps of a pane height or more, resizes and full
-repaints are also unchanged.
+A terminal region scroll moves whole rows (st, like most terminals, has no
+left/right margins), so beside the sidebar or member list the panels' segments
+of the moved rows are repainted in the same synchronized update. Record does
+that only when the terminal confirms synchronized updates: at startup it asks
+with DECRQM (`CSI ? 2026 $ p`), and on a reply of 1 or 2 region scrolls also
+run beside the side panels and around overlays (the band is the longest run of
+message rows no overlay touches; sidebar icons are placed back at their rows).
+Without that confirmation a region scroll is used only while the pane spans the
+full width with no overlay, and Record repaints changed rows otherwise, exactly
+as before. Jumps of a pane height or more, resizes and full repaints are
+unchanged either way.
 
 #### Smooth scrolling (st)
 
@@ -181,7 +191,9 @@ The pinned-messages view is the same pane and glides the same way.
 
 To turn region scrolls off (smooth scrolling included), set
 `"scrollRegions": false` in `config.json` and restart. Record then emits exactly
-what it did before region scrolls existed and never asks about mode 2032.
+what it did before region scrolls existed and never asks about modes 2026 or
+2032. For testing, `RECORD_SMOOTH_SCROLL=off` keeps region scrolls but never
+asks for st's mode 2032 (st then gets the plain region scrolls above).
 
 ### Sidebar icons
 

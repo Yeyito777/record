@@ -584,6 +584,31 @@ describe("rendering sidebar icons", () => {
     setSmoothScroller(state, null);
   });
 
+  test("with synchronized updates confirmed, icons the region scroll moved are placed back", async () => {
+    const { state } = await iconState(30);
+    state.synchronizedUpdates = true;
+    state.rows = 24;
+    setTimelineMessages(state.timeline, "channel-1", Array.from({ length: 60 }, (_, i) => ({
+      id: String(100 + i), channelId: "channel-1", type: 0, timestamp: Date.UTC(2026, 0, 1) + i * 60_000, editedTimestamp: null,
+      content: `line ${i}`, mentionEveryone: false, mentionRoleIds: [], mentionUserIds: [],
+      author: { id: "u", username: "u", displayName: "U", bot: false }, reply: null, call: null, attachments: [], stickerNames: [], embedsCount: 0,
+    })));
+    invalidateFrame(state);
+    const screen = new VtScreen(state.rows, state.cols);
+    screen.write(capture(state));
+    const iconsAtRest = screen.placements().filter((placement) => placement.imageId >= 0x73000000);
+    expect(iconsAtRest.length).toBeGreaterThan(5);
+    let scrolls = 0;
+    for (const step of [-2, -3, 1, -1]) {
+      state.timeline.scrollOffset += step;
+      const out = capture(state);
+      if (/\x1b\[\d+;\d+r\x1b\[\d+[ST]/.test(out)) scrolls++;
+      screen.write(out);
+      expect(screen.placements().filter((placement) => placement.imageId >= 0x73000000)).toEqual(iconsAtRest);
+    }
+    expect(scrolls).toBe(4);
+  });
+
   test("scrolling the sidebar moves placements with their rows", async () => {
     const { state } = await iconState(30);
     capture(state);

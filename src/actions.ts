@@ -6,6 +6,7 @@
  */
 
 import { clearConfig, saveConfig, saveSavedLogins } from "./config";
+import { resolveSlashShorthands } from "./slashsearch";
 import { tryCommand } from "./commands";
 import { decodeCustomEmojiMarkers } from "./customemoji";
 import { fetchCurrentUserStatusSettings, setCurrentUserSettingsProtoCustomStatus, setCurrentUserSettingsProtoStatus, validateToken } from "./discord";
@@ -307,14 +308,16 @@ export function submitCurrentBuffer(state: AppState, effects: AppEffects): void 
     return;
   }
 
-  const expandedText = expandMacros(text);
-  if (text && expandedText === text) {
+  // Shorthands such as "/stat idle" send as the popup's first row ("/status idle").
+  const resolvedText = resolveSlashShorthands(state, text);
+  const expandedText = expandMacros(resolvedText);
+  if (resolvedText && expandedText === resolvedText) {
     // The advertised /@app namespace is always an app command. Legacy /app
     // input remains accepted, but local commands keep priority there so an app
     // with a colliding name can never shadow Record's own controls.
-    if (!hasImages && !text.startsWith("/@") && handleCommandSubmit(state, text, effects)) return;
-    if (handleServerCommandSubmit(state, text, effects)) return;
-    if (!hasImages && handleCommandSubmit(state, text, effects)) return;
+    if (!hasImages && !resolvedText.startsWith("/@") && handleCommandSubmit(state, resolvedText, effects)) return;
+    if (handleServerCommandSubmit(state, resolvedText, effects)) return;
+    if (!hasImages && handleCommandSubmit(state, resolvedText, effects)) return;
   }
 
   const activeChannelId = state.channelList.activeChannelId ?? state.timeline.channelId;

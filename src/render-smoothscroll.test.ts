@@ -1,7 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 import { customEmojiImages, customEmojiMarker } from "./customemoji";
-import { invalidateFrame, retainedFrameRows } from "./frame";
+import { invalidateFrame, parseSynchronizedUpdatesReport, retainedFrameRows } from "./frame";
+import { TerminalControlBuffer } from "./terminalclipboard";
 import { render } from "./render";
 import { MEMBER_LIST_WIDTH, setMemberListMembers } from "./memberlist";
 import { setSidebarGuilds } from "./sidebar";
@@ -714,4 +715,126 @@ describe("reloading the open channel while scrolled up", () => {
       expect(screen.snapshot()).toBe(before);
     });
   }
+});
+
+describe("other terminals: region scrolls beside the side panels only once synchronized updates are confirmed", () => {
+  function syncState(options: { sidebar?: boolean; members?: boolean; confirmed: boolean }): AppState {
+    const state = chatState({ ...options, smooth: false });
+    state.synchronizedUpdates = options.confirmed;
+    return state;
+  }
+
+  test("the DECRQM reply for mode 2026 is parsed and routed to the control handler", () => {
+    expect(parseSynchronizedUpdatesReport("\x1b[?2026;1$y")).toBe(true);
+    expect(parseSynchronizedUpdatesReport("\x1b[?2026;2$y")).toBe(true);
+    expect(parseSynchronizedUpdatesReport("\x1b[?2026;0$y")).toBe(false);
+    expect(parseSynchronizedUpdatesReport("\x1b[?2026;4$y")).toBe(false);
+    expect(parseSynchronizedUpdatesReport("\x1b[?2032;1$y")).toBeNull();
+    const input: string[] = [];
+    const control: string[] = [];
+    const buffer = new TerminalControlBuffer((data) => input.push(data), (sequence) => control.push(sequence));
+    buffer.feed("\x1b[?2026;2$yk");
+    expect(control).toEqual(["\x1b[?2026;2$y"]);
+    expect(input).toEqual(["k"]);
+    buffer.dispose();
+  });
+
+  for (const [sidebar, members] of [[true, false], [false, true], [true, true]] as const) {
+    test(`confirmed: a scroll beside the side panels is a region scroll plus the panels' segments, no smooth-scroll sequences (sidebar ${sidebar}, members ${members})`, () => {
+      const state = syncState({ sidebar, members, confirmed: true });
+      frame(state);
+      state.timeline.scrollOffset = state.timeline.maxScroll - 20;
+      frame(state);
+      for (const step of [-3, 2, -1, 5, -6]) {
+        state.timeline.scrollOffset += step;
+        const out = frame(state);
+        const [scroll] = regionScrolls(out);
+        expect(scroll?.rows).toBe(Math.abs(step));
+        expect(scroll?.dir).toBe(step < 0 ? "T" : "S");
+        expect(out.startsWith(SYNC_BEGIN)).toBe(true);
+        expect(out.endsWith(SYNC_END)).toBe(true);
+        expect(out).not.toContain("\x1b]2032");
+        expect(out.match(/\x1b\[2K/g)?.length ?? 0).toBeLessThanOrEqual(Math.abs(step));
+        expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+      }
+    });
+  }
+
+  test("unconfirmed: beside the side panels the pane repaints as before (no region scroll)", () => {
+    const state = syncState({ sidebar: true, members: true, confirmed: false });
+    frame(state);
+    state.timeline.scrollOffset = state.timeline.maxScroll - 20;
+    frame(state);
+    state.timeline.scrollOffset -= 3;
+    const out = frame(state);
+    expect(regionScrolls(out)).toEqual([]);
+    expect(out).not.toContain("\x1b]2032");
+    expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+  });
+
+  test("confirmed: the band stops above the autocomplete popup", () => {
+    const state = syncState({ sidebar: true, confirmed: true });
+    frame(state);
+    state.timeline.scrollOffset = state.timeline.maxScroll - 20;
+    frame(state);
+    state.autocomplete = {
+      type: "command",
+      selection: 0,
+      prefix: "/",
+      matches: Array.from({ length: 5 }, (_, i) => ({ name: `/cmd${i}`, desc: `command ${i}` })),
+    };
+    frame(state);
+    const popupTop = screen.text().findIndex((row) => row.includes("/cmd0")) + 1;
+    state.timeline.scrollOffset -= 2;
+    const out = frame(state);
+    const [scroll] = regionScrolls(out);
+    expect(scroll?.bottom).toBe(popupTop - 1);
+    expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+  });
+
+  test("scrollRegions off ignores the confirmation: the old line-feed bytes", () => {
+    const state = syncState({ sidebar: false, confirmed: true });
+    state.scrollRegions = false;
+    frame(state);
+    state.timeline.scrollOffset = state.timeline.maxScroll - 3;
+    const out = frame(state);
+    expect(out).not.toMatch(/\x1b\[\d+[ST]/);
+    expect(out).not.toContain("\x1b]2032");
+    state.sidebar.open = true;
+    frame(state);
+    state.timeline.scrollOffset -= 2;
+    expect(frame(state)).not.toMatch(/\x1b\[\d+;\d+r/);
+  });
+
+  test("confirmed: any sequence of scrolls, arrivals, history pages and the typing line ends every frame as its rows painted from scratch", () => {
+    const state = syncState({ sidebar: true, members: true, confirmed: true });
+    frame(state);
+    let seed = 23;
+    const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    let next = 60;
+    let scrolled = 0;
+    for (let step = 0; step < 150; step++) {
+      const roll = random();
+      if (roll < 0.6) {
+        const delta = Math.floor(random() * 9) - 4;
+        state.timeline.scrollOffset = Math.max(0, Math.min(state.timeline.maxScroll, state.timeline.scrollOffset + (delta || 1)));
+      } else if (roll < 0.75) {
+        appendTimelineMessage(state.timeline, message(next++));
+        if (random() < 0.5) state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
+      } else if (roll < 0.85) {
+        const page = Array.from({ length: 4 }, (_, i) => ({ ...message(i), id: String(5000 + step * 10 + i), timestamp: Date.UTC(2025, 0, 1) + (step * 10 + i) * 60_000 }));
+        prependTimelineMessages(state.timeline, page, 60, { hasOlder: true });
+      } else if (roll < 0.92) {
+        recordTypingStart(state.typing, "channel-1", { id: "user-9", displayName: "Cy" }, Date.now());
+      } else {
+        state.typing.byChannelId = {};
+      }
+      const out = frame(state);
+      if (regionScrolls(out).length > 0) scrolled++;
+      expect(out).not.toContain("\x1b]2032");
+      expect(screen.snapshot()).toBe(retainedScreen(state));
+    }
+    expect(scrolled).toBeGreaterThan(40);
+    expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+  });
 });

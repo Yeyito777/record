@@ -162,6 +162,11 @@ export interface AppState {
   showHiddenChannels: boolean;
   /** Scroll the message pane with terminal scroll regions (config `scrollRegions`). */
   scrollRegions: boolean;
+  /**
+   * The terminal confirmed synchronized updates (DECRQM mode 2026): region
+   * scrolls may then run beside the side panels and around overlays.
+   */
+  synchronizedUpdates: boolean;
   serverCommands: ServerCommandsState;
   whatsapp: WhatsAppUiState;
   instagram: InstagramUiState;
@@ -170,7 +175,22 @@ export interface AppState {
   loadingFrameIndex: number;
   configPath: string;
   /** Desktop mouse cursor shape, cached to avoid redundant OSC writes. */
-  mouseCursor: "pointer" | "hand";
+  mouseCursor: "pointer" | "hand" | "text";
+  /** Where the last frame drew the history body and the prompt, for mouse hit tests. */
+  chatMouseLayout: ChatMouseLayout | null;
+}
+
+/** Screen rows/columns (1-based) of the last frame's chat column. */
+export interface ChatMouseLayout {
+  /** First and last screen column of the chat column. */
+  firstCol: number;
+  lastCol: number;
+  /** History body: rows [bodyTop, bodyTop + bodyRows), content from column firstCol + 1. */
+  bodyTop: number;
+  bodyRows: number;
+  /** Prompt input rows [firstInputRow, firstInputRow + inputRows). */
+  firstInputRow: number;
+  inputRows: number;
 }
 
 export function createInitialState(
@@ -233,6 +253,7 @@ export function createInitialState(
     channelMuteSettings: {},
     showHiddenChannels: options.showHiddenChannels ?? false,
     scrollRegions: options.scrollRegions ?? true,
+    synchronizedUpdates: false,
     serverCommands: createServerCommandsState(),
     whatsapp: createWhatsAppUiState(),
     instagram: createInstagramUiState(),
@@ -253,6 +274,7 @@ export function createInitialState(
     loadingFrameIndex: 0,
     configPath: path,
     mouseCursor: "pointer",
+    chatMouseLayout: null,
   };
 }
 
