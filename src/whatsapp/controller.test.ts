@@ -184,7 +184,7 @@ class DelayedShutdownBackend extends FakeBackend {
   }
 }
 
-function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" | "historyRequestTimeoutMs" | "recentHistoryIntervalMs" | "sendShutdownTimeoutMs" | "loadCache"> = {}) {
+function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" | "historyRequestTimeoutMs" | "recentHistoryIntervalMs" | "sendShutdownTimeoutMs" | "loadCache" | "newerFooterGraceMs" | "resyncAfterOfflineMs" | "chatIsBehind"> = {}) {
   const state = createInitialState(null, "/tmp/config.json");
   const backend = new FakeBackend();
   let renders = 0;
@@ -198,6 +198,9 @@ function fixture(options: Pick<WhatsAppControllerOptions, "historyPageDelayMs" |
     recentHistoryIntervalMs: options.recentHistoryIntervalMs,
     sendShutdownTimeoutMs: options.sendShutdownTimeoutMs ?? 50,
     loadCache: options.loadCache,
+    newerFooterGraceMs: options.newerFooterGraceMs,
+    resyncAfterOfflineMs: options.resyncAfterOfflineMs,
+    chatIsBehind: options.chatIsBehind,
   });
   return { state, backend, controller, authDirectory, renders: () => renders };
 }
@@ -400,6 +403,10 @@ test("a failed write-ahead save leaves the draft intact and never contacts Whats
 });
 
 describe("WhatsApp recent-history reconciliation", () => {
+  // Footer mechanics with evidence that the chat is behind; detecting that
+  // evidence is covered by "WhatsApp newer-messages footer" below.
+  const behindFixture = (options: Parameters<typeof fixture>[0] = {}) =>
+    fixture({ newerFooterGraceMs: 0, chatIsBehind: () => true, ...options });
   const jid = "repair@s.whatsapp.net";
   const connected: WhatsAppConnectionState = {
     status: "connected", resumed: true, connectedAtMs: 1,
@@ -423,7 +430,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   };
 
   test("a restarted client reconciles a hydrated full cache without receiving startup history", async () => {
-    const { state, backend, controller } = fixture({
+    const { state, backend, controller } = behindFixture({
       loadCache: async () => ({
         version: 1, savedAtMs: 1, account: { id: "self@s.whatsapp.net" },
         chats: [{ id: jid, kind: "direct", name: "Repair" }], contacts: [],
@@ -448,7 +455,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   });
 
   test("a full cache shows recent loading on focus and reconnect without paging older", async () => {
-    const { state, backend, controller } = fixture();
+    const { state, backend, controller } = behindFixture();
     try {
       backend.emit("state", connected);
       backend.emit("history", historyPage(fullHistory()));
@@ -490,7 +497,7 @@ describe("WhatsApp recent-history reconciliation", () => {
 
   for (const focus of ["prompt", "history"] as const) {
     test(`foreground resyncs animate at the bottom and preserve scrolled-up views with ${focus} focus`, async () => {
-      const { state, backend, controller } = fixture();
+      const { state, backend, controller } = behindFixture();
       const write = spyOn(process.stdout, "write").mockImplementation(() => true);
       try {
         state.cols = 100;
@@ -550,7 +557,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   }
 
   test("a failed foreground resync clears its footer without changing older-pagination state", async () => {
-    const { state, backend, controller, renders } = fixture();
+    const { state, backend, controller, renders } = behindFixture();
     const request = deferred<string>();
     backend.fetchHistory = () => request.promise;
     try {
@@ -573,7 +580,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   });
 
   test("pending resync footers belong to the active chat when switching between cached chats", async () => {
-    const { state, backend, controller } = fixture();
+    const { state, backend, controller } = behindFixture();
     const otherJid = "other@s.whatsapp.net";
     try {
       backend.emit("state", connected);
@@ -603,7 +610,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   });
 
   test("periodically repairs the active chat silently, deduplicates requests and stops on shutdown", async () => {
-    const { state, backend, controller } = fixture({ recentHistoryIntervalMs: 10 });
+    const { state, backend, controller } = behindFixture({ recentHistoryIntervalMs: 10 });
     try {
       backend.emit("state", connected);
       backend.emit("history", historyPage(fullHistory()));
@@ -648,7 +655,7 @@ describe("WhatsApp recent-history reconciliation", () => {
 
   for (const focus of ["prompt", "history"] as const) {
     test(`opening a chat exposes an existing periodic check without duplicating it (${focus} focus)`, async () => {
-      const { state, backend, controller } = fixture({ recentHistoryIntervalMs: 10 });
+      const { state, backend, controller } = behindFixture({ recentHistoryIntervalMs: 10 });
       const write = spyOn(process.stdout, "write").mockImplementation(() => true);
       try {
         state.cols = 100;
@@ -691,7 +698,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   }
 
   test("recent loading survives timeline refreshes and clears on disconnect", async () => {
-    const { state, backend, controller } = fixture();
+    const { state, backend, controller } = behindFixture();
     try {
       backend.emit("state", connected);
       backend.emit("history", historyPage(fullHistory()));
@@ -716,7 +723,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   });
 
   test("recent-sync timeouts can retry and do not alter older-pagination state", async () => {
-    const { state, backend, controller, renders } = fixture({ historyRequestTimeoutMs: 5 });
+    const { state, backend, controller, renders } = behindFixture({ historyRequestTimeoutMs: 5 });
     try {
       backend.emit("state", connected);
       backend.emit("history", historyPage(fullHistory()));
@@ -744,7 +751,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   });
 
   test("correlates early recent pages and resolves old LID keys through the canonical chat", async () => {
-    const { state, backend, controller } = fixture();
+    const { state, backend, controller } = behindFixture();
     const calls: import("./types").WhatsAppMessageKey[] = [];
     backend.fetchHistory = async (_count, key) => {
       calls.push(key);
@@ -773,7 +780,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   for (const terminalPage of ["empty", "duplicate"] as const) {
     for (const early of [false, true]) {
       test(`completed sparse history shows recent loading on reopen/reconnect (${terminalPage}, early=${early})`, async () => {
-        const { state, backend, controller } = fixture();
+        const { state, backend, controller } = behindFixture();
         const request = deferred<string>();
         const otherJid = "unsynced@s.whatsapp.net";
         const originalFetch = backend.fetchHistory.bind(backend);
@@ -840,7 +847,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   }
 
   test("remembers a terminal page received while another chat is open, including LID migration", async () => {
-    const { state, backend, controller } = fixture();
+    const { state, backend, controller } = behindFixture();
     const lid = "completed@lid";
     const otherJid = "pending@s.whatsapp.net";
     try {
@@ -869,7 +876,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   });
 
   test("a changed gap anchor re-enables genuine older-history loading", async () => {
-    const { state, backend, controller } = fixture();
+    const { state, backend, controller } = behindFixture();
     try {
       backend.emit("state", connected);
       backend.emit("history", historyPage([raceMessage("old", jid, 100)]));
@@ -896,7 +903,7 @@ describe("WhatsApp recent-history reconciliation", () => {
   });
 
   test("failed backfill is not remembered as completed history", async () => {
-    const { state, backend, controller } = fixture();
+    const { state, backend, controller } = behindFixture();
     const request = deferred<string>();
     const originalFetch = backend.fetchHistory.bind(backend);
     backend.fetchHistory = () => request.promise;
@@ -2686,5 +2693,107 @@ describe("WhatsApp controller", () => {
     expect(restartedState.timeline.channelId).toBe(restoredChannelId);
     expect(restartedState.timeline.messages[0]?.content).toBe("cached hello");
     await restarted.shutdown();
+  });
+});
+
+describe("WhatsApp newer-messages footer", () => {
+  const jid = "footer@s.whatsapp.net";
+  const connected: WhatsAppConnectionState = {
+    status: "connected", resumed: true, connectedAtMs: 1,
+    account: { id: "self@s.whatsapp.net" },
+  };
+  const fullHistory = () => Array.from({ length: MAX_WHATSAPP_MESSAGES_PER_CHAT },
+    (_, index) => raceMessage(`cached-${index}`, jid, (index + 1) * 1_000));
+  const footer = (state: ReturnType<typeof createInitialState>) =>
+    renderTimelineLines({ ...state.timeline }, 80, 10, state.notice).allLines.join("\n").includes("Loading newer messages");
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  test("focusing an up-to-date chat rechecks silently: no footer, even after the grace period", async () => {
+    const { state, backend, controller } = fixture({ newerFooterGraceMs: 20 });
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      expect(backend.historyRequests).toHaveLength(1);
+      await sleep(60);
+      expect(state.timeline.loadingNewer).toBe(false);
+      expect(footer(state)).toBe(false);
+      // A missed message the check finds just appears.
+      backend.emit("history", historyPage([raceMessage("missed", jid, 299_500)], "history-1"));
+      expect(state.timeline.messages.some((message) => message.id === "missed")).toBe(true);
+      expect(footer(state)).toBe(false);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("the chat list saying the last message is newer shows the footer after the grace period, until it lands", async () => {
+    const { state, backend, controller, renders } = fixture({ newerFooterGraceMs: 30 });
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      backend.emit("chats", { kind: "update", chats: [{ id: jid, kind: "direct", lastMessageAtMs: 900_000 }] });
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      expect(footer(state)).toBe(false);
+      const rendersBefore = renders();
+      await sleep(70);
+      expect(renders()).toBeGreaterThan(rendersBefore);
+      expect(state.timeline.loadingNewer).toBe(true);
+      expect(footer(state)).toBe(true);
+      // The newer message arrives live before the recheck answers: hide now.
+      backend.emit("messages", { kind: "upsert", upsertType: "notify", messages: [raceMessage("newest", jid, 900_000)], skippedMessages: 0 });
+      expect(state.timeline.loadingNewer).toBe(false);
+      expect(footer(state)).toBe(false);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("a quick answer never flashes the footer, even with evidence", async () => {
+    const { state, backend, controller } = fixture({ newerFooterGraceMs: 40 });
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      backend.emit("chats", { kind: "update", chats: [{ id: jid, kind: "direct", lastMessageAtMs: 900_000 }] });
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      backend.emit("history", historyPage([raceMessage("newest", jid, 900_000)], "history-1"));
+      await sleep(80);
+      expect(state.timeline.loadingNewer).toBe(false);
+      expect(footer(state)).toBe(false);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("a reconnect after a long offline spell shows the footer once per chat; a short blip does not", async () => {
+    const { state, backend, controller } = fixture({ newerFooterGraceMs: 0, resyncAfterOfflineMs: 40, historyRequestTimeoutMs: 5_000 });
+    const reconnecting: WhatsAppConnectionState = { status: "reconnecting", attempt: 1, delayMs: 1, disconnect: { code: 428, name: null } };
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      backend.emit("history", historyPage([], "history-1"));
+      expect(footer(state)).toBe(false);
+
+      backend.emit("state", reconnecting);
+      backend.emit("state", connected);
+      await settle();
+      expect(footer(state)).toBe(false);
+      backend.emit("history", historyPage([], "history-2"));
+
+      backend.emit("state", reconnecting);
+      await sleep(60);
+      backend.emit("state", connected);
+      await settle();
+      expect(footer(state)).toBe(true);
+      backend.emit("history", historyPage([], "history-3"));
+      expect(footer(state)).toBe(false);
+    } finally {
+      await controller.shutdown();
+    }
   });
 });
