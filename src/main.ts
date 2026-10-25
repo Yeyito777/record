@@ -36,11 +36,12 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
-import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
+import type { EmbedVideoTarget } from "./embeds";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { handleMouseEvent } from "./mouse";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
@@ -170,7 +171,7 @@ import {
 import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize, terminalImageNotFoundId } from "./terminalimage";
 import { sidebarIconTerminalOwner, sidebarIcons } from "./sidebaricons";
 import { dmAuthorColor, theme } from "./theme";
-import { clearTimeline, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
+import { clearTimeline, clearTimelineInlineImageStates, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
@@ -567,7 +568,8 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
 }
 
 function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
-  if (!isImageAttachment(attachment)) return false;
+  // Without Kitty graphics the caller opens it with the configured opener.
+  if (!isImageAttachment(attachment) || !inlineImagesDrawable(terminalGraphicsClient?.isSupported())) return false;
 
   const existing = state.timeline.inlineImages[attachment.id];
   if (existing?.phase === "ready" || existing?.phase === "loading" || existing?.phase === "waiting") {
@@ -650,7 +652,8 @@ function autoShowVisibleInlineImages(): void {
     if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
     const existing = state.timeline.inlineImages[attachment.id];
     if (!shouldLoadInlineImage(existing, attachment.url, state.imageDisplayMode === "show",
-      !isWhatsAppChannelId(state.timeline.channelId) || whatsAppController.isConnected)) continue;
+      !isWhatsAppChannelId(state.timeline.channelId) || whatsAppController.isConnected,
+      inlineImagesDrawable(terminalGraphicsClient?.isSupported()))) continue;
     startInlineAttachmentImage(attachment);
   }
 }
@@ -2248,8 +2251,19 @@ function openHistoryLink(target: string, joinInvites: boolean): void {
   }
 }
 
+/** A video embed plays like a video attachment (a media file) or opens its page (YouTube, Tenor). */
+function openEmbedVideo(target: EmbedVideoTarget): void {
+  if (target.kind === "file") downloadAndOpenAttachment(target.attachment);
+  else openHistoryLink(target.url, false);
+}
+
 /** A click in history: open the image, attachment or link under the cursor. Returns whether one was there. */
 function openHistoryTargetAtCursor(): boolean {
+  const video = embedVideoAtHistoryCursor(state);
+  if (video) {
+    openEmbedVideo(video);
+    return true;
+  }
   const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
   if (imageBodyAttachment) {
     openInlineImageModal(imageBodyAttachment);
@@ -2346,6 +2360,11 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_select": {
+      const video = embedVideoAtHistoryCursor(state);
+      if (video) {
+        openEmbedVideo(video);
+        return true;
+      }
       const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
       if (imageBodyAttachment && openInlineImageModal(imageBodyAttachment)) return true;
 
@@ -2821,6 +2840,11 @@ async function main(): Promise<void> {
     onSupportChanged: (supported) => {
       customEmojiImages.setEnabled(supported);
       sidebarIcons.setEnabled(supported);
+      if (!supported) {
+        // Nothing can draw them: back to their name rows.
+        clearTimelineInlineImageStates(state.timeline);
+        state.imageModal = null;
+      }
       invalidateFrame(state);
       scheduleRender();
     },

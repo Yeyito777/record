@@ -1397,14 +1397,17 @@ describe("timeline rendering", () => {
     const plainLines = rendered.lines.map(stripAnsi);
     expect(plainLines).toContain("first link https://example.com/story");
     const firstLinkRow = plainLines.indexOf("first link https://example.com/story");
-    expect(plainLines[firstLinkRow + 1]).toBe("↳ Example News: Story title");
+    // Each embed is a block under the line holding its URL: bar, then its title as a link.
+    expect(plainLines[firstLinkRow + 1]).toBe("▎ Story title");
     const secondLinkRow = plainLines.indexOf("second link https://youtu.be/video");
-    expect(plainLines[secondLinkRow + 1]).toBe("↳ YouTube: Video title");
-    expect(plainLines).toContain("↳ preview 1/2");
-    expect(plainLines).toContain("↳ preview 2/2");
+    expect(plainLines[secondLinkRow + 1]).toBe("▎ Video title");
+    // A video with no picture still offers to play.
+    expect(plainLines[secondLinkRow + 2]).toBe("▎ ▶ Play video · youtu.be");
     expect(rendered.lines[firstLinkRow]).toContain(theme.accent);
-    expect(rendered.lines[firstLinkRow + 1]).toContain(theme.muted);
-    expect(rendered.lines[firstLinkRow + 1]).not.toContain(theme.accent);
+    expect(rendered.lines[firstLinkRow + 1]).toContain(`${theme.bold}${theme.accent}Story title`);
+    // A bare embed count (old caches) has nothing to show: never a "preview" placeholder.
+    expect(plainLines.some((line) => line.includes("preview"))).toBe(false);
+    expect(plainLines).toContain("(empty message)");
     expect(plainLines).not.toContain("[embeds] 1");
   });
 

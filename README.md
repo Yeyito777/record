@@ -50,6 +50,9 @@ Controls:
 - opening the full-image viewer shows the cached preview immediately at the image's final viewer size, then swaps in full-resolution pixels in place without resizing; `Enter` / `Esc` closes even while loading. Chat images stay placed behind the higher-z viewer rather than disappearing, and image placements are presented in the same synchronized update as the surrounding text.
 - Images and custom emoji under an overlay (the autocomplete popup, the image viewer, server actions, the WhatsApp login) stay where they are; one that would be placed or moved underneath (a message arrived, an image finished loading) waits for the overlay to close, while the rest of the chat keeps updating. st remembers the cells an image is first drawn over and draws any that change later above it, so an image placed under an overlay would otherwise have holes where the overlay was. For the same reason a visual selection tints a selected image (st's `V=1`) instead of painting cells under it
 - `/images hide|show`: keep images collapsed until opened manually, or restore automatic expansion; the selected mode persists
+- Discord embeds (link previews and bot embeds) draw like Discord's cards, right under the line holding their link: a bar in the embed's colour, the author, the title (in the link colour; `Enter` or a click opens it, as does `Enter` on the author), the description with markdown (up to 6 rows), fields (inline ones a third of the width each, side by side when they fit), then the footer under any picture. Cards are at most 80 columns wide. A thumbnail sits at the right of the text when there is room, else below; large images and tweet galleries (pictures side by side) go below. Embed pictures load through Discord's media proxy at the size a chat row needs, follow `/images hide|show` and open in the viewer on `Enter` or a click; until drawn (hidden, loading, or a terminal without graphics) each is one muted row such as `🖼 image · pbs.twimg.com`
+- Video embeds (YouTube, fxtwitter-style posts, QuickVids replies) show their thumbnail as a poster with `▶ Play` under it (`▶ GIF` for Tenor/Giphy gifs). With no thumbnail the poster is a still Discord's proxy renders; with neither, a `▶ Play video · host` row. `Enter` or a click on the poster or play row plays it: a video file downloads and opens like a video attachment, a page (YouTube) opens with the URL opener, and Tenor gifs keep their gif download. An embed with nothing but its link adds nothing when the link is right above it (otherwise one row naming the host); never a bare "preview" row
+- Embeds that arrive later (Discord unfurling a link) or go away (the author removing the preview) update the message in place: at the followed bottom the pane glides, elsewhere the line at the top of the view stays put. With `Ctrl+O` an embed also shows its provider row, its timestamp in the footer, and its whole description and field values
 - `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
 - `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history
 - `/thread <name>` in the prompt: create and open a public thread; if a reply is active, anchor it to that replied-to message, otherwise create a standalone thread
@@ -107,7 +110,7 @@ Notes:
 - custom emoji support uses direct-stream Kitty graphics, so it works over SSH without exposing local file paths; animated emoji use Discord's PNG first frame
 - custom emoji autocomplete uses the active server's emoji for non-Nitro accounts and all joined servers' emoji for Nitro accounts
 - tokens are stored as plaintext for now, just with strict file permissions
-- expanded chat images use the Kitty direct-stream graphics protocol; PNGs are sent directly and other image formats use `ffmpeg` to produce a bounded first-frame PNG
+- expanded chat images use the Kitty direct-stream graphics protocol; PNGs are sent directly and other image formats use `ffmpeg` to produce a bounded first-frame PNG. Record asks the terminal at startup; a terminal without Kitty graphics (or tmux without passthrough) gets no graphics commands at all: images stay as their `📎 name • size` rows, `Enter` or a click opens them with your configured opener, and custom emoji show `◇`
 - WhatsApp stickers expand inline like images, including first-frame previews of animated WebP stickers
 - Initial WhatsApp history loading and older-page fetching show timeline spinners, including between pages; sending a message does not clear them.
 - WhatsApp silently rechecks the open chat's recent 50-message window every minute to recover missed messages. Full caches and chats whose older history finished syncing also recheck on focus and reconnect without restarting completed backfills or moving scrolled-up readers. These checks are silent (anything they find just appears) unless Record has evidence the chat is behind: the chat list reports a newer last message than any Record has, or WhatsApp reconnected after being offline for a minute or more. Then a bottom “Loading newer messages…” spinner appears if the check takes longer than 0.4 s, and goes away as soon as the newer messages arrive.
@@ -409,11 +412,17 @@ account:
   range from empty to 2,400 messages (`Record Lounge / #general`) and a
   1,500-message DM, with inline images of many sizes and aspect ratios, custom
   emoji, stickers, reactions, replies, embeds, code blocks, markdown and long
-  wrapped lines. Older pages load with a 450 ms delay.
+  wrapped lines. `Record Lounge / #embeds` ends with one embed of each kind
+  (an fxtwitter-style post with a picture, a QuickVids video reply, YouTube, a
+  bot's rich embed with fields, a Tenor gif, an article with a thumbnail, a
+  tweet gallery) and a link whose preview arrives 1.5 s after the channel
+  opens. Older pages load with a 450 ms delay.
 - **Live traffic.** Sends, edits, deletes and reactions update the fake server
   and echo back through the gateway like Discord does. Send `!demo more 20` to
   receive 20 messages in the open channel, `!demo typing` for a typing
-  indicator, `!demo every 3` for one message every 3 s (`!demo every 0` stops).
+  indicator, `!demo every 3` for one message every 3 s (`!demo every 0` stops),
+  `!demo unfurl` for a link whose preview arrives a moment later (a partial
+  `MESSAGE_UPDATE`), `!demo suppress` to remove the newest preview (flag 4).
   `kill -USR1 <pid>` appends one message, `-USR2` ten; the pid is in
   `<demo home>/record-demo.pid`.
 
@@ -437,4 +446,5 @@ home), `RECORD_DEMO_KEEP=1` and `RECORD_DEMO_FAIL_LEAVE=1` (Leave Server fails w
 long error, to check the actions menu). Like discord.com, the fake server rejects
 requests that announce a JSON body without sending valid JSON. Each demo home has a `record/demo.log` of every
 request the fake server answered. The CDN serves PNG bytes for every image URL
-(icons, avatars, emoji, stickers, attachments), whatever the extension.
+(icons, avatars, emoji, stickers, attachments, and embed pictures through the
+media proxy `images-ext-1.discordapp.net`), whatever the extension.

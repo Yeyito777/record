@@ -275,18 +275,40 @@ export interface DiscordStickerItemResponse {
   format_type?: number;
 }
 
+/** Image, thumbnail or video of an embed, as Discord sends it. */
+export interface DiscordEmbedMediaResponse {
+  url?: string | null;
+  proxy_url?: string | null;
+  width?: number | null;
+  height?: number | null;
+  /** Not in Discord's documented schema; read when a payload carries one. */
+  duration?: number | null;
+  duration_secs?: number | null;
+}
+
 export interface DiscordEmbedResponse {
   type?: string;
   title?: string;
   url?: string;
   description?: string;
+  timestamp?: string | null;
+  color?: number | null;
   provider?: { name?: string | null; url?: string | null } | null;
-  author?: { name?: string | null; url?: string | null } | null;
+  author?: { name?: string | null; url?: string | null; icon_url?: string | null; proxy_icon_url?: string | null } | null;
+  footer?: { text?: string | null; icon_url?: string | null; proxy_icon_url?: string | null } | null;
+  fields?: Array<{ name?: string | null; value?: string | null; inline?: boolean | null }> | null;
+  image?: DiscordEmbedMediaResponse | null;
+  thumbnail?: DiscordEmbedMediaResponse | null;
+  video?: DiscordEmbedMediaResponse | null;
 }
+
+/** Message flag: the author (or a moderator) removed the message's link previews. */
+export const MESSAGE_FLAG_SUPPRESS_EMBEDS = 1 << 2;
 
 export interface DiscordReferencedMessageResponse {
   id: string;
   content: string;
+  flags?: number;
   timestamp: string;
   author: DiscordMessageAuthorResponse;
   member?: DiscordMessageMemberResponse;
@@ -300,6 +322,7 @@ export interface DiscordReferencedMessageResponse {
 
 export interface DiscordMessageSnapshotMessageResponse {
   content?: string;
+  flags?: number;
   mention_everyone?: boolean;
   mention_roles?: string[];
   mentions?: DiscordMessageMentionResponse[];
@@ -326,6 +349,7 @@ export interface DiscordMessageResponse {
   timestamp: string;
   edited_timestamp: string | null;
   type?: number;
+  flags?: number;
   mention_everyone?: boolean;
   mention_roles?: string[];
   mentions?: DiscordMessageMentionResponse[];
@@ -458,6 +482,24 @@ export interface DiscordMessageSticker {
   attachment?: DiscordMessageAttachment;
 }
 
+export interface DiscordMessageEmbedMedia {
+  url: string;
+  proxyUrl: string | null;
+  width: number | null;
+  height: number | null;
+  durationSecs?: number | null;
+}
+
+export interface DiscordMessageEmbedField {
+  name: string;
+  value: string;
+  inline: boolean;
+}
+
+/**
+ * A link preview or bot embed. The fields after authorName are optional:
+ * caches written before full embeds kept only the first six.
+ */
 export interface DiscordMessageEmbed {
   type: string | null;
   title: string | null;
@@ -465,6 +507,18 @@ export interface DiscordMessageEmbed {
   description: string | null;
   providerName: string | null;
   authorName: string | null;
+  providerUrl?: string | null;
+  authorUrl?: string | null;
+  authorIconUrl?: string | null;
+  /** 0xRRGGBB; null when the embed sets none. */
+  color?: number | null;
+  /** Milliseconds since the epoch. */
+  timestamp?: number | null;
+  footer?: { text: string; iconUrl: string | null } | null;
+  fields?: DiscordMessageEmbedField[];
+  image?: DiscordMessageEmbedMedia | null;
+  thumbnail?: DiscordMessageEmbedMedia | null;
+  video?: DiscordMessageEmbedMedia | null;
 }
 
 export interface DiscordRole {
@@ -1054,7 +1108,33 @@ function forwardedContentLabel(content: string): string {
   return content.trim() ? `[Forwarded]: ${content}` : "[Forwarded]";
 }
 
-function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
+function positiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function mapDiscordEmbedMedia(media: DiscordEmbedMediaResponse | null | undefined): DiscordMessageEmbedMedia | null {
+  const url = nonEmptyString(media?.url) ?? nonEmptyString(media?.proxy_url);
+  if (!media || !url) return null;
+  const durationSecs = positiveNumber(media.duration_secs) ?? positiveNumber(media.duration);
+  return {
+    url,
+    proxyUrl: nonEmptyString(media.proxy_url),
+    width: positiveNumber(media.width),
+    height: positiveNumber(media.height),
+    ...(durationSecs ? { durationSecs } : {}),
+  };
+}
+
+export function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
+  const timestamp = embed.timestamp ? Date.parse(embed.timestamp) : NaN;
+  const footerText = nonEmptyString(embed.footer?.text);
+  const fields = (embed.fields ?? [])
+    .filter((field) => nonEmptyString(field?.name) || nonEmptyString(field?.value))
+    .map((field) => ({ name: field.name ?? "", value: field.value ?? "", inline: Boolean(field.inline) }));
   return {
     type: embed.type ?? null,
     title: embed.title ?? null,
@@ -1062,7 +1142,25 @@ function mapDiscordEmbed(embed: DiscordEmbedResponse): DiscordMessageEmbed {
     description: embed.description ?? null,
     providerName: embed.provider?.name ?? null,
     authorName: embed.author?.name ?? null,
+    providerUrl: nonEmptyString(embed.provider?.url),
+    authorUrl: nonEmptyString(embed.author?.url),
+    authorIconUrl: nonEmptyString(embed.author?.proxy_icon_url) ?? nonEmptyString(embed.author?.icon_url),
+    color: typeof embed.color === "number" && Number.isInteger(embed.color) && embed.color >= 0 ? embed.color & 0xffffff : null,
+    timestamp: Number.isFinite(timestamp) ? timestamp : null,
+    footer: footerText
+      ? { text: footerText, iconUrl: nonEmptyString(embed.footer?.proxy_icon_url) ?? nonEmptyString(embed.footer?.icon_url) }
+      : null,
+    fields,
+    image: mapDiscordEmbedMedia(embed.image),
+    thumbnail: mapDiscordEmbedMedia(embed.thumbnail),
+    video: mapDiscordEmbedMedia(embed.video),
   };
+}
+
+/** Embeds as a message shows them: none once its previews are suppressed. */
+function mapMessageEmbeds(embeds: DiscordEmbedResponse[] | undefined, flags: number | null | undefined): DiscordMessageEmbed[] | undefined {
+  if (typeof flags === "number" && (flags & MESSAGE_FLAG_SUPPRESS_EMBEDS) !== 0) return [];
+  return embeds?.map(mapDiscordEmbed);
 }
 
 function mapDiscordAttachment(attachment: DiscordAttachmentResponse): DiscordMessageAttachment {
@@ -1090,7 +1188,7 @@ function mapForwardedMessage(message: Partial<DiscordMessageResponse>): DiscordF
   const snapshot = firstMessageSnapshot(message);
   if (!snapshot) return undefined;
 
-  const embeds = snapshot.embeds?.map(mapDiscordEmbed) ?? [];
+  const embeds = mapMessageEmbeds(snapshot.embeds, snapshot.flags) ?? [];
   return {
     content: snapshot.content ?? "",
     originMessageId: message.message_reference?.message_id ?? null,
@@ -1243,7 +1341,7 @@ export function mapReplyPreview(message: DiscordMessageResponse): DiscordMessage
       summary: summarizeReplyPreview(
         forwarded ? forwardedContentLabel(forwarded.content) : message.referenced_message.content,
         forwarded?.attachments ?? message.referenced_message.attachments ?? [],
-        forwarded?.embeds ?? message.referenced_message.embeds ?? [],
+        forwarded?.embeds ?? mapMessageEmbeds(message.referenced_message.embeds, message.referenced_message.flags) ?? [],
         forwarded?.stickerNames ?? (message.referenced_message.sticker_items ?? []).map((sticker) => sticker.name),
       ),
       ...(forwarded
@@ -1744,6 +1842,9 @@ function mapMentionedUser(mention: DiscordMessageMentionResponse): DiscordGuildM
 export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> & { id: string; channel_id: string }): DiscordMessagePatch {
   const hasReplyFields = message.referenced_message !== undefined || message.message_reference !== undefined;
   const forwarded = mapForwardedMessage(message);
+  // Suppressing previews (flag 4) arrives as an update with the flag set; an
+  // unfurl arrives as one with the new embeds.
+  const embeds = mapMessageEmbeds(message.embeds, message.flags);
   return {
     id: message.id,
     channelId: message.channel_id,
@@ -1803,8 +1904,8 @@ export function mapDiscordMessagePatch(message: Partial<DiscordMessageResponse> 
     attachments: message.attachments?.map(mapDiscordAttachment),
     stickerNames: message.sticker_items?.map((sticker) => sticker.name),
     stickers: message.sticker_items?.map(mapDiscordSticker),
-    embedsCount: message.embeds?.length,
-    embeds: message.embeds?.map(mapDiscordEmbed),
+    embedsCount: embeds?.length,
+    embeds,
     forwarded,
     threadId: message.type === MESSAGE_TYPE_THREAD_CREATED
       ? message.message_reference?.channel_id ?? null

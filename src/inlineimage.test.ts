@@ -15,6 +15,7 @@ import {
   prepareInlineImage,
   prepareInlineImageBytes,
   stickerImageAttachment,
+  inlineImagesDrawable,
   shouldLoadInlineImage,
   visibleInlineImageSources,
 } from "./inlineimage";
@@ -59,14 +60,24 @@ describe("inline chat images", () => {
   test("retries waiting previews only after connection, including explicit requests in hide mode", () => {
     const waiting = { phase: "waiting" as const, attachmentId: "image", filename: "image.jpg", sourceUrl: "", requestId: 1 };
     for (const autoShow of [true, false]) {
-      expect(shouldLoadInlineImage(waiting, "", autoShow, false)).toBe(false);
-      expect(shouldLoadInlineImage(waiting, "", autoShow, true)).toBe(true);
-      expect(shouldLoadInlineImage({ ...waiting, phase: "loading" }, "", autoShow, true)).toBe(false);
-      expect(shouldLoadInlineImage({ ...waiting, phase: "error", error: "bad image" }, "", autoShow, true)).toBe(false);
+      expect(shouldLoadInlineImage(waiting, "", autoShow, false, true)).toBe(false);
+      expect(shouldLoadInlineImage(waiting, "", autoShow, true, true)).toBe(true);
+      expect(shouldLoadInlineImage({ ...waiting, phase: "loading" }, "", autoShow, true, true)).toBe(false);
+      expect(shouldLoadInlineImage({ ...waiting, phase: "error", error: "bad image" }, "", autoShow, true, true)).toBe(false);
     }
     // Cancelling a manually requested preview must not restart it in hide mode.
-    expect(shouldLoadInlineImage(undefined, "", false, true)).toBe(false);
-    expect(shouldLoadInlineImage(undefined, "", true, false)).toBe(true); // May already be cached.
+    expect(shouldLoadInlineImage(undefined, "", false, true, true)).toBe(false);
+    expect(shouldLoadInlineImage(undefined, "", true, false, true)).toBe(true); // May already be cached.
+  });
+
+  test("nothing loads for display until the terminal confirms Kitty graphics", () => {
+    const waiting = { phase: "waiting" as const, attachmentId: "image", filename: "image.jpg", sourceUrl: "", requestId: 1 };
+    for (const graphics of [false, null]) {
+      expect(inlineImagesDrawable(graphics)).toBe(false);
+      expect(shouldLoadInlineImage(undefined, "", true, true, inlineImagesDrawable(graphics))).toBe(false);
+      expect(shouldLoadInlineImage(waiting, "", true, true, inlineImagesDrawable(graphics))).toBe(false);
+    }
+    expect(inlineImagesDrawable(true)).toBe(true);
   });
 
   test("recognizes image MIME types and filename fallbacks", () => {

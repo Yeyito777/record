@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 
 import type { DiscordMessage, DiscordMessageAttachment, DiscordMessageSticker } from "./discord";
+import { embedImageSources } from "./embeds";
 import { firstAnimatedWebpFrame } from "./webp";
 import { trackChildProcess } from "./childprocesses";
 
@@ -62,13 +63,25 @@ export interface InlineChatImageReady extends InlineChatImageBase {
 
 export type InlineChatImageState = InlineChatImageLoading | InlineChatImageWaiting | InlineChatImageError | InlineChatImageReady;
 
+/**
+ * Whether chat images can be drawn in the chat: the terminal answered the
+ * Kitty graphics query. Until it does, and on terminals without it, images
+ * keep their name rows (Enter opens them with the configured opener) instead
+ * of reserving blank rows nothing is drawn in.
+ */
+export function inlineImagesDrawable(graphicsSupported: boolean | null | undefined): boolean {
+  return graphicsSupported === true;
+}
+
 /** Resume requested previews even in hide mode, without retrying real errors. */
 export function shouldLoadInlineImage(
   existing: InlineChatImageState | undefined,
   sourceUrl: string,
   autoShow: boolean,
   providerConnected: boolean,
+  drawable: boolean,
 ): boolean {
+  if (!drawable) return false;
   if (existing?.sourceUrl === sourceUrl) return existing.phase === "waiting" && providerConnected;
   return autoShow;
 }
@@ -138,7 +151,7 @@ export function stickerImageAttachment(
 }
 
 export function inlineImageSourcesForMessage(
-  message: Pick<DiscordMessage, "id" | "attachments" | "stickers" | "forwarded">,
+  message: Pick<DiscordMessage, "id" | "attachments" | "stickers" | "forwarded" | "embeds">,
 ): DiscordMessageAttachment[] {
   const stickers = [
     ...(message.stickers ?? []),
@@ -149,10 +162,12 @@ export function inlineImageSourcesForMessage(
     ...message.attachments,
     ...(message.forwarded?.attachments ?? []),
     ...stickers,
+    // Embed pictures (link previews, bot embeds), drawn inside their embed.
+    ...embedImageSources(message),
   ];
 }
 
-type InlineImageMessage = Pick<DiscordMessage, "id" | "attachments" | "stickers" | "forwarded">;
+type InlineImageMessage = Pick<DiscordMessage, "id" | "attachments" | "stickers" | "forwarded" | "embeds">;
 
 /** id -> index per messages array; validated on use, rebuilt when stale. */
 const messageIndexes = new WeakMap<readonly InlineImageMessage[], Map<string, number>>();
