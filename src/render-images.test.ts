@@ -122,7 +122,7 @@ function frame(state: AppState): string {
   return out;
 }
 
-function imageChatState(options: { smooth?: boolean; sidebar?: boolean; members?: boolean; messages?: number; scrollRegions?: boolean; emoji?: boolean } = {}): AppState {
+function imageChatState(options: { smooth?: boolean; sidebar?: boolean; members?: boolean; messages?: number; scrollRegions?: boolean; emoji?: boolean; clips?: boolean } = {}): AppState {
   const state = createInitialState(null, "/tmp/record-config.json", {}, { scrollRegions: options.scrollRegions ?? true });
   state.cols = 110;
   state.rows = 34;
@@ -135,7 +135,12 @@ function imageChatState(options: { smooth?: boolean; sidebar?: boolean; members?
   const messages = Array.from({ length: options.messages ?? 90 }, (_, i) => message(i));
   setTimelineMessages(state.timeline, "channel-1", messages);
   showImages(state, messages);
-  if (options.smooth !== false) setSmoothScroller(state, new SmoothScroller(100, () => now, 30));
+  if (options.smooth !== false) {
+    const smooth = new SmoothScroller(100, () => now, 30);
+    // st's image clip regions (mode 2033): the default path on the owner's st.
+    if (options.clips) smooth.useImageClip(true);
+    setSmoothScroller(state, smooth);
+  }
   screen = new VtScreen(state.rows, state.cols);
   return state;
 }
@@ -157,8 +162,19 @@ function reference(state: AppState): VtScreen {
   // it remembers placing on the real screen.
   const emoji = customEmojiImages as unknown as Record<string, unknown>;
   const saved = { tracked: emoji.tracked, lastVisibleImageIds: emoji.lastVisibleImageIds, mayHavePlacements: emoji.mayHavePlacements };
+  // ...and starts from nothing placed, like a fresh terminal.
+  Object.assign(emoji, { tracked: null, lastVisibleImageIds: new Set(), mayHavePlacements: false });
   try {
     const copy = structuredClone(state);
+    // Already laid out: rows and the cursor stay where they are (a re-map
+    // through repeated line anchors could move the selection).
+    copy.historyLineAnchors = [];
+    // A fresh start in the same terminal mode: with image clip regions too.
+    if (smoothScrollerFor(state)?.imageClipSupported) {
+      const smooth = new SmoothScroller(100, () => now, 30);
+      smooth.useImageClip(true);
+      setSmoothScroller(copy, smooth);
+    }
     const fresh = new VtScreen(copy.rows, copy.cols);
     fresh.write(capture(copy));
     return fresh;
@@ -303,6 +319,35 @@ describe("cells under images", () => {
       state.editor.mode = "normal";
       rest(state);
     }
+  });
+});
+
+describe("the VT model's image clip regions (st mode 2033)", () => {
+  test("an image clips to its region; only cells it can draw over hide it; a new clip starts afresh", () => {
+    const vt = new VtScreen(12, 20);
+    // Clip region rows 2-6, columns 1-10 (1-based); an 8-row image anchored on row 4 reaches row 11.
+    vt.write("\x1b]2032;k;2,1,6,10\x1b\\\x1b[4;2H\x1b_Ga=p,i=1073741825,p=7,c=4,r=8,C=1,z=1,q=1\x1b\\");
+    const hidden = () => vt.occlusions().map((placement) => placement.cell.row);
+    // Rows below the region (a prompt) change: nothing it draws there, nothing hidden.
+    vt.write("\x1b[9;1Hprompt text\x1b[11;3Hmore");
+    expect(hidden()).toEqual([]);
+    // A cell inside the region changes: hidden there.
+    vt.write("\x1b[5;3Hx");
+    expect(hidden()).toEqual([4]);
+    // The clip grows: the placement remembers its cells afresh, the x included.
+    vt.write("\x1b]2032;k;2,1,9,10\x1b\\");
+    expect(hidden()).toEqual([]);
+    // Outside every region (a different anchor column) an image is not clipped.
+    vt.write("\x1b[4;15H\x1b_Ga=p,i=1073741826,p=8,c=2,r=4,C=1,z=1,q=1\x1b\\");
+    vt.write("\x1b[7;16Hy");
+    expect(vt.occlusions().map((placement) => placement.imageId)).toEqual([1073741826]);
+    // Mode 2032 off clears the regions (st: CSI ? 2032 l): the image draws
+    // whole again, remembering its cells afresh, so a change below the old
+    // region now hides it.
+    vt.write("\x1b[?2032l");
+    expect(vt.occlusions().map((placement) => placement.imageId)).toEqual([1073741826]);
+    vt.write("\x1b[10;3Hw");
+    expect(vt.occlusions().map((placement) => placement.imageId)).toEqual([1073741825, 1073741826]);
   });
 });
 
@@ -465,6 +510,8 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
     ["no smooth scrolling, sidebar", { smooth: false, sidebar: true }],
     ["scrollRegions off", { smooth: false, sidebar: false, scrollRegions: false }],
     ["custom emoji, smooth scrolling, sidebar", { smooth: true, sidebar: true, emoji: true }],
+    ["image clip regions, sidebar", { smooth: true, sidebar: true, clips: true }],
+    ["image clip regions, custom emoji, full width", { smooth: true, sidebar: false, clips: true, emoji: true }],
     ["custom emoji, no smooth scrolling, full width", { smooth: false, sidebar: false, emoji: true }],
   ] as const) {
     test(`at rest every image is placed and shown as a fresh start would (${label})`, async () => {
@@ -483,6 +530,8 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
       let next = 90;
       let older = 0;
       let emojiSeen = 0;
+      /** Images resting past the pane's bottom (st clips them there). */
+      let clippedSeen = 0;
       const log: string[] = [];
       for (let step = 0; step < Number(process.env.IMG_FUZZ_STEPS ?? 220); step++) {
         const roll = random();
@@ -615,6 +664,9 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
         if (random() < 0.35 && !state.autocomplete && !state.imageModal) {
           rest(state);
           emojiSeen += screen.placements().filter((placement) => isEmojiImage(placement.imageId)).length;
+          const paneBottom = state.chatMouseLayout ? state.chatMouseLayout.bodyTop + state.chatMouseLayout.bodyRows - 1 : 0;
+          clippedSeen += screen.placements().filter((placement) => isChatImage(placement.imageId)
+            && placement.row + Number(/(?:^|,)r=(\d+)/.exec(placement.controls)?.[1] ?? 1) > paneBottom).length;
           expectImagesAtRest(state, `${label}: step ${step} after ${log.slice(-6).join(", ")}`);
         }
       }
@@ -623,6 +675,7 @@ describe("chat images under random scrolling, arrivals, overlays and layout chan
       rest(state);
       expectImagesAtRest(state, `${label}: end after ${log.slice(-6).join(", ")}`);
       if (withEmoji) expect(emojiSeen).toBeGreaterThan(0);
+      if ("clips" in options) expect(clippedSeen).toBeGreaterThan(0);
       withEmoji = false;
       customEmojiImages.setEnabled(false);
     });
