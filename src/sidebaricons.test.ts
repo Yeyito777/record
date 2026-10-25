@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, mapDirectMessageChannel, type DiscordChannel } from "./discord";
 import { invalidateFrame } from "./frame";
 import { openImageModalState } from "./imagemodal";
 import type { InlineChatImageReady } from "./inlineimage";
@@ -12,11 +13,14 @@ import {
   createSidebarState,
   moveSidebarSelection,
   renderSidebar,
+  setSidebarCachedChannels,
   setSidebarGuilds,
   SIDEBAR_WIDTH,
 } from "./sidebar";
 import {
+  discordGroupIconSource,
   discordGuildIconSource,
+  discordUserAvatarSource,
   SidebarIconStore,
   sidebarIconInitials,
   sidebarIconTerminalOwner,
@@ -94,6 +98,15 @@ describe("sidebar icon sources", () => {
     // Ids and hashes become file names; anything unexpected is not fetched.
     expect(discordGuildIconSource({ id: "../x", icon: "abc" })).toBeNull();
     expect(discordGuildIconSource({ id: "1", icon: "a/b" })).toBeNull();
+  });
+
+  test("DM avatars and group DM icons come from the same CDN", () => {
+    expect(discordUserAvatarSource({ id: "7", avatar: "abc" })?.url).toBe("https://cdn.discordapp.com/avatars/7/abc.png?size=64");
+    expect(discordGroupIconSource({ id: "8", icon: "def" })?.url).toBe("https://cdn.discordapp.com/channel-icons/8/def.png?size=64");
+    expect(discordUserAvatarSource({ id: "7", avatar: null })).toBeNull();
+    const group = mapDirectMessageChannel({ id: "8", parent_id: null, type: 3, icon: "def", recipients: [] });
+    expect(group.icon).toBe("def");
+    expect(mapDirectMessageChannel({ id: "9", parent_id: null, type: 1 }).icon).toBeUndefined();
   });
 
   test("initials fill two cells", () => {
@@ -207,6 +220,10 @@ describe("SidebarIconStore", () => {
   });
 });
 
+function padTo(text: string): string {
+  return `${text}${" ".repeat(SIDEBAR_WIDTH - 1 - termWidth(text))}│`;
+}
+
 describe("sidebar rows with icons", () => {
   function sidebarWith(guilds: ReturnType<typeof guild>[]) {
     const sidebar = createSidebarState();
@@ -237,6 +254,31 @@ describe("sidebar rows with icons", () => {
     expect(frame.placements).toEqual([{ image: ready, row: 3, col: 5, highlighted: true }]);
     // Beta has no picture; Alpha and Gamma do.
     expect(frame.visible.map((iconSource) => iconSource.key)).toEqual([source("1").key, source("3").key]);
+  });
+
+  test("direct messages show avatars in place of their marker; roots get fixed initials", () => {
+    const sidebar = sidebarWith([guild("1", "Alpha")]);
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }, guild("1", "Alpha")]);
+    const dm = (id: string, type: number, name: string, extra: Partial<DiscordChannel> = {}): DiscordChannel => ({
+      id, guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name, topic: null, position: 0, type, nsfw: false, ...extra,
+    });
+    setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, [
+      dm("11", 1, "alice", { recipients: [{ id: "u1", username: "alice", displayName: "alice", bot: false, avatar: "ava" }], lastMessageId: "30" }),
+      dm("12", 3, "the group", { icon: "grp", lastMessageId: "20" }),
+      dm("13", 1, "bob", { recipients: [{ id: "u2", username: "bob", displayName: "bob", bot: false }], lastMessageId: "10" }),
+    ]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    const plain = renderSidebar(sidebar, [], 12).map(stripAnsi);
+    expect(plain.some((row) => row.startsWith("  # alice"))).toBe(true);
+
+    const frame = createSidebarIconFrame(() => null);
+    const rows = renderSidebar(sidebar, [], 12, false, null, 0, new Set(), "⋯", new Map(), new Map(), {}, frame).map(stripAnsi);
+    expect(rows).toContain(padTo("▸ ▾ DM Direct Messages"));
+    // Avatars line up under the root's tile, names under its name.
+    expect(rows.some((row) => row.startsWith("    Al alice"))).toBe(true);
+    expect(rows.some((row) => row.startsWith("    TG the group"))).toBe(true);
+    expect(rows.some((row) => row.startsWith("    Bo bob"))).toBe(true);
+    expect(frame.visible.map((iconSource) => iconSource.key).sort()).toEqual(["group-12-grp", "guild-1-hash1", "user-u1-ava"]);
   });
 
   test("prefetches about a screen around the viewport, nearest first", () => {

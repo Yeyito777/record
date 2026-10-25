@@ -12,7 +12,14 @@ import type { KeyEvent } from "./input";
 import { loadingLabel } from "./loading";
 import type { InlineChatImageReady } from "./inlineimage";
 import type { ServerActionModalState } from "./serveractions";
-import { discordGuildIconSource, SIDEBAR_ICON_COLUMNS, sidebarIconInitials, type SidebarIconSource } from "./sidebaricons";
+import {
+  discordGroupIconSource,
+  discordGuildIconSource,
+  discordUserAvatarSource,
+  SIDEBAR_ICON_COLUMNS,
+  sidebarIconInitials,
+  type SidebarIconSource,
+} from "./sidebaricons";
 import { getViewportByWidth, padRight, termWidth, truncate } from "./textwidth";
 import { theme } from "./theme";
 import {
@@ -2745,11 +2752,45 @@ export function createSidebarIconFrame(lookup: SidebarIconFrame["lookup"]): Side
   return { lookup, placements: [], visible: [], nearby: [] };
 }
 
+interface SidebarEntryIcon {
+  source: SidebarIconSource | null;
+  /** Tile text when there is no picture; defaults to the label's initials. */
+  initials?: string;
+  /** Conversation rows show the picture after their indent instead of a `#` marker. */
+  replacesMarker?: boolean;
+}
+
+const FIXED_ROOT_INITIALS: Record<string, string> = {
+  [DIRECT_MESSAGES_GUILD_ID]: "DM",
+  [WHATSAPP_GUILD_ID]: "WA",
+  [INSTAGRAM_GUILD_ID]: "IG",
+};
+
+const DIRECT_MESSAGE_CHANNEL_TYPE = 1;
+const GROUP_DIRECT_MESSAGE_CHANNEL_TYPE = 3;
+
+interface SidebarIconLookup {
+  guildsById: ReadonlyMap<string, DiscordGuild>;
+  directMessage: (channelId: string) => DiscordChannel | undefined;
+}
+
 /** Whether a row draws an icon box, and the picture behind it if it has one. */
-function entryIcon(entry: SidebarEntry, guildsById: ReadonlyMap<string, DiscordGuild>): { source: SidebarIconSource | null } | null {
+function entryIcon(entry: SidebarEntry, lookup: SidebarIconLookup): SidebarEntryIcon | null {
   if (entry.kind === "guild") {
-    const guild = guildsById.get(entry.id);
-    return { source: guild ? discordGuildIconSource(guild) : null };
+    const guild = lookup.guildsById.get(entry.id);
+    return { source: guild ? discordGuildIconSource(guild) : null, initials: FIXED_ROOT_INITIALS[entry.id] };
+  }
+  if (entry.kind === "channel" && entry.guildId === DIRECT_MESSAGES_GUILD_ID) {
+    const channel = lookup.directMessage(entry.id);
+    if (!channel) return null;
+    const initials = sidebarIconInitials(channel.name);
+    if (channel.type === DIRECT_MESSAGE_CHANNEL_TYPE) {
+      const recipient = channel.recipients?.[0];
+      return { source: recipient ? discordUserAvatarSource(recipient) : null, initials, replacesMarker: true };
+    }
+    if (channel.type === GROUP_DIRECT_MESSAGE_CHANNEL_TYPE) {
+      return { source: discordGroupIconSource(channel), initials, replacesMarker: true };
+    }
   }
   return null;
 }
@@ -2812,25 +2853,37 @@ export function renderSidebar(
       + theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   } else {
-    const guildsById = icons ? new Map(sidebar.guilds.map((guild) => [guild.id, guild])) : null;
+    let directMessagesById: Map<string, DiscordChannel> | null = null;
+    const iconLookup: SidebarIconLookup | null = icons
+      ? {
+        guildsById: new Map(sidebar.guilds.map((guild) => [guild.id, guild])),
+        // Built only when Direct Messages is expanded on screen.
+        directMessage: (channelId) => {
+          directMessagesById ??= new Map(sidebarChannelsForGuild(sidebar, channels, DIRECT_MESSAGES_GUILD_ID)
+            .map((channel) => [channel.id, channel]));
+          return directMessagesById.get(channelId);
+        },
+      }
+      : null;
     for (let i = 0; i < listRows; i++) {
       const entry = entries[scrollOffset + i];
       if (!entry) break;
-      const icon = guildsById ? entryIcon(entry, guildsById) : null;
+      const icon = iconLookup ? entryIcon(entry, iconLookup) : null;
       if (icons && icon?.source) icons.visible.push(icon.source);
       rows.push(renderEntryRow(entry, visualKeys, innerWidth, borderBg, borderFg, activeChannelId, icon && icons ? {
+        ...icon,
         row: rows.length + 1,
         image: icon.source ? icons.lookup(icon.source) : null,
         placements: icons.placements,
       } : null));
     }
-    if (icons && guildsById) {
+    if (icons && iconLookup) {
       // Prefetch about a screen each way, nearest rows first.
       const end = scrollOffset + listRows;
       for (let distance = 0; distance < Math.max(1, listRows); distance++) {
         for (const index of [end + distance, scrollOffset - 1 - distance]) {
           const entry = entries[index];
-          const source = entry ? entryIcon(entry, guildsById)?.source : null;
+          const source = entry ? entryIcon(entry, iconLookup)?.source : null;
           if (source) icons.nearby.push(source);
         }
       }
@@ -2879,7 +2932,7 @@ function renderEntryRow(
   borderBg: string,
   borderFg: string,
   activeChannelId: string | null,
-  icon: { row: number; image: InlineChatImageReady | null; placements: SidebarIconPlacement[] } | null = null,
+  icon: SidebarEntryIcon & { row: number; image: InlineChatImageReady | null; placements: SidebarIconPlacement[] } | null = null,
 ): string {
   if (entry.kind === "delimiter") {
     const indent = "  ".repeat(entry.depth);
@@ -2916,7 +2969,10 @@ function renderEntryRow(
         : entry.kind === "voice-member"
           ? "• "
         : "";
-  const basePrefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
+  // A conversation's picture takes its marker's place, lined up under the
+  // parent's icon so the names line up too.
+  const rowMarker = icon?.replacesMarker ? " ".repeat(termWidth(marker)) : marker;
+  const basePrefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${rowMarker}` : `${selectPrefix}${rowMarker}`;
   // The icon box sits between the marker and the name. A ready picture leaves
   // blank cells for the Kitty placement; anything else shows initials there.
   let prefix = basePrefix;
@@ -2929,7 +2985,7 @@ function renderEntryRow(
       prefix += `${" ".repeat(SIDEBAR_ICON_COLUMNS)} `;
     } else {
       const tileFg = entry.muted ? theme.muted : entry.selected || isActive ? theme.text : theme.command;
-      prefix += `${theme.userBg}${tileFg}${sidebarIconInitials(entry.label)}${bg}${fg} `;
+      prefix += `${theme.userBg}${tileFg}${icon.initials ?? sidebarIconInitials(entry.label)}${bg}${fg} `;
     }
   }
 
