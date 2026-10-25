@@ -9,6 +9,7 @@ import { MACRO_LIST, getMacroArgs } from "./macros";
 import { promptMentionSpans } from "./mentions";
 import { getServerCommandPathLength } from "./servercommands";
 import type { AppState } from "./state";
+import { findSlashShorthand } from "./slashsearch";
 import { theme } from "./theme";
 
 interface Span {
@@ -83,7 +84,15 @@ export interface PromptHighlightRegion {
 export function promptHighlightRegions(buffer: string, state: AppState): PromptHighlightRegion[] {
   const regions: Array<PromptHighlightRegion & { priority: number }> = [];
   if (buffer.includes("/")) {
-    for (const span of findCommandSpans(buffer, state)) regions.push({ ...span, color: theme.command, priority: 2 });
+    const spans = findCommandSpans(buffer, state);
+    // A shorthand Enter would resolve ("/stat idle") is sendable, so it highlights too.
+    const shorthand = findSlashShorthand(state, buffer);
+    if (shorthand) {
+      const span = spans.find((candidate) => candidate.start === shorthand.start);
+      if (span) span.end = Math.max(span.end, shorthand.end);
+      else spans.push({ start: shorthand.start, end: shorthand.end });
+    }
+    for (const span of spans) regions.push({ ...span, color: theme.command, priority: 2 });
   }
   if (buffer.includes("@")) {
     for (const span of promptMentionSpans(state, buffer)) regions.push({ ...span, priority: 1 });

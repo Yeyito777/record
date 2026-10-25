@@ -36,6 +36,7 @@ import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
 import { imageModalLayout, renderImageModal } from "./imagemodal";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
+import type { CompletionItem } from "./commands";
 import { highlightPromptViewport, promptHighlightRegions, type PromptHighlightRegion } from "./prompthighlight";
 import {
   SIDEBAR_WIDTH,
@@ -101,6 +102,27 @@ function renderImageIndicator(state: AppState, width: number): string {
   return `${theme.accent}│${theme.reset} ${theme.dim}${padded}${theme.reset} ${theme.accent}│${theme.reset}`;
 }
 
+/** Pad an autocomplete name, accenting the matched characters that survive truncation. */
+export function renderAutocompleteName(item: CompletionItem, displayName: string, width: number, nameColor: string): string {
+  const padded = padRight(displayName, width);
+  const ranges = item.matchRanges;
+  // Ranges index the raw name; skip them for custom emoji markers.
+  if (!ranges?.length || displayName !== item.name) return padded;
+
+  let visible = 0;
+  while (visible < displayName.length && padded[visible] === displayName[visible]) visible++;
+  let result = "";
+  let pos = 0;
+  for (const { start, end } of ranges) {
+    const from = Math.max(start, pos);
+    const to = Math.min(end, visible);
+    if (from >= to) continue;
+    result += padded.slice(pos, from) + theme.accent + theme.bold + padded.slice(from, to) + theme.boldOff + nameColor;
+    pos = to;
+  }
+  return result + padded.slice(pos);
+}
+
 function renderAutocompletePopup(
   state: AppState,
   width: number,
@@ -138,9 +160,9 @@ function renderAutocompletePopup(
     const marker = selected ? "▸ " : "  ";
     const item = matches[index];
     const displayName = item.customEmoji ? customEmojiMarker(item.customEmoji) : item.name;
-    const name = padRight(displayName, nameWidth);
-    const desc = padRight(item.desc, descWidth);
     const nameColor = item.color ?? theme.text;
+    const name = renderAutocompleteName(item, displayName, nameWidth, nameColor);
+    const desc = padRight(item.desc, descWidth);
     const line = `${bg}${theme.accent}${marker}${nameColor}${name}${theme.muted}${desc}${theme.reset}`;
     out.push(moveTo(row, mainCol) + customEmojiImages.renderLine(line, row, mainCol, customEmojiFrame));
   }

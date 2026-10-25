@@ -7,11 +7,11 @@
  */
 
 import type { AppState } from "./state";
-import { COMMAND_LIST, getCommandArgs, type CompletionItem } from "./commands";
+import type { CompletionItem } from "./commands";
 import { INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { customEmojiMarker } from "./customemoji";
 import { emojiCompletions, emojiQueryAtCursor, type CustomEmojiCandidate } from "./emojis";
-import { MACRO_LIST, getMacroArgs } from "./macros";
+import { commandCompletions, macroCompletions } from "./slashsearch";
 import { loadedMentionCandidates, mentionCandidateMatches, mentionQueryAtCursor } from "./mentions";
 import { getServerCommandArgumentCompletions, getServerCommandRootCompletions } from "./servercommands";
 import { readdirSync } from "fs";
@@ -30,47 +30,23 @@ export interface AutocompleteState {
   replaceEnd?: number;
 }
 
-function escapeRegex(text: string): string {
-  return text.replace(/[/\\^$*+?.()|[\]{}]/g, "\\$&");
-}
-
-function matchArgCompletion(raw: string, registry: Record<string, CompletionItem[]>): CompletionItem[] | null {
-  const entries = Object.entries(registry).sort((a, b) => b[0].length - a[0].length);
-  for (const [command, args] of entries) {
-    const re = new RegExp(`^${escapeRegex(command)}\\s+(.*)$`, "i");
-    const match = raw.match(re);
-    if (match) return args.filter((arg) => arg.name.toLowerCase().startsWith(match[1].toLowerCase()));
-  }
-  return null;
-}
-
 function getCommandMatches(state: AppState, input: string): CompletionItem[] {
   const raw = input.trimStart();
   if (!raw.startsWith("/")) return [];
 
-  const argMatch = matchArgCompletion(raw, getCommandArgs(state)) ?? matchArgCompletion(raw, getMacroArgs());
+  // The /@app namespace is always an app command, completed by servercommands.ts.
   const serverArgs = getServerCommandArgumentCompletions(state, raw);
-  if (serverArgs !== null) {
-    if (!raw.startsWith("/@") && argMatch) return argMatch;
-    return serverArgs;
-  }
-  if (argMatch) return argMatch;
+  if (raw.startsWith("/@")) return serverArgs ?? getServerCommandRootCompletions(state, raw);
 
-  const prefix = raw.toLowerCase();
-  const localMatches = [...COMMAND_LIST, ...MACRO_LIST]
-    .filter((command) => command.name.toLowerCase().startsWith(prefix));
-  return [...localMatches, ...getServerCommandRootCompletions(state, raw)];
+  // Record's commands and macros match anywhere in their names (slashsearch.ts);
+  // legacy "/app command" input still reaches app completions when nothing local does.
+  const local = commandCompletions(state, raw);
+  if (serverArgs !== null) return local.length > 0 ? local : serverArgs;
+  return [...local, ...getServerCommandRootCompletions(state, raw)];
 }
 
 function getMacroMatches(token: string): CompletionItem[] {
-  const raw = token.trimStart();
-  if (!raw.startsWith("/")) return [];
-
-  const argMatch = matchArgCompletion(raw, getMacroArgs());
-  if (argMatch) return argMatch;
-
-  const prefix = raw.toLowerCase();
-  return MACRO_LIST.filter((macro) => macro.name.startsWith(prefix));
+  return macroCompletions(token);
 }
 
 function isWhitespace(ch: string): boolean {
@@ -235,7 +211,7 @@ function fillAutocomplete(state: AppState, name: string): void {
     const after = state.editor.buffer.slice(state.editor.cursor);
     let fillText = name;
     const lastSpace = autocomplete.type === "macro" ? autocomplete.prefix.lastIndexOf(" ") : -1;
-    if (autocomplete.type === "macro" && lastSpace >= 0) {
+    if (autocomplete.type === "macro" && lastSpace >= 0 && !name.startsWith("/")) {
       fillText = autocomplete.prefix.slice(0, lastSpace + 1) + name;
     }
     state.editor.buffer = before + fillText + after;

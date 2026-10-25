@@ -10,6 +10,15 @@ import { INSTAGRAM_GUILD_ID } from "./chatproviders";
 import { emojiCompletions } from "./emojis";
 import { createInitialState } from "./state";
 
+/** Popup rows as name + description (slash search adds insert text and match ranges). */
+function rows(state: ReturnType<typeof createInitialState>) {
+  return state.autocomplete?.matches.map((match) => ({
+    name: match.name,
+    desc: match.desc,
+    ...(match.color ? { color: match.color } : {}),
+  }));
+}
+
 describe("autocomplete", () => {
   test("does not offer Discord custom emoji in Instagram even with Nitro", () => {
     const state = createInitialState(null, "/tmp/config.json");
@@ -34,8 +43,11 @@ describe("autocomplete", () => {
 
     updateAutocomplete(state);
 
-    expect(state.autocomplete?.matches).toEqual([
+    // Word starts rank first; "a" also appears inside two providers.
+    expect(rows(state)).toEqual([
       { name: "alice", desc: "saved login" },
+      { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
+      { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)" },
     ]);
   });
 
@@ -49,7 +61,7 @@ describe("autocomplete", () => {
 
     updateAutocomplete(state);
 
-    expect(state.autocomplete?.matches).toEqual([
+    expect(rows(state)).toEqual([
       { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
       { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)" },
       { name: "discord", desc: "Log in to Discord explicitly" },
@@ -298,7 +310,12 @@ describe("autocomplete", () => {
     updateAutocomplete(state);
 
     expect(state.autocomplete?.type).toBe("command");
-    expect(state.autocomplete?.matches).toEqual([{ name: "/kao", desc: "Kaomoji" }]);
+    // "/k" matches anywhere: the macro starts with it, so it ranks first.
+    expect(rows(state)).toEqual([
+      { name: "/kao", desc: "Kaomoji" },
+      { name: "/quickreact", desc: "Show/set the double-Space reaction emoji" },
+      { name: "/speaker", desc: "Set/show local speaker/app gain" },
+    ]);
     cycleAutocomplete(state, 1);
     expect(state.editor.buffer).toBe("/kao");
   });
@@ -311,7 +328,7 @@ describe("autocomplete", () => {
     updateAutocomplete(state);
 
     expect(state.autocomplete?.type).toBe("command");
-    expect(state.autocomplete?.matches).toEqual([{ name: "flustered", desc: "(⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)" }]);
+    expect(rows(state)).toEqual([{ name: "flustered", desc: "(⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)" }]);
     cycleAutocomplete(state, 1);
     expect(state.editor.buffer).toBe("/kao flustered");
   });
@@ -324,7 +341,7 @@ describe("autocomplete", () => {
     updateAutocomplete(state);
 
     expect(state.autocomplete?.type).toBe("macro");
-    expect(state.autocomplete?.matches).toEqual([{ name: "/kao", desc: "Kaomoji" }]);
+    expect(rows(state)).toEqual([{ name: "/kao", desc: "Kaomoji" }]);
     cycleAutocomplete(state, 1);
     expect(state.editor.buffer).toBe("hello /kao");
   });
@@ -337,7 +354,7 @@ describe("autocomplete", () => {
     updateAutocomplete(state);
 
     expect(state.autocomplete?.type).toBe("macro");
-    expect(state.autocomplete?.matches).toEqual([{ name: "happy", desc: "ヽ(o＾▽＾o)ノ" }]);
+    expect(rows(state)).toEqual([{ name: "happy", desc: "ヽ(o＾▽＾o)ノ" }, { name: "what", desc: "(・・ ) ?" }]);
     cycleAutocomplete(state, 1);
     expect(state.editor.buffer).toBe("hello /kao happy");
   });
@@ -363,7 +380,7 @@ describe("autocomplete", () => {
 
     updateAutocomplete(state);
 
-    expect(state.autocomplete?.matches).toEqual([
+    expect(rows(state)).toEqual([
       { name: "on", desc: "Show inaccessible channel rows" },
       { name: "off", desc: "Hide inaccessible channel rows" },
     ]);
@@ -412,7 +429,7 @@ describe("autocomplete", () => {
 
     expect(tryPathComplete(state)).toBe(true);
     expect(state.autocomplete?.type).toBe("path");
-    expect(state.autocomplete?.matches).toEqual([
+    expect(rows(state)).toEqual([
       { name: `${join(dir, "alpha-dir")}/`, desc: "dir" },
       { name: join(dir, "alpha-file.txt"), desc: "file" },
     ]);

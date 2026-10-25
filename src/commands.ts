@@ -24,6 +24,15 @@ export interface CompletionItem {
   insertText?: string;
   /** Custom emoji rendered lazily only when this completion row is visible. */
   customEmoji?: Pick<DiscordCustomEmoji, "id" | "name" | "animated">;
+  /** Other spellings slash search matches. */
+  aliases?: string[];
+  /** Characters of `name` the typed query matched, accented in the popup. */
+  matchRanges?: readonly { start: number; end: number }[];
+  /**
+   * Destructive or credential-bearing: Enter never expands a shorthand into
+   * this command or argument unless it was typed out in full.
+   */
+  exact?: boolean;
 }
 
 export type CommandResult =
@@ -107,14 +116,14 @@ const STATUS_ARGS: CompletionItem[] = [
 ];
 
 const LOGIN_PROVIDER_ARGS: CompletionItem[] = [
-  { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
-  { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)" },
-  { name: "discord", desc: "Log in to Discord explicitly" },
+  { name: "whatsapp", desc: "Link WhatsApp with a QR code", exact: true },
+  { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)", exact: true },
+  { name: "discord", desc: "Log in to Discord explicitly", exact: true },
 ];
 
 const LOGOUT_PROVIDER_ARGS: CompletionItem[] = [
-  { name: "whatsapp", desc: "Disconnect the saved WhatsApp account" },
-  { name: "instagram", desc: "Disconnect the saved Instagram account" },
+  { name: "whatsapp", desc: "Disconnect the saved WhatsApp account", exact: true },
+  { name: "instagram", desc: "Disconnect the saved Instagram account", exact: true },
 ];
 
 function parseOnOff(value: string | undefined): boolean | null {
@@ -614,9 +623,16 @@ export function tryCommand(text: string, state: AppState): CommandResult | null 
   return command.handler(text, state);
 }
 
+/** Commands Enter never reaches through a shorthand: they quit, hang up, or touch logins. */
+const EXACT_COMMANDS = new Set(["/quit", "/login", "/logout", "/hangup"]);
+
 export const COMMAND_LIST: CompletionItem[] = commands
   .filter((command) => command.name !== "/exit")
-  .map((command) => ({ name: command.name, desc: command.description }));
+  .map((command) => ({
+    name: command.name,
+    desc: command.description,
+    ...(EXACT_COMMANDS.has(command.name) ? { exact: true } : {}),
+  }));
 
 export function getCommandArgs(state: AppState): Record<string, CompletionItem[]> {
   const registry: Record<string, CompletionItem[]> = {};
@@ -631,7 +647,7 @@ export function getCommandArgs(state: AppState): Record<string, CompletionItem[]
 
   const savedLoginArgs = Object.keys(state.auth.savedLogins)
     .sort((a, b) => a.localeCompare(b))
-    .map((name) => ({ name, desc: "saved login" }));
+    .map((name) => ({ name, desc: "saved login", exact: true }));
   registry["/login"] = [
     ...LOGIN_PROVIDER_ARGS,
     ...savedLoginArgs.filter((item) => !LOGIN_PROVIDER_ARGS.some((provider) => provider.name === item.name.toLowerCase())),
