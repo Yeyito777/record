@@ -10,7 +10,7 @@ import { render } from "./render";
 import { setMemberListMembers } from "./memberlist";
 import { setSidebarGuilds } from "./sidebar";
 import { SmoothScroller, markRelayout, markScrollIntent, setSmoothScroller, smoothScrollerFor } from "./smoothscroll";
-import { createInitialState, focusHistory, type AppState } from "./state";
+import { createInitialState, cycleFocus, focusHistory, type AppState } from "./state";
 import {
   appendTimelineMessage,
   prependTimelineMessages,
@@ -307,6 +307,52 @@ describe("cells under images", () => {
 });
 
 describe("narrow panes", () => {
+  test("a window too narrow for both side panels hides the member list, then the sidebar, and brings them back when it widens", () => {
+    const state = imageChatState({ smooth: false, sidebar: true, members: true });
+    // Emoji and paperclip rows: what froze Record at a one-column pane.
+    setTimelineMessages(state.timeline, "channel-1", [
+      ...state.timeline.messages,
+      { ...message(500, { image: false }), content: "😀 wide 📎 rows 🎉" },
+    ]);
+    for (const cols of [30, 31, 32, 33, 40, 48, 49, 56, 57, 58, 60, 75, 76, 77, 80, 120, 31]) {
+      state.cols = cols;
+      state.rows = 20;
+      invalidateFrame(state);
+      screen = new VtScreen(state.rows, state.cols);
+      frame(state);
+      const layout = state.chatMouseLayout!;
+      const pane = layout.lastCol - layout.firstCol + 1;
+      const sidebarShown = screen.text()[0]!.trimStart().startsWith("Servers");
+      const membersShown = layout.lastCol < cols;
+      expect({ cols, toggles: [state.sidebar.open, state.memberList.open] }).toEqual({ cols, toggles: [true, true] });
+      // The panels never overlap the pane or each other; the pane stays usable.
+      expect({ cols, firstCol: layout.firstCol }).toEqual({ cols, firstCol: sidebarShown ? 29 : 1 });
+      expect({ cols, lastCol: layout.lastCol }).toEqual({ cols, lastCol: membersShown ? cols - 28 : cols });
+      expect({ cols, usable: pane >= Math.min(20, cols) }).toEqual({ cols, usable: true });
+      // Panels go as late as possible: the member list first, then the sidebar.
+      expect({ cols, sidebarShown, membersShown }).toEqual({ cols, sidebarShown: cols >= 48, membersShown: cols >= 76 });
+    }
+  });
+
+  test("a panel the window is too narrow for gives up focus, and focus cycling skips it", () => {
+    const state = imageChatState({ smooth: false, sidebar: true, members: true });
+    state.cols = 120;
+    state.panelFocus = "memberlist";
+    frame(state);
+    expect(state.panelFocus).toBe("memberlist");
+    state.cols = 60;
+    invalidateFrame(state);
+    frame(state);
+    expect(state.panelFocus as string).toBe("chat");
+    const visited = new Set<string>();
+    for (let i = 0; i < 4; i++) {
+      cycleFocus(state);
+      visited.add(state.panelFocus);
+    }
+    expect([...visited].sort()).toEqual(["chat", "sidebar"]);
+    expect(state.memberList.open).toBe(true);
+  });
+
   test("an image is never placed outside the message pane's columns", () => {
     for (const cols of [30, 31, 32, 33, 40, 60]) {
       for (const [sidebar, members] of [[true, true], [true, false], [false, true]] as const) {

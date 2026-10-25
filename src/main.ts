@@ -3,6 +3,7 @@
  */
 
 // Must stay the first import: demo mode redirects config paths and the network.
+import { visiblePanels } from "./panels";
 import "./demo/bootstrap";
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { AsyncWorkQueue } from "./asyncwork";
@@ -329,7 +330,7 @@ function hasActiveLoadingIndicator(): boolean {
 function typingIndicatorVisible(): boolean {
   const byChannelId = state.typing.byChannelId;
   if (Object.keys(byChannelId).length === 0) return false;
-  if (state.sidebar.open) return true;
+  if (visiblePanels(state).sidebar) return true;
   const channelId = state.timeline.channelId ?? state.channelList.activeChannelId;
   return Boolean(channelId && byChannelId[channelId]?.length);
 }
@@ -803,15 +804,17 @@ function tokenOrWarn(): string | null {
 }
 
 function timelineContentWidth(): number {
-  const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
-  const memberListW = state.memberList.open ? MEMBER_LIST_WIDTH : 0;
+  const panels = visiblePanels(state);
+  const sidebarW = panels.sidebar ? SIDEBAR_WIDTH : 0;
+  const memberListW = panels.memberList ? MEMBER_LIST_WIDTH : 0;
   const mainW = Math.max(1, state.cols - sidebarW - memberListW);
   return Math.max(1, mainW - 2);
 }
 
 function timelinePageSize(): number {
-  const sidebarW = state.sidebar.open ? SIDEBAR_WIDTH : 0;
-  const memberListW = state.memberList.open ? MEMBER_LIST_WIDTH : 0;
+  const panels = visiblePanels(state);
+  const sidebarW = panels.sidebar ? SIDEBAR_WIDTH : 0;
+  const memberListW = panels.memberList ? MEMBER_LIST_WIDTH : 0;
   const mainW = Math.max(1, state.cols - sidebarW - memberListW);
   const statusHeight = renderStatusLine(state, mainW).height;
   const bottomStatusRows = statusHeight > 0 ? statusHeight + 1 : 0;

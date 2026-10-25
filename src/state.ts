@@ -2,6 +2,7 @@
  * Application state for record.
  */
 
+import { visiblePanels } from "./panels";
 import type { AutocompleteState } from "./autocomplete";
 import { createChannelListState, type ChannelListState } from "./channels";
 import type { ImageDisplayMode, SavedLogins } from "./config";
@@ -368,8 +369,9 @@ function focusPanel(state: AppState, panel: PanelFocus): void {
 
 export function cycleFocus(state: AppState, direction: 1 | -1 = 1): void {
   const order: PanelFocus[] = ["chat"];
-  if (state.memberList.open) order.push("memberlist");
-  if (state.sidebar.open) order.push("sidebar");
+  const panels = visiblePanels(state);
+  if (panels.memberList) order.push("memberlist");
+  if (panels.sidebar) order.push("sidebar");
 
   const currentIndex = order.indexOf(state.panelFocus);
   const startIndex = currentIndex >= 0 ? currentIndex : 0;

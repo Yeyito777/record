@@ -28,6 +28,7 @@ What it does right now:
 
 Controls:
 - `Ctrl+M` or `Ctrl+S`: toggle the sidebar
+- A window too narrow for the open side panels and a 20-column message pane hides the member list, then the sidebar; they come back when it widens (their toggles stay as they are)
 - `Ctrl+J` / `Ctrl+K`: cycle between sidebar and chat container
 - `Ctrl+N`: toggle chat focus between prompt and history
 - `;` in history visual/visual-line mode: quote the selection into the draft and focus the following line
