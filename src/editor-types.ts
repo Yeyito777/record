@@ -84,6 +84,12 @@ export function keyString(key: KeyEvent): string | null {
   return null;
 }
 
+/** Whether a command is half-typed (operator, prefix, count, find or replace). */
+export function hasPending(editor: EditorState): boolean {
+  return !!(editor.pendingOperator || editor.pendingTextObjectModifier || editor.pendingKeys
+    || editor.count !== null || editor.pendingFind || editor.pendingReplace);
+}
+
 export function resetPending(editor: EditorState): void {
   editor.pendingOperator = null;
   editor.pendingOperatorKey = null;

@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { isLinewiseClipboardText } from "./editor-clipboard";
+import { isLinewiseClipboardText, setTextClipboardSystemForTest } from "./editor-clipboard";
 import { createEditorState, getInputLines, handleEditorKey, type EditorMode, type EditorState } from "./editor";
 import type { KeyEvent } from "./input";
 
@@ -297,29 +297,20 @@ describe("prompt visual mode matches Vim", () => {
 
 describe("prompt linewise yank and put", () => {
   let clipboard = "";
-  let mocks: Array<{ mockRestore(): void }> = [];
 
   beforeEach(() => {
     clipboard = "";
-    mocks = [
-      spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null),
-      spyOn(Bun, "spawn").mockImplementation((() => ({
-        stdin: {
-          write(text: string) { clipboard = text; },
-          end() {},
-        },
-      })) as unknown as typeof Bun.spawn),
-      spyOn(Bun, "spawnSync").mockImplementation((() => ({
-        exitCode: 0,
-        // Like wl-paste --no-newline, drop one trailing newline.
-        stdout: Buffer.from(clipboard.replace(/\n$/, "")),
-      })) as unknown as typeof Bun.spawnSync),
-    ];
+    setTextClipboardSystemForTest({
+      platform: "linux",
+      env: { DISPLAY: ":0" },
+      which: (command) => command === "xsel" ? "/usr/bin/xsel" : null,
+      copy: async (_command, text) => { clipboard = text; return 0; },
+      // Like wl-paste --no-newline, drop one trailing newline.
+      paste: () => ({ output: clipboard.replace(/\n$/, ""), exitCode: 0 }),
+    });
   });
 
-  afterEach(() => {
-    for (const mock of mocks) mock.mockRestore();
-  });
+  afterEach(() => setTextClipboardSystemForTest(null));
 
   test("yy then p puts the line below", () => {
     expect(vim("abc\ndef", 1, "yyp")).toEqual({ buffer: "abc\nabc\ndef", cursor: 4 });
@@ -368,5 +359,159 @@ describe("prompt linewise yank and put", () => {
     expect(isLinewiseClipboardText("abc\n")).toBe(true);
     expect(isLinewiseClipboardText("abc")).toBe(true);
     expect(isLinewiseClipboardText("ab")).toBe(false);
+  });
+});
+
+describe("prompt Enter with a pending Vim command", () => {
+  test("r<Enter> splits the line instead of submitting", () => {
+    const editor = prompt("ab", 0);
+    keys(editor, "r");
+    expect(handleEditorKey(editor, { type: "enter" })).not.toBe("submit");
+    expect([editor.buffer, editor.cursor]).toEqual(["\nb", 1]);
+  });
+
+  test("r<Enter> on an empty line does nothing", () => {
+    const editor = prompt("a\n\nb", 2);
+    keys(editor, "r");
+    expect(handleEditorKey(editor, { type: "enter" })).not.toBe("submit");
+    expect([editor.buffer, editor.cursor]).toEqual(["a\n\nb", 2]);
+  });
+
+  test("Enter cancels a pending find, operator, prefix or count", () => {
+    for (const pending of ["f", "d", "di", "g", "2", ">"]) {
+      const editor = prompt("ab ab", 0);
+      keys(editor, pending);
+      expect(handleEditorKey(editor, { type: "enter" })).not.toBe("submit");
+      expect(editor.buffer).toBe("ab ab");
+      keys(editor, "w");
+      expect(editor.cursor).toBe(3);
+    }
+  });
+
+  test("Enter with nothing pending still submits", () => {
+    expect(handleEditorKey(prompt("ab", 0), { type: "enter" })).toBe("submit");
+  });
+});
+
+describe("prompt non-character keys cancel a pending Vim command", () => {
+  test("Tab cancels a pending find", () => {
+    expect(vim("xx b yy b", 0, "f<tab>b").cursor).toBe(0);
+  });
+
+  test("Tab cancels a pending operator", () => {
+    expect(vim("ab cd", 0, "d<tab>w")).toEqual({ buffer: "ab cd", cursor: 3 });
+  });
+
+  test("Tab cancels a pending find in visual mode", () => {
+    expect(vim("ab xb", 0, "vf<tab>bd").buffer).toBe("b xb");
+  });
+
+  test("Backspace and Delete cancel a pending command instead of editing", () => {
+    expect(vim("abc", 1, "d<backspace>")).toEqual({ buffer: "abc", cursor: 1 });
+    expect(vim("abc", 1, "f<delete>")).toEqual({ buffer: "abc", cursor: 1 });
+    expect(vim("abc", 1, "r<backspace>")).toEqual({ buffer: "abc", cursor: 1 });
+  });
+});
+
+describe("prompt visual change", () => {
+  test("V c leaves an empty line to type on, like cc", () => {
+    expect(vim("a\nb\nc", 2, "VcX<esc>").buffer).toBe("a\nX\nc");
+    expect(vim("a\nb\nc", 0, "VjcX<esc>").buffer).toBe("X\nc");
+    expect(vim("a\nb", 2, "VcX<esc>").buffer).toBe("a\nX");
+    expect(vim("a\n", 2, "VcX<esc>").buffer).toBe("a\nX");
+  });
+});
+
+describe("prompt charwise put from the system clipboard", () => {
+  afterEach(() => setTextClipboardSystemForTest(null));
+
+  function putClipboard(output: string, buffer: string, cursor: number, sequence: string): string {
+    setTextClipboardSystemForTest({
+      platform: "linux",
+      env: { DISPLAY: ":0" },
+      which: (command) => command === "xsel" ? "/usr/bin/xsel" : null,
+      copy: async () => 0,
+      paste: () => ({ output, exitCode: 0 }),
+    });
+    const editor = prompt(buffer, cursor);
+    keys(editor, sequence);
+    return editor.buffer;
+  }
+
+  test("p cleans clipboard text like a bracketed paste", () => {
+    expect(putClipboard("x\r\ny\tz\x1b[31mR", "ab", 0, "p")).toBe("ax\ny    zRb");
+  });
+
+  test("p on an empty line puts on that line", () => {
+    expect(putClipboard("X", "a\n\nb", 2, "p")).toBe("a\nX\nb");
+    expect(putClipboard("X", "a\n", 2, "p")).toBe("a\nX");
+  });
+});
+
+describe("prompt insert-mode Home", () => {
+  test("stays on the first line when the buffer starts with a newline", () => {
+    const editor = prompt("\nabc", 0, "insert");
+    handleEditorKey(editor, { type: "home" });
+    expect(editor.cursor).toBe(0);
+  });
+
+  test("moves to the start of the cursor's line", () => {
+    const editor = prompt("ab\ncd", 4, "insert");
+    handleEditorKey(editor, { type: "home" });
+    expect(editor.cursor).toBe(3);
+  });
+});
+
+describe("prompt word motions treat non-ASCII letters as word characters", () => {
+  test("dw and diw take the whole accented word", () => {
+    expect(vim("canción x", 0, "dw").buffer).toBe("x");
+    expect(vim("canción x", 1, "diw").buffer).toBe(" x");
+  });
+
+  test("w, b and e step over whole words with accents and combining marks", () => {
+    expect(vim("über naïve x", 0, "w").cursor).toBe(5);
+    expect(vim("über naïve x", 11, "b").cursor).toBe(5);
+    expect(vim("cafés x", 0, "e").cursor).toBe(5);
+    expect(vim("café x", 0, "dw").buffer).toBe("x");
+    expect(vim("Привет мир", 0, "w").cursor).toBe(7);
+  });
+
+  test("punctuation still splits words", () => {
+    expect(vim("año,mes", 0, "w").cursor).toBe(3);
+  });
+});
+
+describe("prompt bracketed paste", () => {
+  test("a paste mid-insert undoes after the typing that follows it", () => {
+    const editor = prompt("", 0, "insert");
+    keys(editor, "abc");
+    handleEditorKey(editor, { type: "paste", text: "XYZ" });
+    keys(editor, "d<esc>");
+    expect(editor.buffer).toBe("abcXYZd");
+    const seen: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      keys(editor, "u");
+      seen.push(editor.buffer);
+    }
+    expect(seen).toEqual(["abcXYZ", "abc", ""]);
+  });
+
+  test("a paste from normal mode is its own undo step", () => {
+    const editor = prompt("ab", 1);
+    handleEditorKey(editor, { type: "paste", text: "X" });
+    keys(editor, "y<esc>");
+    expect(editor.buffer).toBe("aXyb");
+    const seen: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      keys(editor, "u");
+      seen.push(editor.buffer);
+    }
+    expect(seen).toEqual(["aXb", "ab"]);
+  });
+
+  test("pasted text is cleaned of terminal controls and hard tabs", () => {
+    const editor = prompt("", 0, "insert");
+    handleEditorKey(editor, { type: "paste", text: "a\tb\x1b[31mc\x07\r\nd" });
+    expect(editor.buffer).toBe("a    bc\nd");
   });
 });
