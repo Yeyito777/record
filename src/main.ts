@@ -35,7 +35,7 @@ import {
 } from "./historycursor";
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
-import { imageExtension, readClipboardImage, type ClipboardImageAttachment } from "./imageclipboard";
+import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
 import { inlineImageId, inlineImagePreviewPixelBounds, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
@@ -1300,7 +1300,8 @@ function attachClipboardImage(image: ClipboardImageAttachment): void {
     return;
   }
   const index = state.pendingImages.length + 1;
-  const filename = `image-${index}.${imageExtension(image.mediaType)}`;
+  // A copied file keeps its own name; pasted image data gets a numbered one.
+  const filename = image.filename ?? `image-${index}.${imageExtension(image.mediaType)}`;
   state.pendingImages.push({ ...image, filename });
   setNotice(state, "", "muted");
   focusPrompt(state);
@@ -1308,8 +1309,16 @@ function attachClipboardImage(image: ClipboardImageAttachment): void {
 }
 
 function pasteImageFromClipboard(): void {
-  const image = readClipboardImage();
-  if (image) attachClipboardImage(image);
+  const images = readClipboardImages((message) => {
+    setNotice(state, message, "warning");
+    scheduleRender();
+  });
+  for (const image of images) attachClipboardImage(image);
+}
+
+function showClipboardImageError(message: string): void {
+  setNotice(state, message, "warning");
+  scheduleRender();
 }
 
 function handlePromptBackspacePrefixAction(): boolean {
@@ -2702,6 +2711,7 @@ async function main(): Promise<void> {
     onImage: attachClipboardImage,
     onText: (text) => handleKey({ type: "paste", text }),
     onError: (message) => debugLog("terminal.clipboard.error", { message }),
+    onImageError: showClipboardImageError,
   });
   customEmojiImages.configure({
     onUpdate: () => {

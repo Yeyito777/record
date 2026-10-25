@@ -9,7 +9,19 @@
 import { spawnSync } from "child_process";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
+
+import {
+  clipboardFilesAreLocal,
+  convertHeic,
+  detectImageMediaType,
+  FILE_LIST_MIME_TYPES,
+  HEIC_MIME_TYPES,
+  imageFromFile,
+  imagesFromFileList,
+  isImageFilePath,
+  MAX_CLIPBOARD_FILE_BYTES,
+} from "./clipboardfiles";
 
 export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 
@@ -23,17 +35,32 @@ export interface ClipboardImageAttachment {
 type ImageClipboardBackend = "macos" | "xclip" | "wl" | "powershell" | null;
 type CommandLookup = (command: string) => string | null;
 
+interface ImageClipboardSystem {
+  spawnSync: typeof spawnSync;
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+}
+
+const defaultImageClipboardSystem: ImageClipboardSystem = { spawnSync, platform: process.platform, env: process.env };
+let sys = defaultImageClipboardSystem;
 let backend: ImageClipboardBackend | undefined;
+
+/** Replace the clipboard tools in tests (null restores the real ones). */
+export function setImageClipboardSystemForTest(overrides: Partial<ImageClipboardSystem> | null): void {
+  sys = overrides ? { ...defaultImageClipboardSystem, ...overrides } : defaultImageClipboardSystem;
+  backend = undefined;
+}
 
 function detectBackend(): ImageClipboardBackend {
   if (backend !== undefined) return backend;
+  const spawnSync = sys.spawnSync;
 
-  if (process.platform === "win32") {
+  if (sys.platform === "win32") {
     backend = "powershell";
     return backend;
   }
 
-  if (process.platform === "darwin") {
+  if (sys.platform === "darwin") {
     try {
       const osascript = spawnSync("which", ["osascript"], { timeout: 1000 });
       const sips = spawnSync("which", ["sips"], { timeout: 1000 });
@@ -46,7 +73,7 @@ function detectBackend(): ImageClipboardBackend {
     }
   }
 
-  if (process.env.WAYLAND_DISPLAY) {
+  if (sys.env.WAYLAND_DISPLAY) {
     try {
       const result = spawnSync("which", ["wl-paste"], { timeout: 1000 });
       if (result.status === 0) {
@@ -109,7 +136,23 @@ on run argv
 end run
 `;
 
+/**
+ * A file copied in Finder: its own bytes, not the file icon the clipboard
+ * also offers as PNG. Throws for a copied file that is not an image.
+ */
+function readCopiedFileMacOS(): ClipboardImageAttachment[] | null {
+  const file = sys.spawnSync("osascript", ["-e", "POSIX path of (the clipboard as alias)"], {
+    timeout: 1000,
+    maxBuffer: 64 * 1024,
+  });
+  const path = file.status === 0 ? file.stdout?.toString().trim() ?? "" : "";
+  if (!path || path.endsWith("/")) return null;
+  if (!isImageFilePath(path)) throw new Error(`${basename(path)} is not an image; send files with /upload.`);
+  return [imageFromFile(path)];
+}
+
 function readImageMacOS(): ClipboardImageAttachment | null {
+  const spawnSync = sys.spawnSync;
   const tempDir = mkdtempSync(join(tmpdir(), "record-clipboard-"));
   const rawPath = join(tempDir, "clipboard-image");
   const pngPath = join(tempDir, "clipboard-image.png");
@@ -145,49 +188,56 @@ function readImageMacOS(): ClipboardImageAttachment | null {
   }
 }
 
-function readImageXclip(): ClipboardImageAttachment | null {
-  const targets = spawnSync("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], { timeout: 1000 });
-  if (targets.status !== 0 || !targets.stdout) return null;
-  const available = targets.stdout.toString();
-
+/**
+ * Read the best image on an X11/Wayland clipboard listing `available` types:
+ * an original HEIC photo (converted), then copied image files, then
+ * PNG/JPEG/GIF/WebP data whose bytes really are that format.
+ */
+function readTargets(available: string, readTarget: (target: string) => Buffer | null): ClipboardImageAttachment[] | null {
+  const targets = new Set(available.split(/\s+/).filter(Boolean));
+  for (const mime of HEIC_MIME_TYPES) {
+    if (!targets.has(mime)) continue;
+    const bytes = readTarget(mime);
+    if (!bytes) throw new Error(`Could not read the clipboard's ${mime} photo`);
+    return [convertHeic(bytes)];
+  }
+  for (const mime of FILE_LIST_MIME_TYPES) {
+    if (!targets.has(mime)) continue;
+    const list = readTarget(mime);
+    // A failed file read must not fall through to the file icon.
+    const images = list ? imagesFromFileList(list.toString("utf8"), clipboardFilesAreLocal(sys.env)) : null;
+    if (images) return images;
+  }
   for (const format of IMAGE_FORMATS) {
-    if (!available.includes(format.target)) continue;
-    const result = spawnSync("xclip", ["-selection", "clipboard", "-t", format.target, "-o"], {
-      timeout: 5000,
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
-    return {
-      mediaType: format.mime,
-      base64: Buffer.from(result.stdout).toString("base64"),
-      sizeBytes: result.stdout.length,
-    };
+    if (!targets.has(format.target)) continue;
+    const bytes = readTarget(format.target);
+    // Some owners advertise image/png but return something else.
+    if (!bytes || detectImageMediaType(bytes) !== format.mime) continue;
+    return [{ mediaType: format.mime, base64: bytes.toString("base64"), sizeBytes: bytes.length }];
   }
   return null;
 }
 
-function readImageWayland(): ClipboardImageAttachment | null {
-  const targets = spawnSync("wl-paste", ["--list-types"], { timeout: 1000 });
-  if (targets.status !== 0 || !targets.stdout) return null;
-  const available = targets.stdout.toString();
+function spawnBytes(command: string, args: string[]): Buffer | null {
+  const result = sys.spawnSync(command, args, { timeout: 5000, maxBuffer: MAX_CLIPBOARD_FILE_BYTES });
+  if (result.status !== 0 || !result.stdout || result.stdout.length === 0) return null;
+  return Buffer.from(result.stdout);
+}
 
-  for (const format of IMAGE_FORMATS) {
-    if (!available.includes(format.target)) continue;
-    const result = spawnSync("wl-paste", ["--type", format.target], {
-      timeout: 5000,
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    if (result.status !== 0 || !result.stdout || result.stdout.length === 0) continue;
-    return {
-      mediaType: format.mime,
-      base64: Buffer.from(result.stdout).toString("base64"),
-      sizeBytes: result.stdout.length,
-    };
-  }
-  return null;
+function readImageXclip(): ClipboardImageAttachment[] | null {
+  const targets = sys.spawnSync("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], { timeout: 1000 });
+  if (targets.status !== 0 || !targets.stdout) return null;
+  return readTargets(targets.stdout.toString(), (target) => spawnBytes("xclip", ["-selection", "clipboard", "-t", target, "-o"]));
+}
+
+function readImageWayland(): ClipboardImageAttachment[] | null {
+  const targets = sys.spawnSync("wl-paste", ["--list-types"], { timeout: 1000 });
+  if (targets.status !== 0 || !targets.stdout) return null;
+  return readTargets(targets.stdout.toString(), (target) => spawnBytes("wl-paste", ["--type", target]));
 }
 
 function readImagePowerShell(): ClipboardImageAttachment | null {
+  const spawnSync = sys.spawnSync;
   const script = [
     "Add-Type -AssemblyName System.Windows.Forms",
     "$img = [System.Windows.Forms.Clipboard]::GetImage()",
@@ -221,16 +271,32 @@ function readImagePowerShell(): ClipboardImageAttachment | null {
   }
 }
 
-export function readClipboardImage(): ClipboardImageAttachment | null {
+function single(image: ClipboardImageAttachment | null): ClipboardImageAttachment[] | null {
+  return image ? [image] : null;
+}
+
+/**
+ * Images on the system clipboard: copied image data, an original HEIC photo
+ * (converted to JPEG), or copied image files (one attachment each). Returns
+ * an empty list when there is no image; `onError` gets a plain message when
+ * there is one that cannot be attached (a copied non-image file, a HEIC photo
+ * that cannot be decoded).
+ */
+export function readClipboardImages(onError?: (message: string) => void): ClipboardImageAttachment[] {
   try {
     const selectedBackend = detectBackend();
-    if (!selectedBackend) return null;
-    if (selectedBackend === "macos") return readImageMacOS();
-    if (selectedBackend === "powershell") return readImagePowerShell();
-    return selectedBackend === "wl" ? readImageWayland() : readImageXclip();
-  } catch {
-    return null;
+    if (!selectedBackend) return [];
+    if (selectedBackend === "macos") return readCopiedFileMacOS() ?? single(readImageMacOS()) ?? [];
+    if (selectedBackend === "powershell") return single(readImagePowerShell()) ?? [];
+    return (selectedBackend === "wl" ? readImageWayland() : readImageXclip()) ?? [];
+  } catch (error) {
+    onError?.(error instanceof Error ? error.message : String(error));
+    return [];
   }
+}
+
+export function readClipboardImage(): ClipboardImageAttachment | null {
+  return readClipboardImages()[0] ?? null;
 }
 
 export function resolveImageClipboardWriteCommand(

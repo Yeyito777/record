@@ -43,6 +43,7 @@ Controls:
 - `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
 - `Enter` on a thread (shown with `↳`): open its timeline; posting automatically joins the thread when needed
 - `Enter` on an authored “Started a thread” message in history: open and focus that thread
+- `Ctrl+V` attaches the image on the clipboard: copied image data, an iPhone HEIC/HEIF photo (converted to JPEG with macOS's built-in `sips`, or ImageMagick with libheif elsewhere), or copied image files from Finder or a file manager (PNG, JPEG, GIF, WebP or HEIC; each attaches under its own name, never as the file icon). A copied file that is not an image shows a notice pointing to `/upload`. The terminal's own paste (OSC 5522 paste events) does the same; over SSH a copied file names a file on the other computer, so copy the image itself instead
 - image attachments expand inline by default; press `Enter` on their filename or image rows to collapse/reopen one
 - opening the full-image viewer shows the cached preview immediately at the image's final viewer size, then swaps in full-resolution pixels in place without resizing; `Enter` / `Esc` closes even while loading. Chat images stay placed behind the higher-z viewer rather than disappearing, and image placements are presented in the same synchronized update as the surrounding text.
 - `/images hide|show`: keep images collapsed until opened manually, or restore automatic expansion; the selected mode persists
