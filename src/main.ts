@@ -2927,7 +2927,7 @@ async function main(): Promise<void> {
     debugLog("terminal.stdout_error", { error: error.message });
     cleanup("terminal_closed");
   });
-  terminalGraphicsClient.query();
+  terminalGraphicsClient.detect(process.env);
 
   process.stdout.on("resize", () => {
     state.cols = process.stdout.columns || 80;

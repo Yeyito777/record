@@ -105,6 +105,20 @@ export class TerminalGraphicsClient {
     return this.supported;
   }
 
+  /**
+   * Ask the terminal, except inside tmux or GNU screen: they do not pass Kitty
+   * graphics through (tmux even shows the query as the pane's title), so
+   * graphics are unsupported there and nothing is sent.
+   */
+  detect(env: Record<string, string | undefined>): void {
+    if (env.TMUX || /^(?:screen|tmux)/.test(env.TERM ?? "")) {
+      this.clearTimeout();
+      this.updateSupport(false);
+      return;
+    }
+    this.query();
+  }
+
   query(): void {
     this.clearTimeout();
     this.options.write(kittyGraphicsQuery());
