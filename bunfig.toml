@@ -1,0 +1,5 @@
+[test]
+# Point every config/cache/home path at a throwaway directory before any test
+# module loads, so `bun test` never reads or writes the owner's real
+# ~/.config/record (tokens, cache.json, debug.log, attachments).
+preload = ["./src/testenv.preload.ts"]
