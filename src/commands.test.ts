@@ -369,11 +369,11 @@ describe("commands", () => {
     const state = createInitialState(null, "/tmp/record-config.json", { zed: "tok-2", alice: "tok-1" });
 
     expect(getCommandArgs(state)["/login"]).toEqual([
-      { name: "whatsapp", desc: "Link WhatsApp with a QR code" },
-      { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)" },
-      { name: "discord", desc: "Log in to Discord explicitly" },
-      { name: "alice", desc: "saved login" },
-      { name: "zed", desc: "saved login" },
+      { name: "whatsapp", desc: "Link WhatsApp with a QR code", exact: true },
+      { name: "instagram", desc: "Log in with pasted Instagram cookies (or browser import)", exact: true },
+      { name: "discord", desc: "Log in to Discord explicitly", exact: true },
+      { name: "alice", desc: "saved login", exact: true },
+      { name: "zed", desc: "saved login", exact: true },
     ]);
   });
 
