@@ -17,6 +17,9 @@
  * offset, so imageCellsOutside() can say which image cells st draws where at
  * any moment: at rest unshifted and unclipped, while gliding shifted and
  * clipped to the bounding box of the rectangles on the image's anchor row.
+ * Image clip regions (OSC 2032 ; k) clip an image anchored in one, at rest
+ * too, and its occlusion considers only the cells it can draw over there; a
+ * placement whose clip box changes remembers its cells afresh.
  */
 
 import { termWidth } from "./textwidth";
@@ -39,6 +42,8 @@ export interface VtPlacement {
    * st's Line) and column, the cell st first drew the placement over.
    */
   baseline?: WeakMap<Cell[], Map<number, string>>;
+  /** The image clip box the baseline was taken under ("" for none): another clip starts afresh. */
+  baselineClip?: string;
 }
 
 const SGR_FLAGS: Record<number, number> = { 1: 1, 2: 2, 3: 4, 4: 8, 5: 16, 7: 32, 8: 64, 9: 128, 21: 8 };
@@ -128,6 +133,8 @@ export class VtScreen {
       if (placement.row >= rows) this.placementsByKey.delete(key);
       else placement.baseline = undefined;
     }
+    // A resize drops mode 2032's offset, rectangles and image clip regions.
+    this.glideClear();
     // st draws the resized screen before the application repaints it.
     this.snapshotPlacements();
   }
@@ -194,18 +201,40 @@ export class VtScreen {
     }
   }
 
-  /** The cells a placement covers on screen, with the line each is on. */
+  /**
+   * The box st clips an image to at rest and while gliding (OSC 2032 ; k):
+   * the bounding box of the clip regions on its anchor row, when its anchor
+   * cell lies in one of them (zero-based, columns [left, right)); else null.
+   */
+  private imageClipBox(placement: VtPlacement): { top: number; bottom: number; left: number; right: number } | null {
+    const onRow = this.glideClips.filter((rect) => placement.row >= rect.top && placement.row <= rect.bottom);
+    if (!onRow.some((rect) => placement.col >= rect.left && placement.col < rect.right)) return null;
+    return {
+      top: Math.min(...onRow.map((rect) => rect.top)),
+      bottom: Math.max(...onRow.map((rect) => rect.bottom)),
+      left: Math.min(...onRow.map((rect) => rect.left)),
+      right: Math.max(...onRow.map((rect) => rect.right)),
+    };
+  }
+
+  /**
+   * The cells a placement can draw over on screen, with the line each is on:
+   * inside its image clip box when it has one (st compares only those).
+   */
   private cellsUnder(placement: VtPlacement): { line: Cell[]; row: number; col: number; value: string }[] {
     const field = (name: string, fallback: number) => {
       const match = new RegExp(`(?:^|,)${name}=(\\d+)`).exec(placement.controls);
       return match ? Number(match[1]) : fallback;
     };
-    const columns = field("c", 1);
-    const rows = field("r", 1);
+    const clip = this.imageClipBox(placement);
+    const top = Math.max(placement.row, clip?.top ?? 0);
+    const bottom = Math.min(this.rows - 1, placement.row + field("r", 1) - 1, clip?.bottom ?? Infinity);
+    const left = Math.max(placement.col, clip?.left ?? 0);
+    const right = Math.min(this.cols, placement.col + field("c", 1), clip?.right ?? Infinity);
     const cells: { line: Cell[]; row: number; col: number; value: string }[] = [];
-    for (let row = placement.row; row < Math.min(this.rows, placement.row + rows); row++) {
+    for (let row = top; row <= bottom; row++) {
       const line = this.grid[row]!;
-      for (let col = placement.col; col < Math.min(this.cols, placement.col + columns); col++) {
+      for (let col = left; col < right; col++) {
         cells.push({ line, row, col, value: `${line[col]!.sgr}\u0000${line[col]!.ch}` });
       }
     }
@@ -218,10 +247,16 @@ export class VtScreen {
 
   /**
    * st draws the frame: each placement remembers the cells it is drawn over
-   * the first time, per line. A selected placement never snapshots cells.
+   * the first time, per line. A selected placement never snapshots cells,
+   * and one whose clip box changed starts a new baseline.
    */
   private snapshotPlacements(): void {
     for (const placement of this.placementsByKey.values()) {
+      const clip = JSON.stringify(this.imageClipBox(placement) ?? "");
+      if (placement.baselineClip !== clip) {
+        placement.baseline = undefined;
+        placement.baselineClip = clip;
+      }
       if (VtScreen.selected(placement)) continue;
       const baseline = placement.baseline ??= new WeakMap();
       for (const { line, col, value } of this.cellsUnder(placement)) {
@@ -336,7 +371,7 @@ export class VtScreen {
   /** Current placements, sorted by image, placement and position. */
   placements(): VtPlacement[] {
     return [...this.placementsByKey.values()]
-      .map(({ baseline: _baseline, ...placement }) => ({ ...placement }))
+      .map(({ baseline: _baseline, baselineClip: _clip, ...placement }) => ({ ...placement }))
       .sort((a, b) => a.imageId - b.imageId || a.placementId - b.placementId || a.row - b.row || a.col - b.col);
   }
 
@@ -344,7 +379,7 @@ export class VtScreen {
   visiblePlacements(): VtPlacement[] {
     const visible = [...this.placementsByKey.values()].filter((placement) => !this.changedCell(placement));
     return visible
-      .map(({ baseline: _baseline, ...placement }) => ({ ...placement }))
+      .map(({ baseline: _baseline, baselineClip: _clip, ...placement }) => ({ ...placement }))
       .sort((a, b) => a.imageId - b.imageId || a.placementId - b.placementId || a.row - b.row || a.col - b.col);
   }
 
