@@ -2165,6 +2165,82 @@ function handleSidebarFocused(key: KeyEvent): boolean {
   }
 }
 
+function downloadAndOpenAttachment(attachment: DiscordMessageAttachment): void {
+  setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true, chat: false });
+  scheduleRender();
+  void (async () => {
+    const progress: AttachmentDownloadOptions = {
+      onProgress: (progress) => {
+        if (!running) return;
+        showAttachmentDownloadProgress(attachment.filename, progress);
+      },
+    };
+    const downloaded = isWhatsAppChannelId(state.timeline.channelId)
+      ? await whatsAppController.downloadAttachment(attachment)
+      : isInstagramChannelId(state.timeline.channelId)
+        // Shared reels resolve to their one video here, never Instagram's reel feed.
+        ? await instagramController.downloadAttachment(attachment, progress)
+        : await downloadAttachment(attachment, progress);
+    if (!running) return;
+    if (!downloaded.ok || !downloaded.path) {
+      setNotice(state, `Could not open ${attachment.filename}: ${downloaded.error ?? "unknown error"}`, "warning");
+      scheduleRender();
+      return;
+    }
+    const openNotice = downloaded.cached
+      ? `Opening cached ${attachment.filename}…`
+      : `Opening ${attachment.filename}…`;
+    if (!openTargetDetached(downloaded.path)) {
+      setNotice(state, `Could not open ${attachment.filename}: No opener configured for ${downloaded.path}.`, "warning");
+      scheduleRender();
+    } else {
+      showTransientNotice(openNotice);
+    }
+  })();
+}
+
+/**
+ * Open a link or configured path from history with the configured openers.
+ * A Discord invite joins only from the keyboard (`joinInvites`); a click
+ * just says how, so a stray click never joins a server.
+ */
+function openHistoryLink(target: string, joinInvites: boolean): void {
+  const inviteCode = discordInviteCodeFromUrl(target);
+  if (inviteCode) {
+    if (joinInvites) joinDiscordInviteTarget(target, inviteCode);
+    else showTransientNotice(`Press Enter on the invite to join ${inviteCode}.`);
+    return;
+  }
+  if (shouldDownloadTargetBeforeOpen(target)) {
+    downloadAndOpenTarget(target);
+    return;
+  }
+  if (!openTargetDetached(target)) {
+    setNotice(state, `No opener configured for ${target}.`, "warning");
+    scheduleRender();
+  } else {
+    showTransientNotice(`Opening ${target}…`);
+  }
+}
+
+/** A click in history: open the image, attachment or link under the cursor. Returns whether one was there. */
+function openHistoryTargetAtCursor(): boolean {
+  const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
+  if (imageBodyAttachment) {
+    openInlineImageModal(imageBodyAttachment);
+    return true;
+  }
+  const attachment = attachmentAtHistoryCursor(state);
+  if (attachment) {
+    if (!toggleInlineAttachmentImage(attachment)) downloadAndOpenAttachment(attachment);
+    return true;
+  }
+  const target = openableTargetAtHistoryCursor(state);
+  if (!target) return false;
+  openHistoryLink(target, false);
+  return true;
+}
+
 function handleHistoryFocused(key: KeyEvent): boolean {
   if (state.editor.mode === "normal" && !editorHasPendingInput() && key.type === "char" && key.char === ":") {
     const message = selectedHistoryMessage();
@@ -2257,57 +2333,12 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       if (jumpToForwardedOriginAtHistoryCursor()) return true;
 
       if (attachment) {
-        setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true, chat: false });
-        scheduleRender();
-        void (async () => {
-          const progress: AttachmentDownloadOptions = {
-            onProgress: (progress) => {
-              if (!running) return;
-              showAttachmentDownloadProgress(attachment.filename, progress);
-            },
-          };
-          const downloaded = isWhatsAppChannelId(state.timeline.channelId)
-            ? await whatsAppController.downloadAttachment(attachment)
-            : isInstagramChannelId(state.timeline.channelId)
-              // Shared reels resolve to their one video here, never Instagram's reel feed.
-              ? await instagramController.downloadAttachment(attachment, progress)
-              : await downloadAttachment(attachment, progress);
-          if (!running) return;
-          if (!downloaded.ok || !downloaded.path) {
-            setNotice(state, `Could not open ${attachment.filename}: ${downloaded.error ?? "unknown error"}`, "warning");
-            scheduleRender();
-            return;
-          }
-          const openNotice = downloaded.cached
-            ? `Opening cached ${attachment.filename}…`
-            : `Opening ${attachment.filename}…`;
-          if (!openTargetDetached(downloaded.path)) {
-            setNotice(state, `Could not open ${attachment.filename}: No opener configured for ${downloaded.path}.`, "warning");
-            scheduleRender();
-          } else {
-            showTransientNotice(openNotice);
-          }
-        })();
+        downloadAndOpenAttachment(attachment);
         return true;
       }
 
       const target = openableTargetAtHistoryCursor(state);
-      if (!target) return true;
-      const inviteCode = discordInviteCodeFromUrl(target);
-      if (inviteCode) {
-        joinDiscordInviteTarget(target, inviteCode);
-        return true;
-      }
-      if (shouldDownloadTargetBeforeOpen(target)) {
-        downloadAndOpenTarget(target);
-        return true;
-      }
-      if (!openTargetDetached(target)) {
-        setNotice(state, `No opener configured for ${target}.`, "warning");
-        scheduleRender();
-      } else {
-        showTransientNotice(`Opening ${target}…`);
-      }
+      if (target) openHistoryLink(target, true);
       return true;
     }
     default:
@@ -2543,10 +2574,43 @@ function handleMouse(event: MouseEvent): void {
     return;
   }
 
-  if (result.type === "focus_history") {
-    if (state.chatFocus !== "history") focusHistory(state);
-    state.historyCursor = { ...state.historyCursor, row: result.row, col: result.col };
+  if (result.type === "history_press") {
+    if (state.chatFocus !== "history" || state.panelFocus !== "chat") focusHistory(state);
+    const position = { ...state.historyCursor, row: result.row, col: result.col };
+    state.historyCursor = position;
+    state.historyVisualAnchor = { ...position };
+    state.editor.mode = "visual";
     syncPromptAutocomplete();
+    scheduleRender();
+    return;
+  }
+
+  if (result.type === "history_drag") {
+    if (state.chatFocus === "history" && state.editor.mode === "visual") {
+      state.historyCursor = { ...state.historyCursor, row: result.row, col: result.col };
+      ensureHistoryCursorVisible(state, timelinePageSize());
+      scheduleRender();
+    }
+    return;
+  }
+
+  if (result.type === "history_click") {
+    // A click (no drag) is no selection: back to normal mode on the clicked character.
+    state.editor.mode = "normal";
+    state.historyCursor = { ...state.historyCursor, row: result.row, col: result.col };
+    openHistoryTargetAtCursor();
+    scheduleRender();
+    return;
+  }
+
+  if (result.type === "history_release") {
+    if (state.chatFocus === "history" && state.editor.mode === "visual") {
+      if (result.position) state.historyCursor = { ...state.historyCursor, ...result.position };
+      // A press and release on the same character without a drag selects nothing.
+      if (state.historyCursor.row === state.historyVisualAnchor.row
+        && state.historyCursor.col === state.historyVisualAnchor.col) state.editor.mode = "normal";
+      // Otherwise the selection stays, for y (or Esc), like keyboard visual mode.
+    }
     scheduleRender();
     return;
   }

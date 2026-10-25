@@ -178,6 +178,8 @@ export interface AppState {
   mouseCursor: "pointer" | "hand" | "text";
   /** Where the last frame drew the history body and the prompt, for mouse hit tests. */
   chatMouseLayout: ChatMouseLayout | null;
+  /** The screen cell a left press in history started on, until release (drag-select, click-to-open). */
+  mouseHistoryPress: { col: number; row: number; exact: boolean } | null;
 }
 
 /** Screen rows/columns (1-based) of the last frame's chat column. */
@@ -191,6 +193,8 @@ export interface ChatMouseLayout {
   /** Prompt input rows [firstInputRow, firstInputRow + inputRows). */
   firstInputRow: number;
   inputRows: number;
+  /** History line drawn on row bodyTop (differs from scrollOffset while a smooth glide runs). */
+  firstLine: number;
 }
 
 export function createInitialState(
@@ -275,6 +279,7 @@ export function createInitialState(
     configPath: path,
     mouseCursor: "pointer",
     chatMouseLayout: null,
+    mouseHistoryPress: null,
   };
 }
 

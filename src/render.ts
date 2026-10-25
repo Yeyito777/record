@@ -606,6 +606,7 @@ export function render(state: AppState): void {
     bodyRows,
     firstInputRow,
     inputRows: inputRowCount,
+    firstLine: state.timeline.scrollOffset,
   };
 
   const oldAnchors = state.historyLineAnchors;
@@ -706,6 +707,8 @@ export function render(state: AppState): void {
     ].join("|");
     viewStart = maxScroll - smooth.layout(logical, maxScroll, pinDelta, bodyRows, context);
   }
+  // Clicks map onto the rows actually drawn, mid-glide included.
+  state.chatMouseLayout.firstLine = viewStart;
   const customEmojiFrame = customEmojiImages.beginFrame();
   const selectedHistoryRows = historyVisualSelectionRows(state, historyFocused);
 
