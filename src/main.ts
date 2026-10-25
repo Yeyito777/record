@@ -2598,8 +2598,10 @@ function handleMouse(event: MouseEvent): void {
   const previousFocus = state.panelFocus;
   const previousIndex = state.sidebar.selectedIndex;
   const previousScrollOffset = state.sidebar.scrollOffset;
+  const previousLinkHover = state.historyLinkHover;
   const result = handleMouseEvent(event, state);
   if (state.panelFocus !== previousFocus) syncPromptAutocomplete();
+  if (state.historyLinkHover !== previousLinkHover) scheduleRender();
 
   if (result.type === "activate_sidebar") {
     activateSidebarSelection();

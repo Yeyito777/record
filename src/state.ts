@@ -121,6 +121,8 @@ export interface AppState {
   historyMessageBounds: TimelineMessageBound[];
   /** Where the last frame drew inline images: clicks on an embed's side-by-side pictures. */
   historyInlineImages: TimelineInlineImagePlacement[];
+  /** URL of the masked embed link under the mouse, shown in the status line. */
+  historyLinkHover: string | null;
   autocomplete: AutocompleteState | null;
   pendingImages: ClipboardImageAttachment[];
   imageDisplayMode: ImageDisplayMode;
@@ -223,6 +225,7 @@ export function createInitialState(
     historyWrapContinuation: [],
     historyMessageBounds: [],
     historyInlineImages: [],
+    historyLinkHover: null,
     autocomplete: null,
     pendingImages: [],
     imageDisplayMode: options.imageDisplayMode ?? "show",

@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import { applyDiscordMessagePatch, mapDiscordEmbed, mapDiscordMessage, mapDiscordMessagePatch, type DiscordEmbedResponse, type DiscordMessage, type DiscordMessageResponse } from "./discord";
 import { embedGroups, embedImageSources, embedMediaUrl, embedVideoTarget, parseEmbedSourceId } from "./embeds";
-import { embedLinkAtHistoryCursor, embedVideoAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor } from "./historyopenable";
+import { embedLinkAtHistoryCursor, embedMaskedLinkAt, embedVideoAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor } from "./historyopenable";
 import { inlineImageSourcesForMessage } from "./inlineimage";
 import { displayMessageParts, summarizeInlineMessageParts } from "./messageparts";
-import { createInitialState } from "./state";
+import { createInitialState, focusHistory } from "./state";
+import { linkHintBlock } from "./statusblocks/linkhint";
 import { ansiTrueColor, theme } from "./theme";
 import { createTimelineState, renderTimelineLines, setTimelineImageDetails, setTimelineInlineImageState, setTimelineMessages, type TimelineState } from "./timeline";
 
@@ -378,5 +379,46 @@ describe("embed targets in history", () => {
     state.historyCursor = { row: second.lineIndex + 1, col: second.columnOffset! + 1 };
     expect(inlineImageBodyAttachmentAtHistoryCursor(state)?.id).toBe("embed:m1:1:image");
     expect(embedVideoAtHistoryCursor(state)).toBeNull();
+  });
+
+  test("masked links in descriptions and field values open their URL; the label stays text-only", () => {
+    const bot: DiscordEmbedResponse = {
+      type: "rich", title: "Release", color: 0x24292f,
+      // "View on GitHub" wraps onto the next row at width 40.
+      description: "Built and shipped, all green. [View on GitHub](https://github.com/example/record) and read the [full release notes](https://record.example/notes \"Notes\") today.",
+      fields: [{ name: "Links", value: "[Jump to message](https://discord.com/channels/1/2/3) · [Changelog](https://record.example/log)", inline: false }],
+    };
+    const { state, rendered } = historyState([message("m1", "", [bot])], 40);
+    const plain = rendered.allLines.map(stripAnsi);
+    // No URL is drawn, the labels are in the link colour.
+    expect(plain.some((line) => line.includes("https://"))).toBe(false);
+    expect(rendered.allLines.some((line) => line.includes(`${theme.accent}full release notes`))).toBe(true);
+    const at = (needle: string, offset = 0) => {
+      const row = plain.findIndex((line) => line.includes(needle));
+      return { row, col: plain[row]!.indexOf(needle) + offset };
+    };
+    const open = (position: { row: number; col: number }) => {
+      state.historyCursor = position;
+      return openableTargetAtHistoryCursor(state);
+    };
+    expect(open(at("full release notes", 5))).toBe("https://record.example/notes");
+    expect(embedMaskedLinkAt(state, at("Jump to", 2))).toBe("https://discord.com/channels/1/2/3");
+    expect(open(at("Changelog"))).toBe("https://record.example/log");
+    // A label wrapped onto two rows opens from either.
+    const wrappedStart = plain.findIndex((line) => line.endsWith("View on"));
+    expect(wrappedStart).toBeGreaterThan(0);
+    expect(plain[wrappedStart + 1]!.startsWith("▎ GitHub")).toBe(true);
+    expect(rendered.wrapContinuation[wrappedStart + 1]).toBe(true);
+    expect(open({ row: wrappedStart, col: plain[wrappedStart]!.lastIndexOf("View") })).toBe("https://github.com/example/record");
+    expect(open({ row: wrappedStart + 1, col: 3 })).toBe("https://github.com/example/record");
+    // Plain words next to a label open nothing.
+    expect(open(at("Built", 1))).toBeNull();
+    expect(open(at("today", 1))).toBeNull();
+    // The status line shows where the cursor's link goes.
+    focusHistory(state);
+    state.historyCursor = at("Changelog", 2);
+    expect(linkHintBlock(state)?.rows[0]).toContain("↗ https://record.example/log");
+    state.historyCursor = at("Built", 1);
+    expect(linkHintBlock(state)).toBeNull();
   });
 });

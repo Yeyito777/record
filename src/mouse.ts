@@ -9,7 +9,7 @@ import {
   type SidebarVisibilityOptions,
 } from "./sidebar";
 import { clampHistoryCol, stripAnsi } from "./historycursor";
-import { historyTargetAt, inlineImageIdAtHistoryCell, isInlineImageBodyRow } from "./historyopenable";
+import { embedMaskedLinkAt, historyTargetAt, inlineImageIdAtHistoryCell, isInlineImageBodyRow } from "./historyopenable";
 import { focusSidebar, type AppState } from "./state";
 import { mouseCursorHand, mouseCursorPointer, mouseCursorText } from "./terminal";
 import { nextWidthClusterEnd, termWidth } from "./textwidth";
@@ -91,6 +91,9 @@ function chatCursorShape(state: AppState, col: number, row: number): "hand" | "t
 
 function updateMouseCursor(ev: MouseEvent, state: AppState, writeCursor: CursorWriter): void {
   const inSidebar = state.sidebar.open && ev.col >= 1 && ev.col <= SIDEBAR_WIDTH;
+  // A masked embed link shows where it goes (statusblocks/linkhint.ts).
+  const position = !inSidebar && chatAreaAt(state, ev.col, ev.row) === "history" ? historyPositionAt(state, ev.col, ev.row) : null;
+  state.historyLinkHover = position?.exact ? embedMaskedLinkAt(state, position) : null;
   const shape = inSidebar && sidebarHitTest(
     state.sidebar,
     state.channelList.channels,

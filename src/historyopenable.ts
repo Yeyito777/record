@@ -1,7 +1,9 @@
 import { isThreadChannel, type DiscordMessageAttachment } from "./discord";
 import { contentBounds, logicalLineRange, stripAnsi } from "./historycursor";
 import { embedForSourceId, embedGroupForKey, embedVideoTarget, isEmbedSourceId, parseEmbedSourceId, type EmbedVideoTarget } from "./embeds";
+import { embedMaskedLinks } from "./embedlayout";
 import { inlineImageSourcesForMessage } from "./inlineimage";
+import { stripMarkdown } from "./markdown";
 import { findOpenableTargetMatches } from "./openable";
 import type { AppState } from "./state";
 
@@ -203,7 +205,7 @@ export function openableTargetAtHistoryCursor(state: AppState): string | null {
     }
   }
 
-  const embedLink = embedLinkAtHistoryCursor(state);
+  const embedLink = embedMaskedLinkAtHistoryCursor(state) ?? embedLinkAtHistoryCursor(state);
   if (embedLink) return embedLink;
   if (!logicalLine) return null;
   return attachmentAtHistoryCursor(state)?.url ?? null;
@@ -224,6 +226,64 @@ function embedRowAtHistoryCursor(state: AppState) {
   }
   const group = embedGroupForKey(message, occurrence, Number(match[3]));
   return group ? { group, occurrence, part: match[4]! } : null;
+}
+
+/** A drawn embed row as text, without the card's bar and padding, and where `col` falls in it. */
+function embedRowText(state: AppState, row: number): { text: string; prefix: number } {
+  const plain = stripAnsi(state.historyLines[row] ?? "").trimEnd();
+  const prefix = plain.startsWith("▎ ") ? 2 : 0;
+  return { text: plain.slice(prefix), prefix };
+}
+
+/**
+ * The URL of the masked link (`[label](url)`, drawn as its label) under the
+ * cursor in an embed's description or field values. Labels are found in the
+ * drawn text like attachment names are; a description label wrapped onto
+ * the next row is joined back.
+ */
+export function embedMaskedLinkAtHistoryCursor(state: AppState): string | null {
+  const row = embedRowAtHistoryCursor(state);
+  if (!row || (row.part !== "description" && row.part !== "field")) return null;
+  const { embed } = row.group;
+  const links = row.part === "description"
+    ? embedMaskedLinks(embed.description)
+    : (embed.fields ?? []).flatMap((field) => embedMaskedLinks(field.value));
+  if (links.length === 0) return null;
+
+  const cursorRow = state.historyCursor.row;
+  let text = "";
+  let cursorOffset = -1;
+  const rows = [cursorRow];
+  if (row.part === "description") {
+    // The logical line around the cursor: continuation rows of this description.
+    const anchorPart = (index: number) => state.historyLineAnchors[index]?.replace(/:\d+$/, "");
+    const base = anchorPart(cursorRow);
+    let first = cursorRow;
+    while (first > 0 && state.historyWrapContinuation[first] && anchorPart(first - 1) === base) first--;
+    let last = cursorRow;
+    while (anchorPart(last + 1) === base && state.historyWrapContinuation[last + 1]) last++;
+    rows.splice(0, 1, ...Array.from({ length: last - first + 1 }, (_, index) => first + index));
+  }
+  for (const index of rows) {
+    const { text: segment, prefix } = embedRowText(state, index);
+    if (text) text += " ";
+    if (index === cursorRow) {
+      const col = state.historyCursor.col - prefix;
+      if (col < 0 || col >= segment.length) return null;
+      cursorOffset = text.length + col;
+    }
+    text += segment;
+  }
+
+  for (const link of links) {
+    for (const label of new Set([stripAnsi(stripMarkdown(link.label)), link.label])) {
+      if (!label) continue;
+      for (let start = text.indexOf(label); start >= 0; start = text.indexOf(label, start + 1)) {
+        if (cursorOffset >= start && cursorOffset < start + label.length) return link.url;
+      }
+    }
+  }
+  return null;
 }
 
 /** The link an embed row opens: its title's URL, its author's, its provider's. */
@@ -266,6 +326,17 @@ export function historyTargetAt(state: AppState, position: { row: number; col: n
     return embedVideoAtHistoryCursor(state) !== null
       || inlineImageBodyAttachmentAtHistoryCursor(state) !== null
       || openableTargetAtHistoryCursor(state) !== null;
+  } finally {
+    state.historyCursor = saved;
+  }
+}
+
+/** The masked embed link at a history position (the mouse hint), or null. */
+export function embedMaskedLinkAt(state: AppState, position: { row: number; col: number }): string | null {
+  const saved = state.historyCursor;
+  state.historyCursor = { ...saved, row: position.row, col: position.col };
+  try {
+    return embedMaskedLinkAtHistoryCursor(state);
   } finally {
     state.historyCursor = saved;
   }

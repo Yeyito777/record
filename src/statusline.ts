@@ -12,6 +12,7 @@ import { truncate } from "./textwidth";
 
 import { accountBlock } from "./statusblocks/account";
 import { callBlock } from "./statusblocks/call";
+import { linkHintBlock } from "./statusblocks/linkhint";
 import { noticeBlock } from "./statusblocks/notice";
 import { presenceBlock } from "./statusblocks/presence";
 import { instagramStatusBlock, whatsappStatusBlock } from "./statusblocks/provider-status";
@@ -33,6 +34,7 @@ const BLOCK_BUILDERS: BlockBuilder[] = [
   whatsappStatusBlock,
   instagramStatusBlock,
   noticeBlock,
+  linkHintBlock,
 ];
 
 const DELIMITER_WIDTH = 3; // " │ "
