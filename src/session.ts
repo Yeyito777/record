@@ -117,6 +117,7 @@ import {
   removeCachedChannelMessages,
   replaceCachedChannelMessage,
   setCachedChannelMessages,
+  pruneChannelMessageCache,
   upsertCachedChannelMessage,
 } from "./messagecache";
 import {
@@ -1702,6 +1703,11 @@ export function handleGatewayMessageCreate(state: AppState, effects: SessionEffe
   const cachedMessage = hydrateMissingReplyPreviewFromKnownMessages(state, withMessageGuildId(message, guildId));
   recordMessageRoleIds(state, cachedMessage, guildId);
   upsertCachedChannelMessage(state.messageCacheByChannelId, cachedMessage);
+  pruneChannelMessageCache(state.messageCacheByChannelId, new Set([
+    cachedMessage.channelId,
+    state.timeline.channelId,
+    state.channelList.activeChannelId,
+  ].filter((channelId): channelId is string => Boolean(channelId))));
   persistChannelMessageCache(state, cachedMessage.channelId);
   clearTypingUser(state.typing, message.channelId, message.author.id);
   const shouldNotify = shouldNotifyForIncomingMessage(state, cachedMessage);
