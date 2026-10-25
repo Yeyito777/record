@@ -206,11 +206,16 @@ in front of the name (after the expand arrow when `/arrows show` is on). Servers
 still loading or unavailable, show a tile with the server's initials in the
 same box. Direct-message rows show the other person's avatar (group DMs their
 group picture) in place of the `#` marker; the Direct Messages, WhatsApp and
-Instagram roots show DM / WA / IG tiles. WhatsApp chats show their profile or
+Instagram roots show the Discord, WhatsApp and Instagram logos (DM / WA / IG
+tiles without Kitty graphics). WhatsApp chats show their profile or
 group picture and Instagram one-to-one chats the other person's avatar;
 Instagram groups and anyone without a picture get initials. Elsewhere the
 sidebar looks exactly as before.
 
+- The three root logos ship with Record in `assets/sidebar/` (64 px PNGs,
+  never downloaded). They are the [Simple Icons](https://simpleicons.org)
+  glyphs (CC0 1.0) on each brand's background; `bun assets/sidebar/generate.ts`
+  regenerates them from `assets/sidebar/source/`.
 - Discord icons and avatars are 64 px PNGs from Discord's CDN (animated ones
   show their first frame). No login token is sent with these requests.
 - A WhatsApp picture costs one normal profile-picture query (preview size)

@@ -11,6 +11,7 @@
 
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "fs/promises";
 import { join } from "path";
+import { fileURLToPath } from "url";
 import { createHash } from "crypto";
 
 import { configDir } from "./config";
@@ -32,7 +33,8 @@ const BACKOFF_MAX_MS = 30 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-export type SidebarIconPlatform = "discord" | "whatsapp" | "instagram";
+/** "bundled": provider logos shipped in assets/sidebar/, read from disk, never fetched. */
+export type SidebarIconPlatform = "discord" | "whatsapp" | "instagram" | "bundled";
 
 export interface SidebarIconSource {
   platform: SidebarIconPlatform;
@@ -48,6 +50,8 @@ export interface SidebarIconSource {
   url?: string;
   /** What the platform resolver is asked about (a WhatsApp jid). */
   ref?: string;
+  /** Local PNG for bundled icons. */
+  file?: string;
 }
 
 interface PlatformPolicy {
@@ -62,6 +66,7 @@ interface PlatformPolicy {
 }
 
 const POLICIES: Record<SidebarIconPlatform, PlatformPolicy> = {
+  bundled: { concurrency: 3, maxAgeMs: Infinity, noneMaxAgeMs: Infinity, lookaheadRows: null },
   // Public, content-addressed CDN files: a hash never changes its picture.
   discord: { concurrency: 4, maxAgeMs: Infinity, noneMaxAgeMs: 7 * DAY_MS, lookaheadRows: null },
   // Queries through the logged-in session: one at a time, few rows ahead.
@@ -101,6 +106,14 @@ export function discordGroupIconSource(channel: { id: string; icon?: string | nu
 /** File-name-safe stand-in for provider ids such as jids. */
 function idDigest(id: string): string {
   return createHash("sha256").update(id).digest("hex").slice(0, 24);
+}
+
+const BUNDLED_DIR = fileURLToPath(new URL("../assets/sidebar/", import.meta.url));
+
+/** Provider logo tile for a fixed root row (Direct Messages, WhatsApp, Instagram). */
+export function bundledSidebarIconSource(name: "direct-messages" | "whatsapp" | "instagram"): SidebarIconSource {
+  const key = `bundled-${name}`;
+  return { platform: "bundled", key, owner: `${key}-`, file: join(BUNDLED_DIR, `${name}.png`) };
 }
 
 /** A WhatsApp chat's picture, asked for through the session when shown. */
@@ -211,6 +224,7 @@ export class SidebarIconStore {
     discord: { active: 0, backoffMs: 0, pausedUntil: 0 },
     whatsapp: { active: 0, backoffMs: 0, pausedUntil: 0 },
     instagram: { active: 0, backoffMs: 0, pausedUntil: 0 },
+    bundled: { active: 0, backoffMs: 0, pausedUntil: 0 },
   };
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   /** This frame's wanted sources, nearest first; replaced every frame. */
@@ -295,7 +309,7 @@ export class SidebarIconStore {
   }
 
   private needsLoad(source: SidebarIconSource): boolean {
-    if (!source.url && !this.resolvers[source.platform]) return false;
+    if (!source.url && !source.file && !this.resolvers[source.platform]) return false;
     const entry = this.entries.get(source.key);
     return !entry || (entry.status === "failed" && this.now() >= entry.retryAt);
   }
@@ -390,6 +404,10 @@ export class SidebarIconStore {
   }
 
   private async load(source: SidebarIconSource): Promise<LoadResult> {
+    if (source.file) {
+      const bytes = await readFile(source.file).catch(() => null);
+      return bytes && isPng(bytes) ? { kind: "ready", png: bytes } : { kind: "none" };
+    }
     const policy = POLICIES[source.platform];
     const dir = this.dir();
     const pngPath = dir ? join(dir, `${source.key}.png`) : null;
