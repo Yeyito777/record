@@ -318,6 +318,10 @@ export function appendTimelineMessage(timeline: TimelineState, message: DiscordM
   if (pendingIndex >= 0) {
     transferInlineImageStates(timeline, timeline.messages[pendingIndex], message);
     timeline.messages[pendingIndex] = message;
+  } else if (timeline.hasNewer && !message.localStatus) {
+    // Viewing an older window (jump to a message): a live message belongs
+    // after history not loaded yet, not directly after this page.
+    return;
   } else {
     timeline.messages.push(message);
   }
