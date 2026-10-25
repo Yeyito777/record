@@ -87,27 +87,28 @@ function atWordBoundary(input: string, pos: number): boolean {
   return pos === 0 || isWhitespace(input[pos - 1]);
 }
 
+/**
+ * The nearest slash-prefixed word before the cursor on its line, through the
+ * cursor (multi-word macro arguments included). Scans back by `/`, not word
+ * by word, so a long ordinary prompt costs nothing per keystroke.
+ */
 function extractSlashToken(input: string, cursor: number): { token: string; start: number } | null {
-  const wordStart = tokenStart(input, cursor);
-  const currentWord = input.slice(wordStart, cursor);
+  const safeCursor = Math.max(0, Math.min(cursor, input.length));
+  if (safeCursor <= 0) return null;
 
-  if (currentWord.startsWith("/") && atWordBoundary(input, wordStart)) {
-    return { token: currentWord, start: wordStart };
+  const lineStart = input.lastIndexOf("\n", safeCursor - 1) + 1;
+  let slash = input.lastIndexOf("/", safeCursor - 1);
+  while (slash >= lineStart) {
+    if (atWordBoundary(input, slash)) return { token: input.slice(slash, safeCursor), start: slash };
+    slash = slash > 0 ? input.lastIndexOf("/", slash - 1) : -1;
   }
-
-  let scanPos = wordStart;
-  while (scanPos > 0 && (input[scanPos - 1] === " " || input[scanPos - 1] === "\t")) {
-    const prevStart = tokenStart(input, scanPos - 1);
-    const prevWord = input.slice(prevStart, scanPos - 1);
-
-    if (prevWord.startsWith("/") && atWordBoundary(input, prevStart)) {
-      return { token: input.slice(prevStart, cursor), start: prevStart };
-    }
-
-    scanPos = prevStart;
-  }
-
   return null;
+}
+
+function firstNonWhitespaceIndex(input: string): number {
+  let index = 0;
+  while (index < input.length && /\s/.test(input[index]!)) index++;
+  return index;
 }
 
 function getMentionMatches(state: AppState, query: string): CompletionItem[] {
@@ -185,8 +186,8 @@ export function updateAutocomplete(state: AppState): void {
     }
   }
 
-  const trimmed = state.editor.buffer.trimStart();
-  if (trimmed.startsWith("/") && !trimmed.includes("\n")) {
+  const firstNonBlank = firstNonWhitespaceIndex(state.editor.buffer);
+  if (state.editor.buffer[firstNonBlank] === "/" && state.editor.buffer.indexOf("\n", firstNonBlank) === -1) {
     const matches = getCommandMatches(state, state.editor.buffer);
     if (matches.length > 0) {
       state.autocomplete = {
