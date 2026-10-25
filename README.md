@@ -264,6 +264,7 @@ scripts/dev/recorddemo --nested demo        # dwm start demo + st running the de
 dwm -e demo screenshot -o /tmp/record-demo.png
 dwm -e demo key j                           # send keys; type text with:
 printf 'hello\n' | dwm -e demo type
+dwm -e demo key ctrl+c                      # quit Record (deletes the demo home)
 dwm stop demo
 ```
 

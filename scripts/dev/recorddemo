@@ -56,7 +56,7 @@ Record demo starting in nested env '$NAME' (checkout: $REPO_DIR)
   screenshot:  dwm -e $NAME screenshot -o /tmp/record-demo.png
   keys:        dwm -e $NAME key j   |   printf 'hello\n' | dwm -e $NAME type
   incoming:    kill -USR1 \$(cat $HOME_DIR/record-demo.pid)   (USR2 = 10 messages)
-  stop:        dwm -e $NAME key q   (or: dwm stop $NAME)
+  quit:        dwm -e $NAME key ctrl+c   (then: dwm stop $NAME)
 EOF
   exit 0
 fi
