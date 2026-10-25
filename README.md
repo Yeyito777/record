@@ -106,6 +106,8 @@ Notes:
 - switching chats reuses a session-only LRU of prepared image previews (64 entries / 16 MiB); terminal image data also stays resident for recent images (up to 64 idle images / 32 MiB, plus visible images), avoiding reconversion and retransmission on return
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`
+- runtime debug events go to `$XDG_CONFIG_HOME/record/debug.log`, written in batches and rotated to `debug.log.1` at 16 MiB (`RECORD_DEBUG_LOG_MAX_BYTES`); `RECORD_DEBUG=0` turns it off, `RECORD_DEBUG=verbose` also records per-packet/per-speaking-flip call and voice events
+- `bun test` runs against a throwaway config/cache/home directory (bunfig.toml preload), never your real `~/.config/record`
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`
 - this is intentionally small and modular so real Discord features can be layered on later
 
