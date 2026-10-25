@@ -35,6 +35,7 @@ import {
 import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
 import { imageModalLayout, renderImageModal } from "./imagemodal";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
+import { visiblePanels } from "./panels";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import type { CompletionItem } from "./commands";
 import { highlightPromptViewport, promptHighlightRegions, type PromptHighlightRegion } from "./prompthighlight";
@@ -521,8 +522,13 @@ export function render(state: AppState): void {
     ? (line: string) => applyLineBg(line, appBg)
     : (line: string) => line;
 
-  const sidebarOpen = state.sidebar.open;
-  const memberListOpen = state.memberList.open;
+  // A window too narrow for the open side panels hides them for now.
+  const panels = visiblePanels(state);
+  const sidebarOpen = panels.sidebar;
+  const memberListOpen = panels.memberList;
+  if ((state.panelFocus === "sidebar" && !sidebarOpen) || (state.panelFocus === "memberlist" && !memberListOpen)) {
+    state.panelFocus = "chat";
+  }
   const sidebarW = sidebarOpen ? SIDEBAR_WIDTH : 0;
   const memberListW = memberListOpen ? MEMBER_LIST_WIDTH : 0;
   const mainCol = sidebarW + 1;

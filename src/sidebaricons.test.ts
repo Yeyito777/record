@@ -663,7 +663,8 @@ describe("rendering sidebar icons", () => {
 
   test("the image viewer hides icons it covers and they return when it closes", async () => {
     const { state } = await iconState();
-    state.cols = 30;
+    // Wide enough to keep the sidebar beside a usable message pane.
+    state.cols = 50;
     state.rows = 12;
     capture(state);
     state.imageModal = openImageModalState(

@@ -1,5 +1,6 @@
 /** Mouse routing for Record's server sidebar, modeled after Exocortex TUI. */
 
+import { visiblePanels } from "./panels";
 import type { MouseEvent } from "./input";
 import {
   focusSidebarAtMouse,
@@ -90,7 +91,7 @@ function chatCursorShape(state: AppState, col: number, row: number): "hand" | "t
 }
 
 function updateMouseCursor(ev: MouseEvent, state: AppState, writeCursor: CursorWriter): void {
-  const inSidebar = state.sidebar.open && ev.col >= 1 && ev.col <= SIDEBAR_WIDTH;
+  const inSidebar = visiblePanels(state).sidebar && ev.col >= 1 && ev.col <= SIDEBAR_WIDTH;
   // A masked embed link shows where it goes (statusblocks/linkhint.ts).
   const position = !inSidebar && chatAreaAt(state, ev.col, ev.row) === "history" ? historyPositionAt(state, ev.col, ev.row) : null;
   state.historyLinkHover = position?.exact ? embedMaskedLinkAt(state, position) : null;
@@ -137,7 +138,7 @@ export function handleMouseEvent(
     return { type: "history_release", position: position && { row: position.row, col: position.col } };
   }
 
-  const inSidebar = state.sidebar.open && ev.col >= 1 && ev.col <= SIDEBAR_WIDTH;
+  const inSidebar = visiblePanels(state).sidebar && ev.col >= 1 && ev.col <= SIDEBAR_WIDTH;
 
   // Match Exocortex: entering the sidebar focuses it; leaving returns panel focus
   // to chat without forcing insert mode or changing prompt/history focus.
