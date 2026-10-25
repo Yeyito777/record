@@ -62,7 +62,7 @@ export interface RenderFrame {
    * update, given how far the region scroll moved the content (up positive,
    * 0 without one) and whether every row it moved arrived intact.
    */
-  afterScroll?: (regionShift: number, intact: boolean) => string;
+  afterScroll?: (regionShift: number, intact: boolean, scrolled: ScrollRegion | null) => string;
 }
 
 interface RetainedFrame extends RenderFrame {
@@ -499,7 +499,7 @@ function flushSmoothFrame(owner: object, nextFrame: RenderFrame, images?: FrameI
     hasDrawingUpdates = true;
   }
 
-  const smooth = nextFrame.afterScroll!(scrollShift, scrolledIntact);
+  const smooth = nextFrame.afterScroll!(scrollShift, scrolledIntact, scrollRegion);
   if (smooth) out.push(smooth);
 
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {

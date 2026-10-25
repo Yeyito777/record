@@ -46,6 +46,8 @@ describe("mode 2032 protocol", () => {
 describe("SmoothScroller", () => {
   let now = 0;
   const rects = [{ top: 3, left: 1, bottom: 20, right: 80 }];
+  /** The region a frame's region scroll moved (the band). */
+  const band = { start: 3, end: 20 };
   const scroller = () => new SmoothScroller(100, () => now, 30);
   beforeEach(() => { now = 1000; });
   const moves = (out: string) => [...out.matchAll(/\x1b\]2032;m;(-?\d+)(?:;(-?\d+);(\d+))?\x1b\\/g)]
@@ -66,33 +68,33 @@ describe("SmoothScroller", () => {
     return out;
   }
 
-  test("an input is one move: the step, eased out by st, and rows laid out ahead", () => {
+  test("an input is one move and one region scroll: laid out at the target, st glides from its kept lines", () => {
     const smooth = scroller();
     expect(smooth.layout(10, 100, 0, 20, "a")).toBe(10);
     expect(smooth.afterFlush(0, rects)).toBe(rectsPayload(rects));
-    // Three rows towards older history: laid out ahead (the row just past
-    // the position), so the offset is drawn higher, over lines st kept below.
+    // Three rows towards older history: the history is laid out there at
+    // once (the region scroll pushes out the lines st draws the glide from),
+    // and one easing term of -3 rows keeps it where it was at first.
     smooth.intend();
     const grid = smooth.layout(13, 100, 0, 20, "a");
-    expect(grid).toBe(11);
-    const out = smooth.afterFlush(10 - grid, rects);
-    // base += 3 (target) - 1 (row laid out); -3 rows easing from now: no jump.
-    expect(moves(out)).toEqual([[2000, -3000]]);
+    expect(grid).toBe(13);
+    const out = smooth.afterFlush(10 - grid, rects, true, band);
+    expect(moves(out)).toEqual([[0, -3000]]);
     expect(out).toContain(";100\x1b\\");
-    // Each further row is a region scroll plus base -1; nothing in between.
-    expect(moves(settle(smooth, 13))).toEqual([[-1000, 0], [-1000, 0]]);
-    expect(smooth.busy()).toBe(false);
+    // Nothing more until it rests.
     expect(smooth.needsLayout()).toBe(false);
+    expect(settle(smooth, 13)).toBe("");
+    expect(smooth.busy()).toBe(false);
   });
 
-  test("towards newer history rows are laid out behind (floor) and drawn lower", () => {
+  test("towards newer history the same: one scroll, drawn lower at first", () => {
     const smooth = scroller();
     smooth.layout(10, 100, 0, 20, "a");
     smooth.afterFlush(0, rects);
     smooth.intend();
     const grid = smooth.layout(7, 100, 0, 20, "a");
-    expect(grid).toBe(9);
-    expect(moves(smooth.afterFlush(10 - grid, rects))).toEqual([[-2000, 3000]]);
+    expect(grid).toBe(7);
+    expect(moves(smooth.afterFlush(10 - grid, rects, true, band))).toEqual([[0, 3000]]);
     settle(smooth, 7);
     expect(smooth.busy()).toBe(false);
   });
@@ -103,23 +105,23 @@ describe("SmoothScroller", () => {
     smooth.afterFlush(0, rects);
     smooth.intend();
     const first = smooth.layout(13, 100, 0, 20, "a");
-    smooth.afterFlush(10 - first, rects);
+    smooth.afterFlush(10 - first, rects, true, band);
     now += 40;
     smooth.intend();
     const second = smooth.layout(16, 100, 0, 20, "a");
-    const [[delta, ease]] = moves(smooth.afterFlush(first - second, rects));
-    expect(ease).toBe(-3000);
-    expect(delta).toBe(3000 - (second - first) * 1000);
+    expect(second).toBe(16);
+    expect(moves(smooth.afterFlush(first - second, rects, true, band))).toEqual([[0, -3000]]);
     settle(smooth, 16);
     expect(smooth.busy()).toBe(false);
   });
 
-  test("however fast inputs stack up, rows are laid out at most one past the glide", () => {
-    // Key repeat / wheel momentum: 3 rows every 8 ms, laid out every 4 ms.
+  test("however fast inputs stack up, the offset stays within the lines the scrolls kept", () => {
+    // Key repeat / wheel momentum: 3 rows every 8 ms, frames every 4 ms.
     const smooth = scroller();
     smooth.layout(100, 1000, 0, 40, "a");
     smooth.afterFlush(0, rects);
     let logical = 100;
+    let kept = 0;
     let worst = 0;
     for (let i = 0; i < 60; i++) {
       now += 4;
@@ -128,44 +130,56 @@ describe("SmoothScroller", () => {
         smooth.intend();
       }
       const before = gridOf(smooth);
-      smooth.afterFlush(before - smooth.layout(logical, 1000, 0, 40, "a"), rects);
-      worst = Math.max(worst, Math.abs(offsetOf(smooth)));
+      const grid = smooth.layout(logical, 1000, 0, 40, "a");
+      kept = Math.min(40, before === grid ? kept : kept + Math.abs(before - grid));
+      smooth.afterFlush(before - grid, rects, true, band);
+      if (!smooth.busy()) kept = 0;
+      worst = Math.max(worst, Math.abs(offsetOf(smooth)) - kept);
     }
-    expect(worst).toBeLessThanOrEqual(1 + SMOOTH_SCROLL_MARGIN_ROWS);
+    expect(worst).toBeLessThanOrEqual(0);
     for (let i = 0; i < 40 && smooth.busy(); i++) {
       now += 4;
       const before = gridOf(smooth);
-      smooth.afterFlush(before - smooth.layout(logical, 1000, 0, 40, "a"), rects);
+      smooth.afterFlush(before - smooth.layout(logical, 1000, 0, 40, "a"), rects, true, band);
     }
     expect(smooth.busy()).toBe(false);
     expect(gridOf(smooth)).toBe(logical);
   });
 
-  test("the next wake is when a row is due or the glide comes to rest, never a poll", () => {
+  test("the only wake after an input is when the glide comes to rest, never a poll", () => {
     const smooth = scroller();
     smooth.layout(10, 100, 0, 20, "a");
     smooth.afterFlush(0, rects);
     smooth.intend();
-    let grid = smooth.layout(13, 100, 0, 20, "a");
-    smooth.afterFlush(10 - grid, rects);
-    const position = () => grid + offsetOf(smooth);
-    let wakes = 0;
+    const grid = smooth.layout(13, 100, 0, 20, "a");
+    smooth.afterFlush(10 - grid, rects, true, band);
+    const wait = smooth.nextWakeMs();
+    expect(wait).toBeGreaterThanOrEqual(100);
+    now += wait;
+    expect(smooth.needsLayout()).toBe(false);
+    expect(smooth.busy()).toBe(false);
+  });
+
+  test("further than a band in one go: one region scroll per frame, each when due", () => {
+    const smooth = scroller();
+    smooth.layout(0, 100, 0, 20, "a");
+    smooth.afterFlush(0, rects, false, band);
+    smooth.intend();
+    // 16 rows in a 18-row band: 15 rows (band - 3) now, the last one when due.
+    let grid = smooth.layout(16, 100, 0, 20, "a");
+    expect(grid).toBe(15);
+    smooth.afterFlush(0 - grid, rects, true, band);
+    let frames = 0;
     for (let i = 0; i < 200 && smooth.busy(); i++) {
-      const wait = smooth.nextWakeMs();
-      expect(wait).toBeGreaterThanOrEqual(0);
-      now += Math.max(1, wait);
-      wakes++;
+      now += Math.max(1, smooth.nextWakeMs());
       if (!smooth.needsLayout()) continue;
-      // Laid out with about a quarter row to spare (a 1 ms step moves < 0.1 row).
-      if (grid < 13) expect(grid - position()).toBeGreaterThanOrEqual(SMOOTH_SCROLL_MARGIN_ROWS - 0.1);
-      const next = smooth.layout(13, 100, 0, 20, "a");
-      smooth.afterFlush(grid - next, rects);
+      frames++;
+      const next = smooth.layout(16, 100, 0, 20, "a");
+      smooth.afterFlush(grid - next, rects, true, band);
       grid = next;
     }
-    expect(grid).toBe(13);
-    expect(smooth.busy()).toBe(false);
-    // Two rows to lay out after the input's own frame, then rest: no 16 ms ticks.
-    expect(wakes).toBeLessThanOrEqual(3);
+    expect(frames).toBe(1);
+    expect(grid).toBe(16);
   });
 
   test("pinning and a new context never animate", () => {
@@ -213,6 +227,26 @@ describe("SmoothScroller", () => {
     expect(out).toContain(offsetPayload((500 - grid) * 1000));
     expect(moves(out)).toEqual([[0, -(500 - grid) * 1000]]);
     expect(smooth.busy()).toBe(true);
+    // The next frame is one region scroll as far as the band allows (st
+    // kept nothing to glide from before it): 18 rows - 3.
+    now += 1;
+    expect(smooth.needsLayout()).toBe(true);
+    expect(smooth.layout(500, 1000, 0, 20, "a")).toBe(Math.min(500, grid + 15));
+  });
+
+  test("a band edge that moved under a glide (more than a row) snaps it instead of showing an empty strip", () => {
+    const smooth = scroller();
+    smooth.layout(10, 100, 0, 20, "a");
+    smooth.afterFlush(0, rects, false, band);
+    smooth.intend();
+    const grid = smooth.layout(14, 100, 0, 20, "a");
+    smooth.afterFlush(10 - grid, rects, true, band);
+    now += 10;
+    // An overlay took the band's last rows while the strip is at the bottom.
+    smooth.layout(14, 100, 0, 20, "a");
+    const out = smooth.afterFlush(0, [{ ...rects[0]!, bottom: 15 }]);
+    expect(out).toContain(offsetPayload(0));
+    expect(smooth.busy()).toBe(false);
   });
 
   test("content that moved by itself at the bottom eases from where it was drawn", () => {
@@ -225,6 +259,22 @@ describe("SmoothScroller", () => {
     expect(smooth.busy()).toBe(true);
     now += 120;
     expect(smooth.busy()).toBe(false);
+  });
+
+  test("content that arrived at the bottom stays laid out where it ends: no frames until rest", () => {
+    const smooth = scroller();
+    smooth.layout(0, 100, 0, 20, "a");
+    smooth.afterFlush(0, rects);
+    smooth.layout(0, 100, 0, 20, "a");
+    smooth.afterFlush(3, rects, true);
+    let frames = 0;
+    for (let i = 0; i < 40 && smooth.busy(); i++) {
+      now += Math.max(1, smooth.nextWakeMs());
+      if (smooth.needsLayout()) frames++;
+    }
+    expect(frames).toBe(0);
+    expect(smooth.busy()).toBe(false);
+    expect(gridOf(smooth)).toBe(0);
   });
 
   test("content moved by a re-layout, not intact, or above the bottom snaps", () => {

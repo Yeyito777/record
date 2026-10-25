@@ -138,13 +138,17 @@ with DECRQM (`CSI ? 2032 $ p`); if st says yes it turns the mode on
 (`CSI ? 2032 h`) and off again on exit, quit, signals and crashes. Other
 terminals never reply and see no difference.
 
-- Each scroll is one eased move (`OSC 2032 ; m`) that st times itself at the
-  display's refresh rate (100 ms ease-out, like st's own glides). Record keeps
-  the same curve, lays the history out one whole row at a time a little ahead
-  of it, and sends one small frame per row: the region scroll, the exposed row,
-  and the matching offset change, in one synchronized update. Nothing is sent
-  between rows and Record wakes only when the next row is due, so traffic stays
-  tiny and the glide stays smooth over ssh.
+- Each scroll is one frame: the region scroll to where the scroll ends, the
+  rows it exposed, and one eased move (`OSC 2032 ; m`), in one synchronized
+  update. st then animates the whole glide itself at the display's refresh
+  rate (100 ms ease-out, like st's own glides), drawing the rows the scroll
+  pushed out in the strip it uncovers. Record keeps the same curve to know
+  where st is, sends nothing while it glides, and wakes once when it rests, so
+  over ssh the glide never waits on Record and the traffic is one frame per
+  scroll. (Exocortex lays its history out a row at a time because rows beside
+  its Tasks panel re-wrap as they glide; Record's never re-wrap.) A scroll
+  longer than the band minus three rows takes one more frame when due; a jump
+  further than a screen repaints one screen away and glides in from there.
 - What glides: every scroll key (`j`/`k` and other cursor motions that scroll,
   `Ctrl+E`/`Ctrl+Y`, `Ctrl+D`/`Ctrl+U`, page jumps, `gg`/`G`), the mouse wheel,
   messages arriving (or the typing line coming and going) while you follow the
@@ -156,8 +160,13 @@ terminals never reply and see no difference.
 - It works with the sidebar and member list open and around the autocomplete
   popup and other overlays: the scrolled band is the longest run of message
   rows no overlay touches, the moving rectangle (`OSC 2032 ; r`) is the pane's
-  columns only, and the side panels' segments of the moved rows are repainted
-  in the same update, so they never move.
+  columns only, and the side panels' segments of the moved rows (and their
+  server icons) are repainted in the same update, so they never move. That
+  repaint is most of a scroll's bytes with the panels open (about 6 KB with
+  the sidebar, 11 KB with both, under 1 KB with neither, at 240x50); st has no
+  left/right margins (DECLRMM) to avoid it. If an overlay or the typing line
+  changes the band's edge under a glide by more than a row, the rest of the
+  glide snaps rather than uncover an empty strip.
 - Inline images and custom emoji glide with their text. While a glide runs an
   image cut off by the pane's bottom is placed whole past the edge (st clips it
   to the moving rectangle) and one more frame crops it again when the glide

@@ -938,6 +938,6 @@ export function render(state: AppState): void {
     viewStart,
     regionScrolls: state.scrollRegions,
     graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
-    afterScroll: smooth ? (regionShift, intact) => smooth.afterFlush(regionShift, smoothRects, intact) : undefined,
+    afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled) : undefined,
   }, images);
 }

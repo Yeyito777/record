@@ -144,7 +144,7 @@ describe("smooth scrolling the message pane", () => {
   for (const [sidebar, members] of [[false, false], [true, false], [false, true], [true, true]] as const) {
     const label = `sidebar ${sidebar ? "open" : "closed"}, member list ${members ? "open" : "closed"}`;
 
-    test(`a scroll is one eased move, laid out row by row in synchronized region scrolls (${label})`, () => {
+    test(`a scroll is one eased move and one synchronized region scroll; st glides the rest (${label})`, () => {
       const state = chatState({ sidebar, members });
       settle(state);
       state.timeline.scrollOffset = state.timeline.maxScroll - 20;
@@ -155,14 +155,17 @@ describe("smooth scrolling the message pane", () => {
       const outs = [frame(state), ...animate(state)];
       const all = outs.join("");
       const crossings = outs.filter((out) => regionScrolls(out).length > 0);
-      expect(crossings.length).toBeGreaterThanOrEqual(2);
+      // The input's own frame lays the history out at the target; the only
+      // other frame is the one at rest (nothing to redraw here).
+      expect(crossings).toHaveLength(1);
+      expect(outs.length).toBeLessThanOrEqual(2);
       for (const out of crossings) {
         expect(out.startsWith(SYNC_BEGIN)).toBe(true);
         expect(out.endsWith(SYNC_END)).toBe(true);
         // The move rides in the same synchronized update as the scroll.
         expect(out.indexOf("\x1b]2032;m;")).toBeGreaterThan(out.indexOf("\x1b[r"));
         expect(out.indexOf("\x1b]2032;m;")).toBeLessThan(out.indexOf(SYNC_END));
-        // Only the exposed row is drawn whole; beside the others only the side panels repaint.
+        // Only the exposed rows are drawn whole; beside the others only the side panels repaint.
         expect(out.match(/\x1b\[2K/g)?.length ?? 0).toBeLessThanOrEqual(regionScrolls(out)[0]!.rows);
       }
       expect(regionScrolls(all).every((scroll) => scroll.dir === "T")).toBe(true);
@@ -536,7 +539,7 @@ describe("any sequence of glides, arrivals and history pages", () => {
       }
     }
     animate(state);
-    expect(crossings).toBeGreaterThan(100);
+    expect(crossings).toBeGreaterThan(50);
     expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
   });
 });

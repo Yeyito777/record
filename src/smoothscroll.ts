@@ -3,12 +3,11 @@
  *
  * On a terminal that supports it (st's mode 2032, ~/Config/st
  * docs/app-smooth-scroll.md) Record animates scrolls itself: the history is
- * laid out one whole row at a time, as usual, and the terminal draws the
- * moving rectangles shifted by the remaining fraction of a row. Each row the
- * animation crosses is an ordinary region scroll plus the rows it exposes, so
- * the sidebar and member list are repainted beside it in the same
- * synchronized update. Between rows nothing is sent. Ported from the
- * Exocortex TUI (tui/src/smoothscroll.ts); see README "Scroll regions".
+ * laid out at whole rows, as usual, with an ordinary region scroll plus the
+ * rows it exposes (the sidebar and member list repainted beside them in the
+ * same synchronized update), and the terminal draws the moving rectangle
+ * shifted by an offset it eases itself. Ported from the Exocortex TUI
+ * (tui/src/smoothscroll.ts); see README "Scroll regions".
  */
 
 const ESC = "\x1b";
@@ -86,12 +85,19 @@ interface EaseTerm {
  * at the display's refresh. This class keeps the same curve so it knows
  * where st is: the eased position is `grid + offset`. Inputs move the
  * target (one move message: base += step, plus an easing term of -step, so
- * nothing jumps). The history is laid out at the whole row a little ahead of
- * the position in the direction of travel, so the strip a shifted rectangle
- * uncovers always shows lines st's own region scrolls kept; each row laid
- * out is a region scroll plus `base -= rows` in the same synchronized update.
- * Content that moved by itself (a message arriving while following the
- * bottom) gets an easing term from where it was drawn.
+ * nothing jumps). Every row laid out is a region scroll plus `base -= rows`
+ * in the same synchronized update, and the strip a shifted rectangle
+ * uncovers shows the lines that scroll kept.
+ *
+ * Unlike the Exocortex TUI, which lays out one row at a time just ahead of
+ * the glide (its rows re-wrap beside the Tasks panel), Record re-wraps
+ * nothing while gliding, so it lays the history out at the glide's target
+ * right away, up to the band's height a frame: one region scroll per input,
+ * after which st animates the whole glide from the lines it kept. Traffic is
+ * one frame per input whatever the side panels cost per row, and the glide
+ * never waits on Record's frames (over ssh it cannot judder). Content that
+ * moved by itself (a message arriving while following the bottom) gets an
+ * easing term from where it was drawn.
  */
 export class SmoothScroller {
   private target = 0;
@@ -104,6 +110,10 @@ export class SmoothScroller {
   private expectedShift = 0;
   private height = 0;
   private maxOffset = 0;
+  /** Most rows one frame's region scroll can move (the band's height - 3). */
+  private maxStep = Infinity;
+  /** The region the glide's last region scroll moved: the lines st keeps for it. */
+  private keptRegion: { start: number; end: number } | null = null;
   private sentRects = "";
   private context: string | null = null;
   /** The user scrolled since the last layout (markScrollIntent). */
@@ -158,20 +168,22 @@ export class SmoothScroller {
   private gridFor(time: number, maxOffset: number): number {
     const position = this.grid + this.offsetAt(time);
     if (position === this.target && this.terms.length === 0) return this.target;
-    // Lay out where the glide will be a little later, but never more than
-    // the row just past it: st draws the laid-out rows `offset` away from
-    // where they were laid out, so the offset must stay within about a row.
+    // At least where the glide will be a little later (and the next row a
+    // quarter row early), so st's clock never reaches rows not laid out yet.
     const ahead = this.grid + this.offsetAt(time + this.leadMs);
     let grid: number;
-    // The next row may be laid out a quarter row early, so st (whose clock
-    // runs a little behind this one) never reaches the laid-out rows and has
-    // to hold the glide still while the next frame is on its way.
     if (this.target > position) {
       grid = Math.max(Math.ceil(position), Math.min(Math.ceil(ahead), Math.floor(position + SMOOTH_SCROLL_MARGIN_ROWS) + 1));
       grid = Math.min(this.target, grid);
+      // Otherwise as far towards the target as one region scroll from the
+      // rows on screen goes: what it pushes out is what st draws the glide
+      // from. Beyond that (a jump) the frame is a repaint; lay it out at
+      // the glide.
+      if (grid - this.grid <= this.maxStep) grid = Math.max(grid, Math.min(this.target, this.grid + this.maxStep));
     } else if (this.target < position) {
       grid = Math.min(Math.floor(position), Math.max(Math.floor(ahead), Math.ceil(position - SMOOTH_SCROLL_MARGIN_ROWS) - 1));
       grid = Math.max(this.target, grid);
+      if (this.grid - grid <= this.maxStep) grid = Math.min(grid, Math.max(this.target, this.grid - this.maxStep));
     } else {
       grid = Math.round(position);
     }
@@ -187,6 +199,7 @@ export class SmoothScroller {
     this.gridValid = false;
     this.expectedShift = 0;
     this.following = false;
+    this.keptRegion = null;
     this.pendingReset = this.terminalNonzero;
     this.pendingDelta = this.pendingEase = 0;
     this.relayout = true;
@@ -202,6 +215,7 @@ export class SmoothScroller {
   layout(logical: number, maxOffset: number, pinDelta: number, height: number, context: string): number {
     const time = this.now();
     this.height = height;
+    this.maxStep = Math.min(this.maxStep, Math.max(1, height - 3));
     this.maxOffset = maxOffset;
     if (context !== this.context) {
       this.context = context;
@@ -256,14 +270,27 @@ export class SmoothScroller {
 
   /**
    * After the frame was flushed: `regionShift` is how far its region scroll
-   * moved the content (up positive, 0 when it was repainted) and `intact`
-   * whether every row it moved arrived unchanged. Returns what to send
-   * inside the same synchronized update (rectangles, motion).
+   * moved the content (up positive, 0 when it was repainted), `intact`
+   * whether every row it moved arrived unchanged and `scrolled` the region
+   * it scrolled. Returns what to send inside the same synchronized update
+   * (rectangles, motion).
    */
-  afterFlush(regionShift: number, rects: readonly ScrollRect[], intact = false): string {
+  afterFlush(
+    regionShift: number,
+    rects: readonly ScrollRect[],
+    intact = false,
+    scrolled: { start: number; end: number } | null = null,
+  ): string {
     const time = this.now();
+    // The band (less 3 rows) is how far the next frames' region scrolls go.
+    const band = rects.length > 0
+      ? { start: Math.min(...rects.map((rect) => rect.top)), end: Math.max(...rects.map((rect) => rect.bottom)) }
+      : null;
+    this.maxStep = band ? Math.max(1, band.end - band.start + 1 - 3) : 1;
+    if (regionShift !== 0 && scrolled) this.keptRegion = scrolled;
     if (this.expectedShift !== 0 && regionShift === 0) {
       // Repainted, not scrolled: nothing on screen to glide from; ease on from here.
+      this.keptRegion = null;
       this.restart(this.grid, time);
     } else if (regionShift !== this.expectedShift) {
       // Content moved by itself. Only what grows or shrinks at the bottom
@@ -276,13 +303,22 @@ export class SmoothScroller {
     }
     this.relayout = false;
     this.expectedShift = 0;
-    if (rects.length === 0 || Math.abs(this.offsetAt(time)) >= Math.max(1, this.height - 1)) {
-      // Nothing to move, or further than the lines the terminal keeps.
+    const offset = this.offsetAt(time);
+    // The strip a rectangle uncovers shows kept lines only where its edge is
+    // the scrolled region's (st fills the rest with the row beyond's
+    // background): when the band changed under a glide (an overlay, the
+    // typing line) by more than the row it frees, or the offset outgrew the
+    // lines st keeps, the glide snaps instead.
+    const kept = this.keptRegion;
+    const stripEdgeMoved = Math.abs(offset) > 1 && !!kept && !!band
+      && (offset < 0 ? band.end !== kept.end : band.start !== kept.start);
+    if (!band || stripEdgeMoved || Math.abs(offset) >= Math.max(1, this.height - 1)) {
       this.restart(this.grid, time);
       this.terms = [];
       this.unsent = [];
       this.pendingEase = 0;
     }
+    if (this.base === 0 && this.terms.length === 0) this.keptRegion = null;
     let out = "";
     const rectKey = rectsPayload(rects);
     if (rectKey !== this.sentRects) {
