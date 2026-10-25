@@ -18,6 +18,7 @@ import {
   handleEditorKey,
   MAX_PROMPT_ROWS,
   PROMPT_PREFIX_WIDTH,
+  replaceEditorText,
   resetEditor,
 } from "./editor";
 import {
@@ -1370,7 +1371,8 @@ function startEditSelectedHistoryMessage(): void {
   state.messageDeletePending = null;
   state.pendingImages = [];
   setNotice(state, "", "muted");
-  resetEditor(state.editor, replaceCustomEmojiTokens(message.content), "insert");
+  // The replaced draft stays one `u` away.
+  replaceEditorText(state.editor, replaceCustomEmojiTokens(message.content));
   focusPrompt(state);
   syncPromptAutocomplete();
   scheduleRender();

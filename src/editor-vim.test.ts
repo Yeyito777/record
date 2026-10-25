@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { isLinewiseClipboardText, setTextClipboardSystemForTest } from "./editor-clipboard";
-import { createEditorState, getInputLines, handleEditorKey, type EditorMode, type EditorState } from "./editor";
+import { createEditorState, getInputLines, handleEditorKey, replaceEditorText, type EditorMode, type EditorState } from "./editor";
 import type { KeyEvent } from "./input";
 
 /** An editor whose prompt wraps at `width` columns (null: logical lines only). */
@@ -513,5 +513,28 @@ describe("prompt bracketed paste", () => {
     const editor = prompt("", 0, "insert");
     handleEditorKey(editor, { type: "paste", text: "a\tb\x1b[31mc\x07\r\nd" });
     expect(editor.buffer).toBe("a    bc\nd");
+  });
+});
+
+describe("replacing the prompt (editing a sent message)", () => {
+  test("u brings the draft back, then the typing before it", () => {
+    const editor = prompt("", 0, "insert");
+    keys(editor, "my draft");
+    replaceEditorText(editor, "old msg");
+    expect([editor.buffer, editor.cursor, editor.mode]).toEqual(["old msg", 7, "insert"]);
+    keys(editor, "!<esc>");
+    const undone: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      keys(editor, "u");
+      undone.push(editor.buffer);
+    }
+    expect(undone).toEqual(["old msg", "my draft", ""]);
+  });
+
+  test("from normal mode the draft is still one step away", () => {
+    const editor = prompt("draft", 0);
+    replaceEditorText(editor, "old");
+    keys(editor, "<esc>u");
+    expect(editor.buffer).toBe("draft");
   });
 });

@@ -1043,6 +1043,23 @@ export function resetEditor(editor: EditorState, buffer = "", mode: EditorMode =
   }
 }
 
+/**
+ * Replace the prompt with `text` in insert mode, cursor at its end, keeping the
+ * replaced draft one undo step away (Exocortex edit-confirm): `u` brings the
+ * draft back, then the typing before it.
+ */
+export function replaceEditorText(editor: EditorState, text: string): void {
+  if (editor.mode === "insert") commitInsertSession(editor.undo, editor.buffer);
+  if (editor.buffer !== text) pushUndo(editor.undo, editor.buffer, editor.cursor);
+  editor.buffer = text;
+  editor.cursor = text.length;
+  editor.curswant = null;
+  editor.scroll = 0;
+  editor.mode = "insert";
+  resetPending(editor);
+  markInsertEntry(editor.undo, editor.buffer, editor.cursor);
+}
+
 export function leaveInsertMode(editor: EditorState): void {
   if (editor.mode !== "insert") return;
   commitInsertSession(editor.undo, editor.buffer);
