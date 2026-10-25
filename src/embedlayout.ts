@@ -376,10 +376,3 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
   if (footer) push({ text: `${theme.muted}${truncate(footer, contentWidth)}${theme.reset}${restore}`, anchor: anchor("footer", 0), cont: false });
   return out;
 }
-
-/** Whether laying the embed out would draw anything (embedHasText or a picture or video). */
-export function embedDrawsSomething(group: EmbedGroup, urlShown: boolean): boolean {
-  const embed = group.embed;
-  if (embedHasText(embed) || oneLine(embed.providerName) || group.media.length > 0 || isVideoEmbed(embed)) return true;
-  return !urlShown && Boolean(embedHost(embed.url));
-}
