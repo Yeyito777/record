@@ -16,3 +16,17 @@ export function sanitizePromptTextForInsertion(text: string): string {
     .replace(PROMPT_ESCAPE_SEQUENCE_RE, "")
     .replace(PROMPT_CONTROL_RE, "");
 }
+
+const TOKEN_TAIL_CHAR_RE = /[A-Za-z0-9._+-]/;
+
+/**
+ * Start of the text a cursor-anchored completion regex (`@name`, `:emoji`)
+ * needs: the run of name characters before the cursor, its sigil and the
+ * boundary character before that. Matching that tail instead of everything
+ * before the cursor keeps completion O(token) in a long prompt.
+ */
+export function completionTailStart(buffer: string, cursor: number): number {
+  let start = cursor;
+  while (start > 0 && TOKEN_TAIL_CHAR_RE.test(buffer[start - 1]!)) start--;
+  return Math.max(0, start - 2);
+}

@@ -3,6 +3,7 @@
  */
 
 import { DIRECT_MESSAGES_GUILD_ID, type DiscordGuildMember, type DiscordMessage, type DiscordRole } from "./discord";
+import { completionTailStart } from "./prompttext";
 import type { AppState } from "./state";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { resolvePrimaryRoleColor } from "./timeline";
@@ -217,7 +218,7 @@ export function loadedMentionCandidates(state: AppState): MentionCandidate[] {
 
 export function mentionQueryAtCursor(buffer: string, cursor: number): MentionQuery | null {
   const clampedCursor = Math.max(0, Math.min(cursor, buffer.length));
-  const beforeCursor = buffer.slice(0, clampedCursor);
+  const beforeCursor = buffer.slice(completionTailStart(buffer, clampedCursor), clampedCursor);
   const match = beforeCursor.match(MENTION_BOUNDARY_RE);
   if (!match) return null;
   const boundary = match[1] ?? "";

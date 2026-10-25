@@ -28,7 +28,7 @@ import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
 import { imageModalLayout, renderImageModal } from "./imagemodal";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
-import { highlightPromptViewport } from "./prompthighlight";
+import { highlightPromptViewport, promptHighlightRegions, type PromptHighlightRegion } from "./prompthighlight";
 import {
   SIDEBAR_WIDTH,
   createSidebarIconFrame,
@@ -657,6 +657,7 @@ export function render(state: AppState): void {
     ? getVisualRange(state.editor.buffer, state.editor.visualAnchor, state.editor.cursor, state.editor.mode)
     : null;
 
+  let highlightRegions: PromptHighlightRegion[] | null = null;
   for (let i = 0; i < inputRowCount; i++) {
     const row = firstInputRow + i;
     const isFirst = i === 0 && !input.isNewLine[i];
@@ -678,7 +679,10 @@ export function render(state: AppState): void {
       if (voicePromptText) {
         lineContent = `${theme.accent}${input.lines[i] ?? ""}${theme.reset}`;
       } else if (state.editor.buffer.length > 0) {
-        lineContent = highlightPromptViewport(input.lines[i] ?? "", state.editor.buffer, input.lineStarts[i] ?? 0, state);
+        highlightRegions ??= promptHighlightRegions(state.editor.buffer, state);
+        lineContent = highlightPromptViewport(
+          input.lines[i] ?? "", state.editor.buffer, input.lineStarts[i] ?? 0, state, highlightRegions,
+        );
       }
     }
 
