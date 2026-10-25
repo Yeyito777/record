@@ -15,7 +15,7 @@ import {
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { customEmojiImages, customEmojiMarker, type CustomEmojiRenderBatch } from "./customemoji";
 import { renderBodyLines } from "./bodypanel";
-import { appendPositionedPayload, appendRowWrite, createFrameRows, flushFrame } from "./frame";
+import { appendPositionedPayload, appendRowWrite, createFrameRows, flushFrame, hasRetainedFrame } from "./frame";
 import {
   buildLineAnchorIndex,
   clampHistoryCursor,
@@ -25,11 +25,24 @@ import {
   stripAnsi,
 } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
-import { renderImageModal } from "./imagemodal";
+import { imageModalLayout, renderImageModal } from "./imagemodal";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
 import { highlightPromptViewport } from "./prompthighlight";
-import { SIDEBAR_WIDTH, getSidebarSearchBarViewport, renderSidebar } from "./sidebar";
+import {
+  SIDEBAR_WIDTH,
+  createSidebarIconFrame,
+  getSidebarSearchBarViewport,
+  renderSidebar,
+  type SidebarIconFrame,
+} from "./sidebar";
+import {
+  SIDEBAR_ICON_COLUMNS,
+  SIDEBAR_ICON_MAX_IDLE_BYTES,
+  SIDEBAR_ICON_MAX_IDLE_IMAGES,
+  sidebarIconTerminalOwner,
+  sidebarIcons,
+} from "./sidebaricons";
 import { INSTAGRAM_GUILD_ID, isFixedTopLevelGuildId, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { renderServerActionModal } from "./serveractions";
 import { renderStatusLine } from "./statusline";
@@ -51,7 +64,11 @@ import {
 } from "./terminal";
 import { theme } from "./theme";
 import { renderTimelineLines, setTimelineRenderContext, type RenderedTimeline } from "./timeline";
-import { planInlineTerminalImages, type InlineTerminalImagePlacement } from "./terminalimage";
+import {
+  planInlineTerminalImages,
+  type InlineTerminalImagePlacement,
+  type InlineTerminalImageUpdate,
+} from "./terminalimage";
 import { renderTopbar } from "./topbar";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
 import { voiceMessagePromptText } from "./voice-message";
@@ -323,6 +340,62 @@ function visibleInlineImagePlacements(
   return placements;
 }
 
+const SIDEBAR_ICON_PLACEMENT_ID = 1;
+// The selected row's icon is a distinct placement so st snapshots the
+// highlighted cells under it, instead of treating the highlight as a cover.
+const SIDEBAR_ICON_HIGHLIGHTED_PLACEMENT_ID = 2;
+
+/**
+ * Sidebar icon placements minus any an overlay covers. Covered icons are
+ * removed, not drawn under the overlay: Kitty itself has no cell occlusion.
+ */
+function visibleSidebarIconPlacements(
+  state: AppState,
+  frame: SidebarIconFrame | null,
+  rows: number,
+  cols: number,
+): InlineTerminalImagePlacement[] {
+  if (!frame || state.whatsapp.loginModal) return [];
+  let cover: { top: number; left: number; bottom: number; right: number } | null = null;
+  if (state.imageModal) {
+    const layout = imageModalLayout(
+      state.imageModal,
+      rows,
+      cols,
+      state.timeline.terminalCellWidthPixels,
+      state.timeline.terminalCellHeightPixels,
+    );
+    // Without a layout the viewer's "too small" notice fills the screen.
+    cover = layout
+      ? { top: layout.top, left: layout.left, bottom: layout.top + layout.height - 1, right: layout.left + layout.width - 1 }
+      : { top: 1, left: 1, bottom: rows, right: cols };
+  }
+
+  const seen = new Set<string>();
+  const placements: InlineTerminalImagePlacement[] = [];
+  for (const placement of frame.placements) {
+    if (cover && placement.row >= cover.top && placement.row <= cover.bottom
+      && placement.col + SIDEBAR_ICON_COLUMNS - 1 >= cover.left && placement.col <= cover.right) continue;
+    const placementId = placement.highlighted ? SIDEBAR_ICON_HIGHLIGHTED_PLACEMENT_ID : SIDEBAR_ICON_PLACEMENT_ID;
+    const key = `${placement.image.imageId}:${placementId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    placements.push({
+      image: placement.image,
+      placementId,
+      row: placement.row,
+      col: placement.col,
+      columns: SIDEBAR_ICON_COLUMNS,
+      rows: 1,
+    });
+  }
+  return placements;
+}
+
+function joinImageUpdates(a: InlineTerminalImageUpdate, b: InlineTerminalImageUpdate): InlineTerminalImageUpdate {
+  return { transmit: a.transmit + b.transmit, update: a.update + b.update };
+}
+
 export function render(state: AppState): void {
   const cols = Math.max(1, state.cols);
   const rows = Math.max(3, state.rows);
@@ -349,6 +422,9 @@ export function render(state: AppState): void {
   const typingChannelIds = channelsWithTyping(state.typing, state.auth.user?.id ?? null);
   const channelNotifications = channelNotificationCounts(state.notifications);
   const guildNotifications = guildNotificationCounts(state.notifications, state.channelList.channels);
+  const sidebarIconFrame = sidebarOpen && sidebarIcons.isEnabled()
+    ? createSidebarIconFrame((source) => sidebarIcons.get(source))
+    : null;
   const sidebarRows = sidebarOpen
     ? renderSidebar(
       state.sidebar,
@@ -365,8 +441,10 @@ export function render(state: AppState): void {
         showHiddenChannels: state.showHiddenChannels,
         currentUserId: state.auth.user?.id ?? null,
       },
+      sidebarIconFrame,
     )
     : [];
+  if (sidebarIconFrame) sidebarIcons.want(sidebarIconFrame.visible, sidebarIconFrame.nearby);
   const memberListRows = memberListOpen
     ? renderMemberList(
       state.memberList,
@@ -725,6 +803,17 @@ export function render(state: AppState): void {
     inlinePlacements,
     { allowPlacementUpdates: !state.autocomplete || !!state.imageModal },
   );
+  const sidebarPlacements = visibleSidebarIconPlacements(state, sidebarIconFrame, rows, cols);
+  const sidebarImages = planInlineTerminalImages(
+    sidebarIconTerminalOwner,
+    sidebarPlacements.map((placement) => placement.image),
+    sidebarPlacements,
+    {
+      replacePlacements: !hasRetainedFrame(state),
+      maxIdleImages: SIDEBAR_ICON_MAX_IDLE_IMAGES,
+      maxIdleBytes: SIDEBAR_ICON_MAX_IDLE_BYTES,
+    },
+  );
 
   flushFrame(state, {
     rows: frameRows,
@@ -733,5 +822,5 @@ export function render(state: AppState): void {
     viewStart: state.timeline.scrollOffset,
     regionScrolls: state.scrollRegions,
     graphics: customEmojiImages.finishFrame(customEmojiFrame),
-  }, inlineImages);
+  }, joinImageUpdates(inlineImages, sidebarImages));
 }

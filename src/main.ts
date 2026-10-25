@@ -160,7 +160,8 @@ import {
   setCursorColor,
   showCursor,
 } from "./terminal";
-import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize } from "./terminalimage";
+import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize, terminalImageNotFoundId } from "./terminalimage";
+import { sidebarIconTerminalOwner, sidebarIcons } from "./sidebaricons";
 import { dmAuthorColor, theme } from "./theme";
 import { clearTimeline, hasActiveTimelineCall, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
@@ -2463,6 +2464,7 @@ function restoreTerminal(): void {
   if (!terminalReady) return;
   process.stdin.setRawMode(false);
   disposeInlineTerminalImages(state);
+  disposeInlineTerminalImages(sidebarIconTerminalOwner);
   process.stdout.write(
     (terminalGraphicsClient?.isSupported() ? customEmojiImages.cleanupSequence() : "")
       + (terminalGraphicsCells ? setStGraphicsCells(false) : "")
@@ -2561,10 +2563,17 @@ async function main(): Promise<void> {
       scheduleRender();
     },
   });
+  sidebarIcons.configure({
+    onUpdate: () => {
+      if (!running) return;
+      scheduleRender();
+    },
+  });
   terminalGraphicsClient = new TerminalGraphicsClient({
     write: (sequence) => process.stdout.write(sequence),
     onSupportChanged: (supported) => {
       customEmojiImages.setEnabled(supported);
+      sidebarIcons.setEnabled(supported);
       invalidateFrame(state);
       scheduleRender();
     },
@@ -2583,6 +2592,12 @@ async function main(): Promise<void> {
       // Inline-image eviction replies are a narrow subset of Kitty graphics
       // controls. Route them before the custom-emoji capability client, which
       // intentionally consumes every remaining Kitty graphics response.
+      const rejectedImageId = terminalImageNotFoundId(sequence);
+      if (rejectedImageId !== null && sidebarIcons.noteTerminalRejection(rejectedImageId)) {
+        handleInlineTerminalImageResponse(sidebarIconTerminalOwner, sequence);
+        scheduleRender();
+        return;
+      }
       if (handleInlineTerminalImageResponse(state, sequence)) {
         scheduleRender();
         return;
