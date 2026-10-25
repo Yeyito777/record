@@ -423,6 +423,8 @@ export interface DiscordChannel {
   recipients?: DiscordGuildMember[];
   /** Group DM picture hash (CDN channel-icons). */
   icon?: string;
+  /** Provider picture URL already in hand (Instagram avatars). */
+  pictureUrl?: string;
   permissionOverwrites?: DiscordPermissionOverwrite[];
   /** Present for announcement, public, and private thread channel types. */
   thread?: DiscordThreadInfo;

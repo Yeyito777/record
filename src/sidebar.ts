@@ -5,7 +5,7 @@
 import { randomUUID } from "crypto";
 
 import type { CompletionItem } from "./commands";
-import { isFixedTopLevelGuildId, INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID } from "./chatproviders";
+import { isFixedTopLevelGuildId, INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID, whatsappJidFromChannelId } from "./chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID, compareSnowflakesDesc, isThreadChannel, type DiscordChannel, type DiscordGuild } from "./discord";
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import type { KeyEvent } from "./input";
@@ -16,10 +16,14 @@ import {
   discordGroupIconSource,
   discordGuildIconSource,
   discordUserAvatarSource,
+  instagramUserPictureSource,
   SIDEBAR_ICON_COLUMNS,
   sidebarIconInitials,
+  sidebarIconLookaheadRows,
+  whatsappChatPictureSource,
   type SidebarIconSource,
 } from "./sidebaricons";
+import { isWhatsAppPictureJid } from "./whatsapp/profilepicture";
 import { getViewportByWidth, padRight, termWidth, truncate } from "./textwidth";
 import { theme } from "./theme";
 import {
@@ -2821,9 +2825,14 @@ function entryIcon(entry: SidebarEntry, lookup: SidebarIconLookup): SidebarEntry
     const channel = lookup.conversation(entry.guildId, entry.id);
     if (!channel) return null;
     const initials = sidebarIconInitials(channel.name);
-    // WhatsApp and Instagram pictures would need extra requests through the
-    // logged-in session, so their conversations get initials only.
-    if (entry.guildId !== DIRECT_MESSAGES_GUILD_ID) return { source: null, initials, replacesMarker: true };
+    if (entry.guildId === WHATSAPP_GUILD_ID) {
+      const jid = whatsappJidFromChannelId(channel.id);
+      return { source: jid && isWhatsAppPictureJid(jid) ? whatsappChatPictureSource(jid) : null, initials, replacesMarker: true };
+    }
+    if (entry.guildId === INSTAGRAM_GUILD_ID) {
+      const userId = channel.type === DIRECT_MESSAGE_CHANNEL_TYPE ? channel.recipients?.[0]?.id : undefined;
+      return { source: userId ? instagramUserPictureSource(userId, channel.pictureUrl) : null, initials, replacesMarker: true };
+    }
     if (channel.type === DIRECT_MESSAGE_CHANNEL_TYPE) {
       const recipient = channel.recipients?.[0];
       return { source: recipient ? discordUserAvatarSource(recipient) : null, initials, replacesMarker: true };
@@ -2923,11 +2932,12 @@ export function renderSidebar(
     if (icons && iconLookup) {
       // Prefetch about a screen each way, nearest rows first.
       const end = scrollOffset + listRows;
+      // WhatsApp and Instagram look only a few rows ahead.
       for (let distance = 0; distance < Math.max(1, listRows); distance++) {
         for (const index of [end + distance, scrollOffset - 1 - distance]) {
           const entry = entries[index];
           const source = entry ? entryIcon(entry, iconLookup)?.source : null;
-          if (source) icons.nearby.push(source);
+          if (source && distance < sidebarIconLookaheadRows(source.platform, listRows)) icons.nearby.push(source);
         }
       }
     }

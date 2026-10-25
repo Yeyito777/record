@@ -139,6 +139,13 @@ class FakeBackend implements WhatsAppBackendHandle {
     return { path: destinationPath, sizeBytes: this.mediaDownloadBytes?.byteLength ?? 0 };
   }
 
+  pictureRequests: string[] = [];
+
+  async profilePictureUrl(jid: string): Promise<string | null> {
+    this.pictureRequests.push(jid);
+    return `https://pps.whatsapp.net/${jid}.jpg`;
+  }
+
   async setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult> {
     this.muteRequests.push({ chatId, muted });
     if (this.muteError) throw this.muteError;
@@ -227,6 +234,15 @@ function raceFixture(jid = "race@s.whatsapp.net") {
 }
 
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+test("profile pictures are asked for only while connected", async () => {
+  const { backend, controller } = fixture();
+  await expect(controller.profilePictureUrl("15551234567@s.whatsapp.net")).rejects.toThrow("not connected");
+  expect(backend.pictureRequests).toEqual([]);
+  backend.isConnected = true;
+  expect(await controller.profilePictureUrl("15551234567@s.whatsapp.net")).toBe("https://pps.whatsapp.net/15551234567@s.whatsapp.net.jpg");
+  expect(backend.pictureRequests).toEqual(["15551234567@s.whatsapp.net"]);
+});
 
 test("send → immediate quit → reopen retains an acknowledgement arriving during shutdown", async () => {
   const { backend, controller, jid, authDirectory } = raceFixture();

@@ -16,6 +16,7 @@ export type WhatsAppWorkerMethod =
   | "download-media"
   | "fetch-history"
   | "set-chat-muted"
+  | "profile-picture"
   | "mark-read"
   | "logout"
   | "shutdown";
@@ -93,6 +94,15 @@ export interface WhatsAppFetchHistoryParams {
   count: number;
   oldestKey: WhatsAppMessageKey;
   oldestTimestampMs: number;
+}
+
+export interface WhatsAppProfilePictureParams {
+  jid: string;
+}
+
+export interface WhatsAppProfilePictureResult {
+  /** Preview-size picture URL, or null when the chat has none visible to us. */
+  url: string | null;
 }
 
 export interface WhatsAppSetChatMutedParams {
