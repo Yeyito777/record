@@ -6,7 +6,7 @@ import type { KeyEvent } from "./input";
 import { INSTAGRAM_GUILD_ID } from "./chatproviders";
 import { moveTo } from "./frame";
 import { theme } from "./theme";
-import { termWidth } from "./textwidth";
+import { sliceByWidth, termWidth, truncateToWidth } from "./textwidth";
 import { DEFAULT_REMOTE_USER_VOLUME_PERCENT, REMOTE_USER_VOLUME_FINE_STEP_PERCENT, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeRemoteUserVolumePercent } from "./volume";
 
 export type ServerAction =
@@ -241,6 +241,32 @@ function actionLabel(modal: ServerActionModalState, action: ServerAction): strin
   }
 }
 
+const MAX_ERROR_WIDTH = 48;
+
+function wrapModalText(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (let word of text.split(/\s+/).filter(Boolean)) {
+    while (termWidth(word) > width) {
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+      const [head, rest] = sliceByWidth(word, width);
+      lines.push(head || word.slice(0, 1));
+      word = head ? rest : word.slice(1);
+    }
+    if (!line) line = word;
+    else if (termWidth(`${line} ${word}`) <= width) line = `${line} ${word}`;
+    else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
 /** Render the menu immediately to the right of the fixed-width sidebar. */
 export function renderServerActionModal(
   modal: ServerActionModalState,
@@ -253,20 +279,29 @@ export function renderServerActionModal(
   if (availableWidth < 6 || totalRows < 4) return "";
 
   const errorText = modal.error;
-  const maxVisibleActions = Math.max(1, totalRows - 2 - (errorText ? 1 : 0));
+  // Never wider than the screen: a row running past the last column wraps in
+  // the terminal and leaves a stray, offset copy of the box edges.
+  const maxInnerWidth = availableWidth - 2;
+  const allLabels = modal.actions.map((action) => actionLabel(modal, action));
+  const actionsWidth = Math.max(1, ...allLabels.map((label) => termWidth(`  ${label} `)));
+  // Errors wrap inside the box (up to a readable width) instead of widening it.
+  const innerWidth = Math.min(maxInnerWidth, Math.max(actionsWidth, errorText ? Math.min(termWidth(`  ${errorText} `), MAX_ERROR_WIDTH) : 0));
+  const errorLines = errorText ? wrapModalText(errorText, Math.max(1, innerWidth - 3)) : [];
+  const maxErrorLines = Math.max(0, totalRows - 3);
+  if (errorLines.length > maxErrorLines) {
+    errorLines.length = maxErrorLines;
+    if (maxErrorLines > 0) errorLines[maxErrorLines - 1] = truncateToWidth(`${errorLines[maxErrorLines - 1]}…`, Math.max(1, innerWidth - 3));
+  }
+  const maxVisibleActions = Math.max(1, totalRows - 2 - errorLines.length);
   const selectionIndex = Math.max(0, modal.actions.indexOf(modal.selection));
   const windowStart = Math.max(0, Math.min(
     selectionIndex - Math.floor(maxVisibleActions / 2),
     modal.actions.length - maxVisibleActions,
   ));
   const visibleActions = modal.actions.slice(windowStart, windowStart + maxVisibleActions);
-  const labels = visibleActions.map((action) => actionLabel(modal, action));
-  const rawLines = labels.map((label) => `  ${label} `);
-  if (errorText) rawLines.push(`  ${errorText} `);
-
-  // This menu is transient and overlays the main pane, so size it to its full
-  // contents instead of ellipsizing useful action errors at an arbitrary width.
-  const innerWidth = Math.max(1, ...rawLines.map(termWidth));
+  const labels = allLabels.slice(windowStart, windowStart + maxVisibleActions)
+    .map((label) => truncateToWidth(label, Math.max(1, innerWidth - 3)));
+  const rawLines = [...labels, ...errorLines];
   const boxHeight = rawLines.length + 2;
   const topRow = Math.max(1, Math.min(anchorRow, totalRows - boxHeight + 1));
   const border = theme.sidebarBg + theme.accent;
@@ -278,7 +313,7 @@ export function renderServerActionModal(
     const action = visibleActions[index];
     const selected = action !== undefined && modal.selection === action;
     const marker = selected ? "▸ " : "  ";
-    const label = labels[index] ?? errorText!;
+    const label = labels[index] ?? errorLines[index - labels.length] ?? "";
     const bg = selected ? theme.sidebarSelBg : theme.sidebarBg;
     const fg = action !== undefined && DESTRUCTIVE_ACTIONS.has(action)
       ? theme.error

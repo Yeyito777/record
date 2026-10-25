@@ -2678,6 +2678,23 @@ describe("session", () => {
       .toEqual(["friend", "newcomer"]);
   });
 
+  test("member updates that differ only in role order do not count as changes", () => {
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "voice-1", guildId: "guild-1", parentId: null, name: "voice", topic: null, position: 0, type: 2, nsfw: false }];
+    const effects = { renders: 0, scheduleRender: () => { effects.renders += 1; } };
+    handleVoiceStateUpdate(state, effects, { userId: "u1", channelId: "voice-1", guildId: "guild-1", sessionId: "s", selfMute: false, selfDeaf: false, mute: false, deaf: false });
+    const member = { id: "u1", username: "alice", displayName: "Alice", bot: false, roleIds: ["r1", "r2"] };
+    handleGuildMembersChunk(state, effects, "guild-1", [member]);
+    const after = effects.renders;
+    for (let index = 0; index < 6; index++) {
+      handleGuildMembersChunk(state, effects, "guild-1", [{ ...member, roleIds: index % 2 ? ["r1", "r2"] : ["r2", "r1"] }]);
+    }
+    expect(effects.renders).toBe(after);
+    clearReadOnlyClient(state);
+  });
+
   test("hydrates generic voice sidebar members from requested guild member chunks", () => {
     const state = createInitialState("token-1", "/tmp/record-config.json");
     state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };

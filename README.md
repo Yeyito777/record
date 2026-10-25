@@ -425,6 +425,8 @@ environment variables: `RECORD_DEMO_OPEN=images` (channel name to open first;
 `dm` for the long DM, `none` for nothing), `RECORD_DEMO_INCOMING_SECONDS=N`,
 `RECORD_DEMO_OLDER_DELAY_MS`, `RECORD_DEMO_LATENCY_MS`, `RECORD_DEMO_NOW`
 (end of the synthetic history), `RECORD_DEMO_HOME=DIR` (keep and reuse a demo
-home) and `RECORD_DEMO_KEEP=1`. Each demo home has a `record/demo.log` of every
+home), `RECORD_DEMO_KEEP=1` and `RECORD_DEMO_FAIL_LEAVE=1` (Leave Server fails with a
+long error, to check the actions menu). Like discord.com, the fake server rejects
+requests that announce a JSON body without sending valid JSON. Each demo home has a `record/demo.log` of every
 request the fake server answered. The CDN serves PNG bytes for every image URL
 (icons, avatars, emoji, stickers, attachments), whatever the extension.

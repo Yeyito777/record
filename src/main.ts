@@ -1726,6 +1726,8 @@ function toggleSelectedMute(): void {
 
 function serverActionErrorMessage(error: unknown, fallback: string): string {
   const detail = error instanceof Error ? error.message.trim() : "";
+  // HTTP failures are also logged with status and Discord code by discord.ts.
+  debugLog("server_action.failed", { action: fallback, error: detail || String(error) });
   return detail ? `${fallback}: ${detail}` : fallback;
 }
 

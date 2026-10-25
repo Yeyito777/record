@@ -38,6 +38,9 @@ const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const GATEWAY_RECONNECT_CLOSE_CODE = 4000;
 const GATEWAY_RESUME_MAX_HEARTBEAT_ACK_AGE_MS = 3 * 60 * 1_000;
+/** Discord allows 120 gateway sends a minute; member lookups use at most 60 of them. */
+const MEMBER_REQUEST_INTERVAL_MS = 1_000;
+const MAX_MEMBER_REQUEST_USER_IDS = 100;
 
 interface GatewayPayload {
   op: number;
@@ -170,6 +173,9 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private heartbeatAwaitingAck = false;
   private hasBeenReady = false;
   private sessionId: string | null = null;
+  private readonly memberRequestQueue = new Map<string, Set<string>>();
+  private memberRequestTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastMemberRequestAt = 0;
   private manualDisconnect = false;
   private connecting = false;
   private reconnectAttempt = 0;
@@ -296,9 +302,47 @@ export class AppGatewayClient implements VoiceSignalingClient {
     return true;
   }
 
+  /**
+   * Queue a member lookup. Requests are merged per server (up to 100 users
+   * each) and sent at most one per MEMBER_REQUEST_INTERVAL_MS: READY lists
+   * every voice channel's members at once, and one request per user (~245 at
+   * once) made Discord close the gateway with 4008 "Rate limited" on every
+   * start, then answer the backlog one chunk per ~500 ms for minutes.
+   */
   requestGuildMembers(guildId: string, userIds: readonly string[]): boolean {
-    const ids = Array.from(new Set(userIds.filter((userId) => typeof userId === "string" && userId.trim())));
+    const ids = userIds.filter((userId) => typeof userId === "string" && userId.trim());
     if (!this.isReady() || !guildId || ids.length === 0) return false;
+    const queued = this.memberRequestQueue.get(guildId) ?? new Set<string>();
+    for (const id of ids) queued.add(id);
+    this.memberRequestQueue.set(guildId, queued);
+    this.scheduleMemberRequests(0);
+    return true;
+  }
+
+  private scheduleMemberRequests(delayMs: number): void {
+    if (this.memberRequestTimer) return;
+    const wait = Math.max(delayMs, this.lastMemberRequestAt + MEMBER_REQUEST_INTERVAL_MS - Date.now());
+    this.memberRequestTimer = setTimeout(() => {
+      this.memberRequestTimer = null;
+      this.sendNextMemberRequest();
+    }, Math.max(0, wait));
+    this.memberRequestTimer.unref?.();
+  }
+
+  private sendNextMemberRequest(): void {
+    if (!this.isReady()) {
+      this.memberRequestQueue.clear();
+      return;
+    }
+    const next = this.memberRequestQueue.entries().next();
+    if (next.done) return;
+    const [guildId, queued] = next.value;
+    const ids = [...queued].slice(0, MAX_MEMBER_REQUEST_USER_IDS);
+    for (const id of ids) queued.delete(id);
+    // Rotate: a server with more than 100 queued users goes to the back.
+    this.memberRequestQueue.delete(guildId);
+    if (queued.size > 0) this.memberRequestQueue.set(guildId, queued);
+    this.lastMemberRequestAt = Date.now();
     this.send({
       op: 8,
       d: {
@@ -310,8 +354,8 @@ export class AppGatewayClient implements VoiceSignalingClient {
         nonce: `record-members-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       },
     });
-    debugLog("app_gateway.request_members", { guildId, count: ids.length });
-    return true;
+    debugLog("app_gateway.request_members", { guildId, count: ids.length, queuedGuilds: this.memberRequestQueue.size });
+    if (this.memberRequestQueue.size > 0) this.scheduleMemberRequests(MEMBER_REQUEST_INTERVAL_MS);
   }
 
   leaveVoice(): boolean {
@@ -963,6 +1007,10 @@ export class AppGatewayClient implements VoiceSignalingClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    // Unsent lookups are dropped; the session re-asks after its retry window.
+    if (this.memberRequestTimer) clearTimeout(this.memberRequestTimer);
+    this.memberRequestTimer = null;
+    this.memberRequestQueue.clear();
     this.ready = false;
     const socket = this.ws;
     this.ws = null;
