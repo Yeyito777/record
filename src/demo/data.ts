@@ -221,6 +221,47 @@ export interface DemoWorld {
   defaultChannel: { guildId: string; channelId: string };
 }
 
+/**
+ * The demo account's server folders (accounts/<id>/server-folders.json): a
+ * top-level folder that starts expanded and holds a nested folder two levels
+ * deep, plus a collapsed one, so the tree view and its badges can be seen.
+ */
+export function demoServerFolderLayout(world: Pick<DemoWorld, "guilds">) {
+  const id = (name: string): string => {
+    const guild = world.guilds.find((candidate) => candidate.name === name);
+    if (!guild) throw new Error(`demo guild ${name} is missing`);
+    return guild.id;
+  };
+  const folders = [
+    { id: "demo-folder-dev", name: "Dev", parentId: null, pinned: false, sortOrder: 1 },
+    { id: "demo-folder-tools", name: "Tools", parentId: "demo-folder-dev", pinned: false, sortOrder: 2 },
+    { id: "demo-folder-archive", name: "Archive", parentId: "demo-folder-tools", pinned: false, sortOrder: 3 },
+    { id: "demo-folder-chill", name: "Chill", parentId: null, pinned: false, sortOrder: 3 },
+  ];
+  const placements: Array<[string, string | null, number]> = [
+    ["Record Lounge", null, 0],
+    ["Pixel Garden", null, 2],
+    ["Board Game Night", null, 4],
+    ["Climbing Crew", null, 5],
+    ["Polyglot Club", null, 6],
+    ["Terminal Dwellers", "demo-folder-dev", 0],
+    ["Rustaceans Anonymous", "demo-folder-dev", 1],
+    ["Kernel Panic", "demo-folder-tools", 0],
+    ["Bun & Friends", "demo-folder-tools", 1],
+    ["Mechanical Keebs", "demo-folder-tools", 2],
+    ["Open Source Café", "demo-folder-archive", 0],
+    ["Speedrun Lab", "demo-folder-archive", 1],
+    ["Lofi Study Hall", "demo-folder-chill", 0],
+    ["Synthwave FM", "demo-folder-chill", 1],
+    ["Night Owls", "demo-folder-chill", 2],
+  ];
+  return {
+    folders,
+    guildPlacements: Object.fromEntries(placements.map(([name, folderId, sortOrder]) => [id(name), { folderId, pinned: false, sortOrder }])),
+    expandedFolderIds: ["demo-folder-dev"],
+  };
+}
+
 export function buildDemoWorld(anchorMs = DEFAULT_DEMO_ANCHOR_MS): DemoWorld {
   const base = Date.UTC(2021, 0, 1);
   let entitySeq = 0;

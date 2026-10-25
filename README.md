@@ -40,13 +40,15 @@ Controls:
 - Reactions appear immediately, roll back on failure, and keep the last message's reaction row visible if you were already at the bottom
 - `Shift+J` / `Shift+K`: jump the sidebar selection up/down from non-typing contexts
 - `j` / `k` or arrow keys: move in the focused pane
-- `Enter` in the sidebar: expand/collapse servers and categories, or open text channels
+- `Enter` in the sidebar: expand/collapse servers, categories and server folders, or open text channels (see [Server folders](#server-folders))
+- `/arrows hide|show`: hide (default) or show the sidebar's `▸`/`▾` arrows; the choice persists
 - `Enter` on a thread (shown with `↳`): open its timeline; posting automatically joins the thread when needed
 - `Enter` on an authored “Started a thread” message in history: open and focus that thread
 - `Ctrl+V` attaches the image on the clipboard: copied image data, an iPhone HEIC/HEIF photo (converted to JPEG with macOS's built-in `sips`, or ImageMagick with libheif elsewhere), or copied image files from Finder or a file manager (PNG, JPEG, GIF, WebP or HEIC; each attaches under its own name, never as the file icon). A copied file that is not an image shows a notice pointing to `/upload`. The terminal's own paste (OSC 5522 paste events) does the same; over SSH a copied file names a file on the other computer, so copy the image itself instead
 - image attachments expand inline by default. `Enter` (or a click) on an image opens the full-image viewer; `Enter` on an attachment's `📎 name • size` row collapses or reopens its image
 - `Ctrl+O`: image details. Off (the default), an image drawn inline is its own row, with no `📎 name • size` row above it; on, every image gets that row back (to collapse one with `Enter`). Collapsed, loading or failed images and other attachments always keep their row, and yanking an image's rows still gives its name. The choice persists
 - opening the full-image viewer shows the cached preview immediately at the image's final viewer size, then swaps in full-resolution pixels in place without resizing; `Enter` / `Esc` closes even while loading. Chat images stay placed behind the higher-z viewer rather than disappearing, and image placements are presented in the same synchronized update as the surrounding text.
+- Images and custom emoji under an overlay (the autocomplete popup, the image viewer, server actions, the WhatsApp login) stay where they are; one that would be placed or moved underneath (a message arrived, an image finished loading) waits for the overlay to close, while the rest of the chat keeps updating. st remembers the cells an image is first drawn over and draws any that change later above it, so an image placed under an overlay would otherwise have holes where the overlay was. For the same reason a visual selection tints a selected image (st's `V=1`) instead of painting cells under it
 - `/images hide|show`: keep images collapsed until opened manually, or restore automatic expansion; the selected mode persists
 - `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
 - `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history
@@ -108,7 +110,7 @@ Notes:
 - expanded chat images use the Kitty direct-stream graphics protocol; PNGs are sent directly and other image formats use `ffmpeg` to produce a bounded first-frame PNG
 - WhatsApp stickers expand inline like images, including first-frame previews of animated WebP stickers
 - Initial WhatsApp history loading and older-page fetching show timeline spinners, including between pages; sending a message does not clear them.
-- WhatsApp silently rechecks the open chat's recent 50-message window every minute to recover missed messages. Full caches and chats whose older history finished syncing also recheck on focus and reconnect, showing a bottom “Loading newer messages…” spinner until the request finishes without restarting completed backfills or moving scrolled-up readers.
+- WhatsApp silently rechecks the open chat's recent 50-message window every minute to recover missed messages. Full caches and chats whose older history finished syncing also recheck on focus and reconnect without restarting completed backfills or moving scrolled-up readers. These checks are silent (anything they find just appears) unless Record has evidence the chat is behind: the chat list reports a newer last message than any Record has, or WhatsApp reconnected after being offline for a minute or more. Then a bottom “Loading newer messages…” spinner appears if the check takes longer than 0.4 s, and goes away as soon as the newer messages arrive.
 - Late WhatsApp history/cache loads preserve sent messages, live edits, and the reading viewport.
 - WhatsApp writes each outgoing message (including image bytes and exact message IDs) to a private durable outbox before sending. Quitting briefly drains acknowledgements before saving history. Interrupted sends survive restart as **delivery unconfirmed** until an exact echo/history match arrives; Record never automatically resends them. Confirmed outbox entries are removed only after the history cache is safely written. `/logout whatsapp` clears the outbox.
 - downloaded Discord and WhatsApp attachments share a 100-file LRU cache; cache hits refresh their age and successful additions prune the oldest files
@@ -188,7 +190,11 @@ terminals never reply and see no difference.
   (13-50 ms before Record's own glide ends, and st's ends later still, after
   the bytes' trip through the pty or ssh). The image's lowest pixels may be
   missing for those last milliseconds; it never draws over the prompt. Glides
-  forward never need it. st keeps the rows of images leaving at the top. Custom emoji use one
+  forward never need it, and a frame that moves the pane's bottom edge (the
+  typing line, the prompt's rows, an overlay) crops at once. That whole-image
+  placement has its own placement id, so the prompt rows st saw under it are
+  never mistaken for the image's own cells once it rests. st keeps the rows of
+  images leaving at the top. Custom emoji use one
   placement id per cell and are deleted one by one, so emoji on the lines st
   keeps for the glide's edge are not erased mid-glide.
 - The sidebar and member list lists themselves do not glide: mode 2032 has one
@@ -207,15 +213,20 @@ asks for st's mode 2032 (st then gets the plain region scrolls above).
 
 On terminals that answer Record's Kitty graphics query (such as st and Kitty),
 each Discord server in the sidebar shows its icon in a two-cell box
-between the expand marker and the name. Servers without an icon, and icons
+in front of the name (after the expand arrow when `/arrows show` is on). Servers without an icon, and icons
 still loading or unavailable, show a tile with the server's initials in the
 same box. Direct-message rows show the other person's avatar (group DMs their
 group picture) in place of the `#` marker; the Direct Messages, WhatsApp and
-Instagram roots show DM / WA / IG tiles. WhatsApp chats show their profile or
+Instagram roots show the Discord, WhatsApp and Instagram logos (DM / WA / IG
+tiles without Kitty graphics). WhatsApp chats show their profile or
 group picture and Instagram one-to-one chats the other person's avatar;
 Instagram groups and anyone without a picture get initials. Elsewhere the
 sidebar looks exactly as before.
 
+- The three root logos ship with Record in `assets/sidebar/` (64 px PNGs,
+  never downloaded). They are the [Simple Icons](https://simpleicons.org)
+  glyphs (CC0 1.0) on each brand's background; `bun assets/sidebar/generate.ts`
+  regenerates them from `assets/sidebar/source/`.
 - Discord icons and avatars are 64 px PNGs from Discord's CDN (animated ones
   show their first frame). No login token is sent with these requests.
 - A WhatsApp picture costs one normal profile-picture query (preview size)
@@ -245,6 +256,38 @@ sidebar looks exactly as before.
 - The selected row's icon stays visible over the highlight. Icons under the
   image viewer are hidden while it is open; a resize or full repaint places
   every icon again.
+
+### Server folders
+
+Group servers into local folders (saved per account in
+`accounts/<id>/server-folders.json`; nothing is sent to Discord). Folders open
+as a tree, like Exocortex's sidebar: a folder expands in place with its
+contents indented below it, folders nest, and a server inside a folder still
+expands to its own categories and channels. A closed folder shows 📁, how many
+servers it holds and the combined unread badge of everything inside it; an
+open folder shows 📂 and leaves the badges to its rows. Which folders are open
+is saved with the layout.
+
+- `Enter` or a click: open/close the folder. `l` opens it, or steps onto its
+  first row when it is already open. `h` / `Backspace` close it, or close the
+  folder that lists the selected row and move onto it.
+- Folder actions act on the folder that lists the selected row: `f` creates a
+  folder there (with a `v` visual block, the block moves into it), `F` moves
+  the selection to a folder (`..` is that folder's parent, `/` the top level),
+  `<` moves it out to the parent, `e` / `Shift+E` reorder it among its
+  siblings. `r` renames and `x` unwraps the selected folder. A visual block
+  that covers a folder and rows inside it moves the folder only.
+- `/folders navigate` switches to the older view where opening a folder shows
+  only its contents (with a `..` row); `/folders tree` switches back. The
+  choice is saved in `config.json` (`"sidebar": {"folders": ...}`).
+- Search (`/`, `?`) lists matches flat in either view; opening a folder found
+  by search clears the filter and opens it where it lives.
+
+By default the sidebar draws no `▸`/`▾` arrows: rows start one column in and
+each level indents two columns, so an open server or folder shows its rows
+right below it and the selected row is marked by its highlight alone.
+`/arrows show` brings back the arrows on servers and categories and the
+cursor's `▸` (`"sidebar": {"arrows": ...}` in `config.json`).
 
 ### Instagram Direct
 
@@ -359,7 +402,8 @@ account:
   directory overlaps `~/.config/record` or `$XDG_CONFIG_HOME/record`, or if
   `RECORD_DEMO_HOME` is a non-empty directory it did not create.
 - **Synthetic data** (fixed seeds, so screenshots are comparable): 15 servers
-  (12 with generated icons), categories, text/announcement/forum/voice
+  (12 with generated icons) in nested server folders (Dev/ open, holding
+  Tools/ and Tools/Archive/; Chill/ closed), categories, text/announcement/forum/voice
   channels, threads, voice members, DMs and group DMs with avatars, member
   lists with hoisted roles, unread and mention badges, a muted server. Histories
   range from empty to 2,400 messages (`Record Lounge / #general`) and a

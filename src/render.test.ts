@@ -460,13 +460,14 @@ describe("render", () => {
     expect(withAutocomplete).not.toContain("\x1b_Ga=p,i=1073741825");
   });
 
-  test("defers a new image placement until autocomplete closes", () => {
+  test("defers a new image placement under the autocomplete popup until it closes", () => {
     const state = stateWithReadyInlineImage();
+    // Tall enough to cover the image's row.
     state.autocomplete = {
       type: "replace",
       selection: -1,
       prefix: ":",
-      matches: [{ name: "😀", desc: ":grinning_face:" }],
+      matches: Array.from({ length: 18 }, () => ({ name: "😀", desc: ":grinning_face:" })),
       replaceStart: 0,
       replaceEnd: 1,
     };
@@ -479,6 +480,19 @@ describe("render", () => {
     const unobscuredFrame = captureRender(state);
     expect(unobscuredFrame).toContain("\x1b_Ga=p,i=1073741825");
     expect(unobscuredFrame).not.toContain("\x1b_Ga=t,t=d,f=100");
+  });
+
+  test("places an image the autocomplete popup does not cover", () => {
+    const state = stateWithReadyInlineImage();
+    state.autocomplete = {
+      type: "replace",
+      selection: -1,
+      prefix: ":",
+      matches: [{ name: "😀", desc: ":grinning_face:" }],
+      replaceStart: 0,
+      replaceEnd: 1,
+    };
+    expect(captureRender(state)).toContain("\x1b_Ga=p,i=1073741825");
   });
 
   test("renders voice-message listening prompt in the theme accent color", () => {

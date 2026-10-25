@@ -33,8 +33,15 @@ interface TerminalImageSyncState {
 }
 
 export interface InlineTerminalImageSyncOptions {
-  /** Keep established placements but defer creating or moving them. */
-  allowPlacementUpdates?: boolean;
+  /**
+   * Whether an overlay covers this placement's cells. A covered placement
+   * that is already in place stays (the terminal draws the overlay's cells
+   * over it); one that would be created or moved there is taken down until
+   * the cover goes: placed now, st would remember the overlay's cells as
+   * the image's own and hide the image there once the overlay closes, and
+   * other terminals would draw it over the overlay.
+   */
+  covered?: (placement: InlineTerminalImagePlacement) => boolean;
   /**
    * Send every placement again even if it looks unchanged: the screen was
    * repainted from scratch (resize, alternate-screen re-entry), which can
@@ -47,14 +54,6 @@ export interface InlineTerminalImageSyncOptions {
    * when this frame wants them where they were.
    */
   movedRows?: { start: number; end: number } | null;
-  /**
-   * Last row (1-based) existing placements may reach while placement updates
-   * are deferred (allowPlacementUpdates false): one placed further down (an
-   * image placed past the pane for a smooth-scroll glide) is deleted rather
-   * than left drawing over the rows below. Desired placements may still
-   * reach further (they are placed only when updates are allowed).
-   */
-  maxRow?: number;
   /** Bound on images kept in the terminal with no placement (default 64). */
   maxIdleImages?: number;
   /** Bound on their charged bytes, base64 plus RGBA pixels (default 32 MiB). */
@@ -202,12 +201,8 @@ export function planInlineTerminalImages(
     const scrolled = !!moved && placedRow >= moved.start && placedRow <= moved.end;
     if (!options.replacePlacements && !retransmitted.has(placement.image.imageId)
       && state.placements.get(key) === fingerprint && !scrolled) continue;
-    if (options.allowPlacementUpdates === false) {
-      const placed = state.placements.get(key)?.split(":").map(Number);
-      if (placed && options.maxRow !== undefined && placed[0]! + placed[3]! - 1 > options.maxRow) {
-        out.push(deletePlacement(placement.image.imageId, placement.placementId));
-        state.placements.delete(key);
-      }
+    if (options.covered?.(placement)) {
+      if (state.placements.delete(key)) out.push(deletePlacement(placement.image.imageId, placement.placementId));
       continue;
     }
     out.push(placeImage(placement));
