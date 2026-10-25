@@ -125,7 +125,8 @@ export class SidebarIconStore {
   private readonly byImageId = new Map<number, string>();
   private nextImageId = IMAGE_ID_FIRST;
   private enabled = false;
-  private fetchImpl: typeof globalThis.fetch;
+  /** Unset uses the global fetch at call time (demo mode replaces it). */
+  private fetchImpl: typeof globalThis.fetch | undefined;
   private cacheDir: string | null | undefined;
   private onUpdate: () => void;
   private readonly concurrency: number;
@@ -136,7 +137,7 @@ export class SidebarIconStore {
   private visible = new Set<string>();
 
   constructor(options: SidebarIconStoreOptions = {}) {
-    this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.fetchImpl = options.fetch;
     this.cacheDir = options.cacheDir;
     this.onUpdate = options.onUpdate ?? (() => {});
     this.concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
@@ -271,7 +272,7 @@ export class SidebarIconStore {
     }
 
     try {
-      const response = await this.fetchImpl(source.url, { headers: { Accept: "image/png" } });
+      const response = await (this.fetchImpl ?? globalThis.fetch)(source.url, { headers: { Accept: "image/png" } });
       if (!response.ok) return null;
       if (Number(response.headers.get("content-length") ?? 0) > MAX_PNG_BYTES) return null;
       const bytes = Buffer.from(await response.arrayBuffer());
