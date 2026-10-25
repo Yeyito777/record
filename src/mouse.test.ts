@@ -123,3 +123,39 @@ describe("mouse routing", () => {
     expect(state.mouseCursor).toBe("pointer");
   });
 });
+
+describe("clicks in the chat column", () => {
+  function chatState() {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.rows = 20;
+    state.sidebar.open = false;
+    state.historyLines = ["hello world", "日本 x"];
+    state.timeline.scrollOffset = 0;
+    state.chatMouseLayout = { firstCol: 1, lastCol: 80, bodyTop: 3, bodyRows: 10, firstInputRow: 15, inputRows: 2 };
+    return state;
+  }
+
+  test("a click in the prompt focuses it", () => {
+    const writes: string[] = [];
+    expect(handleMouseEvent(mouseEvent({ button: 0, action: "press", col: 10, row: 16 }), chatState(), (s) => writes.push(s)))
+      .toEqual({ type: "focus_prompt" });
+    expect(writes.at(-1)).toContain("mouseshape;text");
+  });
+
+  test("a click in history lands on the clicked character, wide glyphs included", () => {
+    const state = chatState();
+    expect(handleMouseEvent(mouseEvent({ button: 0, action: "press", col: 8, row: 3 }), state, () => {}))
+      .toEqual({ type: "focus_history", row: 0, col: 6 });
+    // "日本 x": columns 0-1 日, 2-3 本, 4 space, 5 x
+    expect(handleMouseEvent(mouseEvent({ button: 0, action: "press", col: 5, row: 4 }), state, () => {}))
+      .toEqual({ type: "focus_history", row: 1, col: 1 });
+  });
+
+  test("clicks below the history content or outside the chat column do nothing", () => {
+    const state = chatState();
+    expect(handleMouseEvent(mouseEvent({ button: 0, action: "press", col: 8, row: 8 }), state, () => {}))
+      .toEqual({ type: "handled" });
+    expect(handleMouseEvent(mouseEvent({ button: 0, action: "press", col: 90, row: 16 }), state, () => {}))
+      .toEqual({ type: "handled" });
+  });
+});

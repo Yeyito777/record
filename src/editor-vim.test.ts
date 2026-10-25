@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { isLinewiseClipboardText, setTextClipboardSystemForTest } from "./editor-clipboard";
-import { createEditorState, getInputLines, handleEditorKey, replaceEditorText, type EditorMode, type EditorState } from "./editor";
+import { createEditorState, getInputLines, handleEditorKey, promptRowLimit, replaceEditorText, type EditorMode, type EditorState } from "./editor";
 import type { KeyEvent } from "./input";
 
 /** An editor whose prompt wraps at `width` columns (null: logical lines only). */
@@ -536,5 +536,14 @@ describe("replacing the prompt (editing a sent message)", () => {
     replaceEditorText(editor, "old");
     keys(editor, "<esc>u");
     expect(editor.buffer).toBe("draft");
+  });
+});
+
+describe("prompt height", () => {
+  test("grows to ten rows but never past half the rows left for history and prompt", () => {
+    expect(promptRowLimit(45)).toBe(10);
+    expect(promptRowLimit(19)).toBe(9);
+    expect(promptRowLimit(10)).toBe(5);
+    expect(promptRowLimit(1)).toBe(1);
   });
 });

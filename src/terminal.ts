@@ -25,6 +25,7 @@ export const disableMouse = `${ESC}?1003l${ESC}?1006l`;
 /** st/Exocortex OSC extension for the desktop pointer shape. */
 export const mouseCursorPointer = `\x1b]777;mouseshape;pointer\x07`;
 export const mouseCursorHand = `\x1b]777;mouseshape;hand\x07`;
+export const mouseCursorText = `\x1b]777;mouseshape;text\x07`;
 export const clearLine = `${ESC}2K`;
 export const cursorBlock = `${ESC}2 q`;
 export const cursorUnderline = `${ESC}4 q`;

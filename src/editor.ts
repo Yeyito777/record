@@ -81,6 +81,7 @@ export {
   getInputLines,
   getViewport,
   MAX_PROMPT_ROWS,
+  promptRowLimit,
   PROMPT_PREFIX_WIDTH,
   promptDisplayRows,
   wrappedLineOffsets,

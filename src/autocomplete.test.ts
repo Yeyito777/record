@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, tryPathComplete, updateAutocomplete } from "./autocomplete";
+import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, handleAutocompleteArrow, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { decodeCustomEmojiMarkers } from "./customemoji";
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { INSTAGRAM_GUILD_ID } from "./chatproviders";
@@ -432,5 +432,34 @@ describe("autocomplete", () => {
 
     expect(tryPathComplete(state)).toBe(false);
     expect(state.editor.buffer).toBe("/upload cat");
+  });
+});
+
+describe("Up/Down with the autocomplete popup open", () => {
+  test("choose from the popup in insert mode instead of moving the cursor", () => {
+    const state = createInitialState(null, "/tmp/record-config.json", { alice: "t1", albert: "t2" });
+    state.editor.buffer = "/login al";
+    state.editor.cursor = state.editor.buffer.length;
+    updateAutocomplete(state);
+    expect(state.autocomplete?.matches.length).toBe(2);
+
+    expect(handleAutocompleteArrow(state, { type: "down" })).toBe(true);
+    expect(state.autocomplete?.selection).toBe(0);
+    expect(handleAutocompleteArrow(state, { type: "down" })).toBe(true);
+    expect(state.autocomplete?.selection).toBe(1);
+    expect(handleAutocompleteArrow(state, { type: "up" })).toBe(true);
+    expect(state.autocomplete?.selection).toBe(0);
+  });
+
+  test("leave arrows alone without a popup or outside insert mode", () => {
+    const state = createInitialState(null, "/tmp/record-config.json", { alice: "t1" });
+    expect(handleAutocompleteArrow(state, { type: "down" })).toBe(false);
+    state.editor.buffer = "/login a";
+    state.editor.cursor = state.editor.buffer.length;
+    updateAutocomplete(state);
+    state.editor.mode = "normal";
+    expect(handleAutocompleteArrow(state, { type: "down" })).toBe(false);
+    state.editor.mode = "insert";
+    expect(handleAutocompleteArrow(state, { type: "left" })).toBe(false);
   });
 });
