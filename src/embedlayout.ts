@@ -85,9 +85,16 @@ function oneLine(text: string | null | undefined): string {
   return sanitize(text).replace(/\s+/g, " ").trim();
 }
 
-/** `[label](url)` reads as its label in the link colour (the URL is not drawn). */
+const MASKED_LINK_RE = /\[([^\]\n]+)\]\(<?(https?:\/\/[^\s)>]+)>?(?:\s+"[^"]*")?\)/g;
+
+/** `[label](url)` reads as its label in the link colour (the URL is not drawn; historyopenable.ts opens it). */
 function maskedLinks(text: string, restore: string): string {
-  return text.replace(/\[([^\]\n]+)\]\(<?https?:\/\/[^\s)>]+>?(?:\s+"[^"]*")?\)/g, (_match, label: string) => `${theme.accent}${label}${restore}`);
+  return text.replace(MASKED_LINK_RE, (_match, label: string) => `${theme.accent}${label}${restore}`);
+}
+
+/** The masked links of embed text, in order: what each drawn label opens. */
+export function embedMaskedLinks(text: string | null | undefined): Array<{ label: string; url: string }> {
+  return [...sanitize(text).matchAll(MASKED_LINK_RE)].map((match) => ({ label: match[1]!, url: match[2]! }));
 }
 
 /**
