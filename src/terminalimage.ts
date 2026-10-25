@@ -41,6 +41,12 @@ export interface InlineTerminalImageSyncOptions {
    * drop or move placements behind our back. Image data stays resident.
    */
   replacePlacements?: boolean;
+  /**
+   * Rows (1-based, inclusive) a region scroll moved in this frame. Placements
+   * anchored there moved (or left) with them, so they are placed again even
+   * when this frame wants them where they were.
+   */
+  movedRows?: { start: number; end: number } | null;
   /** Bound on images kept in the terminal with no placement (default 64). */
   maxIdleImages?: number;
   /** Bound on their charged bytes, base64 plus RGBA pixels (default 32 MiB). */
@@ -180,11 +186,14 @@ export function planInlineTerminalImages(
     state.placements.delete(key);
   }
 
+  const moved = options.movedRows;
   for (const placement of placements) {
     const key = placementKey(placement);
     const fingerprint = placementFingerprint(placement);
+    const placedRow = Number(state.placements.get(key)?.split(":", 1)[0]);
+    const scrolled = !!moved && placedRow >= moved.start && placedRow <= moved.end;
     if (!options.replacePlacements && !retransmitted.has(placement.image.imageId)
-      && state.placements.get(key) === fingerprint) continue;
+      && state.placements.get(key) === fingerprint && !scrolled) continue;
     if (options.allowPlacementUpdates === false) continue;
     out.push(placeImage(placement));
     state.placements.set(key, fingerprint);

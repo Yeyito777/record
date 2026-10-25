@@ -146,6 +146,9 @@ function inRanges(cp: number, ranges: readonly [number, number][]): boolean {
 }
 
 function isZeroWidth(cp: number): boolean {
+  // Nothing below U+0300 (the first combining mark) is zero-width here; this
+  // skips the Unicode-property regex for Latin text.
+  if (cp < 0x0300) return false;
   if (NONSPACING_OR_ENCLOSING_MARK_RE.test(String.fromCodePoint(cp))) return true;
   if (cp >= 0x200B && cp <= 0x200F) return true;
   if (cp >= 0x2028 && cp <= 0x202E) return true;
@@ -236,6 +239,14 @@ export function termWidth(text: string): number {
   let index = 0;
 
   while (index < text.length) {
+    // Printable ASCII is one cell; a combining mark after it is counted (as
+    // zero) on the next step, so the total matches cluster parsing.
+    const code = text.charCodeAt(index);
+    if (code >= 0x20 && code <= 0x7e) {
+      width++;
+      index++;
+      continue;
+    }
     const [clusterWidth, end] = nextCluster(text, index);
     width += clusterWidth;
     index = end;

@@ -102,6 +102,8 @@ interface CachedTimelineContent {
   width: number;
   version: number;
   liveKey: string;
+  /** Messages drawn with the spinner frame or clock (loading images, live calls). */
+  liveMessageIds: ReadonlySet<string>;
   lines: string[];
   lineAnchors: string[];
   lineBackgrounds: string[];
@@ -272,13 +274,34 @@ export function setTimelineMessages(
   timeline.systemMessages = [];
   timeline.emptyText = options.emptyText !== undefined ? options.emptyText : previousEmptyText;
   timeline.scrollOffset = preserveScroll ? previousScrollOffset : Number.MAX_SAFE_INTEGER;
-  timeline.maxScroll = 0;
+  // A preserving refresh keeps the previous maxScroll until the next render
+  // measures the new rows: with 0, the renderer took any scrolled-up view
+  // with the prompt focused for "following the bottom" and jumped there.
+  if (!preserveScroll) timeline.maxScroll = 0;
   timeline.loading = false;
   timeline.loadingOlder = false;
   timeline.loadingNewer = false;
   timeline.hasOlder = options.hasOlder ?? messages.length > 0;
   timeline.hasNewer = options.hasNewer ?? false;
-  resetTimelineRenderCaches(timeline);
+  if (sameTimeline) {
+    // A refresh of the open chat (provider history events, REST revalidation)
+    // keeps rendered messages: the per-message cache is keyed by id, width and
+    // a fingerprint of everything drawn. Re-rendering them all cost ~100 ms
+    // per WhatsApp event in a 300-message chat.
+    pruneMessageRenderCache(timeline);
+    invalidateTimelineContentCache(timeline);
+  } else {
+    resetTimelineRenderCaches(timeline);
+  }
+}
+
+function pruneMessageRenderCache(timeline: TimelineState): void {
+  const cache = getTimelineCacheState(timeline).messageRenderCache;
+  if (cache.size <= timeline.messages.length * 2 + 64) return;
+  const live = new Set(timeline.messages.map((message) => message.id));
+  for (const key of cache.keys()) {
+    if (!live.has(key.slice(0, key.lastIndexOf(":")))) cache.delete(key);
+  }
 }
 
 export function startLoadingOlderMessages(timeline: TimelineState): void {
@@ -318,6 +341,10 @@ export function appendTimelineMessage(timeline: TimelineState, message: DiscordM
   if (pendingIndex >= 0) {
     transferInlineImageStates(timeline, timeline.messages[pendingIndex], message);
     timeline.messages[pendingIndex] = message;
+  } else if (timeline.hasNewer && !message.localStatus) {
+    // Viewing an older window (jump to a message): a live message belongs
+    // after history not loaded yet, not directly after this page.
+    return;
   } else {
     timeline.messages.push(message);
   }
@@ -598,13 +625,16 @@ export function renderTimelineLines(
         lineBackgrounds.push("");
         wrapContinuation.push(false);
       }
-      appendRenderedTimelineContent(allLines, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, inlineImages, content);
-      if (timeline.loadingNewer) {
-        allLines.push(`${theme.muted}${truncate(loadingLabel("Loading newer messages…", loadingFrameIndex), width)}${theme.reset}`);
-        lineAnchors.push("timeline:loading-newer");
-        lineBackgrounds.push("");
-        wrapContinuation.push(false);
-      }
+      const suffixLine = timeline.loadingNewer
+        ? `${theme.muted}${truncate(loadingLabel("Loading newer messages…", loadingFrameIndex), width)}${theme.reset}`
+        : null;
+      const composed = composeTimelineContent(timeline, content, allLines, lineAnchors, lineBackgrounds, wrapContinuation, suffixLine);
+      allLines = composed.lines;
+      lineAnchors = composed.lineAnchors;
+      lineBackgrounds = composed.lineBackgrounds;
+      wrapContinuation = composed.wrapContinuation;
+      messageBounds = composed.messageBounds;
+      inlineImages = composed.inlineImages;
     } else {
       allLines = content.lines;
       lineAnchors = content.lineAnchors;
@@ -643,6 +673,55 @@ export function renderTimelineLines(
     inlineImages,
     maxScroll,
   };
+}
+
+interface ComposedTimelineContent {
+  content: CachedTimelineContent;
+  key: string;
+  lineAnchors: string[];
+  lineBackgrounds: string[];
+  wrapContinuation: boolean[];
+  messageBounds: TimelineMessageBound[];
+  inlineImages: TimelineInlineImagePlacement[];
+}
+
+const composedTimelineContent = new WeakMap<TimelineState, ComposedTimelineContent>();
+
+/**
+ * Content plus banner rows (notice, "Loading older/newer messages…"). Those
+ * are shown exactly while scrolling through a long channel; everything but the
+ * text rows (whose spinner animates) is reused between frames, so anchors keep
+ * their identity and the renderer does not re-index every row.
+ */
+function composeTimelineContent(
+  timeline: TimelineState,
+  content: CachedTimelineContent,
+  prefixLines: string[],
+  prefixAnchors: string[],
+  prefixBackgrounds: string[],
+  prefixContinuation: boolean[],
+  suffixLine: string | null,
+): Omit<ComposedTimelineContent, "content" | "key"> & { lines: string[] } {
+  const key = `${prefixAnchors.join("\u0000")}\u0001${suffixLine === null ? "" : "newer"}`;
+  let composed = composedTimelineContent.get(timeline);
+  if (!composed || composed.content !== content || composed.key !== key) {
+    const lineAnchors = prefixAnchors.slice();
+    const lineBackgrounds = prefixBackgrounds.slice();
+    const wrapContinuation = prefixContinuation.slice();
+    const messageBounds: TimelineMessageBound[] = [];
+    const inlineImages: TimelineInlineImagePlacement[] = [];
+    appendRenderedTimelineContent(prefixLines.slice(), lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, inlineImages, content);
+    if (suffixLine !== null) {
+      lineAnchors.push("timeline:loading-newer");
+      lineBackgrounds.push("");
+      wrapContinuation.push(false);
+    }
+    composed = { content, key, lineAnchors, lineBackgrounds, wrapContinuation, messageBounds, inlineImages };
+    composedTimelineContent.set(timeline, composed);
+  }
+  const lines = prefixLines.concat(content.lines);
+  if (suffixLine !== null) lines.push(suffixLine);
+  return { ...composed, lines };
 }
 
 function countRenderedInsertedRows(
@@ -736,6 +815,18 @@ function getRenderedTimelineContent(
   ) {
     return cacheState.contentCache;
   }
+  if (
+    cacheState.contentCache
+    && cacheState.contentCache.width === width
+    && cacheState.contentCache.version === cacheState.version
+  ) {
+    // Only the spinner frame / clock moved: re-render just the live messages.
+    const spliced = spliceLiveTimelineMessages(timeline, cacheState.contentCache, liveKey, loadingFrameIndex, nowMs);
+    if (spliced) {
+      cacheState.contentCache = spliced;
+      return spliced;
+    }
+  }
 
   const lines: string[] = [];
   const lineAnchors: string[] = [];
@@ -810,6 +901,7 @@ function getRenderedTimelineContent(
     width,
     version: cacheState.version,
     liveKey,
+    liveMessageIds: liveTimelineMessageIds(timeline),
     lines,
     lineAnchors,
     lineBackgrounds,
@@ -819,6 +911,89 @@ function getRenderedTimelineContent(
   };
   cacheState.contentCache = content;
   return content;
+}
+
+function messageIsLive(timeline: TimelineState, message: DiscordMessage): boolean {
+  if (message.call && message.call.endedTimestamp === null) return true;
+  if (message.attachments.length === 0 && !message.stickers?.length && !message.forwarded) return false;
+  return inlineImageStatesForMessage(message, timeline.inlineImages).some((image) => image.phase === "loading");
+}
+
+function liveTimelineMessageIds(timeline: TimelineState): Set<string> {
+  const ids = new Set<string>();
+  if (!hasLoadingInlineTimelineImage(timeline) && !hasActiveTimelineCall(timeline)) return ids;
+  for (const message of timeline.messages) {
+    if (messageIsLive(timeline, message)) ids.add(message.id);
+  }
+  return ids;
+}
+
+/**
+ * While an image loads or a call is live, the spinner advances every 80 ms.
+ * Instead of recomposing every message (100+ ms in a long channel), re-render
+ * only the messages drawn with the frame/clock, now or in the previous build
+ * (an image that just finished), and splice their rows into the previous
+ * content. Returns null when a row count changed: the caller rebuilds.
+ */
+function spliceLiveTimelineMessages(
+  timeline: TimelineState,
+  previous: CachedTimelineContent,
+  liveKey: string,
+  loadingFrameIndex: number,
+  nowMs: number,
+): CachedTimelineContent | null {
+  const liveNow = liveTimelineMessageIds(timeline);
+  const ids = new Set([...previous.liveMessageIds, ...liveNow]);
+  if (ids.size === 0) return { ...previous, liveKey, liveMessageIds: liveNow };
+  const messagesById = new Map<string, DiscordMessage>();
+  for (const message of timeline.messages) {
+    if (ids.has(message.id)) messagesById.set(message.id, message);
+  }
+  let lines: string[] | null = null;
+  let lineAnchors = previous.lineAnchors;
+  let lineBackgrounds = previous.lineBackgrounds;
+  let wrapContinuation = previous.wrapContinuation;
+  let inlineImages = previous.inlineImages;
+  for (const bound of previous.messageBounds) {
+    if (!ids.has(bound.messageId)) continue;
+    const message = messagesById.get(bound.messageId);
+    if (!message) return null;
+    const grouped = Boolean(bound.groupId && bound.groupId !== bound.messageId);
+    const rendered = renderMessageCached(timeline, message, previous.width, loadingFrameIndex, nowMs, grouped);
+    if (rendered.lines.length !== bound.end - bound.start) return null;
+    lines ??= previous.lines.slice();
+    for (let row = 0; row < rendered.lines.length; row++) {
+      const index = bound.start + row;
+      lines[index] = rendered.lines[row]!;
+      if (lineAnchors[index] !== rendered.lineAnchors[row]) {
+        if (lineAnchors === previous.lineAnchors) lineAnchors = lineAnchors.slice();
+        lineAnchors[index] = rendered.lineAnchors[row]!;
+      }
+      if (lineBackgrounds[index] !== rendered.lineBackgrounds[row]) {
+        if (lineBackgrounds === previous.lineBackgrounds) lineBackgrounds = lineBackgrounds.slice();
+        lineBackgrounds[index] = rendered.lineBackgrounds[row]!;
+      }
+      if (wrapContinuation[index] !== rendered.wrapContinuation[row]) {
+        if (wrapContinuation === previous.wrapContinuation) wrapContinuation = wrapContinuation.slice();
+        wrapContinuation[index] = rendered.wrapContinuation[row]!;
+      }
+    }
+    const before = inlineImages.filter((image) => image.lineIndex < bound.start || image.lineIndex >= bound.end);
+    if (before.length !== inlineImages.length || rendered.inlineImages.length > 0) {
+      inlineImages = [...before, ...rendered.inlineImages.map((image) => ({ ...image, lineIndex: image.lineIndex + bound.start }))]
+        .sort((left, right) => left.lineIndex - right.lineIndex);
+    }
+  }
+  return {
+    ...previous,
+    liveKey,
+    liveMessageIds: liveNow,
+    lines: lines ?? previous.lines,
+    lineAnchors,
+    lineBackgrounds,
+    wrapContinuation,
+    inlineImages,
+  };
 }
 
 function timelineRenderEntries(timeline: TimelineState): TimelineRenderEntry[] {
@@ -1684,6 +1859,11 @@ function getTimelineCacheState(timeline: TimelineState): TimelineCacheState {
   return cacheState;
 }
 
+/** Changes whenever the timeline's messages or render inputs change. */
+export function timelineContentVersion(timeline: TimelineState): number {
+  return getTimelineCacheState(timeline).version;
+}
+
 function invalidateTimelineContentCache(timeline: TimelineState): void {
   const cacheState = getTimelineCacheState(timeline);
   cacheState.version += 1;
@@ -1709,6 +1889,9 @@ function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, n
   return `${loadingFrameIndex}:${Math.floor(nowMs / 1000)}`;
 }
 
+/** Role lists are replaced, never mutated, when roles change. */
+const roleListFingerprints = new WeakMap<readonly DiscordRole[], string>();
+
 function rolesByGuildFingerprint(
   rolesByGuildId: Record<string, DiscordRole[]>,
   messageGuildId: string | null | undefined,
@@ -1716,9 +1899,16 @@ function rolesByGuildFingerprint(
 ): string {
   const guildId = messageGuildId ?? activeGuildId;
   if (!guildId) return "";
-  return (rolesByGuildId[guildId] ?? [])
-    .map((role) => [role.id, role.name ?? "", String(role.color)].join("\u0002"))
-    .join("\u0000");
+  const roles = rolesByGuildId[guildId];
+  if (!roles) return "";
+  let fingerprint = roleListFingerprints.get(roles);
+  if (fingerprint === undefined) {
+    // Joined once per role list instead of once per message per rebuild
+    // (57% of appending a message to a long channel in a 200-role server).
+    fingerprint = roles.map((role) => [role.id, role.name ?? "", String(role.color)].join("\u0002")).join("\u0000");
+    roleListFingerprints.set(roles, fingerprint);
+  }
+  return fingerprint;
 }
 
 function messageRenderFingerprint(

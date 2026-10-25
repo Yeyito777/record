@@ -909,6 +909,34 @@ describe("session", () => {
     expect(state.channelList.channels.map((channel) => channel.id)).toEqual(["channel-1", "joined-thread"]);
   });
 
+  test("fetches server roles two at a time and waits out a 429 instead of dropping it", async () => {
+    let running = 0;
+    let maxRunning = 0;
+    const attemptsByGuild = new Map<string, number>();
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const match = /\/guilds\/(guild-\d+)\/roles/.exec(String(input));
+      if (!match) throw new Error(`unexpected fetch ${String(input)}`);
+      const guildId = match[1]!;
+      const attempt = (attemptsByGuild.get(guildId) ?? 0) + 1;
+      attemptsByGuild.set(guildId, attempt);
+      running += 1;
+      maxRunning = Math.max(maxRunning, running);
+      await Bun.sleep(5);
+      running -= 1;
+      if (guildId === "guild-3" && attempt === 1) {
+        return new Response(JSON.stringify({ message: "You are being rate limited.", retry_after: 0.02, global: false }), { status: 429, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify([{ id: guildId, name: "@everyone", color: 0, position: 0, permissions: "1024" }]), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    for (let index = 1; index <= 6; index++) loadGuildRolesInBackground(state, "token-1", `guild-${index}`, { scheduleRender: () => {} });
+    for (let wait = 0; wait < 100 && Object.keys(state.guildRolesByGuildId).length < 6; wait++) await Bun.sleep(5);
+
+    expect(maxRunning).toBe(2);
+    expect(Object.keys(state.guildRolesByGuildId).sort()).toEqual(["guild-1", "guild-2", "guild-3", "guild-4", "guild-5", "guild-6"]);
+    expect(attemptsByGuild.get("guild-3")).toBe(2);
+  });
+
   test("refetches cached guild roles that lack names", async () => {
     let roleFetches = 0;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -1325,6 +1353,40 @@ describe("session", () => {
     expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["from rest", "from gateway"]);
   });
 
+  test("a refresh that does not reach back to the cached messages replaces them instead of hiding a gap", async () => {
+    const restPage = Array.from({ length: 50 }, (_unused, index) => ({
+      id: String(1000 + index), channel_id: "channel-1", guild_id: "guild-1", type: 0, content: `new ${index}`,
+      timestamp: new Date(Date.UTC(2026, 0, 2, 12, index)).toISOString(), edited_timestamp: null,
+      author: { id: "user-1", username: "tester", global_name: "Tester" }, attachments: [], embeds: [],
+    })).reverse();
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/channels/channel-1/messages?")) return new Response(JSON.stringify(restPage), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.includes("/guilds/guild-1/roles")) return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.includes("/ack")) return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.messageCacheByChannelId["channel-1"] = {
+      channelId: "channel-1",
+      messages: Array.from({ length: 20 }, (_unused, index) => message(String(index + 1), `old ${index + 1}`)),
+      hasOlder: true,
+      updatedAt: 0,
+      latestFetchedAt: 0,
+    };
+
+    await loadChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
+    await flushTimers();
+
+    const contents = state.timeline.messages.map((entry) => entry.content);
+    expect(contents).toHaveLength(50);
+    expect(contents[0]).toBe("new 0");
+    expect(contents).not.toContain("old 20");
+  });
+
   test("refreshing stale cached messages preserves manual timeline scroll", async () => {
     let resolveMessages: (response: Response) => void = () => {};
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -1395,6 +1457,36 @@ describe("session", () => {
     expect(state.timeline.scrollOffset).toBe(Number.MAX_SAFE_INTEGER);
     expect(state.timeline.messages).toHaveLength(1);
     expect(state.timeline.messages[0]).toMatchObject({ content: "hello", localStatus: "pending" });
+  });
+
+  test("a failed send never lands in another conversation's prompt or over a newer draft", async () => {
+    const failSend = () => new Response(JSON.stringify({ message: "Missing Access", code: 50001 }), { status: 403, headers: { "Content-Type": "application/json" } });
+    for (const scenario of ["same", "switched", "newer draft"] as const) {
+      let fail!: () => void;
+      globalThis.fetch = (async () => new Promise<Response>((resolve) => { fail = () => resolve(failSend()); })) as unknown as typeof fetch;
+      const state = createInitialState("token-1", "/tmp/record-config.json");
+      state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+      state.channelList.guildId = "guild-1";
+      state.channelList.channels = [
+        { id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false },
+        { id: "channel-2", guildId: "guild-1", parentId: null, name: "random", topic: null, position: 1, type: 0, nsfw: false },
+      ];
+      state.channelList.activeChannelId = "channel-1";
+      state.timeline.channelId = "channel-1";
+
+      sendCurrentChannelMessage(state, "token-1", "secret for general", { scheduleRender: () => {} });
+      if (scenario === "switched") {
+        state.channelList.activeChannelId = "channel-2";
+        state.timeline.channelId = "channel-2";
+      }
+      if (scenario === "newer draft") state.editor.buffer = "newer";
+      fail();
+      await flushTimers();
+
+      const expected = scenario === "same" ? "secret for general" : scenario === "newer draft" ? "newer" : "";
+      expect(state.editor.buffer).toBe(expected);
+      expect(state.messageCacheByChannelId["channel-1"]?.messages.at(-1)).toMatchObject({ content: "secret for general", localStatus: "failed" });
+    }
   });
 
   test("sending to an unjoined thread joins it before posting", async () => {

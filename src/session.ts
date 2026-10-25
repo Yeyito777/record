@@ -19,6 +19,7 @@ import { basename } from "path";
 import {
   DIRECT_MESSAGES_GUILD_ID,
   DIRECT_MESSAGES_GUILD_NAME,
+  DiscordRateLimitError,
   DiscordResourceNotFoundError,
   ackChannelMessage,
   createChannelThread,
@@ -68,6 +69,7 @@ import {
   type DiscordMessagePatch,
   type DiscordCustomStatus,
   type DiscordPresenceStatus,
+  compareSnowflakesDesc,
 } from "./discord";
 import { isFixedTopLevelGuildId, isExternalChannel, isExternalChannelId, isInstagramChannelId, instagramGuild, INSTAGRAM_GUILD_ID, whatsappGuild, whatsappSidebarLayoutScope, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { instagramChannels, instagramTimelineMessages } from "./instagram/integration";
@@ -115,6 +117,7 @@ import {
   removeCachedChannelMessages,
   replaceCachedChannelMessage,
   setCachedChannelMessages,
+  pruneChannelMessageCache,
   upsertCachedChannelMessage,
 } from "./messagecache";
 import {
@@ -1700,6 +1703,11 @@ export function handleGatewayMessageCreate(state: AppState, effects: SessionEffe
   const cachedMessage = hydrateMissingReplyPreviewFromKnownMessages(state, withMessageGuildId(message, guildId));
   recordMessageRoleIds(state, cachedMessage, guildId);
   upsertCachedChannelMessage(state.messageCacheByChannelId, cachedMessage);
+  pruneChannelMessageCache(state.messageCacheByChannelId, new Set([
+    cachedMessage.channelId,
+    state.timeline.channelId,
+    state.channelList.activeChannelId,
+  ].filter((channelId): channelId is string => Boolean(channelId))));
   persistChannelMessageCache(state, cachedMessage.channelId);
   clearTypingUser(state.typing, message.channelId, message.author.id);
   const shouldNotify = shouldNotifyForIncomingMessage(state, cachedMessage);
@@ -2109,10 +2117,42 @@ function recordMemberRoleIds(state: AppState, guildId: string | null | undefined
   const previous = byUserId[userId] ?? [];
   if (hadPrevious && previous.length === roleIds.length && previous.every((roleId, index) => roleId === roleIds[index])) return false;
   byUserId[userId] = [...roleIds];
-  state.memberRoleCacheVersion += 1;
-  const accountId = currentAccountId(state);
-  if (accountId) saveCachedMemberRoles(accountId, guildId, byUserId);
+  noteGuildRoleChange(state, guildId);
+  scheduleMemberRolesSave(state, guildId);
   return true;
+}
+
+/**
+ * Role data of a server only changes how the open timeline looks when it is
+ * that timeline's server; a bump re-wraps every visible message, so member
+ * chunks and list syncs for other servers no longer trigger it.
+ */
+function noteGuildRoleChange(state: AppState, guildId: string): void {
+  const timelineGuildId = state.channelList.activeChannel?.guildId ?? state.channelList.guildId ?? null;
+  if (guildId === timelineGuildId) state.memberRoleCacheVersion += 1;
+}
+
+const pendingMemberRoleSaves = new WeakMap<AppState, Set<string>>();
+
+/**
+ * Save a server's member roles once per batch: saving copies the whole
+ * member->roles map, and member chunks record thousands of members in a loop
+ * (a 1000-member chunk into a 10k-member server stalled for over a second).
+ */
+function scheduleMemberRolesSave(state: AppState, guildId: string): void {
+  let pending = pendingMemberRoleSaves.get(state);
+  if (!pending) {
+    pending = new Set();
+    pendingMemberRoleSaves.set(state, pending);
+  }
+  if (pending.has(guildId)) return;
+  pending.add(guildId);
+  queueMicrotask(() => {
+    pending!.delete(guildId);
+    const accountId = currentAccountId(state);
+    const byUserId = state.memberRoleIdsByGuildId[guildId];
+    if (accountId && byUserId) saveCachedMemberRoles(accountId, guildId, byUserId);
+  });
 }
 
 function withMessageGuildId(message: DiscordMessage, guildId: string | null | undefined): DiscordMessage {
@@ -2253,6 +2293,44 @@ function guildRolesIncludeNamesAndPermissions(roles: readonly DiscordRole[] | un
     && roles.some((role) => typeof role.name === "string" && role.name.trim().length > 0));
 }
 
+/**
+ * Role lists are fetched at most two at a time. A login with an empty cache
+ * used to fire one GET /guilds/:id/roles per server at once, which Discord
+ * rate-limits (failing silently, leaving role colours and hidden-channel flags
+ * missing) and no official client does.
+ */
+const ROLE_FETCH_CONCURRENCY = 2;
+const ROLE_FETCH_MAX_RATE_LIMIT_WAIT_MS = 60_000;
+let roleFetchesRunning = 0;
+const roleFetchQueue: Array<() => void> = [];
+
+function queueRoleFetch<T>(run: () => Promise<T>, urgent: boolean): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const start = (): void => {
+      roleFetchesRunning += 1;
+      run().then(resolve, reject).finally(() => {
+        roleFetchesRunning -= 1;
+        roleFetchQueue.shift()?.();
+      });
+    };
+    if (roleFetchesRunning < ROLE_FETCH_CONCURRENCY) start();
+    else if (urgent) roleFetchQueue.unshift(start);
+    else roleFetchQueue.push(start);
+  });
+}
+
+async function fetchGuildRolesHonoringRateLimit(token: string, guildId: string): Promise<DiscordRole[]> {
+  try {
+    return await fetchGuildRoles(token, guildId);
+  } catch (error) {
+    if (!(error instanceof DiscordRateLimitError)) throw error;
+    const waitMs = Math.min(ROLE_FETCH_MAX_RATE_LIMIT_WAIT_MS, error.retryAfterMs ?? 5_000);
+    debugLog("guild_roles.rate_limited", { guildId, waitMs });
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    return fetchGuildRoles(token, guildId);
+  }
+}
+
 export function loadGuildRolesInBackground(
   state: AppState,
   token: string,
@@ -2265,7 +2343,8 @@ export function loadGuildRolesInBackground(
   if (!options.revalidate && guildRolesIncludeNamesAndPermissions(state.guildRolesByGuildId[guildId])) return;
   fetchState.pending.add(guildId);
   const revision = fetchState.revisions.get(guildId) ?? 0;
-  void fetchGuildRoles(token, guildId).then((roles) => {
+  const urgent = guildId === (state.channelList.activeChannel?.guildId ?? state.channelList.guildId);
+  void queueRoleFetch(() => fetchGuildRolesHonoringRateLimit(token, guildId), urgent).then((roles) => {
     debugLog("guild_roles.fetched", {
       guildId,
       count: roles.length,
@@ -2278,7 +2357,7 @@ export function loadGuildRolesInBackground(
     refreshHiddenChannelFlags(state, guildId);
     const accountId = currentAccountId(state);
     if (accountId) saveCachedGuildRoles(accountId, guildId, roles);
-    state.memberRoleCacheVersion += 1;
+    noteGuildRoleChange(state, guildId);
     syncAllSidebarVoiceMembers(state);
     effects.scheduleRender();
   }).catch(() => {
@@ -2311,7 +2390,7 @@ function applyGatewayGuildRoleUpdate(
   refreshHiddenChannelFlags(state, guildId);
   const accountId = currentAccountId(state);
   if (accountId) saveCachedGuildRoles(accountId, guildId, next);
-  state.memberRoleCacheVersion += 1;
+  noteGuildRoleChange(state, guildId);
   syncAllSidebarVoiceMembers(state);
   effects.scheduleRender();
 }
@@ -3024,6 +3103,23 @@ function ensureWatchStreamService(state: AppState, effects: SessionEffects): Wat
   return watchStreamService;
 }
 
+/**
+ * The gateway logged in fresh instead of resuming, so messages sent while
+ * Record was disconnected never arrived as events: refetch the open channel
+ * and treat every other cached channel as stale until it is opened again.
+ */
+function handleGatewaySessionReset(state: AppState, effects: SessionEffects): void {
+  for (const entry of Object.values(state.messageCacheByChannelId)) {
+    if (entry.latestFetchedAt !== null) entry.latestFetchedAt = 0;
+  }
+  const token = state.auth.savedToken;
+  const channelId = state.timeline.channelId;
+  if (!token || !channelId || isExternalChannelId(channelId) || state.timeline.view === "pinned") return;
+  const guildId = channelById(state, channelId)?.guildId ?? state.channelList.activeChannel?.guildId ?? null;
+  debugLog("app_gateway.session_reset_refresh", { channelId });
+  void refreshLatestChannelMessages(state, token, channelId, guildId, state.timeline.requestId, effects, { hadCachedMessages: true });
+}
+
 function startAppGateway(state: AppState, token: string, effects: SessionEffects): void {
   if (appGateway && appGatewayToken === token) return;
   state.voiceCall = null;
@@ -3071,6 +3167,7 @@ function startAppGateway(state: AppState, token: string, effects: SessionEffects
       applyGuildMuteSettings(state, { [guildId]: muted });
       effects.scheduleRender();
     },
+    onSessionReset: () => handleGatewaySessionReset(state, effects),
     onReadyGuilds: (guilds) => {
       if (mergeGatewayGuilds(state, guilds)) {
         for (const guild of guilds) loadGuildRolesInBackground(state, currentAuthToken(state, token), guild.id, effects);
@@ -4230,6 +4327,17 @@ export async function loadChannelMessages(
   await refreshLatestChannelMessages(state, token, channelId, guildId, requestId, effects, { hadCachedMessages: false });
 }
 
+function latestPageLeavesGap(page: readonly DiscordMessage[], cached: readonly DiscordMessage[]): boolean {
+  if (page.length < MESSAGE_PAGE_LIMIT) return false;
+  const newestCached = [...cached].reverse().find((message) => !message.localStatus);
+  if (!newestCached) return false;
+  if (page.some((message) => message.id === newestCached.id)) return false;
+  const oldestFetched = page.reduce<string | null>((oldest, message) => (
+    oldest === null || compareSnowflakesDesc(message.id, oldest) > 0 ? message.id : oldest
+  ), null);
+  return oldestFetched !== null && compareSnowflakesDesc(oldestFetched, newestCached.id) < 0;
+}
+
 async function refreshLatestChannelMessages(
   state: AppState,
   token: string,
@@ -4244,10 +4352,17 @@ async function refreshLatestChannelMessages(
     const withGuildIds = fetchedMessages.map((message) => withMessageGuildId(message, guildId));
     const { messages } = hydrateMissingReplyPreviewsFromKnownMessages(state, withGuildIds);
     recordMessagesRoleIds(state, messages, guildId);
-    const cacheEntry = setCachedChannelMessages(state.messageCacheByChannelId, channelId, messages, {
+    // A full page that does not reach back to the newest cached message leaves
+    // an unknown gap; merging would show it as continuous history and "load
+    // older" would page back from the old messages, never filling it.
+    const cachedMessages = state.messageCacheByChannelId[channelId]?.messages ?? [];
+    const gap = latestPageLeavesGap(messages, cachedMessages);
+    const cacheEntry = setCachedChannelMessages(state.messageCacheByChannelId, channelId, gap
+      ? [...messages, ...cachedMessages.filter((message) => message.localStatus)]
+      : messages, {
       hasOlder: messages.length >= MESSAGE_PAGE_LIMIT,
       updatedAt: Date.now(),
-      replace: false,
+      replace: gap,
     });
     persistChannelMessageCache(state, channelId);
 
@@ -4431,8 +4546,8 @@ export async function loadChannelMessagesAround(
     const hasOlder = messages.length >= MESSAGE_PAGE_LIMIT;
     const hasNewer = messages.length >= MESSAGE_PAGE_LIMIT;
     recordMessagesRoleIds(state, messages, guildId);
-    setCachedChannelMessages(state.messageCacheByChannelId, channelId, messages, { hasOlder, updatedAt: Date.now(), replace: false, latestFetched: false });
-    persistChannelMessageCache(state, channelId);
+    // A jumped-to page is not merged into the channel cache: reopening the
+    // channel would show it glued onto recent messages with no gap marker.
     setTimelineMessages(state.timeline, channelId, messages, { hasOlder, hasNewer });
     messages.forEach((message) => maybeHydrateMissingReplyPreviewFromRest(state, effects, message));
     return messages.some((message) => message.id === messageId);
@@ -4656,11 +4771,15 @@ export function editCurrentMessage(
           replaceTimelineMessage(state.timeline, messageId, originalMessage);
         }
       }
-      state.editTarget = target;
-      state.editor.buffer = options.failureBuffer ?? content;
-      state.editor.cursor = state.editor.buffer.length;
       const message = error instanceof Error ? error.message : String(error);
-      setNotice(state, `Edit failed: ${message}`, "warning");
+      if (canRestoreFailedDraft(state, channelId)) {
+        state.editTarget = target;
+        state.editor.buffer = options.failureBuffer ?? content;
+        state.editor.cursor = state.editor.buffer.length;
+        setNotice(state, `Edit failed: ${message}`, "warning");
+      } else {
+        setNotice(state, `Edit failed: ${message} (the message was left unchanged).`, "warning");
+      }
       effects.scheduleRender();
     }
   })();
@@ -4746,6 +4865,24 @@ function clearMessageTargetsForDeletedMessage(state: AppState, channelId: string
   }
 }
 
+/**
+ * A failed send/edit goes back into the prompt only in the conversation it
+ * came from and only over an untouched prompt: never into another chat (where
+ * Enter would send it there) and never over a newer draft.
+ */
+function canRestoreFailedDraft(state: AppState, channelId: string): boolean {
+  return (state.channelList.activeChannelId ?? state.timeline.channelId) === channelId
+    && !state.editor.buffer
+    && state.pendingImages.length === 0
+    && !state.replyTarget
+    && !state.editTarget;
+}
+
+function failedTargetLabel(state: AppState, channelId: string): string {
+  const channel = channelById(state, channelId);
+  return channel?.name ? `#${channel.name}` : "another conversation";
+}
+
 export function sendCurrentChannelMessage(
   state: AppState,
   token: string | null,
@@ -4778,6 +4915,7 @@ export function sendCurrentChannelMessage(
   }
 
   const viewer = state.auth.user;
+  const targetGuildId = state.channelList.activeChannel?.guildId ?? null;
   const messageNonce = generateMessageNonce();
   const localMessageId = `local:${messageNonce}`;
   const replyTarget = state.replyTarget?.channelId === channelId ? state.replyTarget : null;
@@ -4809,7 +4947,7 @@ export function sendCurrentChannelMessage(
   const localMessage: DiscordMessage = {
     id: localMessageId,
     channelId,
-    guildId: state.channelList.activeChannel?.guildId ?? null,
+    guildId: targetGuildId,
     nonce: messageNonce,
     type: 0,
     content,
@@ -4853,9 +4991,10 @@ export function sendCurrentChannelMessage(
         flags: options.messageFlags,
         nonce: messageNonce,
       });
-      const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
+      // The user may have switched servers while this was in flight.
+      const message = withMessageGuildId(sentMessage, targetGuildId);
       transferLocalAttachmentVisibility(state, localAttachments, message.attachments);
-      recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
+      recordMemberRoleIds(state, message.guildId ?? targetGuildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, localMessageId, message);
       persistChannelMessageCache(state, channelId);
       if (state.timeline.channelId === channelId) {
@@ -4872,15 +5011,20 @@ export function sendCurrentChannelMessage(
       const message = error instanceof Error ? error.message : String(error);
       const cachedFailed = markCachedChannelMessageFailed(state.messageCacheByChannelId, channelId, localMessageId, message);
       const failed = markTimelineMessageFailed(state.timeline, localMessageId, message) ?? cachedFailed;
-      state.replyTarget = replyTarget;
-      state.pendingImages = pendingImages;
-      state.editor.buffer = options.failureBuffer ?? failed?.content ?? content;
-      state.editor.cursor = state.editor.buffer.length;
+      const restored = canRestoreFailedDraft(state, channelId);
+      if (restored) {
+        state.replyTarget = replyTarget;
+        state.pendingImages = pendingImages;
+        state.editor.buffer = options.failureBuffer ?? failed?.content ?? content;
+        state.editor.cursor = state.editor.buffer.length;
+      }
       if (state.timeline.channelId === channelId) {
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
       }
       if (options.failureNoticePrefix) {
         setNotice(state, `${options.failureNoticePrefix}: ${message}`, "warning", { statusLine: true, chat: false });
+      } else if (!restored) {
+        setNotice(state, `Message to ${failedTargetLabel(state, channelId)} failed to send; its text stays on the failed message.`, "warning", { statusLine: true, chat: false });
       } else {
         setNotice(state, "", "muted");
       }

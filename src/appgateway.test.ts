@@ -4,6 +4,42 @@ import { AppGatewayClient, extractChannelMuteSettings, extractCurrentUserPremium
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 
 describe("app gateway helpers", () => {
+  const baseCallbacks = () => ({ onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} });
+
+  test("a heartbeat without an ACK since the previous one reconnects to resume", async () => {
+    const client = new AppGatewayClient("token", baseCallbacks()) as any;
+    const sent: any[] = [];
+    const reconnects: Array<[number | undefined, number | undefined]> = [];
+    client.ws = { readyState: WebSocket.OPEN, send: (payload: string) => sent.push(JSON.parse(payload)) };
+    client.scheduleReconnect = (delay?: number, code?: number) => { reconnects.push([delay, code]); };
+    client.startHeartbeat(1_000);
+    try {
+      await Bun.sleep(1_050);
+      expect(sent.filter((payload) => payload.op === 40)).toHaveLength(1);
+      client.handleMessage({ data: JSON.stringify({ op: 11 }) });
+      await Bun.sleep(1_000);
+      expect(sent.filter((payload) => payload.op === 40)).toHaveLength(2);
+      expect(reconnects).toEqual([]);
+      await Bun.sleep(1_000);
+      expect(reconnects).toEqual([[0, 4000]]);
+    } finally {
+      clearInterval(client.heartbeatTimer);
+    }
+  });
+
+  test("reports a fresh login after an earlier session so missed messages can be refetched", () => {
+    let resets = 0;
+    const client = new AppGatewayClient("token", { ...baseCallbacks(), onSessionReset: () => { resets += 1; } }) as any;
+    client.ws = { readyState: WebSocket.OPEN, send: () => {} };
+    const ready = JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "s", user: { id: "me" }, guilds: [] } });
+    client.handleMessage({ data: ready });
+    expect(resets).toBe(0);
+    client.handleMessage({ data: JSON.stringify({ op: 0, t: "RESUMED", s: 2, d: null }) });
+    expect(resets).toBe(0);
+    client.handleMessage({ data: ready });
+    expect(resets).toBe(1);
+  });
+
   test("sends presence updates over the gateway", () => {
     const sent: unknown[] = [];
     const client = new AppGatewayClient("token", { onInitialNotifications: () => {}, onMessageCreate: () => {}, onMessageUpdate: () => {}, onMessageDelete: () => {}, onMessageDeleteBulk: () => {}, onMessageAck: () => {}, onChannelCreate: () => {}, onChannelUpdate: () => {}, onChannelDelete: () => {}, onTypingStart: () => {} }, "idle") as any;

@@ -3,7 +3,12 @@
  *
  * Understands what Record's frames emit: CUP, EL, DECSTBM, SU/SD, LF at the
  * bottom margin, SGR (kept per cell as raw text), DECSC/DECRC, and skips
- * private modes, cursor styles, APC graphics and OSC strings.
+ * private modes, cursor styles and OSC strings. Kitty graphics placements
+ * (APC G a=p / a=d) are tracked like st does: anchored to their cell, moved by
+ * region scrolls and dropped when their anchor row scrolls out. Like st, the
+ * second cell of a wide character keeps its previous attributes, and a
+ * placement remembers the cells under it when it is first shown: if they
+ * change later it is hidden (st's image occlusion), see visiblePlacements().
  */
 
 import { termWidth } from "./textwidth";
@@ -11,6 +16,18 @@ import { termWidth } from "./textwidth";
 interface Cell {
   ch: string;
   sgr: string;
+}
+
+/** A Kitty placement as the terminal holds it (zero-based anchor cell). */
+export interface VtPlacement {
+  imageId: number;
+  placementId: number;
+  row: number;
+  col: number;
+  /** The placement's other controls, e.g. `c=2,r=1,C=1,z=1478`. */
+  controls: string;
+  /** The cells under it when first shown (st's occlusion baseline). */
+  baseline?: string;
 }
 
 export class VtScreen {
@@ -21,6 +38,8 @@ export class VtScreen {
   private bottom: number;
   private sgr = "";
   private saved = { row: 0, col: 0, sgr: "" };
+  private readonly placementsByKey = new Map<string, VtPlacement>();
+  private anonymousPlacements = 0;
 
   constructor(readonly rows: number, readonly cols: number) {
     this.bottom = rows - 1;
@@ -40,6 +59,7 @@ export class VtScreen {
       this.grid.splice(this.top, 1);
       this.grid.splice(this.bottom, 0, this.blankRow());
     }
+    this.movePlacements(-n);
   }
 
   private scrollDown(n: number): void {
@@ -47,6 +67,80 @@ export class VtScreen {
       this.grid.splice(this.bottom, 1);
       this.grid.splice(this.top, 0, this.blankRow());
     }
+    this.movePlacements(n);
+  }
+
+  private movePlacements(rows: number): void {
+    for (const [key, placement] of this.placementsByKey) {
+      if (placement.row < this.top || placement.row > this.bottom) continue;
+      placement.row += rows;
+      if (placement.row < this.top || placement.row > this.bottom) this.placementsByKey.delete(key);
+    }
+  }
+
+  private graphics(body: string): void {
+    const controls = new Map(body.split(";", 1)[0]!.split(",").map((field) => {
+      const equals = field.indexOf("=");
+      return [field.slice(0, equals), field.slice(equals + 1)] as const;
+    }));
+    const action = controls.get("a");
+    const imageId = Number(controls.get("i") ?? 0);
+    const placementId = Number(controls.get("p") ?? 0);
+    if (action === "p") {
+      const rest = [...controls].filter(([name]) => !["a", "i", "p", "q"].includes(name)).map(([name, value]) => `${name}=${value}`).join(",");
+      const key = placementId ? `${imageId}:${placementId}` : `${imageId}:anon${++this.anonymousPlacements}`;
+      const previous = this.placementsByKey.get(key);
+      // st keeps a placement's baseline while its identity (ids, cell, size) stays the same.
+      const same = previous && previous.row === this.row && previous.col === this.col && previous.controls === rest;
+      this.placementsByKey.set(key, { imageId, placementId, row: this.row, col: this.col, controls: rest, baseline: same ? previous.baseline : undefined });
+      return;
+    }
+    if (action !== "d") return;
+    const what = controls.get("d") ?? "a";
+    for (const [key, placement] of this.placementsByKey) {
+      const remove = what === "a" || what === "A"
+        || ((what === "i" || what === "I") && placement.imageId === imageId && (!placementId || placement.placementId === placementId))
+        || (what === "z" && placement.controls.split(",").includes(`z=${controls.get("z")}`))
+        || ((what === "r" || what === "R") && placement.imageId >= Number(controls.get("x")) && placement.imageId <= Number(controls.get("y")));
+      if (remove) this.placementsByKey.delete(key);
+    }
+  }
+
+  private cellsUnder(placement: VtPlacement): string {
+    const field = (name: string, fallback: number) => {
+      const match = new RegExp(`(?:^|,)${name}=(\\d+)`).exec(placement.controls);
+      return match ? Number(match[1]) : fallback;
+    };
+    const columns = field("c", 1);
+    const rows = field("r", 1);
+    let cells = "";
+    for (let row = placement.row; row < Math.min(this.rows, placement.row + rows); row++) {
+      for (let col = placement.col; col < Math.min(this.cols, placement.col + columns); col++) {
+        const cell = this.grid[row]![col]!;
+        cells += `${cell.sgr}\u0000${cell.ch}\u0001`;
+      }
+    }
+    return cells;
+  }
+
+  /** Placements first shown now remember the cells under them (st's occlusion baseline). */
+  private snapshotPlacements(): void {
+    for (const placement of this.placementsByKey.values()) placement.baseline ??= this.cellsUnder(placement);
+  }
+
+  /** Current placements, sorted by image, placement and position. */
+  placements(): VtPlacement[] {
+    return [...this.placementsByKey.values()]
+      .map(({ baseline: _baseline, ...placement }) => ({ ...placement }))
+      .sort((a, b) => a.imageId - b.imageId || a.placementId - b.placementId || a.row - b.row || a.col - b.col);
+  }
+
+  /** Placements st would draw: the cells under them are still the ones they were first shown over. */
+  visiblePlacements(): VtPlacement[] {
+    const visible = [...this.placementsByKey.values()].filter((placement) => placement.baseline === this.cellsUnder(placement));
+    return visible
+      .map(({ baseline: _baseline, ...placement }) => ({ ...placement }))
+      .sort((a, b) => a.imageId - b.imageId || a.placementId - b.placementId || a.row - b.row || a.col - b.col);
   }
 
   private csi(params: string, final: string): void {
@@ -97,11 +191,12 @@ export class VtScreen {
           this.csi(match[1]!, match[2]!);
           i += match[0].length;
         } else if (next === "_" || next === "]") {
-          // APC/OSC: skip to ST (ESC \) or BEL.
+          // APC/OSC: skip to ST (ESC \) or BEL; track Kitty graphics placements.
           const st = data.indexOf("\x1b\\", i + 2);
           const bel = next === "]" ? data.indexOf("\x07", i + 2) : -1;
           const end = bel >= 0 && (st < 0 || bel < st) ? bel + 1 : st + 2;
           if (end <= i) throw new Error("VtScreen: unterminated string");
+          if (next === "_" && data[i + 2] === "G") this.graphics(data.slice(i + 3, st));
           i = end;
         } else if (next === "7") {
           this.saved = { row: this.row, col: this.col, sgr: this.sgr };
@@ -132,10 +227,12 @@ export class VtScreen {
       if (width === 0) continue;
       if (this.col < this.cols) {
         this.grid[this.row]![this.col] = { ch: glyph, sgr: this.sgr };
-        if (width === 2 && this.col + 1 < this.cols) this.grid[this.row]![this.col + 1] = { ch: "", sgr: this.sgr };
+        // Like st, the dummy half of a wide character keeps its previous attributes.
+        if (width === 2 && this.col + 1 < this.cols) this.grid[this.row]![this.col + 1] = { ch: "", sgr: this.grid[this.row]![this.col + 1]!.sgr };
       }
       this.col = Math.min(this.cols, this.col + width);
     }
+    this.snapshotPlacements();
   }
 
   /** Visible text per row, trailing spaces trimmed. */

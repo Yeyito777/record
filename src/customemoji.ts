@@ -7,6 +7,7 @@ import type { DiscordCustomEmoji } from "./discord";
 import type { ClipboardImageAttachment } from "./imageclipboard";
 import {
   kittyGraphicsDeleteImageRange,
+  kittyGraphicsDeletePlacement,
   kittyGraphicsDeleteZ,
   kittyGraphicsPlace,
   kittyGraphicsTransmitPng,
@@ -57,7 +58,24 @@ interface RegisteredCustomEmoji extends RenderableCustomEmoji {
 }
 
 export interface CustomEmojiRenderBatch {
-  placements: Array<{ emoji: RegisteredCustomEmoji; row: number; col: number; selected: boolean }>;
+  placements: Array<{
+    emoji: RegisteredCustomEmoji;
+    row: number;
+    col: number;
+    selected: boolean;
+    /** The attributes the placeholder cells under the image were drawn with. */
+    cells: string;
+  }>;
+}
+
+/** FNV-1a, folded into the placement ids applications may use (st's kept copies use 0xff000000+). */
+function placementIdFor(text: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return ((hash >>> 0) % 0xfe000000) + 1;
 }
 
 export interface CustomEmojiRenderLineOptions {
@@ -93,6 +111,11 @@ export class CustomEmojiImageRenderer {
   private fetchImpl: typeof globalThis.fetch;
   private onUpdate: () => void;
   private lastVisibleImageIds = new Set<number>();
+  /**
+   * Placements made by finishTrackedFrame, by `imageId:placementId`, with
+   * their row and selection. Null while placements are anonymous (finishFrame).
+   */
+  private tracked: Map<string, { imageId: number; placementId: number; row: number; selected: boolean }> | null = null;
 
   constructor(options: CustomEmojiImageRendererOptions = {}) {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
@@ -108,6 +131,7 @@ export class CustomEmojiImageRenderer {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
     if (!enabled) this.lastVisibleImageIds.clear();
+    this.tracked = null;
     this.onUpdate();
   }
 
@@ -129,7 +153,10 @@ export class CustomEmojiImageRenderer {
     if (existing) return existing.marker;
 
     const offset = this.byKey.size;
-    if (MARKER_FIRST + offset > MARKER_LAST) return LOADING_GLYPH;
+    // All 6400 private-use markers are taken (a long session across many
+    // emoji-heavy servers): show the emoji's name instead of a loading glyph
+    // that would never resolve.
+    if (MARKER_FIRST + offset > MARKER_LAST) return `:${emoji.name}:`;
     const registered: RegisteredCustomEmoji = {
       ...emoji,
       key,
@@ -179,6 +206,8 @@ export class CustomEmojiImageRenderer {
     let chunkStart = 0;
     let col = startCol;
     let selected = false;
+    // Every attribute set so far: what the placeholder cells end up drawn with.
+    let attributes = "";
 
     for (let index = 0; index < text.length; index++) {
       const emoji = this.byMarker.get(text[index]!);
@@ -188,11 +217,13 @@ export class CustomEmojiImageRenderer {
       result += chunk;
       col += termWidth(chunk);
       selected = selectionStateAfter(chunk, selected);
+      for (const match of chunk.matchAll(SGR_RE)) attributes += match[0];
 
       if (this.enabled) this.ensureLoaded(emoji);
       if (this.enabled && emoji.status === "ready") {
         result += `${options.imageBackground ?? ""}${IMAGE_PLACEHOLDER}${options.restoreBackground ?? ""}`;
-        batch.placements.push({ emoji, row, col, selected });
+        batch.placements.push({ emoji, row, col, selected, cells: `${attributes}|${options.imageBackground ?? ""}` });
+        attributes += `${options.imageBackground ?? ""}${options.restoreBackground ?? ""}`;
       } else {
         result += `${LOADING_GLYPH} `;
       }
@@ -203,21 +234,26 @@ export class CustomEmojiImageRenderer {
     return chunkStart === 0 ? text : result + text.slice(chunkStart);
   }
 
+  /** Image data for emoji entering the view; records the visible set. */
+  private transmitEntering(placements: CustomEmojiRenderBatch["placements"]): string {
+    const visibleImageIds = new Set(placements.map((placement) => placement.emoji.imageId));
+    let payload = "";
+    for (const imageId of visibleImageIds) {
+      if (this.lastVisibleImageIds.has(imageId)) continue;
+      const emoji = placements.find((placement) => placement.emoji.imageId === imageId)?.emoji;
+      if (emoji?.pngBase64) payload += kittyGraphicsTransmitPng(imageId, emoji.pngBase64);
+    }
+    this.lastVisibleImageIds = visibleImageIds;
+    return payload;
+  }
+
   finishFrame(batch: CustomEmojiRenderBatch): KittyGraphicsFrame {
     const placements = this.enabled ? batch.placements : [];
-    const visibleImageIds = new Set(placements.map((placement) => placement.emoji.imageId));
-    const enteringImageIds = new Set(
-      [...visibleImageIds].filter((imageId) => !this.lastVisibleImageIds.has(imageId)),
-    );
     const key = placements
       .map((placement) => `${placement.emoji.imageId}@${placement.row},${placement.col}:${placement.selected ? 1 : 0}`)
       .join(";");
 
-    let payload = "";
-    for (const imageId of enteringImageIds) {
-      const emoji = placements.find((placement) => placement.emoji.imageId === imageId)?.emoji;
-      if (emoji?.pngBase64) payload += kittyGraphicsTransmitPng(imageId, emoji.pngBase64);
-    }
+    let payload = this.transmitEntering(placements);
     payload += kittyGraphicsDeleteZ(EMOJI_Z_INDEX);
     for (const placement of placements) {
       payload += moveTo(placement.row, placement.col);
@@ -229,12 +265,75 @@ export class CustomEmojiImageRenderer {
       });
     }
 
-    this.lastVisibleImageIds = visibleImageIds;
+    this.tracked = null;
     return { key, payload };
+  }
+
+  /**
+   * Smooth scrolling (st mode 2032): explicit placement ids, and only the
+   * placements that changed are deleted or placed. While a glide runs st
+   * keeps the lines a region scroll pushed out, with their emoji under ids
+   * nothing addresses; the delete-everything sweep of finishFrame would
+   * erase those copies too. The returned function is told which rows the
+   * frame's region scroll moved: emoji anchored there moved with them and
+   * are placed again where this frame wants them.
+   *
+   * A placement's id comes from its cell and the attributes its placeholder
+   * cells were drawn with. st remembers the cells under an image when it is
+   * first shown and hides it once they change (and the second half of a
+   * wide placeholder keeps the background it had before, so a cursor-line
+   * highlight changes it): a row rewritten differently (the cursor line, a
+   * selection, a pending delete) gets new placements, shown over its new
+   * cells.
+   */
+  finishTrackedFrame(batch: CustomEmojiRenderBatch): (scrolled: { start: number; end: number } | null) => string {
+    const placements = this.enabled ? batch.placements : [];
+    return (scrolled) => {
+      let payload = this.transmitEntering(placements);
+      if (!this.tracked) {
+        // Anonymous placements from finishFrame (or none): start clean.
+        payload += kittyGraphicsDeleteZ(EMOJI_Z_INDEX);
+        this.tracked = new Map();
+      }
+      const desired = new Map<string, CustomEmojiRenderBatch["placements"][number] & { placementId: number }>();
+      for (const placement of placements) {
+        const placementId = placementIdFor(`${placement.row}:${placement.col}:${placement.cells}`);
+        desired.set(`${placement.emoji.imageId}:${placementId}`, { ...placement, placementId });
+      }
+      for (const [key, placed] of this.tracked) {
+        const moved = scrolled !== null && placed.row >= scrolled.start && placed.row <= scrolled.end;
+        const wanted = desired.get(key);
+        if (wanted && !moved && wanted.selected === placed.selected) {
+          desired.delete(key);
+          continue;
+        }
+        // Placed again below (same ids replace it) or gone.
+        if (!wanted) payload += kittyGraphicsDeletePlacement(placed.imageId, placed.placementId);
+        this.tracked.delete(key);
+      }
+      for (const [key, placement] of desired) {
+        payload += moveTo(placement.row, placement.col);
+        payload += kittyGraphicsPlace(placement.emoji.imageId, {
+          columns: EMOJI_COLUMNS,
+          rows: EMOJI_ROWS,
+          z: EMOJI_Z_INDEX,
+          selected: placement.selected,
+          placementId: placement.placementId,
+        });
+        this.tracked.set(key, {
+          imageId: placement.emoji.imageId,
+          placementId: placement.placementId,
+          row: placement.row,
+          selected: placement.selected,
+        });
+      }
+      return payload;
+    };
   }
 
   cleanupSequence(): string {
     this.lastVisibleImageIds.clear();
+    this.tracked = null;
     return kittyGraphicsDeleteImageRange(IMAGE_ID_FIRST, IMAGE_ID_LAST);
   }
 

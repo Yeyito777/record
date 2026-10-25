@@ -7,7 +7,13 @@
  * When the message pane's viewport moves by fewer rows than its height, the
  * frame first tells the terminal to scroll just those rows (DECSTBM + SU/SD),
  * then writes only the rows that scroll exposed or that otherwise changed.
- * Terminals that animate region scrolls (st's smooth-scroll) glide the pane.
+ *
+ * With app-driven smooth scrolling (st mode 2032, smoothscroll.ts) frames
+ * carry `afterScroll`: the scrolled band may then sit beside the sidebar and
+ * member list (their `pinned` segments are repainted beside the moved rows),
+ * end above an overlay, change between frames (the common rows scroll), and
+ * the shift is also found from the rows themselves when older history arrives
+ * in the same frame. Images and graphics learn which rows the scroll moved.
  */
 
 export const ESC = "\x1b[";
@@ -24,6 +30,14 @@ export interface ScrollRegion {
 
 export interface RenderFrame {
   rows: string[];
+  /**
+   * Per-row segments, already part of `rows[i]`, that paint columns beside
+   * the scrolled pane (the sidebar, the member list). A region scroll moves
+   * whole rows (st has no left/right margins), so rows whose other content
+   * moved intact get only these segments repainted. Each segment must paint
+   * all of its columns, starting with its own cursor move.
+   */
+  pinned?: (readonly string[] | undefined)[];
   cursor: string;
   /**
    * Rows (1-based, inclusive) holding nothing but the scrolling pane, across
@@ -37,10 +51,26 @@ export interface RenderFrame {
    * default on). False keeps the older upward-only line-feed heuristic.
    */
   regionScrolls?: boolean;
-  graphics?: { key: string; payload: string };
+  /**
+   * Retained graphics layer (custom emoji). A function is told which rows the
+   * frame's region scroll moved (null without one): terminals move or drop
+   * placements with the rows they sit on.
+   */
+  graphics?: { key: string; payload: string } | ((scrolled: ScrollRegion | null) => string);
+  /**
+   * App-driven smooth scrolling: sent last inside the same synchronized
+   * update, given how far the region scroll moved the content (up positive,
+   * 0 without one) and whether every row it moved arrived intact.
+   */
+  afterScroll?: (regionShift: number, intact: boolean, scrolled: ScrollRegion | null) => string;
 }
 
-const lastRenderedFrames = new WeakMap<object, RenderFrame>();
+interface RetainedFrame extends RenderFrame {
+  /** Lazily computed content keys (see `contentKey`), by row. */
+  keys?: (string | undefined)[];
+}
+
+const lastRenderedFrames = new WeakMap<object, RetainedFrame>();
 
 /** False until the next flush after `invalidateFrame`: that flush repaints every row. */
 export function hasRetainedFrame(owner: object): boolean {
@@ -49,6 +79,11 @@ export function hasRetainedFrame(owner: object): boolean {
 
 export function invalidateFrame(owner: object): void {
   lastRenderedFrames.delete(owner);
+}
+
+/** The rows of the last flushed frame (tests: what a full repaint of it would draw). */
+export function retainedFrameRows(owner: object): readonly string[] | undefined {
+  return lastRenderedFrames.get(owner)?.rows;
 }
 
 export function createFrameRows(totalRows: number, clearPayload: string): string[] {
@@ -177,6 +212,142 @@ function detectRegionScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): num
   return shift;
 }
 
+
+// ── Smooth-scroll frames (afterScroll set) ──────────────────────────
+
+/** Rows both frames' bands share: what a region scroll may move (null below 4 rows). */
+function commonRegion(a: ScrollRegion | null, b: ScrollRegion | null): ScrollRegion | null {
+  if (!a || !b) return null;
+  const start = Math.max(a.start, b.start);
+  const end = Math.min(a.end, b.end);
+  return end - start + 1 >= 4 ? { start, end } : null;
+}
+
+/** A row's payload without its pinned segments, with absolute row numbers removed. */
+function contentKey(frame: RetainedFrame, index: number): string | undefined {
+  const keys = frame.keys ??= [];
+  if (index in keys) return keys[index];
+  let row = frame.rows[index];
+  for (const segment of frame.pinned?.[index] ?? []) {
+    const at = row === undefined || !segment ? -1 : row.indexOf(segment);
+    if (at >= 0) row = row!.slice(0, at) + row!.slice(at + segment.length);
+  }
+  const key = normalizeRowMoves(row);
+  keys[index] = key;
+  return key;
+}
+
+/**
+ * What row `index` of a scrolled region needs: nothing, only its pinned
+ * segments that changed (the content beside them moved intact), or the
+ * whole row.
+ */
+function scrolledRowUpdate(
+  prevFrame: RetainedFrame,
+  nextFrame: RetainedFrame,
+  region: ScrollRegion,
+  index: number,
+  shift: number,
+): string | null {
+  const nextRow = nextFrame.rows[index]!;
+  const source = index + shift;
+  if (source < region.start - 1 || source > region.end - 1) return nextRow;
+  const key = contentKey(nextFrame, index);
+  if (key === undefined || key !== contentKey(prevFrame, source)) return nextRow;
+  const nextPinned = nextFrame.pinned?.[index] ?? [];
+  const prevPinned = prevFrame.pinned?.[source] ?? [];
+  if (nextPinned.length !== prevPinned.length) return nextRow;
+  let update = "";
+  for (let i = 0; i < nextPinned.length; i++) {
+    if (!sameRowContent(prevPinned[i], nextPinned[i])) update += nextPinned[i];
+  }
+  return update || null;
+}
+
+/**
+ * The viewport's own move, confirmed by the rows (as detectRegionScroll,
+ * comparing rows without their pinned segments, within `region`).
+ */
+function detectViewportScroll(
+  prevFrame: RenderFrame,
+  nextFrame: RenderFrame,
+  region: ScrollRegion,
+  same: (prevIndex: number, nextIndex: number) => boolean,
+): number {
+  const height = region.end - region.start + 1;
+  const shift = nextFrame.viewStart - prevFrame.viewStart;
+  if (shift === 0 || Math.abs(shift) > height - 3) return 0;
+
+  let shiftedMatches = 0;
+  let stayMatches = 0;
+  let nonBlankShiftedMatch = false;
+  for (let row = region.start - 1; row <= region.end - 1; row++) {
+    if (same(row, row)) stayMatches++;
+    const source = row + shift;
+    if (source < region.start - 1 || source > region.end - 1) continue;
+    if (same(source, row)) {
+      shiftedMatches++;
+      if (!isBlankRow(nextFrame.rows[row])) nonBlankShiftedMatch = true;
+    }
+  }
+
+  const comparableRows = height - Math.abs(shift);
+  if (!nonBlankShiftedMatch) return 0;
+  if (shiftedMatches < Math.max(3, Math.floor(comparableRows * 0.6))) return 0;
+  if (shiftedMatches <= stayMatches) return 0;
+  return shift;
+}
+
+/**
+ * How far the band's content moved, found from the rows themselves: the
+ * shift that explains the most rows that changed. Used when the viewport's
+ * own move does not explain the frame: its first line's index also jumps when
+ * older history is prepended (a page arriving mid-glide) while the content on
+ * screen moved by just the scroll step.
+ */
+function detectContentScroll(
+  prevFrame: RenderFrame,
+  nextFrame: RenderFrame,
+  region: ScrollRegion,
+  same: (prevIndex: number, nextIndex: number) => boolean,
+): number {
+  const height = region.end - region.start + 1;
+  // Unchanged rows (blank lines, a still pinned-only row) say nothing.
+  const first = region.start - 1;
+  const last = region.end - 1;
+  const changed: number[] = [];
+  for (let row = first; row <= last; row++) if (!same(row, row)) changed.push(row);
+  if (changed.length < 3) return 0;
+
+  const hint = nextFrame.viewStart - prevFrame.viewStart;
+  let best = 0;
+  let bestMatches = 0;
+  for (let distance = 1; distance <= height - 3; distance++) {
+    for (const direction of [1, -1]) {
+      const shift = distance * direction;
+      let comparable = 0;
+      let matches = 0;
+      let nonBlank = false;
+      for (const row of changed) {
+        const source = row + shift;
+        if (source < first || source > last) continue;
+        comparable++;
+        if (same(source, row)) {
+          matches++;
+          if (!isBlankRow(nextFrame.rows[row])) nonBlank = true;
+        }
+      }
+      if (!nonBlank || matches < Math.max(3, Math.floor(comparable * 0.6))) continue;
+      // Most rows explained wins; on a tie the viewport's own move, else the shorter one.
+      if (matches > bestMatches || (matches === bestMatches && shift === hint)) {
+        best = shift;
+        bestMatches = matches;
+      }
+    }
+  }
+  return best;
+}
+
 /** Per-frame image commands that are reconciled outside the retained diff. */
 export interface FrameImageCommands {
   /** Invisible data transfers, written before the synchronized update. */
@@ -185,7 +356,14 @@ export interface FrameImageCommands {
   update: string;
 }
 
-export function flushFrame(owner: object, nextFrame: RenderFrame, images?: FrameImageCommands): void {
+/** Image commands for a frame; a function is told which rows its region scroll moved. */
+export type FrameImages = FrameImageCommands | ((scrolled: ScrollRegion | null) => FrameImageCommands);
+
+export function flushFrame(owner: object, nextFrame: RenderFrame, images?: FrameImages): void {
+  if (nextFrame.afterScroll) {
+    flushSmoothFrame(owner, nextFrame, images);
+    return;
+  }
   const prevFrame = lastRenderedFrames.get(owner);
   const out: string[] = [];
   const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
@@ -196,6 +374,7 @@ export function flushFrame(owner: object, nextFrame: RenderFrame, images?: Frame
       ? detectRegionScroll(prevFrame, nextFrame)
       : detectUpwardScroll(prevFrame, nextFrame);
   const scrollRegion = scrollShift !== 0 ? nextFrame.scrollRegion : null;
+  const imageCommands = typeof images === "function" ? images(scrollRegion) : images;
 
   if (scrollRegion) {
     out.push(regionScrolls ? scrollRegionBy(scrollRegion, scrollShift) : scrollUpRegion(scrollRegion, scrollShift));
@@ -219,26 +398,121 @@ export function flushFrame(owner: object, nextFrame: RenderFrame, images?: Frame
     if (!unchanged) out.push(nextRow);
   }
 
-  const graphicsChanged = prevFrame?.graphics?.key !== nextFrame.graphics?.key;
-  if (graphicsChanged && nextFrame.graphics?.payload) {
-    // Row writes happen first. Graphics are then replaced as one retained layer,
-    // and the regular cursor payload below restores the application cursor.
-    out.push(nextFrame.graphics.payload);
+  const graphics = typeof nextFrame.graphics === "function" ? nextFrame.graphics(scrollRegion) : nextFrame.graphics;
+  if (typeof graphics === "string") {
+    if (graphics) out.push(graphics);
+  } else {
+    const prevGraphics = prevFrame?.graphics;
+    const graphicsChanged = (typeof prevGraphics === "object" ? prevGraphics.key : undefined) !== graphics?.key;
+    if (graphicsChanged && graphics?.payload) {
+      // Row writes happen first. Graphics are then replaced as one retained layer,
+      // and the regular cursor payload below restores the application cursor.
+      out.push(graphics.payload);
+    }
   }
   // Chat and viewer images join the same update as the text they sit in, so
   // no presented frame shows a resized box without its image or the reverse.
-  if (images?.update) out.push(images.update);
+  if (imageCommands?.update) out.push(imageCommands.update);
 
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
     out.push(nextFrame.cursor);
   }
 
-  if (out.length > 0 || images?.transmit) {
+  if (out.length > 0 || imageCommands?.transmit) {
     const payload = out.join("");
-    const synchronized = out.length > 2 || !!images?.update || (regionScrolls && !!scrollRegion);
-    process.stdout.write((images?.transmit ?? "")
+    const synchronized = out.length > 2 || !!imageCommands?.update || (regionScrolls && !!scrollRegion);
+    process.stdout.write((imageCommands?.transmit ?? "")
       + (synchronized ? beginSynchronizedUpdate + payload + endSynchronizedUpdate : payload));
   }
 
-  lastRenderedFrames.set(owner, nextFrame);
+  lastRenderedFrames.set(owner, { ...nextFrame, graphics: typeof graphics === "object" ? graphics : undefined });
+}
+
+/**
+ * A frame under app-driven smooth scrolling: the band may sit beside pinned
+ * side panels and change between frames, and the frame ends with the
+ * scroller's rectangles and motion inside the same synchronized update.
+ */
+function flushSmoothFrame(owner: object, nextFrame: RenderFrame, images?: FrameImages): void {
+  const prevFrame = lastRenderedFrames.get(owner);
+  const next: RetainedFrame = { ...nextFrame };
+  const out: string[] = [];
+  const rowCount = Math.max(prevFrame?.rows.length ?? 0, nextFrame.rows.length);
+  const region = prevFrame ? commonRegion(prevFrame.scrollRegion, nextFrame.scrollRegion) : null;
+  // Compare without the side panels, which stay put while the content moves.
+  const sameContent = (prevIndex: number, nextIndex: number) => {
+    const key = contentKey(next, nextIndex);
+    return key !== undefined && key === contentKey(prevFrame!, prevIndex);
+  };
+  const scrollShift = !prevFrame || !region
+    ? 0
+    : detectViewportScroll(prevFrame, next, region, sameContent) || detectContentScroll(prevFrame, next, region, sameContent);
+  const scrollRegion = scrollShift !== 0 ? region : null;
+  let hasDrawingUpdates = false;
+  /** Every row the region scroll supplied matches this frame (near the bottom edge aside). */
+  let scrolledIntact = scrollRegion !== null;
+
+  if (scrollRegion) {
+    out.push(scrollRegionBy(scrollRegion, scrollShift));
+    hasDrawingUpdates = true;
+  }
+
+  for (let i = 0; i < rowCount; i++) {
+    const nextRow = nextFrame.rows[i];
+    if (nextRow === undefined) continue;
+
+    if (scrollRegion && prevFrame && i >= scrollRegion.start - 1 && i <= scrollRegion.end - 1) {
+      const update = scrolledRowUpdate(prevFrame, next, scrollRegion, i, scrollShift);
+      const source = i + scrollShift;
+      // The rows just above the ones it exposed may change with it (the
+      // footer of what was the last message).
+      if (update === nextRow && source >= scrollRegion.start - 1 && source <= scrollRegion.end - 1
+        && i < scrollRegion.end - 1 - Math.abs(scrollShift) - 2) scrolledIntact = false;
+      if (update !== null) {
+        out.push(update);
+        hasDrawingUpdates = true;
+      }
+      continue;
+    }
+
+    if (prevFrame?.rows[i] !== nextRow) {
+      out.push(nextRow);
+      hasDrawingUpdates = true;
+    }
+  }
+
+  // Images draw above text, so placing them after the rows is equivalent and
+  // keeps both inside the same synchronized update.
+  const graphics = typeof nextFrame.graphics === "function" ? nextFrame.graphics(scrollRegion) : nextFrame.graphics;
+  const graphicsPayload = typeof graphics === "string"
+    ? graphics
+    : graphics && (scrollRegion || (typeof prevFrame?.graphics === "object" ? prevFrame.graphics.key : undefined) !== graphics.key)
+      ? graphics.payload
+      : "";
+  if (graphicsPayload) {
+    out.push(graphicsPayload);
+    hasDrawingUpdates = true;
+  }
+  const imageCommands = typeof images === "function" ? images(scrollRegion) : images;
+  if (imageCommands?.update) {
+    out.push(imageCommands.update);
+    hasDrawingUpdates = true;
+  }
+
+  const smooth = nextFrame.afterScroll!(scrollShift, scrolledIntact, scrollRegion);
+  if (smooth) out.push(smooth);
+
+  if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
+    out.push(nextFrame.cursor);
+  }
+
+  if (out.length > 0 || imageCommands?.transmit) {
+    const payload = out.join("");
+    process.stdout.write((imageCommands?.transmit ?? "")
+      + (hasDrawingUpdates ? beginSynchronizedUpdate + payload + endSynchronizedUpdate : payload));
+  }
+
+  next.graphics = typeof graphics === "object" ? graphics : undefined;
+  next.afterScroll = undefined;
+  lastRenderedFrames.set(owner, next);
 }
