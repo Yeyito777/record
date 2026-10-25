@@ -36,7 +36,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, nextInlineImageId, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
@@ -461,7 +461,7 @@ function availableInlineImageId(attachmentId: string, preferred: number): number
   );
   let candidate = preferred;
   while (used.has(candidate) && used.get(candidate) !== attachmentId) {
-    candidate = ((candidate + 1) & 0x7fffffff) || 0x40000000;
+    candidate = nextInlineImageId(candidate);
   }
   return candidate;
 }

@@ -50,6 +50,26 @@ describe("textwidth", () => {
     expect(tail).toBe(`${red}kl${reset}`);
   });
 
+  test("a character wider than the line gets a line of its own, styled or not, never split", () => {
+    // Fails fast instead of filling memory if hardBreak stops making progress.
+    class Lines extends Array<string> {
+      override push(...items: string[]): number {
+        if (this.length + items.length > 50) throw new Error("hardBreak made no progress");
+        return super.push(...items);
+      }
+    }
+    const muted = "\x1b[90m";
+    const text = "\x1b[97m";
+    for (const word of [`${muted}📎${text}`, `${muted}📎📎x${text}`, "📎😀", "a📎"]) {
+      const wrapped = new Lines();
+      const tail = hardBreak(word, 1, wrapped);
+      const visible = [...wrapped, tail].map((part) => part.replace(/\x1b\[[0-9;]*m/g, "")).filter(Boolean);
+      expect(visible.join("")).toBe(word.replace(/\x1b\[[0-9;]*m/g, ""));
+      // Whole characters only: no lone surrogate halves.
+      for (const part of visible) expect(part).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/);
+    }
+  });
+
   test("builds a width-aware viewport that keeps the cursor visible", () => {
     const viewport = getViewportByWidth("ab🦋cd", "ab🦋cd".length, 4);
     expect(viewport.visibleText).toBe("🦋cd");

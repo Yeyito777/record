@@ -441,9 +441,22 @@ function fnv1a32(value: string): number {
   return hash >>> 0;
 }
 
+/**
+ * Kitty image ids of chat images (and the viewer's full-size copies). Ids
+ * above belong to others: the graphics query (0x6ffffffe), custom emoji
+ * (0x72000000+) and sidebar icons (0x73000000+).
+ */
+export const INLINE_IMAGE_ID_FIRST = 0x40000000;
+export const INLINE_IMAGE_ID_LAST = 0x6ffffff0;
+
 /** Use a namespaced, deterministic nonzero Kitty image ID for an attachment. */
 export function inlineImageId(attachment: Pick<DiscordMessageAttachment, "id" | "url">): number {
-  return ((fnv1a32(`${attachment.id}\n${attachment.url}`) & 0x3fffffff) | 0x40000000) >>> 0;
+  return INLINE_IMAGE_ID_FIRST + (fnv1a32(`${attachment.id}\n${attachment.url}`) % (INLINE_IMAGE_ID_LAST - INLINE_IMAGE_ID_FIRST + 1));
+}
+
+/** The id after `imageId`, wrapping within the chat image range (probing for a free one). */
+export function nextInlineImageId(imageId: number): number {
+  return imageId >= INLINE_IMAGE_ID_LAST ? INLINE_IMAGE_ID_FIRST : imageId + 1;
 }
 
 /** Give each rendered occurrence its own placement while sharing image data. */
