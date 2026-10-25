@@ -48,6 +48,9 @@ Controls:
 - `Ctrl+O`: image details. Off (the default), an image drawn inline is its own row, with no `📎 name • size` row above it; on, every image gets that row back (to collapse one with `Enter`). Collapsed, loading or failed images and other attachments always keep their row, and yanking an image's rows still gives its name. The choice persists
 - opening the full-image viewer shows the cached preview immediately at the image's final viewer size, then swaps in full-resolution pixels in place without resizing; `Enter` / `Esc` closes even while loading. Chat images stay placed behind the higher-z viewer rather than disappearing, and image placements are presented in the same synchronized update as the surrounding text.
 - `/images hide|show`: keep images collapsed until opened manually, or restore automatic expansion; the selected mode persists
+- Discord embeds (link previews and bot embeds) draw like Discord's cards, right under the line holding their link: a bar in the embed's colour, the author, the title (in the link colour; `Enter` or a click opens it, as does `Enter` on the author), the description with markdown (up to 6 rows), fields (inline ones a third of the width each, side by side when they fit), then the footer under any picture. Cards are at most 80 columns wide. A thumbnail sits at the right of the text when there is room, else below; large images and tweet galleries (pictures side by side) go below. Embed pictures load through Discord's media proxy at the size a chat row needs, follow `/images hide|show` and open in the viewer on `Enter` or a click; until drawn (hidden, loading, or a terminal without graphics) each is one muted row such as `🖼 image · pbs.twimg.com`
+- Video embeds (YouTube, fxtwitter-style posts, QuickVids replies) show their thumbnail as a poster with `▶ Play` under it (`▶ GIF` for Tenor/Giphy gifs). With no thumbnail the poster is a still Discord's proxy renders; with neither, a `▶ Play video · host` row. `Enter` or a click on the poster or play row plays it: a video file downloads and opens like a video attachment, a page (YouTube) opens with the URL opener, and Tenor gifs keep their gif download. An embed with nothing but its link adds nothing when the link is right above it (otherwise one row naming the host); never a bare "preview" row
+- Embeds that arrive later (Discord unfurling a link) or go away (the author removing the preview) update the message in place: at the followed bottom the pane glides, elsewhere the line at the top of the view stays put. With `Ctrl+O` an embed also shows its provider row, its timestamp in the footer, and its whole description and field values
 - `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
 - `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history
 - `/thread <name>` in the prompt: create and open a public thread; if a reply is active, anchor it to that replied-to message, otherwise create a standalone thread
@@ -359,11 +362,17 @@ account:
   range from empty to 2,400 messages (`Record Lounge / #general`) and a
   1,500-message DM, with inline images of many sizes and aspect ratios, custom
   emoji, stickers, reactions, replies, embeds, code blocks, markdown and long
-  wrapped lines. Older pages load with a 450 ms delay.
+  wrapped lines. `Record Lounge / #embeds` ends with one embed of each kind
+  (an fxtwitter-style post with a picture, a QuickVids video reply, YouTube, a
+  bot's rich embed with fields, a Tenor gif, an article with a thumbnail, a
+  tweet gallery) and a link whose preview arrives 1.5 s after the channel
+  opens. Older pages load with a 450 ms delay.
 - **Live traffic.** Sends, edits, deletes and reactions update the fake server
   and echo back through the gateway like Discord does. Send `!demo more 20` to
   receive 20 messages in the open channel, `!demo typing` for a typing
-  indicator, `!demo every 3` for one message every 3 s (`!demo every 0` stops).
+  indicator, `!demo every 3` for one message every 3 s (`!demo every 0` stops),
+  `!demo unfurl` for a link whose preview arrives a moment later (a partial
+  `MESSAGE_UPDATE`), `!demo suppress` to remove the newest preview (flag 4).
   `kill -USR1 <pid>` appends one message, `-USR2` ten; the pid is in
   `<demo home>/record-demo.pid`.
 
@@ -385,4 +394,5 @@ environment variables: `RECORD_DEMO_OPEN=images` (channel name to open first;
 (end of the synthetic history), `RECORD_DEMO_HOME=DIR` (keep and reuse a demo
 home) and `RECORD_DEMO_KEEP=1`. Each demo home has a `record/demo.log` of every
 request the fake server answered. The CDN serves PNG bytes for every image URL
-(icons, avatars, emoji, stickers, attachments), whatever the extension.
+(icons, avatars, emoji, stickers, attachments, and embed pictures through the
+media proxy `images-ext-1.discordapp.net`), whatever the extension.
