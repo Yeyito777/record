@@ -2,6 +2,8 @@
  * record — Discord terminal client bootstrap.
  */
 
+// Must stay the first import: demo mode redirects config paths and the network.
+import "./demo/bootstrap";
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { AsyncWorkQueue } from "./asyncwork";
 import { flushDataCacheSync } from "./datacache";

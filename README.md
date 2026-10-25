@@ -226,3 +226,52 @@ changing server-side mute settings are not supported. Call outcomes (missed,
 declined, answered) are inferred from Instagram's wording of the call row.
 Send, reaction, accept and read-receipt tests are mocked; testing never sends
 messages to your contacts automatically.
+
+## Development: offline demo mode
+
+`scripts/dev/recorddemo` (or `bun run demo`, or `bun run src/main.ts --demo`,
+or `RECORD_DEMO=1 bun run src/main.ts`) runs the real Record UI against a fake,
+in-process Discord. Use it to look at and drive the TUI without any real
+account:
+
+- **No network.** Demo mode replaces `fetch` and `WebSocket` before any other
+  module loads. Discord API/CDN/gateway requests are answered locally; every
+  other request is refused. WhatsApp login is disabled (it runs in a separate
+  Node process), and the demo config disables link/file openers.
+- **No real config.** Each run uses a fresh temporary `XDG_CONFIG_HOME`
+  (deleted on exit) holding a demo token. Demo mode refuses to start if the
+  directory overlaps `~/.config/record` or `$XDG_CONFIG_HOME/record`, or if
+  `RECORD_DEMO_HOME` is a non-empty directory it did not create.
+- **Synthetic data** (fixed seeds, so screenshots are comparable): 15 servers
+  (12 with generated icons), categories, text/announcement/forum/voice
+  channels, threads, voice members, DMs and group DMs with avatars, member
+  lists with hoisted roles, unread and mention badges, a muted server. Histories
+  range from empty to 2,400 messages (`Record Lounge / #general`) and a
+  1,500-message DM, with inline images of many sizes and aspect ratios, custom
+  emoji, stickers, reactions, replies, embeds, code blocks, markdown and long
+  wrapped lines. Older pages load with a 450 ms delay.
+- **Live traffic.** Sends, edits, deletes and reactions update the fake server
+  and echo back through the gateway like Discord does. Send `!demo more 20` to
+  receive 20 messages in the open channel, `!demo typing` for a typing
+  indicator, `!demo every 3` for one message every 3 s (`!demo every 0` stops).
+  `kill -USR1 <pid>` appends one message, `-USR2` ten; the pid is in
+  `<demo home>/record-demo.pid`.
+
+Visual testing in a nested X server (never on the host display):
+
+```sh
+scripts/dev/recorddemo --nested demo        # dwm start demo + st running the demo
+dwm -e demo screenshot -o /tmp/record-demo.png
+dwm -e demo key j                           # send keys; type text with:
+printf 'hello\n' | dwm -e demo type
+dwm stop demo
+```
+
+`--nested` prints the demo home, pid file and these commands. Options are
+environment variables: `RECORD_DEMO_OPEN=images` (channel name to open first;
+`dm` for the long DM, `none` for nothing), `RECORD_DEMO_INCOMING_SECONDS=N`,
+`RECORD_DEMO_OLDER_DELAY_MS`, `RECORD_DEMO_LATENCY_MS`, `RECORD_DEMO_NOW`
+(end of the synthetic history), `RECORD_DEMO_HOME=DIR` (keep and reuse a demo
+home) and `RECORD_DEMO_KEEP=1`. Each demo home has a `record/demo.log` of every
+request the fake server answered. The CDN serves PNG bytes for every image URL
+(icons, avatars, emoji, stickers, attachments), whatever the extension.
