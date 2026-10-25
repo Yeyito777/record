@@ -16,6 +16,7 @@ import {
   discordGroupIconSource,
   discordGuildIconSource,
   discordUserAvatarSource,
+  bundledSidebarIconSource,
   instagramUserPictureSource,
   SIDEBAR_ICON_COLUMNS,
   sidebarIconInitials,
@@ -3012,6 +3013,13 @@ interface SidebarEntryIcon {
   replacesMarker?: boolean;
 }
 
+/** Bundled logo tiles (assets/sidebar/) for the provider roots; the initials stay as their fallback. */
+const FIXED_ROOT_LOGOS: Record<string, "direct-messages" | "whatsapp" | "instagram"> = {
+  [DIRECT_MESSAGES_GUILD_ID]: "direct-messages",
+  [WHATSAPP_GUILD_ID]: "whatsapp",
+  [INSTAGRAM_GUILD_ID]: "instagram",
+};
+
 const FIXED_ROOT_INITIALS: Record<string, string> = {
   [DIRECT_MESSAGES_GUILD_ID]: "DM",
   [WHATSAPP_GUILD_ID]: "WA",
@@ -3031,7 +3039,9 @@ interface SidebarIconLookup {
 function entryIcon(entry: SidebarEntry, lookup: SidebarIconLookup): SidebarEntryIcon | null {
   if (entry.kind === "guild") {
     const guild = lookup.guildsById.get(entry.id);
-    return { source: guild ? discordGuildIconSource(guild) : null, initials: FIXED_ROOT_INITIALS[entry.id] };
+    const logo = FIXED_ROOT_LOGOS[entry.id];
+    if (logo) return { source: bundledSidebarIconSource(logo), initials: FIXED_ROOT_INITIALS[entry.id] };
+    return { source: guild ? discordGuildIconSource(guild) : null };
   }
   if (entry.kind === "channel" && Object.hasOwn(FIXED_ROOT_INITIALS, entry.guildId)) {
     const channel = lookup.conversation(entry.guildId, entry.id);
