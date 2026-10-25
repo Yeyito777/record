@@ -650,9 +650,9 @@ export function render(state: AppState): void {
   const useTimeline = timeline.allLines.length > 0;
   const timelineLines = useTimeline ? timeline.lines : fallbackBody;
 
-  // App-driven smooth scrolling (st mode 2032, smoothscroll.ts) lays the
-  // history out at a whole row next to the animated position; input, the
-  // history cursor and pinning keep working on the logical scrollOffset.
+  // App-driven smooth scrolling (st mode 2032, smoothscroll.ts) decides which
+  // whole row to lay the history out at while st animates the glide; input,
+  // the history cursor and pinning keep working on the logical scrollOffset.
   const smooth = state.scrollRegions ? smoothScrollerFor(state) : null;
   let viewStart = state.timeline.scrollOffset;
   if (smooth) {
