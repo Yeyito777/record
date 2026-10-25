@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { flushDataCacheSync, sweepStaleCacheTemps, loadCachedChannelMessages, loadCachedChannelPins, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, markCachedChannelActive, saveCachedChannelMessages, saveCachedChannelPins, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
+import { flushDataCache, flushDataCacheSync, loadCachedMemberLists, saveCachedMemberRoles, sweepStaleCacheTemps, loadCachedChannelMessages, loadCachedChannelPins, loadCachedGuildChannels, loadCachedGuildOrder, loadCachedMemberList, loadCachedSidebarChannelLayout, loadLastCachedAccountId, markCachedAccountActive, markCachedChannelActive, saveCachedChannelMessages, saveCachedChannelPins, saveCachedGuildChannels, saveCachedGuildOrder, saveCachedGuilds, saveCachedMemberList, saveCachedSidebarChannelLayout, watchCachedGuildOrder } from "./datacache";
 
 const previousXdg = process.env.XDG_CONFIG_HOME;
 
@@ -12,6 +12,22 @@ afterEach(() => {
   if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = previousXdg;
 });
+
+/** cache.json with each account's section files merged back in. */
+function readPersistedCache(configRecordDir: string): any {
+  const cache = JSON.parse(readFileSync(join(configRecordDir, "cache.json"), "utf8"));
+  for (const accountId of Object.keys(cache.accounts)) {
+    const dir = join(configRecordDir, "accounts", encodeURIComponent(accountId));
+    for (const section of ["guildChannels", "memberLists", "channelMessages", "channelPins", "guildRoles", "memberRoles"]) {
+      const file = join(dir, `cache.${section}.json`);
+      if (!existsSync(file)) continue;
+      const shard = JSON.parse(readFileSync(file, "utf8"));
+      expect(shard.accountId).toBe(accountId);
+      cache.accounts[accountId][section] = shard.entries;
+    }
+  }
+  return cache;
+}
 
 function waitForCondition(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const start = Date.now();
@@ -56,6 +72,115 @@ describe("data cache temp files", () => {
   });
 });
 
+describe("data cache writes", () => {
+  function useTempConfig(): string {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-write-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    return join(xdg, "record");
+  }
+
+  const diskCache = readPersistedCache;
+
+  test("an exit during a background write keeps the newest snapshot and leaves no temp file", async () => {
+    const dir = useTempConfig();
+    saveCachedGuilds("account-race", [{ id: "g1", name: "Old", icon: null }]);
+    const background = flushDataCache();
+    saveCachedGuilds("account-race", [{ id: "g1", name: "New", icon: null }]);
+    flushDataCacheSync();
+    await background;
+    await Bun.sleep(20);
+    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect(diskCache(dir).accounts["account-race"].guilds[0].name).toBe("New");
+  });
+
+  test("background writes rename into place without leftovers", async () => {
+    const dir = useTempConfig();
+    saveCachedGuilds("account-async", [{ id: "g1", name: "One", icon: null }]);
+    await flushDataCache();
+    expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    expect(diskCache(dir).accounts["account-async"].guilds[0].name).toBe("One");
+  });
+
+  test("re-saving an entry, even the same array changed in place, rewrites only that entry", () => {
+    const dir = useTempConfig();
+    const members = [{ id: "u1", username: "one", displayName: "One", avatar: null, roleIds: [], bot: false }] as any[];
+    saveCachedMemberList("account-incremental", "g", "c1", members);
+    saveCachedMemberList("account-incremental", "g", "c2", [{ ...members[0], id: "u2" }]);
+    saveCachedMemberRoles("account-incremental", "g", { u1: ["r1"] });
+    flushDataCacheSync();
+    members.push({ ...members[0], id: "u3" });
+    saveCachedMemberList("account-incremental", "g", "c1", members);
+    saveCachedMemberRoles("account-incremental", "g", { u1: ["r2"] });
+    flushDataCacheSync();
+    const account = diskCache(dir).accounts["account-incremental"];
+    expect(account.memberLists["g:c1"].map((member: { id: string }) => member.id)).toEqual(["u1", "u3"]);
+    expect(account.memberLists["g:c2"].map((member: { id: string }) => member.id)).toEqual(["u2"]);
+    expect(account.memberRoles.g).toEqual({ u1: ["r2"] });
+    expect(Object.keys(loadCachedMemberLists("account-incremental")).sort()).toEqual(["g:c1", "g:c2"]);
+  });
+});
+
+describe("data cache section files", () => {
+  const message = (id: string, channelId: string) => ({
+    id, channelId, guildId: null, type: 0, content: id, mentionEveryone: false, mentionRoleIds: [], mentionUserIds: [], mentionUsers: [],
+    timestamp: Date.UTC(2026, 0, 1), editedTimestamp: null, author: { id: "u", username: "u", displayName: "U", bot: false },
+    reply: null, call: null, attachments: [], stickerNames: [], embedsCount: 0,
+  });
+
+  test("a save rewrites only the sections that changed", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-shards-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    const accountDir = join(xdg, "record", "accounts", "account-shards");
+    saveCachedMemberList("account-shards", "g", "c", [{ id: "u1", username: "one", displayName: "One", avatar: null, roleIds: [], bot: false }] as any);
+    saveCachedChannelMessages("account-shards", "c", { channelId: "c", messages: [message("m1", "c")] as any, hasOlder: false, updatedAt: 1, latestFetchedAt: 1 });
+    flushDataCacheSync();
+    expect(readdirSync(accountDir).sort()).toEqual(["cache.channelMessages.json", "cache.memberLists.json"]);
+    const index = JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8"));
+    expect(Object.keys(index.accounts["account-shards"]).sort()).toEqual(["savedAt"]);
+
+    rmSync(join(accountDir, "cache.memberLists.json"));
+    saveCachedChannelMessages("account-shards", "c", { channelId: "c", messages: [message("m1", "c"), message("m2", "c")] as any, hasOlder: false, updatedAt: 2, latestFetchedAt: 2 });
+    flushDataCacheSync();
+    expect(readdirSync(accountDir).sort()).toEqual(["cache.channelMessages.json"]);
+    expect(readPersistedCache(join(xdg, "record")).accounts["account-shards"].channelMessages.c.messages.map((entry: { id: string }) => entry.id)).toEqual(["m1", "m2"]);
+  });
+
+  test("loads a cache.json written inline by older builds and moves it into section files", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-cache-legacy-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    mkdirSync(join(xdg, "record"), { recursive: true });
+    writeFileSync(join(xdg, "record", "cache.json"), JSON.stringify({
+      version: 1,
+      lastAccountId: "account-legacy",
+      accounts: {
+        "account-legacy": {
+          savedAt: 1,
+          memberLists: { "g:c": [{ id: "u1", username: "one", displayName: "One", avatar: null, roleIds: [], bot: false }] },
+          channelMessages: { c: { channelId: "c", messages: [message("m1", "c")], hasOlder: false, updatedAt: 1, latestFetchedAt: 1 } },
+        },
+      },
+    }));
+    expect(loadCachedMemberList("account-legacy", "g", "c")?.map((member) => member.id)).toEqual(["u1"]);
+    markCachedAccountActive("account-legacy");
+    flushDataCacheSync();
+    const index = JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8"));
+    expect(index.accounts["account-legacy"].memberLists).toBeUndefined();
+    const persisted = readPersistedCache(join(xdg, "record"));
+    expect(persisted.accounts["account-legacy"].memberLists["g:c"][0].id).toBe("u1");
+    expect(persisted.accounts["account-legacy"].channelMessages.c.messages[0].id).toBe("m1");
+  });
+
+  test("the startup sweep also clears dead writers' temp files in account directories", () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-cache-temps-"));
+    const accountDir = join(dir, "accounts", "a");
+    mkdirSync(accountDir, { recursive: true });
+    writeFileSync(join(accountDir, "cache.memberLists.json.999999999.0b6f-11aa.tmp"), "{}");
+    writeFileSync(join(accountDir, "cache.memberLists.json"), "{}");
+    expect(sweepStaleCacheTemps(join(dir, "cache.json"))).toBe(1);
+    expect(readdirSync(accountDir)).toEqual(["cache.memberLists.json"]);
+  });
+});
+
 describe("data cache", () => {
   test("saves and loads member lists per account, guild, and channel", () => {
     process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "record-cache-test-"));
@@ -93,7 +218,7 @@ describe("data cache", () => {
     expect(loadLastCachedAccountId()).toBe("account-2");
 
     flushDataCacheSync();
-    expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).lastAccountId).toBe("account-2");
+    expect(readPersistedCache(join(xdg, "record")).lastAccountId).toBe("account-2");
   });
 
   test("finds the newest account in cache files that predate the active-account marker", () => {
@@ -206,7 +331,7 @@ describe("data cache", () => {
 
     expect(loadCachedChannelMessages("account-1")["dm-1"]?.latestFetchedAt).toBeNull();
     flushDataCacheSync();
-    expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).accounts["account-1"].channelMessages["dm-1"].latestFetchedAt).toBeNull();
+    expect(readPersistedCache(join(xdg, "record")).accounts["account-1"].channelMessages["dm-1"].latestFetchedAt).toBeNull();
   });
 
   test("loads persisted REST-seeded message caches as stale instead of fresh", () => {
@@ -241,7 +366,7 @@ describe("data cache", () => {
     markCachedChannelActive("account-1", "channel-0");
     flushDataCacheSync();
 
-    const persisted = JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8"));
+    const persisted = readPersistedCache(join(xdg, "record"));
     const channelIds = Object.keys(persisted.accounts["account-1"].channelMessages);
     expect(channelIds).toHaveLength(30);
     expect(channelIds).toContain("channel-0");
@@ -284,7 +409,7 @@ describe("data cache", () => {
     expect(loadCachedChannelPins("account-2")["channel-1"]).toBeUndefined();
 
     flushDataCacheSync();
-    expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).accounts["account-1"].channelPins["channel-1"].messages[0].id)
+    expect(readPersistedCache(join(xdg, "record")).accounts["account-1"].channelPins["channel-1"].messages[0].id)
       .toBe("pin-1");
   });
 
@@ -398,7 +523,7 @@ describe("data cache", () => {
     ]);
 
     flushDataCacheSync();
-    expect(JSON.parse(readFileSync(join(xdg, "record", "cache.json"), "utf8")).accounts["account-1"].guildChannels["guild-1"]).toEqual([
+    expect(readPersistedCache(join(xdg, "record")).accounts["account-1"].guildChannels["guild-1"]).toEqual([
       { id: "channel-1", guildId: "guild-1", parentId: null, name: "secret", topic: null, position: 0, type: 0, nsfw: false, permissionOverwrites: [] },
     ]);
   });

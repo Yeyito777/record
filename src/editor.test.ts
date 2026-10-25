@@ -1,6 +1,20 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
+import { setTextClipboardSystemForTest } from "./editor-clipboard";
 import { createEditorState, getInputLines, getViewport, getVisualRange, handleEditorKey, wrappedLineOffsets } from "./editor";
+
+/** A fake system clipboard: records copies; puts return `paste()`. */
+function fakeClipboard(paste: () => string = () => ""): string[] {
+  const copied: string[] = [];
+  setTextClipboardSystemForTest({
+    platform: "linux",
+    env: { DISPLAY: ":0" },
+    which: (command) => command === "xsel" ? "/usr/bin/xsel" : null,
+    copy: async (_command, text) => { copied.push(text); return 0; },
+    paste: () => ({ output: paste(), exitCode: 0 }),
+  });
+  return copied;
+}
 
 describe("editor", () => {
   test("escape leaves insert mode and moves cursor left", () => {
@@ -114,16 +128,7 @@ describe("editor", () => {
   });
 
   test("Shift+D deletes and yanks the visual selection", () => {
-    const copiedTexts: string[] = [];
-    const which = spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null);
-    const spawn = spyOn(Bun, "spawn").mockImplementation((() => ({
-      stdin: {
-        write(text: string) {
-          copiedTexts.push(text);
-        },
-        end() {},
-      },
-    })) as unknown as typeof Bun.spawn);
+    const copiedTexts = fakeClipboard();
     const editor = createEditorState("hello world", "normal");
     editor.cursor = 0;
     const lineEditor = createEditorState("one\ntwo\nthree", "normal");
@@ -138,8 +143,7 @@ describe("editor", () => {
       handleEditorKey(lineEditor, { type: "char", char: "j" });
       handleEditorKey(lineEditor, { type: "char", char: "D" });
     } finally {
-      spawn.mockRestore();
-      which.mockRestore();
+      setTextClipboardSystemForTest(null);
     }
 
     expect(editor.mode).toBe("normal");
@@ -151,14 +155,7 @@ describe("editor", () => {
   });
 
   test("visual emoji yanks and edits preserve complete graphemes", () => {
-    const copiedTexts: string[] = [];
-    const which = spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null);
-    const spawn = spyOn(Bun, "spawn").mockImplementation((() => ({
-      stdin: {
-        write(text: string) { copiedTexts.push(text); },
-        end() {},
-      },
-    })) as unknown as typeof Bun.spawn);
+    const copiedTexts = fakeClipboard();
 
     try {
       for (const emoji of ["😭", "❤️", "👍🏽", "👩‍💻", "🇨🇦"]) {
@@ -181,17 +178,12 @@ describe("editor", () => {
         }
       }
     } finally {
-      spawn.mockRestore();
-      which.mockRestore();
+      setTextClipboardSystemForTest(null);
     }
   });
 
   test("clipboard puts preserve whole graphemes before and after the cursor", () => {
-    const which = spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null);
-    const spawn = spyOn(Bun, "spawnSync").mockImplementation((() => ({
-      exitCode: 0,
-      stdout: Buffer.from("🥺"),
-    })) as unknown as typeof Bun.spawnSync);
+    fakeClipboard(() => "🥺");
 
     try {
       for (const grapheme of ["🫳", "😭", "❤️", "👍🏽", "👩‍💻", "🇨🇦", "e\u0301", "a"]) {
@@ -225,24 +217,13 @@ describe("editor", () => {
         expect(editor.cursor).toBe(0);
       }
     } finally {
-      spawn.mockRestore();
-      which.mockRestore();
+      setTextClipboardSystemForTest(null);
     }
   });
 
   test("repeated emoji yank/put/select round trips never split the clipboard text", () => {
-    let clipboard = "";
-    const which = spyOn(Bun, "which").mockImplementation((command) => command === "xclip" ? "/usr/bin/xclip" : null);
-    const copy = spyOn(Bun, "spawn").mockImplementation((() => ({
-      stdin: {
-        write(text: string) { clipboard = Buffer.from(text).toString("utf8"); },
-        end() {},
-      },
-    })) as unknown as typeof Bun.spawn);
-    const paste = spyOn(Bun, "spawnSync").mockImplementation((() => ({
-      exitCode: 0,
-      stdout: Buffer.from(clipboard),
-    })) as unknown as typeof Bun.spawnSync);
+    // The system clipboard holds UTF-8, where split surrogates would be lost.
+    const copied: string[] = fakeClipboard(() => Buffer.from(copied.at(-1) ?? "").toString("utf8"));
 
     try {
       for (const emoji of ["🫳", "❤️", "👍🏽", "👩‍💻", "🇨🇦"]) {
@@ -251,7 +232,7 @@ describe("editor", () => {
         handleEditorKey(editor, { type: "escape" });
         handleEditorKey(editor, { type: "char", char: "v" });
         handleEditorKey(editor, { type: "char", char: "y" });
-        expect(clipboard).toBe(emoji);
+        expect(copied.at(-1)).toBe(emoji);
 
         for (let count = 2; count <= 5; count++) {
           handleEditorKey(editor, { type: "char", char: "p" });
@@ -263,13 +244,11 @@ describe("editor", () => {
           );
           expect(editor.buffer.slice(start, endExclusive)).toBe(emoji);
           handleEditorKey(editor, { type: "char", char: "y" });
-          expect(clipboard).toBe(emoji);
+          expect(copied.at(-1)).toBe(emoji);
         }
       }
     } finally {
-      paste.mockRestore();
-      copy.mockRestore();
-      which.mockRestore();
+      setTextClipboardSystemForTest(null);
     }
   });
 

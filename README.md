@@ -15,7 +15,7 @@ What it does right now:
 - load servers, categories, channels, and recent messages
 - render Discord custom emoji inline with an aspect-preserving two-column footprint when the terminal reports Kitty graphics support
 - autocomplete and send server custom emoji: type `:name`, then press `Tab` to insert the selected emoji inline in the prompt
-- render the server tree as a collapsible sidebar
+- render the server tree as a collapsible sidebar, with server icons on terminals that support Kitty graphics
 - show active announcement/public/private threads beneath their text or forum parent, with live updates and full read/send support
 - show server voice/stage channels in the sidebar and join them from the terminal
 - start DM voice calls with `/call`, leave with `/hangup`, and toggle `/mute` or `/deafen`
@@ -59,10 +59,13 @@ Controls:
 - `-` / `+` / `=` on a selected voice member: lower/raise that user's playback volume by 10% directly
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
 - `Esc`: return to normal mode
-- `Enter` in the prompt: submit the current message or slash command
+- `Enter` in the prompt: submit the current message or slash command. In normal mode `Enter` never submits a half-typed command: `r<Enter>` splits the line and a pending find, operator, count or `g` is cancelled (as are other non-character keys like `Tab`)
 - `Tab` / `Shift+Tab`: cycle autocomplete, including custom emoji choices; with nothing to complete, `Tab` in insert mode inserts a four-space soft tab, which `Backspace`/`Delete` remove in one press
 - `>>` / `<<` in prompt normal or visual mode: shift the line (a count shifts that many lines) or the selected lines right/left by four spaces
 - Prompt vim keys follow Vim: `j`/`k` (and `Up`/`Down`) move by displayed rows of wrapped lines, counts work before operators (`3dd`, `2d3w`), `f`/`F`/`t`/`T` with `;`/`,`, `^`, `o` in visual mode, and `yy`/`Vy` put back as whole lines with `p`/`P`. A bare `t` in normal mode stays the next-notification shortcut; after a count or operator it is the till motion
+- Word motions (`w`/`b`/`e`, `iw`) treat letters and accents in any script as word characters; `V c` leaves an empty line like `cc`
+- Yank and put use the system clipboard (pbcopy, wl-copy, xclip or xsel); without a working one (for example over SSH with no `DISPLAY`) they fall back to an in-memory register. A put never reads an image on the clipboard as text, and put or pasted text is cleaned of terminal control sequences, carriage returns and hard tabs (which become four spaces)
+- A bracketed paste is its own undo step between the typing around it; `e` on a sent message replaces the draft, which `u` brings back
 - `Ctrl+C` or `q` in normal mode: quit
 
 ### App/bot commands
@@ -106,6 +109,8 @@ Notes:
 - switching chats reuses a session-only LRU of prepared image previews (64 entries / 16 MiB); terminal image data also stays resident for recent images (up to 64 idle images / 32 MiB, plus visible images), avoiding reconversion and retransmission on return
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`
+- runtime debug events go to `$XDG_CONFIG_HOME/record/debug.log`, written in batches and rotated to `debug.log.1` at 16 MiB (`RECORD_DEBUG_LOG_MAX_BYTES`); `RECORD_DEBUG=0` turns it off, `RECORD_DEBUG=verbose` also records per-packet/per-speaking-flip call and voice events
+- `bun test` runs against a throwaway config/cache/home directory (bunfig.toml preload), never your real `~/.config/record`
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`
 - this is intentionally small and modular so real Discord features can be layered on later
 
@@ -168,6 +173,34 @@ The pinned-messages view is the same pane and glides the same way.
 To turn region scrolls off (smooth scrolling included), set
 `"scrollRegions": false` in `config.json` and restart. Record then emits exactly
 what it did before region scrolls existed and never asks about mode 2032.
+
+### Sidebar icons
+
+On terminals that answer Record's Kitty graphics query (such as st and Kitty),
+each Discord server in the sidebar shows its icon in a two-cell box
+between the expand marker and the name. Servers without an icon, and icons
+still loading or unavailable, show a tile with the server's initials in the
+same box. Direct-message rows show the other person's avatar (group DMs their
+group picture) in place of the `#` marker; the Direct Messages, WhatsApp and
+Instagram roots show DM / WA / IG tiles. WhatsApp and Instagram conversations
+show initials tiles: their pictures would need extra requests through the
+logged-in session, so Record does not fetch them. Elsewhere the sidebar looks
+exactly as before.
+
+- Icons and avatars are 64 px PNGs from Discord's CDN (animated ones show
+  their first frame). No login token is sent with these requests.
+- Only rows on screen and about a screen above and below are fetched, visible
+  rows first, four at a time. A failed download is retried after a minute.
+- Downloaded icons are kept in `~/.config/record/image-cache/sidebar/` (one
+  file per server or person; a changed picture replaces the old file) and reused after a
+  restart without a request.
+- The terminal keeps icon data once sent (up to 256 off-screen icons /
+  16 MiB), so scrolling, collapsing, toggling the sidebar or closing an
+  overlay only places them again. An icon the terminal rejects three times
+  falls back to its initials.
+- The selected row's icon stays visible over the highlight. Icons under the
+  image viewer are hidden while it is open; a resize or full repaint places
+  every icon again.
 
 ### Instagram Direct
 
@@ -265,3 +298,53 @@ changing server-side mute settings are not supported. Call outcomes (missed,
 declined, answered) are inferred from Instagram's wording of the call row.
 Send, reaction, accept and read-receipt tests are mocked; testing never sends
 messages to your contacts automatically.
+
+## Development: offline demo mode
+
+`scripts/dev/recorddemo` (or `bun run demo`, or `bun run src/main.ts --demo`,
+or `RECORD_DEMO=1 bun run src/main.ts`) runs the real Record UI against a fake,
+in-process Discord. Use it to look at and drive the TUI without any real
+account:
+
+- **No network.** Demo mode replaces `fetch` and `WebSocket` before any other
+  module loads. Discord API/CDN/gateway requests are answered locally; every
+  other request is refused. WhatsApp login is disabled (it runs in a separate
+  Node process), and the demo config disables link/file openers.
+- **No real config.** Each run uses a fresh temporary `XDG_CONFIG_HOME`
+  (deleted on exit) holding a demo token. Demo mode refuses to start if the
+  directory overlaps `~/.config/record` or `$XDG_CONFIG_HOME/record`, or if
+  `RECORD_DEMO_HOME` is a non-empty directory it did not create.
+- **Synthetic data** (fixed seeds, so screenshots are comparable): 15 servers
+  (12 with generated icons), categories, text/announcement/forum/voice
+  channels, threads, voice members, DMs and group DMs with avatars, member
+  lists with hoisted roles, unread and mention badges, a muted server. Histories
+  range from empty to 2,400 messages (`Record Lounge / #general`) and a
+  1,500-message DM, with inline images of many sizes and aspect ratios, custom
+  emoji, stickers, reactions, replies, embeds, code blocks, markdown and long
+  wrapped lines. Older pages load with a 450 ms delay.
+- **Live traffic.** Sends, edits, deletes and reactions update the fake server
+  and echo back through the gateway like Discord does. Send `!demo more 20` to
+  receive 20 messages in the open channel, `!demo typing` for a typing
+  indicator, `!demo every 3` for one message every 3 s (`!demo every 0` stops).
+  `kill -USR1 <pid>` appends one message, `-USR2` ten; the pid is in
+  `<demo home>/record-demo.pid`.
+
+Visual testing in a nested X server (never on the host display):
+
+```sh
+scripts/dev/recorddemo --nested demo        # dwm start demo + st running the demo
+dwm -e demo screenshot -o /tmp/record-demo.png
+dwm -e demo key j                           # send keys; type text with:
+printf 'hello\n' | dwm -e demo type
+dwm -e demo key ctrl+c                      # quit Record (deletes the demo home)
+dwm stop demo
+```
+
+`--nested` prints the demo home, pid file and these commands. Options are
+environment variables: `RECORD_DEMO_OPEN=images` (channel name to open first;
+`dm` for the long DM, `none` for nothing), `RECORD_DEMO_INCOMING_SECONDS=N`,
+`RECORD_DEMO_OLDER_DELAY_MS`, `RECORD_DEMO_LATENCY_MS`, `RECORD_DEMO_NOW`
+(end of the synthetic history), `RECORD_DEMO_HOME=DIR` (keep and reuse a demo
+home) and `RECORD_DEMO_KEEP=1`. Each demo home has a `record/demo.log` of every
+request the fake server answered. The CDN serves PNG bytes for every image URL
+(icons, avatars, emoji, stickers, attachments), whatever the extension.

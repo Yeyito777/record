@@ -439,6 +439,8 @@ function getMemberListGateway(state: AppState, token: string, effects: SessionEf
     disconnectMemberListGateway();
     memberListGateway = new MemberListGatewayClient(token, {
       onAuthTokenRefresh: (refreshedToken) => handleGatewayAuthTokenRefresh(state, effects, refreshedToken),
+      // Same fail-closed default as the main gateway: never appear online by accident.
+      presenceStatus: () => state.auth.presenceStatus ?? "invisible",
     });
     memberListGatewayToken = token;
   }
@@ -3564,22 +3566,28 @@ export function syncMemberListForCurrentChannel(state: AppState, effects: Sessio
     debugLog("member_list.subscribe_attempt", { guildId, channelId, requestId, attempt });
     timeoutId = setTimeout(retryOrTimeout, MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS);
     void gateway.subscribe(guildId, channelId, {
-      onMembers: (members) => {
-        if (settled) {
-          debugLog("member_list.members_ignored", { guildId, channelId, requestId, attempt, reason: "settled", count: members.length });
-          return;
-        }
-        clearPending();
+      // Every update for the current target applies: the first one only ends
+      // the retry timer. (Ignoring later ones froze the list after its first
+      // load and let another channel's replayed list stand in for this one.)
+      onMembers: (members, info) => {
         if (!isCurrentTarget()) {
+          clearPending();
           debugLog("member_list.members_ignored", { guildId, channelId, requestId, attempt, reason: "stale_target", count: members.length, activeChannelId: state.channelList.activeChannelId, currentRequestId: state.memberList.requestId });
           return;
         }
-        debugLog("member_list.members", { guildId, channelId, requestId, attempt, count: members.length });
+        clearPending();
+        const provisional = info?.provisional === true;
+        if (provisional && getCachedMemberList(state.memberList, guildId, channelId)) {
+          // This channel's own cached list beats another channel's live rows.
+          debugLog("member_list.members_ignored", { guildId, channelId, requestId, attempt, reason: "provisional_with_cache", count: members.length });
+          return;
+        }
+        debugLog("member_list.members", { guildId, channelId, requestId, attempt, count: members.length, provisional });
         const roleIdsChanged = recordMemberListRoleIds(state, guildId, members);
-        cacheMemberList(state.memberList, guildId, channelId, members);
+        if (!provisional) cacheMemberList(state.memberList, guildId, channelId, members);
         syncAllSidebarVoiceMembers(state);
         const accountId = currentAccountId(state);
-        if (accountId) saveCachedMemberList(accountId, guildId, channelId, members);
+        if (accountId && !provisional) saveCachedMemberList(accountId, guildId, channelId, members);
         if (state.memberList.open) {
           setMemberListMembers(state.memberList, guildId, channelId, members, state.auth.user?.id ?? null);
           effects.scheduleRender();
@@ -4648,11 +4656,15 @@ export function editCurrentMessage(
           replaceTimelineMessage(state.timeline, messageId, originalMessage);
         }
       }
-      state.editTarget = target;
-      state.editor.buffer = options.failureBuffer ?? content;
-      state.editor.cursor = state.editor.buffer.length;
       const message = error instanceof Error ? error.message : String(error);
-      setNotice(state, `Edit failed: ${message}`, "warning");
+      if (canRestoreFailedDraft(state, channelId)) {
+        state.editTarget = target;
+        state.editor.buffer = options.failureBuffer ?? content;
+        state.editor.cursor = state.editor.buffer.length;
+        setNotice(state, `Edit failed: ${message}`, "warning");
+      } else {
+        setNotice(state, `Edit failed: ${message} (the message was left unchanged).`, "warning");
+      }
       effects.scheduleRender();
     }
   })();
@@ -4738,6 +4750,24 @@ function clearMessageTargetsForDeletedMessage(state: AppState, channelId: string
   }
 }
 
+/**
+ * A failed send/edit goes back into the prompt only in the conversation it
+ * came from and only over an untouched prompt: never into another chat (where
+ * Enter would send it there) and never over a newer draft.
+ */
+function canRestoreFailedDraft(state: AppState, channelId: string): boolean {
+  return (state.channelList.activeChannelId ?? state.timeline.channelId) === channelId
+    && !state.editor.buffer
+    && state.pendingImages.length === 0
+    && !state.replyTarget
+    && !state.editTarget;
+}
+
+function failedTargetLabel(state: AppState, channelId: string): string {
+  const channel = channelById(state, channelId);
+  return channel?.name ? `#${channel.name}` : "another conversation";
+}
+
 export function sendCurrentChannelMessage(
   state: AppState,
   token: string | null,
@@ -4770,6 +4800,7 @@ export function sendCurrentChannelMessage(
   }
 
   const viewer = state.auth.user;
+  const targetGuildId = state.channelList.activeChannel?.guildId ?? null;
   const messageNonce = generateMessageNonce();
   const localMessageId = `local:${messageNonce}`;
   const replyTarget = state.replyTarget?.channelId === channelId ? state.replyTarget : null;
@@ -4801,7 +4832,7 @@ export function sendCurrentChannelMessage(
   const localMessage: DiscordMessage = {
     id: localMessageId,
     channelId,
-    guildId: state.channelList.activeChannel?.guildId ?? null,
+    guildId: targetGuildId,
     nonce: messageNonce,
     type: 0,
     content,
@@ -4845,9 +4876,10 @@ export function sendCurrentChannelMessage(
         flags: options.messageFlags,
         nonce: messageNonce,
       });
-      const message = withMessageGuildId(sentMessage, state.channelList.activeChannel?.guildId ?? null);
+      // The user may have switched servers while this was in flight.
+      const message = withMessageGuildId(sentMessage, targetGuildId);
       transferLocalAttachmentVisibility(state, localAttachments, message.attachments);
-      recordMemberRoleIds(state, message.guildId ?? state.channelList.activeChannel?.guildId, message.author.id, message.author.roleIds);
+      recordMemberRoleIds(state, message.guildId ?? targetGuildId, message.author.id, message.author.roleIds);
       replaceCachedChannelMessage(state.messageCacheByChannelId, channelId, localMessageId, message);
       persistChannelMessageCache(state, channelId);
       if (state.timeline.channelId === channelId) {
@@ -4864,15 +4896,20 @@ export function sendCurrentChannelMessage(
       const message = error instanceof Error ? error.message : String(error);
       const cachedFailed = markCachedChannelMessageFailed(state.messageCacheByChannelId, channelId, localMessageId, message);
       const failed = markTimelineMessageFailed(state.timeline, localMessageId, message) ?? cachedFailed;
-      state.replyTarget = replyTarget;
-      state.pendingImages = pendingImages;
-      state.editor.buffer = options.failureBuffer ?? failed?.content ?? content;
-      state.editor.cursor = state.editor.buffer.length;
+      const restored = canRestoreFailedDraft(state, channelId);
+      if (restored) {
+        state.replyTarget = replyTarget;
+        state.pendingImages = pendingImages;
+        state.editor.buffer = options.failureBuffer ?? failed?.content ?? content;
+        state.editor.cursor = state.editor.buffer.length;
+      }
       if (state.timeline.channelId === channelId) {
         state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
       }
       if (options.failureNoticePrefix) {
         setNotice(state, `${options.failureNoticePrefix}: ${message}`, "warning", { statusLine: true, chat: false });
+      } else if (!restored) {
+        setNotice(state, `Message to ${failedTargetLabel(state, channelId)} failed to send; its text stays on the failed message.`, "warning", { statusLine: true, chat: false });
       } else {
         setNotice(state, "", "muted");
       }
@@ -5681,6 +5718,7 @@ export function setCurrentUserPresenceStatus(
   state.auth.presenceStatus = status;
   if (!appGateway || appGatewayToken !== token) startAppGateway(state, token, effects);
   appGateway?.updatePresenceStatus(status);
+  memberListGateway?.updatePresenceStatus(status);
   effects.scheduleRender();
 
   void persistPresenceStatusWithRetries(token, status, persistStatus, {

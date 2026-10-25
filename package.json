@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "dev": "bun run --watch src/main.ts",
+    "demo": "bun run src/main.ts --demo",
     "build:widget": "scripts/build-call-widget",
     "build:stream-helper": "scripts/build-stream-helper",
     "build:voice-engine": "make -C native/discord-voice-engine build",

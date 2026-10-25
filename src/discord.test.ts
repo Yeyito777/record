@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  isPendingLocalMessageEcho,
   DIRECT_MESSAGES_GUILD_ID,
   acceptDiscordInvite,
   banGuildMember,
@@ -1964,5 +1965,19 @@ describe("discord helpers", () => {
       timestamp: Date.parse("2026-01-01T12:00:00.000Z"),
       summary: "original body",
     });
+  });
+});
+
+describe("local send echoes", () => {
+  const base = {
+    id: "local:1", channelId: "c", guildId: null, nonce: "1234", type: 0, content: "hi", mentionEveryone: false, mentionRoleIds: [], mentionUserIds: [], mentionUsers: [],
+    timestamp: 0, editedTimestamp: null, author: { id: "self", username: "self", displayName: "Self", bot: false }, reply: null, call: null, attachments: [], stickerNames: [], embedsCount: 0,
+  } as const;
+
+  test("an echo with the same nonce confirms a send that timed out locally", () => {
+    const failed = { ...base, localStatus: "failed" as const };
+    expect(isPendingLocalMessageEcho(failed as any, { ...base, id: "99" } as any)).toBe(true);
+    expect(isPendingLocalMessageEcho(failed as any, { ...base, id: "99", nonce: "other" } as any)).toBe(false);
+    expect(isPendingLocalMessageEcho(failed as any, { ...base, id: "99", nonce: null } as any)).toBe(false);
   });
 });

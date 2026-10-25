@@ -49,9 +49,11 @@ import {
 import { getVisualRange } from "./editor-selection";
 import { PROMPT_TAB, promptDeleteEnd, promptDeleteStart } from "./editor-tabs";
 import { isTextObjectKey, resolveTextObject } from "./editor-textobjects";
+import { sanitizePromptTextForInsertion } from "./prompttext";
 import { getSymbol } from "./symbols";
 import { termWidth } from "./textwidth";
 import {
+  hasPending,
   keyString,
   resetPending,
   type BufferEdit,
@@ -255,7 +257,10 @@ function applyPasteCommand(editor: EditorState, position: "after" | "before", co
   } else {
     // Cursor offsets are UTF-16 indices; step over the whole grapheme before
     // putting text, rather than splitting an emoji or its modifiers in half.
-    const insertAt = position === "after" ? nextGraphemeEnd(buffer, editor.cursor) : editor.cursor;
+    // On an empty line there is no character to put after.
+    const insertAt = position === "after" && buffer[editor.cursor] !== "\n"
+      ? nextGraphemeEnd(buffer, editor.cursor)
+      : editor.cursor;
     const pos = Math.min(insertAt, buffer.length);
     const pasted = text.repeat(count);
     editor.buffer = buffer.slice(0, pos) + pasted + buffer.slice(pos);
@@ -593,9 +598,14 @@ function executeVisualCommand(editor: EditorState, command: PromptCommand): Edit
           exitVisualMode(editor);
           applyBufferEdit(editor, deleteRange(editor.buffer, start, endExclusive));
           return "handled";
-        case "visual_change":
-          applyBufferEdit(editor, deleteRange(editor.buffer, start, endExclusive), "insert", true);
+        case "visual_change": {
+          // Like cc, V c keeps the trailing newline: an empty line remains.
+          const end = linewise && endExclusive > start && editor.buffer[endExclusive - 1] === "\n"
+            ? endExclusive - 1
+            : endExclusive;
+          applyBufferEdit(editor, deleteRange(editor.buffer, start, end), "insert", true);
           return "handled";
+        }
         case "visual_swap_case":
           exitVisualMode(editor);
           applyBufferEdit(editor, swapCaseRange(editor.buffer, start, endExclusive));
@@ -609,10 +619,18 @@ function executeVisualCommand(editor: EditorState, command: PromptCommand): Edit
   }
 }
 
+/**
+ * Bracketed paste: cleaned like any prompt text, then its own undo step.
+ * Typing before a mid-insert paste is one step, the paste the next, and
+ * typing after it starts a new insert session.
+ */
 function handlePaste(editor: EditorState, text: string): EditorAction {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  if (!normalized) return "handled";
-  replaceWithPaste(editor, normalized);
+  const cleaned = sanitizePromptTextForInsertion(text);
+  if (!cleaned) return "handled";
+  commitInsertSession(editor.undo, editor.buffer);
+  pushUndo(editor.undo, editor.buffer, editor.cursor);
+  replaceWithPaste(editor, cleaned);
+  markInsertEntry(editor.undo, editor.buffer, editor.cursor);
   return "handled";
 }
 
@@ -627,7 +645,7 @@ function handleInsertKey(editor: EditorState, key: KeyEvent): EditorAction {
 
   switch (key.type) {
     case "char":
-      if (key.char) insertText(editor, key.char);
+      if (key.char) insertText(editor, sanitizePromptTextForInsertion(key.char));
       return "handled";
     case "tab":
       insertText(editor, PROMPT_TAB);
@@ -789,9 +807,24 @@ function handleNormalKey(editor: EditorState, key: KeyEvent): EditorAction {
     return "handled";
   }
 
+  // Enter submits only when no command is half-typed: r<Enter> splits the
+  // line like Vim, and any other pending command is cancelled.
   if (key.type === "enter") {
+    const pending = hasPending(editor);
+    const replace = editor.pendingReplace;
     resetPending(editor);
-    return "submit";
+    if (replace) {
+      const edit = replaceChar(editor.buffer, editor.cursor, "\n");
+      if (edit.buffer !== editor.buffer) applyBufferEdit(editor, { buffer: edit.buffer, cursor: editor.cursor + 1 });
+    }
+    return pending ? "handled" : "submit";
+  }
+
+  // Other non-character keys cancel a half-typed command (d<BS> must not
+  // leave d waiting, or delete a character).
+  if (key.type !== "char" && hasPending(editor)) {
+    resetPending(editor);
+    return "handled";
   }
 
   if (key.type === "backspace") {
@@ -1008,6 +1041,23 @@ export function resetEditor(editor: EditorState, buffer = "", mode: EditorMode =
   if (mode === "insert") {
     markInsertEntry(editor.undo, editor.buffer, editor.cursor);
   }
+}
+
+/**
+ * Replace the prompt with `text` in insert mode, cursor at its end, keeping the
+ * replaced draft one undo step away (Exocortex edit-confirm): `u` brings the
+ * draft back, then the typing before it.
+ */
+export function replaceEditorText(editor: EditorState, text: string): void {
+  if (editor.mode === "insert") commitInsertSession(editor.undo, editor.buffer);
+  if (editor.buffer !== text) pushUndo(editor.undo, editor.buffer, editor.cursor);
+  editor.buffer = text;
+  editor.cursor = text.length;
+  editor.curswant = null;
+  editor.scroll = 0;
+  editor.mode = "insert";
+  resetPending(editor);
+  markInsertEntry(editor.undo, editor.buffer, editor.cursor);
 }
 
 export function leaveInsertMode(editor: EditorState): void {

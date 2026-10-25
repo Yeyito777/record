@@ -15,7 +15,15 @@ import {
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { customEmojiImages, customEmojiMarker, type CustomEmojiRenderBatch } from "./customemoji";
 import { renderBodyLines } from "./bodypanel";
-import { appendPositionedPayload, appendRowWrite, createFrameRows, flushFrame, type FrameImages, type ScrollRegion } from "./frame";
+import {
+  appendPositionedPayload,
+  appendRowWrite,
+  createFrameRows,
+  flushFrame,
+  hasRetainedFrame,
+  type FrameImages,
+  type ScrollRegion,
+} from "./frame";
 import {
   buildLineAnchorIndex,
   clampHistoryCursor,
@@ -25,11 +33,24 @@ import {
   stripAnsi,
 } from "./historycursor";
 import { renderLineWithCursor, renderLineWithSelection } from "./historyrender";
-import { renderImageModal } from "./imagemodal";
+import { imageModalLayout, renderImageModal } from "./imagemodal";
 import { renderMemberList, MEMBER_LIST_WIDTH } from "./memberlist";
 import { channelNotificationCounts, guildNotificationCounts } from "./notifications";
-import { highlightPromptViewport } from "./prompthighlight";
-import { SIDEBAR_WIDTH, getSidebarSearchBarViewport, renderSidebar } from "./sidebar";
+import { highlightPromptViewport, promptHighlightRegions, type PromptHighlightRegion } from "./prompthighlight";
+import {
+  SIDEBAR_WIDTH,
+  createSidebarIconFrame,
+  getSidebarSearchBarViewport,
+  renderSidebar,
+  type SidebarIconFrame,
+} from "./sidebar";
+import {
+  SIDEBAR_ICON_COLUMNS,
+  SIDEBAR_ICON_MAX_IDLE_BYTES,
+  SIDEBAR_ICON_MAX_IDLE_IMAGES,
+  sidebarIconTerminalOwner,
+  sidebarIcons,
+} from "./sidebaricons";
 import { INSTAGRAM_GUILD_ID, isFixedTopLevelGuildId, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { renderServerActionModal } from "./serveractions";
 import { renderStatusLine } from "./statusline";
@@ -51,7 +72,11 @@ import {
 } from "./terminal";
 import { theme } from "./theme";
 import { renderTimelineLines, setTimelineRenderContext, type RenderedTimeline } from "./timeline";
-import { planInlineTerminalImages, type InlineTerminalImagePlacement } from "./terminalimage";
+import {
+  planInlineTerminalImages,
+  type InlineTerminalImagePlacement,
+  type InlineTerminalImageUpdate,
+} from "./terminalimage";
 import { renderTopbar } from "./topbar";
 import { smoothScrollerFor, type ScrollRect } from "./smoothscroll";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
@@ -328,6 +353,62 @@ function visibleInlineImagePlacements(
   return placements;
 }
 
+const SIDEBAR_ICON_PLACEMENT_ID = 1;
+// The selected row's icon is a distinct placement so st snapshots the
+// highlighted cells under it, instead of treating the highlight as a cover.
+const SIDEBAR_ICON_HIGHLIGHTED_PLACEMENT_ID = 2;
+
+/**
+ * Sidebar icon placements minus any an overlay covers. Covered icons are
+ * removed, not drawn under the overlay: Kitty itself has no cell occlusion.
+ */
+function visibleSidebarIconPlacements(
+  state: AppState,
+  frame: SidebarIconFrame | null,
+  rows: number,
+  cols: number,
+): InlineTerminalImagePlacement[] {
+  if (!frame || state.whatsapp.loginModal) return [];
+  let cover: { top: number; left: number; bottom: number; right: number } | null = null;
+  if (state.imageModal) {
+    const layout = imageModalLayout(
+      state.imageModal,
+      rows,
+      cols,
+      state.timeline.terminalCellWidthPixels,
+      state.timeline.terminalCellHeightPixels,
+    );
+    // Without a layout the viewer's "too small" notice fills the screen.
+    cover = layout
+      ? { top: layout.top, left: layout.left, bottom: layout.top + layout.height - 1, right: layout.left + layout.width - 1 }
+      : { top: 1, left: 1, bottom: rows, right: cols };
+  }
+
+  const seen = new Set<string>();
+  const placements: InlineTerminalImagePlacement[] = [];
+  for (const placement of frame.placements) {
+    if (cover && placement.row >= cover.top && placement.row <= cover.bottom
+      && placement.col + SIDEBAR_ICON_COLUMNS - 1 >= cover.left && placement.col <= cover.right) continue;
+    const placementId = placement.highlighted ? SIDEBAR_ICON_HIGHLIGHTED_PLACEMENT_ID : SIDEBAR_ICON_PLACEMENT_ID;
+    const key = `${placement.image.imageId}:${placementId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    placements.push({
+      image: placement.image,
+      placementId,
+      row: placement.row,
+      col: placement.col,
+      columns: SIDEBAR_ICON_COLUMNS,
+      rows: 1,
+    });
+  }
+  return placements;
+}
+
+function joinImageUpdates(a: InlineTerminalImageUpdate, b: InlineTerminalImageUpdate): InlineTerminalImageUpdate {
+  return { transmit: a.transmit + b.transmit, update: a.update + b.update };
+}
+
 /** What moves when the history scrolls smoothly: the pane's columns of the band. */
 export function smoothScrollRects(band: ScrollRegion | null, mainCol: number, mainW: number): ScrollRect[] {
   return band ? [{ top: band.start, left: mainCol, bottom: band.end, right: mainCol + mainW - 1 }] : [];
@@ -393,6 +474,9 @@ export function render(state: AppState): void {
   const typingChannelIds = channelsWithTyping(state.typing, state.auth.user?.id ?? null);
   const channelNotifications = channelNotificationCounts(state.notifications);
   const guildNotifications = guildNotificationCounts(state.notifications, state.channelList.channels);
+  const sidebarIconFrame = sidebarOpen && sidebarIcons.isEnabled()
+    ? createSidebarIconFrame((source) => sidebarIcons.get(source))
+    : null;
   const sidebarRows = sidebarOpen
     ? renderSidebar(
       state.sidebar,
@@ -409,8 +493,10 @@ export function render(state: AppState): void {
         showHiddenChannels: state.showHiddenChannels,
         currentUserId: state.auth.user?.id ?? null,
       },
+      sidebarIconFrame,
     )
     : [];
+  if (sidebarIconFrame) sidebarIcons.want(sidebarIconFrame.visible, sidebarIconFrame.nearby);
   const memberListRows = memberListOpen
     ? renderMemberList(
       state.memberList,
@@ -667,6 +753,7 @@ export function render(state: AppState): void {
     ? getVisualRange(state.editor.buffer, state.editor.visualAnchor, state.editor.cursor, state.editor.mode)
     : null;
 
+  let highlightRegions: PromptHighlightRegion[] | null = null;
   for (let i = 0; i < inputRowCount; i++) {
     const row = firstInputRow + i;
     const isFirst = i === 0 && !input.isNewLine[i];
@@ -688,7 +775,10 @@ export function render(state: AppState): void {
       if (voicePromptText) {
         lineContent = `${theme.accent}${input.lines[i] ?? ""}${theme.reset}`;
       } else if (state.editor.buffer.length > 0) {
-        lineContent = highlightPromptViewport(input.lines[i] ?? "", state.editor.buffer, input.lineStarts[i] ?? 0, state);
+        highlightRegions ??= promptHighlightRegions(state.editor.buffer, state);
+        lineContent = highlightPromptViewport(
+          input.lines[i] ?? "", state.editor.buffer, input.lineStarts[i] ?? 0, state, highlightRegions,
+        );
       }
     }
 
@@ -819,9 +909,26 @@ export function render(state: AppState): void {
     );
   if (imageModal?.placement) inlinePlacements.push(imageModal.placement);
   const inlineImageOptions = { allowPlacementUpdates: !state.autocomplete || !!state.imageModal };
-  const inlineImages: FrameImages = smooth
-    ? (scrolled) => planInlineTerminalImages(state, readyInlineImages(state), inlinePlacements, { ...inlineImageOptions, movedRows: scrolled })
-    : planInlineTerminalImages(state, readyInlineImages(state), inlinePlacements, inlineImageOptions);
+  const sidebarPlacements = visibleSidebarIconPlacements(state, sidebarIconFrame, rows, cols);
+  const sidebarImageOptions = {
+    replacePlacements: !hasRetainedFrame(state),
+    maxIdleImages: SIDEBAR_ICON_MAX_IDLE_IMAGES,
+    maxIdleBytes: SIDEBAR_ICON_MAX_IDLE_BYTES,
+  };
+  const planImages = (movedRows: ScrollRegion | null = null) => joinImageUpdates(
+    planInlineTerminalImages(state, readyInlineImages(state), inlinePlacements, { ...inlineImageOptions, movedRows }),
+    planInlineTerminalImages(
+      sidebarIconTerminalOwner,
+      sidebarPlacements.map((placement) => placement.image),
+      sidebarPlacements,
+      // A smooth-scroll region scroll moves whole rows: sidebar icons beside
+      // the moved rows moved too and are placed back where they belong.
+      { ...sidebarImageOptions, movedRows },
+    ),
+  );
+  // Under smooth scrolling the frame tells the planners which rows its
+  // region scroll moved.
+  const images: FrameImages = smooth ? planImages : planImages();
 
   flushFrame(state, {
     rows: frameRows,
@@ -832,5 +939,5 @@ export function render(state: AppState): void {
     regionScrolls: state.scrollRegions,
     graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
     afterScroll: smooth ? (regionShift, intact) => smooth.afterFlush(regionShift, smoothRects, intact) : undefined,
-  }, inlineImages);
+  }, images);
 }

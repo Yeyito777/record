@@ -10,6 +10,7 @@ import { OPUS_PAYLOAD_TYPE, OPUS_RTP_CLOCK_INCREMENT, OPUS_SILENCE_FRAME, RTP_HE
 import { dbToLinear, linearToDb, speakingIdleMs, speakingStartThresholdDb, speakingStopThresholdDb } from "./env";
 import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parseDiscordRtpPacket, parsePlainRtpPacket, reserveUdpPort, stripRtpPadding } from "./rtp";
 import { NoopVoiceAudioBackend, type VoiceAudioBackend, type VoiceAudioContext } from "./types";
+import { trackChildProcess } from "../childprocesses";
 
 const VOICE_HELPER_SHUTDOWN_GRACE_MS = 1_500;
 const VOICE_CAPTURE_STARTUP_TIMEOUT_MS = 5_000;
@@ -1058,7 +1059,7 @@ function expandHome(value: string): string {
 }
 
 function spawnVoiceHelper(command: string, args: string[]): ChildProcessWithoutNullStreams {
-  return spawn(command, args, { detached: process.platform !== "win32" });
+  return trackChildProcess(spawn(command, args, { detached: process.platform !== "win32" }), { group: process.platform !== "win32" });
 }
 
 async function waitForFile(path: string, timeoutMs: number): Promise<void> {

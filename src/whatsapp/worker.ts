@@ -209,6 +209,7 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
       await backend.getSocket().logout();
       return { loggedOut: true };
     case "shutdown":
+      exitBy(STOP_DEADLINE_MS);
       shuttingDown = true;
       await backend.shutdown();
       await diagnosticsServer?.close().catch(() => {});
@@ -243,7 +244,15 @@ process.stdin.on("data", (chunk: string) => {
   }
 });
 
+/** A shutdown that hangs (e.g. a socket that never closes) must not keep the session alive. */
+const STOP_DEADLINE_MS = 5_000;
+
+function exitBy(deadlineMs: number): void {
+  setTimeout(() => process.exit(0), deadlineMs);
+}
+
 async function stop(): Promise<void> {
+  exitBy(STOP_DEADLINE_MS);
   if (shuttingDown) return;
   shuttingDown = true;
   await backend.shutdown().catch(() => {});
@@ -253,4 +262,8 @@ async function stop(): Promise<void> {
 
 process.on("SIGTERM", () => void stop());
 process.on("SIGINT", () => void stop());
+process.on("SIGHUP", () => void stop());
 process.on("disconnect", () => void stop());
+// Record went away without asking (killed, crashed): its end of the pipe closed.
+process.stdin.on("end", () => void stop());
+process.stdin.on("close", () => void stop());

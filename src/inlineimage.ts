@@ -6,6 +6,7 @@ import { extname } from "node:path";
 
 import type { DiscordMessage, DiscordMessageAttachment, DiscordMessageSticker } from "./discord";
 import { firstAnimatedWebpFrame } from "./webp";
+import { trackChildProcess } from "./childprocesses";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MAX_TERMINAL_IMAGE_DIMENSION = 8192;
@@ -215,7 +216,7 @@ function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: In
   return new Promise((resolve, reject) => {
     const bounds = normalizedPreviewBounds(options);
     const scale = `scale='min(iw,${bounds.width})':'min(ih,${bounds.height})':force_original_aspect_ratio=decrease`;
-    const child = spawn("ffmpeg", [
+    const child = trackChildProcess(spawn("ffmpeg", [
       "-v", "error",
       "-nostdin",
       ...inputArgs,
@@ -225,7 +226,7 @@ function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: In
       "-f", "image2pipe",
       "-vcodec", "png",
       "pipe:1",
-    ], { stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
+    ], { stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] }));
 
     const chunks: Buffer[] = [];
     let size = 0;

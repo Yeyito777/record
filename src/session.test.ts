@@ -1397,6 +1397,36 @@ describe("session", () => {
     expect(state.timeline.messages[0]).toMatchObject({ content: "hello", localStatus: "pending" });
   });
 
+  test("a failed send never lands in another conversation's prompt or over a newer draft", async () => {
+    const failSend = () => new Response(JSON.stringify({ message: "Missing Access", code: 50001 }), { status: 403, headers: { "Content-Type": "application/json" } });
+    for (const scenario of ["same", "switched", "newer draft"] as const) {
+      let fail!: () => void;
+      globalThis.fetch = (async () => new Promise<Response>((resolve) => { fail = () => resolve(failSend()); })) as unknown as typeof fetch;
+      const state = createInitialState("token-1", "/tmp/record-config.json");
+      state.auth.user = { id: "self", username: "self", globalName: "Self", discriminator: "0", avatar: null, bot: false, email: null, verified: null };
+      state.channelList.guildId = "guild-1";
+      state.channelList.channels = [
+        { id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false },
+        { id: "channel-2", guildId: "guild-1", parentId: null, name: "random", topic: null, position: 1, type: 0, nsfw: false },
+      ];
+      state.channelList.activeChannelId = "channel-1";
+      state.timeline.channelId = "channel-1";
+
+      sendCurrentChannelMessage(state, "token-1", "secret for general", { scheduleRender: () => {} });
+      if (scenario === "switched") {
+        state.channelList.activeChannelId = "channel-2";
+        state.timeline.channelId = "channel-2";
+      }
+      if (scenario === "newer draft") state.editor.buffer = "newer";
+      fail();
+      await flushTimers();
+
+      const expected = scenario === "same" ? "secret for general" : scenario === "newer draft" ? "newer" : "";
+      expect(state.editor.buffer).toBe(expected);
+      expect(state.messageCacheByChannelId["channel-1"]?.messages.at(-1)).toMatchObject({ content: "secret for general", localStatus: "failed" });
+    }
+  });
+
   test("sending to an unjoined thread joins it before posting", async () => {
     const requests: Array<{ url: string; method: string }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

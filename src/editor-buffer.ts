@@ -109,14 +109,42 @@ function graphemeBoundaryAtOrAfterFallback(buffer: string, pos: number): number 
   return buffer.length;
 }
 
+function isAsciiPrintable(code: number): boolean {
+  return code >= 0x20 && code <= 0x7e;
+}
+
+/**
+ * Whether a grapheme boundary always falls before `index`: at either end, after
+ * a line feed, or between two printable ASCII characters (they never combine).
+ */
+function isSafeBoundary(buffer: string, index: number): boolean {
+  if (index <= 0 || index >= buffer.length) return true;
+  const before = buffer.charCodeAt(index - 1);
+  return before === 0x0a || (isAsciiPrintable(before) && isAsciiPrintable(buffer.charCodeAt(index)));
+}
+
+/**
+ * Segment only the stretch of `buffer` around `pos` between two safe
+ * boundaries (a start before `pos` and an end after it), so cursor moves in a
+ * long prompt cost the local text, not everything before the cursor.
+ */
+function segmentsAround(buffer: string, pos: number): { offset: number; segments: Intl.Segments } {
+  let start = Math.max(0, Math.min(pos, buffer.length) - 1);
+  while (!isSafeBoundary(buffer, start)) start--;
+  let end = Math.min(buffer.length, pos + 1);
+  while (!isSafeBoundary(buffer, end)) end++;
+  return { offset: start, segments: graphemeSegmenter!.segment(buffer.slice(start, end)) };
+}
+
 export function previousGraphemeStart(buffer: string, pos: number): number {
   const clamped = Math.max(0, Math.min(pos, buffer.length));
   if (clamped <= 0) return 0;
   if (!graphemeSegmenter) return previousGraphemeStartFallback(buffer, clamped);
 
-  let previous = 0;
-  for (const segment of graphemeSegmenter.segment(buffer)) {
-    const start = segment.index;
+  const { offset, segments } = segmentsAround(buffer, clamped);
+  let previous = offset;
+  for (const segment of segments) {
+    const start = offset + segment.index;
     const end = start + segment.segment.length;
     if (start >= clamped) return previous;
     if (end >= clamped) return start;
@@ -130,8 +158,9 @@ export function nextGraphemeEnd(buffer: string, pos: number): number {
   if (clamped >= buffer.length) return buffer.length;
   if (!graphemeSegmenter) return nextGraphemeEndFallback(buffer, clamped);
 
-  for (const segment of graphemeSegmenter.segment(buffer)) {
-    const start = segment.index;
+  const { offset, segments } = segmentsAround(buffer, clamped);
+  for (const segment of segments) {
+    const start = offset + segment.index;
     const end = start + segment.segment.length;
     if (start <= clamped && clamped < end) return end;
     if (start >= clamped) return end;
@@ -144,8 +173,9 @@ function graphemeStartAtOrAfter(buffer: string, pos: number): number {
   if (clamped === 0 || clamped >= buffer.length) return clamped;
   if (!graphemeSegmenter) return graphemeStartAtOrAfterFallback(buffer, clamped);
 
-  for (const segment of graphemeSegmenter.segment(buffer)) {
-    const start = segment.index;
+  const { offset, segments } = segmentsAround(buffer, clamped);
+  for (const segment of segments) {
+    const start = offset + segment.index;
     const end = start + segment.segment.length;
     if (start >= clamped) return start;
     if (end > clamped) return start;
@@ -158,8 +188,9 @@ export function graphemeBoundaryAtOrAfter(buffer: string, pos: number): number {
   if (clamped === 0 || clamped >= buffer.length) return clamped;
   if (!graphemeSegmenter) return graphemeBoundaryAtOrAfterFallback(buffer, clamped);
 
-  for (const segment of graphemeSegmenter.segment(buffer)) {
-    const start = segment.index;
+  const { offset, segments } = segmentsAround(buffer, clamped);
+  for (const segment of segments) {
+    const start = offset + segment.index;
     const end = start + segment.segment.length;
     if (start === clamped) return clamped;
     if (start > clamped) return start;

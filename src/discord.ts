@@ -9,6 +9,8 @@ const API_BASE = "https://discord.com/api/v9";
 const DISCORD_CLIENT_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.115 Chrome/138.0.7204.251 Electron/37.6.0 Safari/537.36";
 const USER_AGENT = DISCORD_CLIENT_USER_AGENT;
 const REQUEST_TIMEOUT_MS = 15_000;
+/** Uploads also get time for the bytes themselves, at a slow 64 KiB/s. */
+const UPLOAD_TIMEOUT_BYTES_PER_SECOND = 64 * 1024;
 const GUILD_PAGE_LIMIT = 200;
 const GUILD_THREAD_CHANNEL_TYPES = new Set([10, 11, 12]);
 const MESSAGE_THREAD_PARENT_CHANNEL_TYPES = new Set([0, 5]);
@@ -194,6 +196,8 @@ export interface DiscordChannelResponse {
   last_message_id?: string | null;
   muted?: boolean;
   recipients?: DiscordDMRecipientResponse[];
+  /** Group DM picture hash. */
+  icon?: string | null;
   permission_overwrites?: DiscordPermissionOverwriteResponse[];
   owner_id?: string;
   thread_metadata?: DiscordThreadMetadataResponse;
@@ -407,6 +411,8 @@ export interface DiscordChannel {
   pinned?: boolean;
   muted?: boolean;
   recipients?: DiscordGuildMember[];
+  /** Group DM picture hash (CDN channel-icons). */
+  icon?: string;
   permissionOverwrites?: DiscordPermissionOverwrite[];
   /** Present for announcement, public, and private thread channel types. */
   thread?: DiscordThreadInfo;
@@ -588,8 +594,12 @@ export interface DiscordMessagePatch {
 
 /** Match Discord's canonical create event to the optimistic message it acknowledges. */
 export function isPendingLocalMessageEcho(pending: DiscordMessage, message: DiscordMessage): boolean {
-  if (pending.localStatus !== "pending" || message.localStatus) return false;
+  if (message.localStatus) return false;
+  if (pending.localStatus !== "pending" && pending.localStatus !== "failed") return false;
   if (pending.channelId !== message.channelId || pending.author.id !== message.author.id) return false;
+  // A send that timed out locally may still have reached Discord: its echo
+  // (same nonce) confirms the failed bubble instead of showing a duplicate.
+  if (pending.localStatus === "failed") return Boolean(pending.nonce && message.nonce && pending.nonce === message.nonce);
 
   // Discord echoes the nonce from Create Message in MESSAGE_CREATE. When both
   // sides have one, it is authoritative: attachment names/sizes may be changed
@@ -1326,6 +1336,7 @@ export function mapDirectMessageChannel(channel: DiscordChannelResponse, positio
       bot: false,
       ...(recipient.avatar ? { avatar: recipient.avatar } : {}),
     })),
+    ...(channel.icon ? { icon: channel.icon } : {}),
   };
 }
 
@@ -1994,10 +2005,11 @@ export async function sendChannelMessage(
       ? buildSendMessageMultipartBody(body, uploads)
       : JSON.stringify(body);
 
+    const uploadBytes = uploads.reduce((total, upload) => total + Math.floor(upload.base64.length * 3 / 4), 0);
     return requestJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages`, {
       method: "POST",
       body: requestBody,
-    });
+    }, REQUEST_TIMEOUT_MS + Math.ceil(uploadBytes / UPLOAD_TIMEOUT_BYTES_PER_SECOND) * 1_000);
   };
 
   let message: DiscordMessageResponse;
@@ -2417,9 +2429,9 @@ async function apiGetJson<T>(token: string, path: string): Promise<T> {
   return requestJson<T>(token, path, { method: "GET" });
 }
 
-async function requestJson<T>(token: string, path: string, init: RequestInit): Promise<T> {
+async function requestJson<T>(token: string, path: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${API_BASE}${path}`, {
