@@ -120,6 +120,36 @@ describe("data cache writes", () => {
   });
 });
 
+describe("saved member lists", () => {
+  const list = (id: string) => [{ id, username: id, displayName: id, avatar: null, roleIds: [], bot: false }] as any;
+
+  test("keep the three most recently saved lists per server", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-memberlists-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    for (const channelId of ["c1", "c2", "c3", "c4", "c5"]) saveCachedMemberList("account-ml", "g", channelId, list(channelId));
+    saveCachedMemberList("account-ml", "h", "x1", list("x1"));
+    saveCachedMemberList("account-ml", "g", "c3", list("c3-again"));
+    flushDataCacheSync();
+    const lists = readPersistedCache(join(xdg, "record")).accounts["account-ml"].memberLists;
+    expect(Object.keys(lists).sort()).toEqual(["g:c3", "g:c4", "g:c5", "h:x1"]);
+    expect(lists["g:c3"][0].id).toBe("c3-again");
+    expect(loadCachedMemberList("account-ml", "g", "c1")).toBeNull();
+  });
+
+  test("an older cache with a list for every channel is trimmed when loaded", () => {
+    const xdg = mkdtempSync(join(tmpdir(), "record-memberlists-legacy-"));
+    process.env.XDG_CONFIG_HOME = xdg;
+    mkdirSync(join(xdg, "record"), { recursive: true });
+    const memberLists = Object.fromEntries(Array.from({ length: 6 }, (_unused, index) => [`g:c${index}`, list(`c${index}`)]));
+    writeFileSync(join(xdg, "record", "cache.json"), JSON.stringify({ version: 1, lastAccountId: "account-old", accounts: { "account-old": { savedAt: 1, memberLists } } }));
+    expect(loadCachedMemberList("account-old", "g", "c0")).toBeNull();
+    expect(loadCachedMemberList("account-old", "g", "c5")?.[0]?.id).toBe("c5");
+    markCachedAccountActive("account-old");
+    flushDataCacheSync();
+    expect(Object.keys(readPersistedCache(join(xdg, "record")).accounts["account-old"].memberLists)).toEqual(["g:c3", "g:c4", "g:c5"]);
+  });
+});
+
 describe("data cache section files", () => {
   const message = (id: string, channelId: string) => ({
     id, channelId, guildId: null, type: 0, content: id, mentionEveryone: false, mentionRoleIds: [], mentionUserIds: [], mentionUsers: [],
