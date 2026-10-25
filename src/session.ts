@@ -19,6 +19,7 @@ import { basename } from "path";
 import {
   DIRECT_MESSAGES_GUILD_ID,
   DIRECT_MESSAGES_GUILD_NAME,
+  DiscordRateLimitError,
   DiscordResourceNotFoundError,
   ackChannelMessage,
   createChannelThread,
@@ -2254,6 +2255,44 @@ function guildRolesIncludeNamesAndPermissions(roles: readonly DiscordRole[] | un
     && roles.some((role) => typeof role.name === "string" && role.name.trim().length > 0));
 }
 
+/**
+ * Role lists are fetched at most two at a time. A login with an empty cache
+ * used to fire one GET /guilds/:id/roles per server at once, which Discord
+ * rate-limits (failing silently, leaving role colours and hidden-channel flags
+ * missing) and no official client does.
+ */
+const ROLE_FETCH_CONCURRENCY = 2;
+const ROLE_FETCH_MAX_RATE_LIMIT_WAIT_MS = 60_000;
+let roleFetchesRunning = 0;
+const roleFetchQueue: Array<() => void> = [];
+
+function queueRoleFetch<T>(run: () => Promise<T>, urgent: boolean): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const start = (): void => {
+      roleFetchesRunning += 1;
+      run().then(resolve, reject).finally(() => {
+        roleFetchesRunning -= 1;
+        roleFetchQueue.shift()?.();
+      });
+    };
+    if (roleFetchesRunning < ROLE_FETCH_CONCURRENCY) start();
+    else if (urgent) roleFetchQueue.unshift(start);
+    else roleFetchQueue.push(start);
+  });
+}
+
+async function fetchGuildRolesHonoringRateLimit(token: string, guildId: string): Promise<DiscordRole[]> {
+  try {
+    return await fetchGuildRoles(token, guildId);
+  } catch (error) {
+    if (!(error instanceof DiscordRateLimitError)) throw error;
+    const waitMs = Math.min(ROLE_FETCH_MAX_RATE_LIMIT_WAIT_MS, error.retryAfterMs ?? 5_000);
+    debugLog("guild_roles.rate_limited", { guildId, waitMs });
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    return fetchGuildRoles(token, guildId);
+  }
+}
+
 export function loadGuildRolesInBackground(
   state: AppState,
   token: string,
@@ -2266,7 +2305,8 @@ export function loadGuildRolesInBackground(
   if (!options.revalidate && guildRolesIncludeNamesAndPermissions(state.guildRolesByGuildId[guildId])) return;
   fetchState.pending.add(guildId);
   const revision = fetchState.revisions.get(guildId) ?? 0;
-  void fetchGuildRoles(token, guildId).then((roles) => {
+  const urgent = guildId === (state.channelList.activeChannel?.guildId ?? state.channelList.guildId);
+  void queueRoleFetch(() => fetchGuildRolesHonoringRateLimit(token, guildId), urgent).then((roles) => {
     debugLog("guild_roles.fetched", {
       guildId,
       count: roles.length,

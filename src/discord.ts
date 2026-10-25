@@ -45,6 +45,8 @@ export interface DiscordCurrentUserStatusSettings {
 interface DiscordErrorResponse {
   message?: string;
   code?: number;
+  /** Seconds, on 429 responses. */
+  retry_after?: number;
   captcha_key?: unknown;
   captcha_sitekey?: unknown;
   errors?: unknown;
@@ -120,6 +122,14 @@ export class DiscordCaptchaRequiredError extends Error {
   constructor(message = "Captcha required to join this server.") {
     super(message);
     this.name = "DiscordCaptchaRequiredError";
+  }
+}
+
+/** HTTP 429; retryAfterMs is Discord's requested wait when it sent one. */
+export class DiscordRateLimitError extends Error {
+  constructor(readonly retryAfterMs: number | null) {
+    super("Discord rate-limited the request. Try again in a moment.");
+    this.name = "DiscordRateLimitError";
   }
 }
 
@@ -2447,7 +2457,7 @@ async function requestJson<T>(token: string, path: string, init: RequestInit, ti
       return body as T;
     }
 
-    throw buildDiscordError(response.status, body as DiscordErrorResponse | null);
+    throw buildDiscordError(response.status, body as DiscordErrorResponse | null, response.headers.get("retry-after"));
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("Discord request timed out.");
@@ -2484,7 +2494,7 @@ function requestHeaders(token: string, init: RequestInit): HeadersInit {
   };
 }
 
-function buildDiscordError(status: number, body: DiscordErrorResponse | null): Error {
+function buildDiscordError(status: number, body: DiscordErrorResponse | null, retryAfterHeader: string | null = null): Error {
   if (status === 401) {
     return new Error("Discord rejected the token.");
   }
@@ -2495,7 +2505,8 @@ function buildDiscordError(status: number, body: DiscordErrorResponse | null): E
     return new DiscordResourceNotFoundError();
   }
   if (status === 429) {
-    return new Error("Discord rate-limited the request. Try again in a moment.");
+    const retryAfterSeconds = typeof body?.retry_after === "number" ? body.retry_after : Number(retryAfterHeader);
+    return new DiscordRateLimitError(Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0 ? Math.ceil(retryAfterSeconds * 1000) : null);
   }
 
   if (body?.captcha_key !== undefined || body?.captcha_sitekey !== undefined) {
