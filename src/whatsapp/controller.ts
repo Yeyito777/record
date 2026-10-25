@@ -114,6 +114,10 @@ export interface WhatsAppControllerOptions {
   recentHistoryIntervalMs?: number;
   sendShutdownTimeoutMs?: number;
   loadCache?: typeof loadWhatsAppCache;
+  newerFooterGraceMs?: number;
+  resyncAfterOfflineMs?: number;
+  /** Tests of footer mechanics: replace the behind-evidence check. */
+  chatIsBehind?: (jid: string) => boolean;
 }
 
 const DEFAULT_SUCCESS_MODAL_DELAY_MS = 900;
@@ -125,10 +129,20 @@ const DEFAULT_HISTORY_REQUEST_TIMEOUT_MS = 20_000;
 const DEFAULT_RECENT_HISTORY_INTERVAL_MS = 60_000;
 const DEFAULT_SEND_SHUTDOWN_TIMEOUT_MS = 2_000;
 const HISTORY_GAP_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1_000;
+/** Quick recent-window answers never flash the "Loading newer messages…" footer. */
+const DEFAULT_NEWER_FOOTER_GRACE_MS = 400;
+/** Offline (sleep, network loss) at least this long may have missed live messages. */
+const DEFAULT_RESYNC_AFTER_OFFLINE_MS = 60_000;
+/**
+ * Chat metadata times are when the phone received the last message; message
+ * times are the sender's, in whole seconds. Smaller differences are noise.
+ */
+const CHAT_BEHIND_TOLERANCE_MS = 10_000;
 
 interface PendingHistoryRequest {
   recent: boolean;
   silent: boolean;
+  startedAtMs: number;
   anchorId: string;
   requestId: string | null;
   receivedPages: Map<string, readonly import("./types").WhatsAppMessage[]>;
@@ -179,6 +193,16 @@ export class WhatsAppController {
   private backendResetPromise: Promise<void> | null = null;
   private cacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
   private cacheWrites: Promise<void> = Promise.resolve();
+  private readonly newerFooterGraceMs: number;
+  private readonly resyncAfterOfflineMs: number;
+  private readonly chatIsBehindOverride: ((jid: string) => boolean) | null;
+  private newerFooterTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the connection last dropped after being up; null while connected. */
+  private disconnectedAtMs: number | null = null;
+  /** A reconnect after a long offline spell: chats not rechecked since may be behind. */
+  private resyncSuspectSinceMs: number | null = null;
+  /** Last completed recent recheck per chat, and the chat's last-message time it confirmed. */
+  private readonly recentRecheckByChatId = new Map<string, { atMs: number; lastMessageAtMs: number }>();
   private firstUnsavedChangeAt: number | null = null;
   private cacheEnabled = true;
   private shuttingDown = false;
@@ -223,6 +247,9 @@ export class WhatsAppController {
     this.historyRequestTimeoutMs = options.historyRequestTimeoutMs ?? DEFAULT_HISTORY_REQUEST_TIMEOUT_MS;
     this.recentHistoryIntervalMs = options.recentHistoryIntervalMs ?? DEFAULT_RECENT_HISTORY_INTERVAL_MS;
     this.sendShutdownTimeoutMs = options.sendShutdownTimeoutMs ?? DEFAULT_SEND_SHUTDOWN_TIMEOUT_MS;
+    this.newerFooterGraceMs = options.newerFooterGraceMs ?? DEFAULT_NEWER_FOOTER_GRACE_MS;
+    this.resyncAfterOfflineMs = options.resyncAfterOfflineMs ?? DEFAULT_RESYNC_AFTER_OFFLINE_MS;
+    this.chatIsBehindOverride = options.chatIsBehind ?? null;
     this.backendFactory = options.backendFactory ?? (() => createNodeWhatsAppBackendClient({ authDirectory: this.authDirectory }));
     this.backend = this.backendFactory();
     this.bindBackend();
@@ -860,6 +887,9 @@ export class WhatsAppController {
         else upsertWhatsAppChats(this.state.whatsapp, event.chats);
         this.queueCacheSave();
         this.syncProviderState(true);
+        // Chat metadata is what can show the open chat is behind.
+        this.updateLoadingState();
+        this.scheduleRender();
       }),
       this.backend.on("messages", (incomingEvent) => {
         const event = { ...incomingEvent, messages: this.withOutgoingOrder(incomingEvent.messages) };
@@ -940,6 +970,12 @@ export class WhatsAppController {
   }
 
   private handleConnectionState(connection: WhatsAppConnectionState): void {
+    const wasConnected = this.state.whatsapp.connection.status === "connected";
+    if (wasConnected && connection.status !== "connected") this.disconnectedAtMs = Date.now();
+    if (connection.status === "connected" && this.disconnectedAtMs !== null) {
+      if (Date.now() - this.disconnectedAtMs >= this.resyncAfterOfflineMs) this.resyncSuspectSinceMs = Date.now();
+      this.disconnectedAtMs = null;
+    }
     this.state.whatsapp.connection = connection;
     if (connection.status !== "connected") this.clearPendingHistoryRequests();
     if (connection.status === "connected") {
@@ -1374,7 +1410,7 @@ export class WhatsAppController {
       this.updateLoadingState();
       this.scheduleRender();
     }, this.historyRequestTimeoutMs);
-    const pending: PendingHistoryRequest = { recent, silent, anchorId: oldest.key.id, requestId: null, receivedPages: new Map(), timeout };
+    const pending: PendingHistoryRequest = { recent, silent, startedAtMs: Date.now(), anchorId: oldest.key.id, requestId: null, receivedPages: new Map(), timeout };
     this.pendingHistoryByChatId.set(jid, pending);
     this.updateLoadingState();
     this.scheduleRender();
@@ -1435,6 +1471,12 @@ export class WhatsAppController {
     const [chatId, pending] = match;
     clearTimeout(pending.timeout);
     this.pendingHistoryByChatId.delete(chatId);
+    if (pending.recent) {
+      this.recentRecheckByChatId.set(chatId, {
+        atMs: Date.now(),
+        lastMessageAtMs: this.state.whatsapp.chatsById[chatId]?.lastMessageAtMs ?? 0,
+      });
+    }
     this.updateLoadingState();
     // Recent reconciliation is not backward pagination: it must not change
     // hasOlder or launch an unbounded cascade of older-page requests.
@@ -1466,6 +1508,7 @@ export class WhatsAppController {
   }
 
   private clearPendingHistoryRequests(): void {
+    this.clearNewerFooterTimer();
     if (this.recentHistoryTimer) clearInterval(this.recentHistoryTimer);
     this.recentHistoryTimer = null;
     this.historyRequestGeneration += 1;
@@ -1684,9 +1727,9 @@ export class WhatsAppController {
     const jid = this.activeWhatsAppJid();
     if (jid) {
       const pending = this.pendingHistoryByChatId.get(jid);
-      const loadingNewer = Boolean(pending?.recent && !pending.silent);
-      // Foreground resyncs show a footer; periodic checks remain silent. Keep
-      // it visible in either focus mode without pulling a scrolled-up reader down.
+      const loadingNewer = this.showsNewerFooter(jid, pending);
+      // Keep the footer visible in either focus mode without pulling a
+      // scrolled-up reader down.
       if (loadingNewer !== this.state.timeline.loadingNewer
         && (this.state.timeline.scrollOffset === Number.MAX_SAFE_INTEGER
           || this.state.timeline.scrollOffset === this.state.timeline.maxScroll)) {
@@ -1696,6 +1739,56 @@ export class WhatsAppController {
       this.state.timeline.loadingOlder = Boolean(pending && !pending.recent) || this.queuedHistoryByChatId.has(jid);
       this.state.timeline.loading = !this.state.timeline.messages.length && Boolean(text) && !this.shuttingDown && this.cacheEnabled;
     }
+  }
+
+  /**
+   * The recent-window recheck runs on every focus and reconnect, and the phone
+   * may take its whole timeout to answer. Its footer is shown only with
+   * evidence the open chat is behind, after a short grace period, and goes
+   * away as soon as that evidence is gone (the newer messages arrived).
+   */
+  private showsNewerFooter(jid: string, pending: PendingHistoryRequest | undefined): boolean {
+    if (!pending?.recent || pending.silent || !this.chatIsBehind(jid)) {
+      this.clearNewerFooterTimer();
+      return false;
+    }
+    const waitMs = pending.startedAtMs + this.newerFooterGraceMs - Date.now();
+    if (waitMs <= 0) {
+      this.clearNewerFooterTimer();
+      return true;
+    }
+    if (!this.newerFooterTimer) {
+      this.newerFooterTimer = setTimeout(() => {
+        this.newerFooterTimer = null;
+        this.updateLoadingState();
+        this.scheduleRender();
+      }, waitMs);
+      this.newerFooterTimer.unref?.();
+    }
+    return false;
+  }
+
+  private clearNewerFooterTimer(): void {
+    if (!this.newerFooterTimer) return;
+    clearTimeout(this.newerFooterTimer);
+    this.newerFooterTimer = null;
+  }
+
+  /** Evidence that messages newer than the ones Record has exist for this chat. */
+  private chatIsBehind(jid: string): boolean {
+    if (this.chatIsBehindOverride) return this.chatIsBehindOverride(jid);
+    const recheck = this.recentRecheckByChatId.get(jid);
+    // Back from a long offline spell (sleep, network loss) and not rechecked since.
+    if (this.resyncSuspectSinceMs !== null && (recheck?.atMs ?? 0) < this.resyncSuspectSinceMs) return true;
+    // The chat list says its last message is newer than any Record has, and
+    // no completed recheck has already accounted for that time.
+    const lastMessageAtMs = this.state.whatsapp.chatsById[jid]?.lastMessageAtMs ?? 0;
+    if (lastMessageAtMs <= (recheck?.lastMessageAtMs ?? 0)) return false;
+    let newestMs = 0;
+    for (const message of this.state.whatsapp.messagesByChatId[jid] ?? []) {
+      if ((message.timestampMs ?? 0) > newestMs) newestMs = message.timestampMs ?? 0;
+    }
+    return lastMessageAtMs > newestMs + CHAT_BEHIND_TOLERANCE_MS;
   }
 
   /**
