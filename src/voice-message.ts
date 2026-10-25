@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { DEFAULT_LOCAL_GAIN_DB, formatGainDb, normalizeGainDb } from "./volume";
+import { trackChildProcess } from "./childprocesses";
 
 export type VoiceMessagePromptPhase = "recording" | "sending";
 
@@ -278,7 +279,7 @@ export class VoiceMessageRecorder {
       cleanupPath(tmpDir);
       throw new Error("Voice messages require pw-record, arecord, or ffmpeg to capture audio.");
     }
-    const child = spawn(recorder.command, recorder.args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = trackChildProcess(spawn(recorder.command, recorder.args, { stdio: ["ignore", "ignore", "pipe"] }));
     return new VoiceMessageRecorder(child, wavPath, oggPath, tmpDir, micGainDb);
   }
 

@@ -26,6 +26,7 @@ import type {
   WhatsAppWorkerMethod,
   WhatsAppWorkerRequest,
 } from "./worker-protocol";
+import { trackChildProcess } from "../childprocesses";
 
 export interface NodeWhatsAppBackendClientOptions {
   authDirectory: string;
@@ -178,7 +179,7 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
     if (this.child) return this.child;
     if (this.stopping) throw new Error("WhatsApp worker is stopping.");
     const defaults = workerDefaults();
-    const child = this.options.spawnWorker?.() ?? spawn(
+    const child = this.options.spawnWorker?.() ?? trackChildProcess(spawn(
       this.options.command ?? defaults.command,
       this.options.args ?? defaults.args,
       {
@@ -191,7 +192,7 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
         },
         stdio: ["pipe", "pipe", "pipe"],
       },
-    );
+    ));
     this.child = child;
     this.inputBuffer = "";
     child.stdout.setEncoding("utf8");
