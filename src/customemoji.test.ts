@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
 import { CustomEmojiImageRenderer, discordCustomEmojiCdnUrl } from "./customemoji";
-import { termWidth } from "./textwidth";
+import { sliceByWidth, termWidth } from "./textwidth";
 import { theme } from "./theme";
 import { VtScreen } from "./vtscreen.testutil";
 
@@ -25,6 +25,32 @@ describe("Discord custom emoji images", () => {
     renderer.renderLine(marked, 3, 1, batch);
     expect(renderer.finishFrame(batch).payload).toBe("");
     expect(renderer.finishTrackedFrame(renderer.beginFrame())(null)).toBe("");
+  });
+
+  describe("on a terminal without Kitty graphics", () => {
+    let renderer: CustomEmojiImageRenderer;
+    afterEach(() => renderer.setNamesWithoutGraphics(false));
+
+    test("an emoji is its muted :name:, as wide as the name, wherever it is laid out or drawn", () => {
+      renderer = new CustomEmojiImageRenderer({ fetch: (async () => new Response(PNG)) as unknown as typeof fetch });
+      const marked = renderer.replaceTokens("hi <:wave:123> there");
+      expect(termWidth(marked)).toBe(termWidth("hi xx there"));
+      expect(renderer.setNamesWithoutGraphics(true)).toBe(true);
+      // Layout (wrapping, the prompt, the history cursor) measures the name.
+      expect(termWidth(marked)).toBe(termWidth("hi :wave: there"));
+      expect(sliceByWidth(marked, 4)[0]).toBe("hi ");
+      // The marker is still the emoji: sending and yanking give its token.
+      expect(renderer.decodeMarkers(marked)).toBe("hi <:wave:123> there");
+      const batch = renderer.beginFrame();
+      const line = renderer.renderLine(`${theme.text}${marked}`, 3, 1, batch);
+      expect(line.replace(/\x1b\[[0-9;]*m/g, "")).toBe("hi :wave: there");
+      expect(line).toContain(`${theme.muted}:wave:`);
+      expect(line).not.toContain("◇");
+      expect(batch.placements).toEqual([]);
+      // Graphics confirmed after all (or a test resetting): two cells again.
+      expect(renderer.setNamesWithoutGraphics(false)).toBe(true);
+      expect(termWidth(marked)).toBe(termWidth("hi xx there"));
+    });
   });
 
   test("replaces static and animated syntax with atomic two-column markers", () => {

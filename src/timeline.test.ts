@@ -4,6 +4,7 @@ import {
   appendTimelineMessage,
   createTimelineState,
   formatLocalMessageTime,
+  invalidateTimelineLayout,
   markTimelineCallEnded,
   prependTimelineMessages,
   pushTimelineSystemMessage,
@@ -19,7 +20,7 @@ import {
 import { inlineImageSourcesForMessage } from "./inlineimage";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { termWidth } from "./textwidth";
-import { decodeCustomEmojiMarkers } from "./customemoji";
+import { customEmojiImages, decodeCustomEmojiMarkers } from "./customemoji";
 import type { DiscordMessage } from "./discord";
 
 function message(
@@ -1137,6 +1138,22 @@ describe("timeline rendering", () => {
       Array.from({ length: 13 }, (_unused, row) => `msg:message-1:image:a1:${row}`),
     );
     expect(rendered.messageBounds[0]?.end).toBe(15);
+  });
+
+  test("without Kitty graphics, custom emoji wrap as their :name:", () => {
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [message("message-1", "<:wave:1> <:wave:1> <:wave:1>", { authorName: "Paramount" })]);
+    const contentRows = () => renderTimelineLines(timeline, 12, 30, { text: "", tone: "muted" }).lineAnchors
+      .filter((anchor) => anchor.startsWith("msg:message-1:content:")).length;
+    expect(contentRows()).toBe(1);
+    try {
+      customEmojiImages.setNamesWithoutGraphics(true);
+      invalidateTimelineLayout(timeline);
+      // ":wave: :wave:" is 13 cells: one name per 12-cell row.
+      expect(contentRows()).toBe(3);
+    } finally {
+      customEmojiImages.setNamesWithoutGraphics(false);
+    }
   });
 
   describe("image details (Ctrl+O)", () => {

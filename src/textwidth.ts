@@ -183,12 +183,28 @@ function ansiEscapeEnd(text: string, start: number): number | null {
   return null;
 }
 
+/**
+ * Width of a private-use character the application draws as something else
+ * (a custom emoji shown as its name without Kitty graphics); undefined keeps
+ * the usual two cells. Null when nothing is drawn differently.
+ */
+let privateUseWidth: ((codePoint: number) => number | undefined) | null = null;
+
+export function setPrivateUseWidth(width: ((codePoint: number) => number | undefined) | null): void {
+  privateUseWidth = width;
+}
+
 function nextCluster(text: string, start: number): [width: number, end: number] {
   const ansiEnd = ansiEscapeEnd(text, start);
   if (ansiEnd !== null) return [0, ansiEnd];
 
   const cp = text.codePointAt(start)!;
   const charLen = cp > 0xFFFF ? 2 : 1;
+
+  if (privateUseWidth && cp >= 0xE000 && cp <= 0xF8FF) {
+    const width = privateUseWidth(cp);
+    if (width !== undefined) return [width, start + charLen];
+  }
 
   if (isZeroWidth(cp)) {
     return [0, start + charLen];
