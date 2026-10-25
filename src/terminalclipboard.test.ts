@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 import {
   TerminalClipboardClient,
@@ -74,6 +77,41 @@ describe("OSC 5522 clipboard client", () => {
       sizeBytes: 3,
     }]);
     client.dispose();
+  });
+
+  test("a copied image file attaches the file; a list without images pastes text, never the icon", () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-5522-"));
+    try {
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9]);
+      writeFileSync(join(dir, "pic.png"), png);
+      const run = (list: string) => {
+        const writes: string[] = [];
+        const images: Array<{ filename?: string }> = [];
+        const texts: string[] = [];
+        const client = new TerminalClipboardClient({
+          write: (sequence) => writes.push(sequence), onImage: (image) => images.push(image), onText: (text) => texts.push(text),
+        });
+        for (const sequence of pasteOffer("text/plain image/png text/uri-list")) client.handleControlSequence(sequence);
+        expect(writes[0]).toContain(`;${b64("text/uri-list")}${ST}`);
+        client.handleControlSequence(packet("type=read:status=OK"));
+        client.handleControlSequence(packet(`type=read:status=DATA:mime=${b64("text/uri-list")}`, b64(list)));
+        client.handleControlSequence(packet("type=read:status=DONE"));
+        client.dispose();
+        return { writes, images, texts };
+      };
+
+      const copied = run(`file://${join(dir, "pic.png")}\r\n`);
+      expect(copied.images.map((image) => image.filename)).toEqual(["pic.png"]);
+      expect(copied.writes).toHaveLength(1);
+
+      const pdf = run("file:///tmp/report.pdf\r\n");
+      expect(pdf.images).toEqual([]);
+      // Falls through to text/plain (the path), skipping the image/png icon.
+      expect(pdf.writes).toHaveLength(2);
+      expect(pdf.writes[1]).toContain(`;${b64("text/plain")}${ST}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("requests text when no supported image exists", () => {

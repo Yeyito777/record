@@ -7,6 +7,14 @@
  */
 
 import { StringDecoder } from "node:string_decoder";
+import {
+  clipboardFilesAreLocal,
+  convertHeic,
+  FILE_LIST_MIME_TYPES,
+  filePathsFromUriList,
+  HEIC_MIME_TYPES,
+  imagesFromFileList,
+} from "./clipboardfiles";
 import type { ClipboardImageAttachment, ImageMediaType } from "./imageclipboard";
 export {
   disableClipboardPasteEvents,
@@ -48,6 +56,9 @@ interface OfferTransfer {
 
 interface DataTransfer {
   requestedMime: string;
+  offer: OfferTransfer;
+  /** Types to try next when this one turns out to hold no usable image. */
+  remainingMimes: string[];
   chunks: Buffer[];
   sizeBytes: number;
   opened: boolean;
@@ -58,6 +69,8 @@ export interface TerminalClipboardClientOptions {
   onImage: (image: ClipboardImageAttachment) => void;
   onText: (text: string) => void;
   onError?: (message: string) => void;
+  /** A pasted photo or copied file that cannot be attached, in plain words for the user. */
+  onImageError?: (message: string) => void;
 }
 
 function encodeBase64(text: string): string {
@@ -199,12 +212,25 @@ export class TerminalClipboardClient {
       .trim()
       .split(/\s+/)
       .filter(Boolean);
-    const requestedMime = IMAGE_MIME_PRIORITY.find((mime) => mimeTypes.includes(mime))
+    this.startTransfer(offer, mimeTypes);
+  }
+
+  /**
+   * Request the best remaining type: an original HEIC photo, then a copied
+   * file list (whose image files beat the file icon offered beside them),
+   * then image data, then text.
+   */
+  private startTransfer(offer: OfferTransfer, mimeTypes: string[]): void {
+    const requestedMime = HEIC_MIME_TYPES.find((mime) => mimeTypes.includes(mime))
+      ?? FILE_LIST_MIME_TYPES.find((mime) => mimeTypes.includes(mime))
+      ?? IMAGE_MIME_PRIORITY.find((mime) => mimeTypes.includes(mime))
       ?? textMimeFromOffer(mimeTypes);
     if (!requestedMime) return;
 
     this.transfer = {
       requestedMime,
+      offer,
+      remainingMimes: mimeTypes.filter((mime) => mime !== requestedMime),
       chunks: [],
       sizeBytes: 0,
       opened: false,
@@ -244,6 +270,19 @@ export class TerminalClipboardClient {
       this.transfer = null;
       this.clearTimeout();
       const bytes = Buffer.concat(transfer.chunks);
+      if ((FILE_LIST_MIME_TYPES as readonly string[]).includes(transfer.requestedMime)) {
+        this.finishFileList(transfer, bytes.toString("utf8"));
+        return;
+      }
+      if ((HEIC_MIME_TYPES as readonly string[]).includes(transfer.requestedMime)) {
+        if (bytes.length === 0) return;
+        try {
+          this.options.onImage(convertHeic(bytes));
+        } catch (error) {
+          this.options.onImageError?.(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
       if (transfer.requestedMime.startsWith("image/")) {
         if (!IMAGE_MIME_PRIORITY.includes(transfer.requestedMime as ImageMediaType) || bytes.length === 0) return;
         this.options.onImage({
@@ -258,6 +297,26 @@ export class TerminalClipboardClient {
     }
 
     this.fail(`Terminal clipboard read failed: ${status}`);
+  }
+
+  /** Attach a copied file list's images; without any, paste its other types except the file icon. */
+  private finishFileList(transfer: DataTransfer, list: string): void {
+    let images: ClipboardImageAttachment[] | null;
+    try {
+      images = imagesFromFileList(list, clipboardFilesAreLocal());
+    } catch (error) {
+      this.options.onImageError?.(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (images) {
+      for (const image of images) this.options.onImage(image);
+      return;
+    }
+    const namedFiles = filePathsFromUriList(list).length > 0;
+    const rest = namedFiles
+      ? transfer.remainingMimes.filter((mime) => !mime.startsWith("image/") && !(FILE_LIST_MIME_TYPES as readonly string[]).includes(mime))
+      : transfer.remainingMimes.filter((mime) => !(FILE_LIST_MIME_TYPES as readonly string[]).includes(mime));
+    this.startTransfer(transfer.offer, rest);
   }
 
   private decodeChunk(payload: string): Buffer | null {
