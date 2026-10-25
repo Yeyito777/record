@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 
-import { DEMO_TOKEN } from "./data";
+import { DEMO_TOKEN, demoServerFolderLayout } from "./data";
 import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, parseAnchor, realRecordConfigDirs, type Env } from "./env";
 import { DemoDiscordServer } from "./server";
 
@@ -69,6 +69,7 @@ export function installDemoMode(env: Env = process.env): DemoInstall {
     }, null, 2)}\n`, { mode: 0o600 });
   }
   writeStartingState(server, configDir, env.RECORD_DEMO_OPEN);
+  writeServerFolders(server, configDir);
   writeFileSync(join(home, "record-demo.pid"), `${process.pid}\n`);
 
   globalThis.fetch = server.fetch;
@@ -142,6 +143,17 @@ function writeStartingState(server: DemoDiscordServer, configDir: string, open: 
       scrollOffset: 0,
     },
   }, null, 2)}\n`);
+}
+
+/** Nested server folders for the tree view, unless this demo home already has its own. */
+function writeServerFolders(server: DemoDiscordServer, configDir: string): void {
+  const accountId = server.world.self.id;
+  const dir = join(configDir, "accounts", encodeURIComponent(accountId));
+  const path = join(dir, "server-folders.json");
+  if (existsSync(path)) return;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = { version: 1, accountId, layout: demoServerFolderLayout(server.world), savedAt: server.world.anchorMs };
+  writeFileSync(path, `${JSON.stringify(file)}\n`);
 }
 
 /** WhatsApp runs in a Node child process with its own sockets; keep it off. */
