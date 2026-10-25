@@ -48,6 +48,7 @@ Controls:
 - image attachments expand inline by default. `Enter` (or a click) on an image opens the full-image viewer; `Enter` on an attachment's `📎 name • size` row collapses or reopens its image
 - `Ctrl+O`: image details. Off (the default), an image drawn inline is its own row, with no `📎 name • size` row above it; on, every image gets that row back (to collapse one with `Enter`). Collapsed, loading or failed images and other attachments always keep their row, and yanking an image's rows still gives its name. The choice persists
 - opening the full-image viewer shows the cached preview immediately at the image's final viewer size, then swaps in full-resolution pixels in place without resizing; `Enter` / `Esc` closes even while loading. Chat images stay placed behind the higher-z viewer rather than disappearing, and image placements are presented in the same synchronized update as the surrounding text.
+- Images and custom emoji under an overlay (the autocomplete popup, the image viewer, server actions, the WhatsApp login) stay where they are; one that would be placed or moved underneath (a message arrived, an image finished loading) waits for the overlay to close, while the rest of the chat keeps updating. st remembers the cells an image is first drawn over and draws any that change later above it, so an image placed under an overlay would otherwise have holes where the overlay was. For the same reason a visual selection tints a selected image (st's `V=1`) instead of painting cells under it
 - `/images hide|show`: keep images collapsed until opened manually, or restore automatic expansion; the selected mode persists
 - `/pinned` in the prompt: replace history with the channel's pinned messages; `Enter` on one returns to channel history focused on it
 - `Escape` from pinned history, or from the sidebar in normal mode: return to ordinary channel history
@@ -183,7 +184,9 @@ terminals never reply and see no difference.
 - Inline images and custom emoji glide with their text. While a glide runs an
   image cut off by the pane's bottom is placed whole past the edge (st clips it
   to the moving rectangle) and one more frame crops it again when the glide
-  ends; st keeps the rows of images leaving at the top. Custom emoji use one
+  ends; st keeps the rows of images leaving at the top. That whole-image
+  placement has its own placement id, so the prompt rows st saw under it are
+  never mistaken for the image's own cells once it rests. Custom emoji use one
   placement id per cell and are deleted one by one, so emoji on the lines st
   keeps for the glide's edge are not erased mid-glide.
 - The sidebar and member list lists themselves do not glide: mode 2032 has one

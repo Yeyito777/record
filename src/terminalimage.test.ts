@@ -193,7 +193,7 @@ describe("inline terminal graphics", () => {
     expect(output).not.toContain("a=t");
   });
 
-  test("can retain placements while deferring new or moved placements", () => {
+  test("a covered placement stays put; one that would be placed or moved under the cover waits for it to close", () => {
     const owner = {};
     const writes: string[] = [];
     const ready = image();
@@ -206,20 +206,29 @@ describe("inline terminal graphics", () => {
       rows: 3,
     };
     const write = (payload: string) => writes.push(payload);
+    const covered = () => true;
 
-    syncInlineTerminalImages(owner, [ready], [placement], write, { allowPlacementUpdates: false });
+    // New under a cover: data only, no placement.
+    syncInlineTerminalImages(owner, [ready], [placement], write, { covered });
     expect(writes[0]).toContain("a=t,t=d,f=100");
     expect(writes[0]).not.toContain("a=p");
 
-    syncInlineTerminalImages(owner, [ready], [placement], write, { allowPlacementUpdates: true });
+    syncInlineTerminalImages(owner, [ready], [placement], write);
     expect(writes[1]).not.toContain("a=t,t=d,f=100");
     expect(writes[1]).toContain("a=p");
 
-    syncInlineTerminalImages(owner, [ready], [{ ...placement, row: 3 }], write, { allowPlacementUpdates: false });
+    // Unchanged under a cover: kept (the terminal hides it under the cover's cells).
+    syncInlineTerminalImages(owner, [ready], [placement], write, { covered });
     expect(writes).toHaveLength(2);
 
-    syncInlineTerminalImages(owner, [ready], [{ ...placement, row: 3 }], write, { allowPlacementUpdates: true });
-    expect(writes[2]).toContain("\x1b[3;27H");
+    // Moving under a cover: taken down rather than left behind or placed over it.
+    syncInlineTerminalImages(owner, [ready], [{ ...placement, row: 3 }], write, { covered });
+    expect(writes[2]).toContain("a=d,d=i,i=");
+    expect(writes[2]).not.toContain("a=p");
+
+    syncInlineTerminalImages(owner, [ready], [{ ...placement, row: 3 }], write);
+    expect(writes[3]).toContain("\x1b[3;27H");
+    expect(writes[3]).toContain("a=p");
   });
 
   test("retransmits only after the terminal reports real image eviction", () => {
