@@ -43,6 +43,7 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let fd: number | null = null;
 let fileBytes = 0;
 let exitHookInstalled = false;
+let exiting = false;
 
 function optionsFromEnv(env: NodeJS.ProcessEnv): DebugLogOptions {
   const mode = (env.RECORD_DEBUG ?? "").trim().toLowerCase();
@@ -68,9 +69,13 @@ export function debugLog(event: string, fields: Record<string, unknown> = {}): v
   }
   if (!exitHookInstalled) {
     exitHookInstalled = true;
-    process.once("exit", flushDebugLog);
+    process.once("exit", () => {
+      exiting = true;
+      flushDebugLog();
+    });
   }
-  if (pendingBytes >= FLUSH_BYTES) {
+  // Timers never fire once the process is exiting: write shutdown events now.
+  if (exiting || pendingBytes >= FLUSH_BYTES) {
     flushDebugLog();
   } else if (!flushTimer) {
     flushTimer = setTimeout(flushDebugLog, FLUSH_DELAY_MS);

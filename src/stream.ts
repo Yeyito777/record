@@ -8,6 +8,7 @@ import { OPUS_PAYLOAD_TYPE, RTP_HEADER_LENGTH, VIDEO_PAYLOAD_TYPE_H264, VIDEO_RT
 import { bindUdp, decryptAes256GcmRtp, encryptAes256GcmRtp, parsePlainRtpPacket } from "./voice/rtp";
 import { rewriteH264SpsVuiForWebRtc } from "./voice/sps-vui";
 import type { VoiceAudioBackend, VoiceAudioContext } from "./voice/types";
+import { trackChildProcess } from "./childprocesses";
 
 const RUN_STREAM_HELPER_PATH = fileURLToPath(new URL("../scripts/run-stream-helper", import.meta.url));
 const DEFAULT_STREAM_HELPER_COMMAND = [RUN_STREAM_HELPER_PATH];
@@ -166,7 +167,7 @@ export class StreamMediaBackend implements VoiceAudioBackend {
       "--parent-pid", String(process.pid),
     ];
     debugLog("stream.media.start", { command: executable, args, audioPort, videoSsrc: context.videoSsrc, audioSsrc: context.ssrc, videoTransport: "h264-annexb-stdout" });
-    const proc = spawn(executable, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = trackChildProcess(spawn(executable, args, { stdio: ["ignore", "pipe", "pipe"] }));
     this.proc = proc;
     proc.stdout?.on("data", (chunk) => {
       if (this.proc !== proc) return;

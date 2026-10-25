@@ -9,6 +9,7 @@ import type { IncomingVoiceRtpPacket } from "../voice";
 import { buildVoiceEnginePlaybackArgs, resolveVoiceEngineCommand } from "../voice/audio-ffmpeg";
 import { OPUS_PAYLOAD_TYPE, VIDEO_PAYLOAD_TYPE_H264 } from "../voice/constants";
 import { reserveUdpPort } from "../voice/rtp";
+import { trackChildProcess } from "../childprocesses";
 
 const WATCH_STREAM_HELPER_SHUTDOWN_GRACE_MS = 1_500;
 const WATCH_STREAM_VIDEO_PAYLOAD_TYPE = VIDEO_PAYLOAD_TYPE_H264;
@@ -77,7 +78,7 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
       const readyPath = join(this.tempDir, `audio-${Date.now()}.ready`);
       const audioArgs = this.options.audioArgs ?? buildVoiceEnginePlaybackArgs(this.audioPort, readyPath, process.pid);
       debugLog("stream.watch.audio.start", { backend: "engine", command: audioCommand, args: audioArgs, audioPort: this.audioPort });
-      const audioProc = spawn(audioCommand, audioArgs, { stdio: ["pipe", "pipe", "pipe"] });
+      const audioProc = trackChildProcess(spawn(audioCommand, audioArgs, { stdio: ["pipe", "pipe", "pipe"] }));
       this.audioProc = audioProc;
       const audioOutput = drainChildOutput(audioProc);
       audioProc.on("error", (error) => this.handleAudioPlaybackEnd(audioProc, new Error(`Failed to start stream audio: ${error.message}`)));
@@ -100,7 +101,7 @@ export class PlayerWatchStreamPlayback implements WatchStreamPlayback {
       ? buildWatchStreamMpvArgs(this.sdpPath, this.options.title)
       : buildWatchStreamFfplayArgs(this.sdpPath, this.options.title));
     debugLog("stream.watch.playback.start", { command, args, videoPort: this.videoPort, audioPort: this.audioPort, sdpPath: this.sdpPath });
-    const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = trackChildProcess(spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] }));
     this.proc = proc;
     const stderr = drainChildOutput(proc);
     proc.on("error", (error) => {

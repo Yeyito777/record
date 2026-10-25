@@ -6,6 +6,7 @@
 import "./demo/bootstrap";
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { AsyncWorkQueue } from "./asyncwork";
+import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
 import { configPath, loadConfig, loadSavedLogins, type ImageDisplayMode } from "./config";
@@ -2464,10 +2465,13 @@ function setupTerminal(): void {
 
 function restoreTerminal(): void {
   if (!terminalReady) return;
-  process.stdin.setRawMode(false);
-  disposeInlineTerminalImages(state);
-  disposeInlineTerminalImages(sidebarIconTerminalOwner);
-  process.stdout.write(
+  terminalReady = false;
+  // Once the terminal window is closed (SIGHUP) the tty is gone and these
+  // throw EIO; that must not abort the rest of shutdown.
+  bestEffort("terminal.raw_mode", () => process.stdin.setRawMode(false));
+  bestEffort("terminal.images", () => disposeInlineTerminalImages(state));
+  bestEffort("terminal.sidebar_icons", () => disposeInlineTerminalImages(sidebarIconTerminalOwner));
+  bestEffort("terminal.restore", () => process.stdout.write(
     (terminalGraphicsClient?.isSupported() ? customEmojiImages.cleanupSequence() : "")
       + (terminalGraphicsCells ? setStGraphicsCells(false) : "")
       + disableMouse
@@ -2477,33 +2481,56 @@ function restoreTerminal(): void {
       + showCursor
       + resetCursorColor
       + leaveAlt,
-  );
+  ));
   terminalGraphicsCells = false;
-  terminalReady = false;
 }
 
-function cleanup(): void {
+/** Run one shutdown step; a failing step is logged and the next one still runs. */
+function bestEffort(step: string, run: () => unknown): void {
+  try {
+    run();
+  } catch (error) {
+    debugLog("shutdown.step_failed", { step, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+function settleShutdown(step: string, run: () => Promise<unknown>): Promise<unknown> {
+  try {
+    return run().catch((error) => {
+      debugLog("shutdown.step_failed", { step, error: error instanceof Error ? error.message : String(error) });
+    });
+  } catch (error) {
+    debugLog("shutdown.step_failed", { step, error: error instanceof Error ? error.message : String(error) });
+    return Promise.resolve();
+  }
+}
+
+function cleanup(reason: string = "quit"): void {
   if (!running) return;
   running = false;
-  persistStartingStateOnce();
+  debugLog("shutdown.start", { reason });
+  bestEffort("starting_state", persistStartingStateOnce);
   if (renderTimer) {
     clearTimeout(renderTimer);
     renderTimer = null;
   }
-  stopLoadingAnimation();
-  voiceMessageController?.cleanup();
-  terminalControlBuffer?.dispose();
+  bestEffort("loading_animation", stopLoadingAnimation);
+  bestEffort("voice_message", () => voiceMessageController?.cleanup());
+  bestEffort("terminal.control_buffer", () => terminalControlBuffer?.dispose());
   terminalControlBuffer = null;
-  terminalClipboardClient?.dispose();
+  bestEffort("terminal.clipboard", () => terminalClipboardClient?.dispose());
   terminalClipboardClient = null;
-  terminalGraphicsClient?.dispose();
-  disconnectMemberListGateway();
-  disconnectAppGateway();
-  flushDataCacheSync();
+  bestEffort("terminal.graphics", () => terminalGraphicsClient?.dispose());
+  bestEffort("member_list_gateway", disconnectMemberListGateway);
+  bestEffort("app_gateway", disconnectAppGateway);
+  bestEffort("data_cache", flushDataCacheSync);
   restoreTerminal();
   // Allow WhatsApp's bounded send drain and final durable cache flush to finish.
   const forceExit = setTimeout(() => process.exit(0), 5_000);
-  void Promise.allSettled([whatsAppController.shutdown(), instagramController.shutdown()]).finally(() => {
+  void Promise.allSettled([
+    settleShutdown("whatsapp", () => whatsAppController.shutdown()),
+    settleShutdown("instagram", () => instagramController.shutdown()),
+  ]).finally(() => {
     clearTimeout(forceExit);
     process.exit(0);
   });
@@ -2519,7 +2546,7 @@ function logoutWhatsApp(): void {
 
 const effects: AppEffects = {
   scheduleRender,
-  quit: cleanup,
+  quit: () => cleanup("quit"),
   applyThemeCursor,
   bootstrapSession,
   loginWhatsApp,
@@ -2609,6 +2636,17 @@ async function main(): Promise<void> {
     },
   );
   process.stdin.on("data", (data: Buffer) => terminalControlBuffer?.feed(data));
+  // Closing the terminal window makes the tty read fail with EIO (often before
+  // SIGHUP arrives). Unhandled, that error crashed Record past its shutdown.
+  process.stdin.on("error", (error) => {
+    debugLog("terminal.stdin_error", { error: error.message });
+    cleanup("terminal_closed");
+  });
+  process.stdin.on("end", () => cleanup("terminal_closed"));
+  process.stdout.on("error", (error) => {
+    debugLog("terminal.stdout_error", { error: error.message });
+    cleanup("terminal_closed");
+  });
   terminalGraphicsClient.query();
 
   process.stdout.on("resize", () => {
@@ -2654,13 +2692,29 @@ function persistStartingStateOnce(): void {
   }
 }
 
-process.on("exit", () => {
-  persistStartingStateOnce();
+// Every way out ends here, including a second signal during the shutdown
+// drain and crashes: never leave the terminal raw or helper processes running.
+process.on("exit", (code) => {
+  debugLog("shutdown.exit", { code, childrenRunning: trackedChildProcessCount() });
+  bestEffort("starting_state", persistStartingStateOnce);
   restoreTerminal();
+  bestEffort("data_cache", flushDataCacheSync);
+  killTrackedChildProcesses("SIGTERM");
 });
-process.on("SIGINT", cleanup);
-process.on("SIGTERM", cleanup);
-process.on("SIGHUP", cleanup);
+process.on("SIGINT", () => cleanup("SIGINT"));
+process.on("SIGTERM", () => cleanup("SIGTERM"));
+process.on("SIGHUP", () => cleanup("SIGHUP"));
+process.on("uncaughtException", (error) => {
+  debugLog("process.uncaught_exception", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
+  running = false;
+  restoreTerminal();
+  bestEffort("fatal.report", () => console.error(`Fatal: ${error instanceof Error ? error.stack ?? error.message : String(error)}`));
+  process.exit(1);
+});
+// A background task that forgot a .catch must not take the whole client down.
+process.on("unhandledRejection", (reason) => {
+  debugLog("process.unhandled_rejection", { error: reason instanceof Error ? reason.stack ?? reason.message : String(reason) });
+});
 
 main().catch(async (error) => {
   disconnectMemberListGateway();
