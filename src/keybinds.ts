@@ -45,6 +45,7 @@ export type Action =
   | "notification_prev"
   | "notification_next"
   | "paste_image"
+  | "toggle_image_details"
   | "reply_toggle";
 
 const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
@@ -57,6 +58,7 @@ const GLOBAL_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
   "ctrl-k": "focus_cycle_prev",
   "ctrl-m": "sidebar_toggle",
   "ctrl-n": "focus_history",
+  "ctrl-o": "toggle_image_details",
   "ctrl-q": "cancel_action",
   "ctrl-r": "reply_toggle",
   "ctrl-s": "sidebar_toggle",

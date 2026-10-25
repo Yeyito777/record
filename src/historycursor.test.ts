@@ -15,6 +15,7 @@ import {
 } from "./historycursor";
 import type { DiscordMessage } from "./discord";
 import { createInitialState } from "./state";
+import { renderTimelineLines, setTimelineImageDetails, setTimelineInlineImageState, setTimelineMessages } from "./timeline";
 
 function message(id: string, content: string, reply: DiscordMessage["reply"] = null): DiscordMessage {
   return {
@@ -271,6 +272,49 @@ describe("history cursor", () => {
     }
 
     expect(getHistoryVisualYank(state).image).toBeNull();
+  });
+
+  test("with image details off, yanks give an image's name row as with details on", () => {
+    for (const details of [false, true]) {
+      const state = createInitialState(null, "/tmp/record-config.json");
+      state.chatFocus = "history";
+      const withImage = message("m1", "look");
+      withImage.attachments = [{ id: "a1", filename: "cat.png", contentType: "image/png", size: 1536, url: "https://cdn.example/cat.png" }];
+      setTimelineMessages(state.timeline, "channel-1", [withImage, message("m2", "after")]);
+      setTimelineInlineImageState(state.timeline, {
+        phase: "ready",
+        attachmentId: "a1",
+        filename: "cat.png",
+        sourceUrl: "https://cdn.example/cat.png",
+        requestId: 1,
+        imageId: 0x40000001,
+        pngBase64: "cG5n",
+        pixelWidth: 32,
+        pixelHeight: 64,
+      });
+      setTimelineImageDetails(state.timeline, details);
+      const rendered = renderTimelineLines(state.timeline, 80, 30, { text: "", tone: "muted" });
+      state.historyLines = rendered.allLines;
+      state.historyLineAnchors = rendered.lineAnchors;
+      state.historyWrapContinuation = rendered.wrapContinuation;
+      state.historyMessageBounds = rendered.messageBounds;
+      const look = rendered.lineAnchors.indexOf("msg:m1:content:0");
+      const imageEnd = rendered.inlineImages[0]!.lineIndex + rendered.inlineImages[0]!.rows - 1;
+
+      // The message's text object.
+      state.historyCursor = { row: look, col: 0 };
+      for (const char of ["v", "i", "m"]) handleHistoryVimKey(state, { type: "char", char }, 30);
+      expect(getHistoryVisualSelection(state)).toBe("look\n📎 cat.png • 1.5 KB");
+
+      // Whole rows across the text and the image.
+      state.editor.mode = "visual-line";
+      state.historyVisualAnchor = { row: look, col: 0 };
+      state.historyCursor = { row: imageEnd, col: 0 };
+      expect(getHistoryVisualSelection(state)).toBe(details
+        ? `look\n📎 cat.png • 1.5 KB${"\n".repeat(rendered.inlineImages[0]!.rows)}`
+        : "look\n📎 cat.png • 1.5 KB");
+      state.editor.mode = "normal";
+    }
   });
 
   test("lowercase message text object selects only message text", () => {

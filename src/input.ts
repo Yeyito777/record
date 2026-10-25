@@ -33,6 +33,7 @@ export interface KeyEvent {
     | "ctrl-l"
     | "ctrl-m"
     | "ctrl-n"
+    | "ctrl-o"
     | "ctrl-q"
     | "ctrl-r"
     | "ctrl-s"
@@ -90,6 +91,7 @@ const CONTROL_BYTE_MAP: Partial<Record<number, KeyEvent["type"]>> = {
   12: "ctrl-l",
   13: "enter",
   14: "ctrl-n",
+  15: "ctrl-o",
   17: "ctrl-q",
   18: "ctrl-r",
   19: "ctrl-s",
@@ -117,6 +119,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "108;5": "ctrl-l",
   "109;5": "ctrl-m",
   "110;5": "ctrl-n",
+  "111;5": "ctrl-o",
   "113;5": "ctrl-q",
   "114;5": "ctrl-r",
   "115;5": "ctrl-s",
@@ -168,6 +171,7 @@ function csiUKeyType(keyCode: number, modifiers: number): KeyEvent["type"] | nul
       case 108: return "ctrl-l";
       case 109: return "ctrl-m";
       case 110: return "ctrl-n";
+      case 111: return "ctrl-o";
       case 113: return "ctrl-q";
       case 114: return "ctrl-r";
       case 115: return "ctrl-s";

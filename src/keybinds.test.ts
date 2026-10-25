@@ -23,6 +23,11 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "ctrl-n" })).toBe("focus_history");
   });
 
+  test("Ctrl+O toggles image details", () => {
+    expect(resolveAction({ type: "ctrl-o" })).toBe("toggle_image_details");
+    expect(resolveAction({ type: "ctrl-o" }, "navigation")).toBe("toggle_image_details");
+  });
+
   test("Ctrl+; toggles the member list", () => {
     expect(resolveAction({ type: "ctrl-semicolon" })).toBe("member_list_toggle");
   });
