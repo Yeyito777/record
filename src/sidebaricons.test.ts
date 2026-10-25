@@ -28,8 +28,10 @@ import {
   sidebarIcons,
   type SidebarIconSource,
 } from "./sidebaricons";
+import { SmoothScroller, markScrollIntent, setSmoothScroller } from "./smoothscroll";
 import { createInitialState } from "./state";
 import { disposeInlineTerminalImages } from "./terminalimage";
+import { setTimelineMessages } from "./timeline";
 import { termWidth } from "./textwidth";
 import { theme } from "./theme";
 import { VtScreen } from "./vtscreen.testutil";
@@ -403,6 +405,39 @@ describe("rendering sidebar icons", () => {
     const repainted = capture(state);
     expect(transmissions(repainted)).toBe(0);
     expect(sidebarPlacements(repainted)).toHaveLength(3);
+  });
+
+  test("smooth scrolling beside the sidebar puts icons the region scroll moved back in place", async () => {
+    const { state } = await iconState(30);
+    let now = 1000;
+    const smooth = new SmoothScroller(100, () => now, 30);
+    setSmoothScroller(state, smooth);
+    state.rows = 24;
+    setTimelineMessages(state.timeline, "channel-1", Array.from({ length: 60 }, (_, i) => ({
+      id: String(100 + i), channelId: "channel-1", type: 0, timestamp: Date.UTC(2026, 0, 1) + i * 60_000, editedTimestamp: null,
+      content: `line ${i}`, mentionEveryone: false, mentionRoleIds: [], mentionUserIds: [],
+      author: { id: "u", username: "u", displayName: "U", bot: false }, reply: null, call: null, attachments: [], stickerNames: [], embedsCount: 0,
+    })));
+    invalidateFrame(state);
+    const screen = new VtScreen(state.rows, state.cols);
+    screen.write(capture(state));
+    const iconsAtRest = screen.placements().filter((placement) => placement.imageId >= 0x73000000);
+    expect(iconsAtRest.length).toBeGreaterThan(5);
+
+    markScrollIntent(state);
+    state.timeline.scrollOffset -= 3;
+    let scrolls = 0;
+    for (let i = 0; i < 60; i++) {
+      const out = capture(state);
+      if (/\x1b\[\d+;\d+r\x1b\[\d+T/.test(out)) scrolls++;
+      screen.write(out);
+      // After every row of the glide the icons sit where they were.
+      expect(screen.placements().filter((placement) => placement.imageId >= 0x73000000)).toEqual(iconsAtRest);
+      if (!smooth.busy()) break;
+      now += Math.max(1, smooth.nextWakeMs());
+    }
+    expect(scrolls).toBeGreaterThan(0);
+    setSmoothScroller(state, null);
   });
 
   test("scrolling the sidebar moves placements with their rows", async () => {

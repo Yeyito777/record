@@ -241,3 +241,170 @@ describe("message pane region scrolls", () => {
   });
 });
 
+
+describe("smooth-scroll frames (afterScroll)", () => {
+  const COLS = 40;
+  const ROWS = 16;
+  const TOP = 3;
+  const BOTTOM = 14;
+  const SIDE = 8;
+  const MEMBERS_COL = 33;
+
+  interface SmoothOptions {
+    band?: { start: number; end: number } | null;
+    side?: (row: number) => string;
+    members?: boolean;
+    afterScroll?: (shift: number, intact: boolean) => string;
+    graphics?: (scrolled: { start: number; end: number } | null) => string;
+  }
+
+  /** Sidebar (cols 1-8), pane (9-32) and member list (33-40); pane lines from `viewStart`. */
+  function smoothFrame(lines: string[], viewStart: number, options: SmoothOptions = {}): RenderFrame {
+    const rows = createFrameRows(ROWS, clearLine);
+    const pinned: string[][] = [];
+    const side = options.side ?? ((row: number) => `side${row}`);
+    for (let row = 1; row <= ROWS; row++) {
+      const segments: string[] = [];
+      const sideText = side(row).padEnd(SIDE - 1).slice(0, SIDE - 1) + "|";
+      appendRowWrite(rows, row, 1, sideText);
+      segments.push(moveTo(row, 1) + sideText);
+      if (row >= TOP && row <= BOTTOM) appendRowWrite(rows, row, SIDE + 1, lines[viewStart + row - TOP] ?? "");
+      if (options.members) {
+        const memberText = `|m${row}`.padEnd(COLS - MEMBERS_COL + 1);
+        appendRowWrite(rows, row, MEMBERS_COL, memberText);
+        segments.push(moveTo(row, MEMBERS_COL) + memberText);
+      }
+      pinned[row - 1] = segments;
+    }
+    return {
+      rows,
+      pinned,
+      cursor: moveTo(ROWS, 1),
+      scrollRegion: options.band === undefined ? { start: TOP, end: BOTTOM } : options.band,
+      viewStart,
+      regionScrolls: true,
+      graphics: options.graphics,
+      afterScroll: options.afterScroll ?? (() => ""),
+    };
+  }
+
+  const lines = Array.from({ length: 80 }, (_, i) => `line ${i}`);
+
+  test("beside the side panels a scroll moves the band and repaints only side segments that changed", () => {
+    const owner = {};
+    const screen = new VtScreen(ROWS, COLS);
+    screen.write(captureWrite(() => flushFrame(owner, smoothFrame(lines, 20, { members: true }))));
+    // The sidebar's rows stay put (same text per screen row): after the
+    // scroll they are repainted, the pane rows are not (but the exposed one).
+    const out = captureWrite(() => flushFrame(owner, smoothFrame(lines, 21, { members: true })));
+    expect(out).toContain(`\x1b[${TOP};${BOTTOM}r\x1b[1S\x1b[r`);
+    expect(out.match(/\x1b\[2K/g)).toHaveLength(1);
+    for (let row = TOP; row < BOTTOM; row++) {
+      expect(out).toContain(moveTo(row, 1) + `side${row}`.padEnd(SIDE - 1) + "|");
+      expect(out).toContain(moveTo(row, MEMBERS_COL) + `|m${row}`);
+    }
+    screen.write(out);
+    const reference = new VtScreen(ROWS, COLS);
+    reference.write(captureWrite(() => flushFrame({}, smoothFrame(lines, 21, { members: true }))));
+    expect(screen.snapshot()).toBe(reference.snapshot());
+  });
+
+  test("side segments that move with the content are not repainted", () => {
+    const owner = {};
+    // A sidebar that scrolls along with the pane (same text per line): nothing beside it to fix.
+    const side = (viewStart: number) => (row: number) => (row >= TOP && row <= BOTTOM ? `s${viewStart + row}` : "head");
+    captureWrite(() => flushFrame(owner, smoothFrame(lines, 20, { side: side(20) })));
+    const next = smoothFrame(lines, 22, { side: side(22) });
+    const out = captureWrite(() => flushFrame(owner, next));
+    // Just the scroll and the two exposed rows.
+    expect(out).toBe(SYNC_BEGIN + `\x1b[${TOP};${BOTTOM}r\x1b[2S\x1b[r` + next.rows[BOTTOM - 2] + next.rows[BOTTOM - 1] + moveTo(ROWS, 1) + SYNC_END);
+  });
+
+  test("a band that changes between frames scrolls the rows both share", () => {
+    const owner = {};
+    const screen = new VtScreen(ROWS, COLS);
+    screen.write(captureWrite(() => flushFrame(owner, smoothFrame(lines, 20))));
+    const next = smoothFrame(lines, 21, { band: { start: TOP, end: BOTTOM - 1 } });
+    const out = captureWrite(() => flushFrame(owner, next));
+    expect(out).toContain(`\x1b[${TOP};${BOTTOM - 1}r\x1b[1S\x1b[r`);
+    screen.write(out);
+    const reference = new VtScreen(ROWS, COLS);
+    reference.write(captureWrite(() => flushFrame({}, next)));
+    expect(screen.snapshot()).toBe(reference.snapshot());
+  });
+
+  test("older lines prepended in the same frame: the shift is found from the rows", () => {
+    const owner = {};
+    captureWrite(() => flushFrame(owner, smoothFrame(lines, 20)));
+    const prepended = [...Array.from({ length: 7 }, (_, i) => `older ${i}`), ...lines];
+    // Scrolled back one row while seven older lines arrived: viewStart 20 -> 26.
+    const shifts: number[] = [];
+    const out = captureWrite(() => flushFrame(owner, smoothFrame(prepended, 26, { afterScroll: (shift) => { shifts.push(shift); return ""; } })));
+    expect(out).toContain(`\x1b[${TOP};${BOTTOM}r\x1b[1T\x1b[r`);
+    expect(shifts).toEqual([-1]);
+  });
+
+  test("the scroller learns the shift and whether moved rows arrived intact", () => {
+    const owner = {};
+    const reports: Array<[number, boolean]> = [];
+    const afterScroll = (shift: number, intact: boolean) => { reports.push([shift, intact]); return "MOTION"; };
+    captureWrite(() => flushFrame(owner, smoothFrame(lines, 20, { afterScroll })));
+    const out = captureWrite(() => flushFrame(owner, smoothFrame(lines, 22, { afterScroll })));
+    // The motion rides last inside the synchronized update.
+    expect(out.indexOf("MOTION")).toBeGreaterThan(out.indexOf("\x1b[r"));
+    expect(out.endsWith(`MOTION${moveTo(ROWS, 1)}\x1b[?2026l`)).toBe(true);
+    const edited = [...lines];
+    edited[25] = "edited";
+    captureWrite(() => flushFrame(owner, smoothFrame(edited, 23, { afterScroll })));
+    expect(reports).toEqual([[0, false], [2, true], [1, false]]);
+    // A motion alone (no drawing) is not wrapped in a synchronized update.
+    expect(captureWrite(() => flushFrame(owner, smoothFrame(edited, 23, { afterScroll })))).toBe("MOTION" + moveTo(ROWS, 1));
+  });
+
+  test("graphics and images are told which rows the region scroll moved", () => {
+    const owner = {};
+    const told: unknown[] = [];
+    const graphics = (scrolled: { start: number; end: number } | null) => { told.push(scrolled); return ""; };
+    captureWrite(() => flushFrame(owner, smoothFrame(lines, 20, { graphics }), (scrolled) => { told.push(["images", scrolled]); return { transmit: "", update: "" }; }));
+    captureWrite(() => flushFrame(owner, smoothFrame(lines, 21, { graphics }), (scrolled) => { told.push(["images", scrolled]); return { transmit: "", update: "" }; }));
+    expect(told).toEqual([null, ["images", null], { start: TOP, end: BOTTOM }, ["images", { start: TOP, end: BOTTOM }]]);
+  });
+
+  test("after any sequence of scrolls, side-panel changes, band changes and prepends the screen equals a full repaint", () => {
+    const owner = {};
+    const screen = new VtScreen(ROWS, COLS);
+    let content = [...lines];
+    let viewStart = 30;
+    let seed = 5;
+    const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    let sideSeed = 0;
+    let scrolled = 0;
+    for (let step = 0; step < 400; step++) {
+      const roll = random();
+      if (roll < 0.1) {
+        const count = 1 + Math.floor(random() * 5);
+        content = [...Array.from({ length: count }, (_, i) => `older ${step}.${i}`), ...content];
+        viewStart += count;
+      } else if (roll < 0.2) {
+        content[viewStart + Math.floor(random() * 10)] = `edit ${step}`;
+      } else if (roll < 0.3) {
+        sideSeed = step;
+      }
+      if (random() < 0.7) viewStart += Math.floor(random() * 11) - 5;
+      viewStart = Math.max(0, Math.min(viewStart, content.length - 12));
+      const band = random() < 0.2 ? { start: TOP, end: BOTTOM - 1 - Math.floor(random() * 4) } : undefined;
+      const frame = smoothFrame(content, viewStart, {
+        band,
+        members: step % 50 < 40,
+        side: (row) => (row + sideSeed) % 3 === 0 ? `x${sideSeed}` : `side${row}`,
+      });
+      const out = captureWrite(() => flushFrame(owner, frame));
+      if (/\x1b\[\d+[ST]/.test(out)) scrolled++;
+      screen.write(out);
+      const reference = new VtScreen(ROWS, COLS);
+      reference.write(captureWrite(() => flushFrame({}, frame)));
+      expect(screen.snapshot()).toBe(reference.snapshot());
+    }
+    expect(scrolled).toBeGreaterThan(100);
+  });
+});

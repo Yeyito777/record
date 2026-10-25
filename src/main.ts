@@ -189,6 +189,17 @@ import { isTimelineNearBottom } from "./timeline";
 import { INSTAGRAM_GUILD_ID, instagramGuild, isInstagramChannelId, isExternalChannelId } from "./chatproviders";
 import { handleLoginModalKey } from "./whatsapp/loginmodal";
 import { applyTuiStartingState, availableStartingChannel, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
+import {
+  SMOOTH_SCROLL_OFF,
+  SMOOTH_SCROLL_ON,
+  SMOOTH_SCROLL_QUERY,
+  SmoothScroller,
+  markRelayout,
+  markScrollIntent,
+  parseSmoothScrollReport,
+  setSmoothScroller,
+  smoothScrollerFor,
+} from "./smoothscroll";
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   console.error("record needs an interactive TTY.");
@@ -324,9 +335,58 @@ function scheduleRender(): void {
   if (renderTimer) return;
   renderTimer = setTimeout(() => {
     renderTimer = null;
-    render(state);
-    autoShowVisibleInlineImages();
+    renderFrame();
   }, 16);
+}
+
+function renderFrame(): void {
+  render(state);
+  autoShowVisibleInlineImages();
+  scheduleSmoothScrollFrame();
+}
+
+function renderImmediately(): void {
+  if (renderTimer) {
+    clearTimeout(renderTimer);
+    renderTimer = null;
+  }
+  renderFrame();
+}
+
+let smoothScrollTimer: ReturnType<typeof setTimeout> | null = null;
+let smoothScrollWasBusy = false;
+
+/**
+ * While a smooth scroll moves, lay out each row it is about to cross: st
+ * draws every frame of the glide itself, so Record wakes only when the next
+ * row is due (no polling) and sends one small region-scroll frame per row.
+ */
+function scheduleSmoothScrollFrame(): void {
+  const smooth = smoothScrollerFor(state);
+  // Every frame may have changed the glide (a new input): plan the wake anew.
+  if (smoothScrollTimer) {
+    clearTimeout(smoothScrollTimer);
+    smoothScrollTimer = null;
+  }
+  if (!smooth) return;
+  if (!smooth.busy()) {
+    // At rest again: one more frame crops images back to the pane.
+    if (smoothScrollWasBusy) {
+      smoothScrollWasBusy = false;
+      renderImmediately();
+    }
+    return;
+  }
+  smoothScrollWasBusy = true;
+  smoothScrollTimer = setTimeout(() => {
+    smoothScrollTimer = null;
+    if (!running || smoothScrollerFor(state) !== smooth) return;
+    if (smooth.needsLayout()) {
+      renderImmediately();
+      return;
+    }
+    scheduleSmoothScrollFrame();
+  }, Math.max(1, smooth.nextWakeMs()));
 }
 
 let voiceMessageController: ReturnType<typeof createVoiceMessageController> | null = null;
@@ -775,7 +835,9 @@ function maybeLoadNewerHistory(): void {
 }
 
 function scrollTimeline(delta: number): void {
+  const before = state.timeline.scrollOffset;
   moveTimelineScroll(state.timeline, delta);
+  if (state.timeline.scrollOffset !== before) markScrollIntent(state);
   if (delta <= 0) {
     maybeLoadOlderHistory();
   } else {
@@ -1188,6 +1250,7 @@ function jumpToChannelBottom(): void {
   const channelId = state.timeline.channelId;
 
   state.historyCursorPendingVisibleBottom = true;
+  markScrollIntent(state);
   state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
 
   if (!state.timeline.hasNewer || !token || !channelId) {
@@ -2322,6 +2385,7 @@ function handlePromptFocused(key: KeyEvent): void {
   }
 
   if (action === "scroll_top") {
+    markScrollIntent(state);
     state.timeline.scrollOffset = 0;
     maybeLoadOlderHistory();
     scheduleRender();
@@ -2329,6 +2393,7 @@ function handlePromptFocused(key: KeyEvent): void {
   }
 
   if (action === "scroll_bottom") {
+    markScrollIntent(state);
     state.timeline.scrollOffset = state.timeline.maxScroll;
     if (isInstagramChannelId(state.timeline.channelId)) instagramController.markActiveRead();
     else ackCurrentChannelIfAtBottom(state);
@@ -2354,6 +2419,9 @@ function handleKey(key: KeyEvent): void {
   }
 
   if (key.event === "release") return;
+  // Whatever this key re-lays out (a send, a toggle) snaps; scroll keys mark
+  // their own intent, which still glides.
+  markRelayout(state);
   if (handleQuickReactionKey(state, key, effects)) return;
 
   if (state.imageModal) {
@@ -2419,6 +2487,7 @@ function handleKey(key: KeyEvent): void {
 }
 
 function handleMouse(event: MouseEvent): void {
+  if (event.action !== "motion") markRelayout(state);
   resetQuickReaction(state);
   if (state.imageModal || voiceMessageController?.isRecording() || state.voiceMessagePrompt) return;
 
@@ -2453,6 +2522,8 @@ function setupTerminal(): void {
     enterAlt
       + hideCursor
       + queryTerminalCellSize()
+      // App-driven smooth scrolling (st mode 2032) needs region scrolls.
+      + (state.scrollRegions ? SMOOTH_SCROLL_QUERY : "")
       + enableBracketedPaste
       + queryClipboardPasteEvents
       + enableClipboardPasteEvents
@@ -2474,7 +2545,8 @@ function restoreTerminal(): void {
   bestEffort("terminal.images", () => disposeInlineTerminalImages(state));
   bestEffort("terminal.sidebar_icons", () => disposeInlineTerminalImages(sidebarIconTerminalOwner));
   bestEffort("terminal.restore", () => process.stdout.write(
-    (terminalGraphicsClient?.isSupported() ? customEmojiImages.cleanupSequence() : "")
+    (smoothScrollerFor(state) ? SMOOTH_SCROLL_OFF : "")
+      + (terminalGraphicsClient?.isSupported() ? customEmojiImages.cleanupSequence() : "")
       + (terminalGraphicsCells ? setStGraphicsCells(false) : "")
       + disableMouse
       + disableKittyKeyboard
@@ -2515,6 +2587,10 @@ function cleanup(reason: string = "quit"): void {
   if (renderTimer) {
     clearTimeout(renderTimer);
     renderTimer = null;
+  }
+  if (smoothScrollTimer) {
+    clearTimeout(smoothScrollTimer);
+    smoothScrollTimer = null;
   }
   bestEffort("loading_animation", stopLoadingAnimation);
   bestEffort("voice_message", () => voiceMessageController?.cleanup());
@@ -2615,6 +2691,16 @@ async function main(): Promise<void> {
       if (ready !== null) processInput(ready);
     },
     (sequence) => {
+      const smoothSupported = parseSmoothScrollReport(sequence);
+      if (smoothSupported !== null) {
+        if (smoothSupported && state.scrollRegions && !smoothScrollerFor(state)) {
+          process.stdout.write(SMOOTH_SCROLL_ON);
+          setSmoothScroller(state, new SmoothScroller());
+          invalidateFrame(state);
+          renderImmediately();
+        }
+        return;
+      }
       const cellSize = parseTerminalCellSize(sequence);
       if (cellSize) {
         if (setTimelineTerminalCellSize(state.timeline, cellSize.width, cellSize.height)) scheduleRender();
@@ -2655,6 +2741,9 @@ async function main(): Promise<void> {
     state.cols = process.stdout.columns || 80;
     state.rows = process.stdout.rows || 24;
     invalidateFrame(state);
+    // st drops the glide's offset, rectangles and kept lines on resize.
+    smoothScrollerFor(state)?.terminalReset();
+    markRelayout(state);
     if (terminalReady) process.stdout.write(queryTerminalCellSize());
     scheduleRender();
   });
@@ -2665,7 +2754,7 @@ async function main(): Promise<void> {
     void validateAndMaybeSave(state, initialToken, false, "Validating saved token…", effects);
   }
 
-  render(state);
+  renderFrame();
 
   whatsAppController.restoreSavedSession();
   void instagramController.autoConnect().then(() => restorePendingStartingState(state.auth.savedToken));

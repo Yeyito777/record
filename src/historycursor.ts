@@ -13,6 +13,7 @@ import type { KeyEvent } from "./input";
 import { copyImageToClipboard, type ClipboardImageAttachment } from "./imageclipboard";
 import type { AppState } from "./state";
 import type { TimelineMessageBound } from "./timeline";
+import { markScrollIntent } from "./smoothscroll";
 import {
   ensureCursorRowVisibleInViewport,
   scrollByAmountWithCursorInViewport,
@@ -147,6 +148,12 @@ export function placeHistoryCursorAtVisibleBottom(state: AppState, visibleRows: 
   state.historyCurswant = null;
 }
 
+/** History-cursor motions and scrolls move the view: the user scrolled, so it may glide. */
+function setHistoryViewStart(state: AppState, viewStart: number): void {
+  if (viewStart !== state.timeline.scrollOffset) markScrollIntent(state);
+  state.timeline.scrollOffset = viewStart;
+}
+
 export function ensureHistoryCursorVisible(state: AppState, visibleRows: number): void {
   const lines = state.historyLines;
   if (lines.length === 0) return;
@@ -160,7 +167,7 @@ export function ensureHistoryCursorVisible(state: AppState, visibleRows: number)
     viewStart: state.timeline.scrollOffset,
     cursorRow: cursor.row,
   });
-  state.timeline.scrollOffset = next.viewStart;
+  setHistoryViewStart(state, next.viewStart);
 }
 
 export function shiftHistorySelection(state: AppState, deltaRows: number): void {
@@ -189,7 +196,7 @@ export function scrollHistoryWithCursor(state: AppState, dir: number, amount: nu
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
   resetHistoryCurswant(state);
-  state.timeline.scrollOffset = next.viewStart;
+  setHistoryViewStart(state, next.viewStart);
 }
 
 export function scrollHistoryPageWithCursor(state: AppState, dir: number, amount: number, visibleRows: number): void {
@@ -205,7 +212,7 @@ export function scrollHistoryPageWithCursor(state: AppState, dir: number, amount
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
   resetHistoryCurswant(state);
-  state.timeline.scrollOffset = next.viewStart;
+  setHistoryViewStart(state, next.viewStart);
 }
 
 export function scrollHistoryViewportSticky(state: AppState, dir: number, visibleRows: number): void {
@@ -221,7 +228,7 @@ export function scrollHistoryViewportSticky(state: AppState, dir: number, visibl
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
   resetHistoryCurswant(state);
-  state.timeline.scrollOffset = next.viewStart;
+  setHistoryViewStart(state, next.viewStart);
 }
 
 function charLeft(cursor: HistoryCursor, lines: string[]): HistoryCursor {

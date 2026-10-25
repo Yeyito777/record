@@ -119,19 +119,69 @@ Notes:
 When the message pane scrolls by less than its height (keys, wheel, or a new
 message while following the bottom), Record tells the terminal to scroll just
 the pane's rows (`DECSTBM` + `SU`/`SD`) and then draws only the rows that
-scrolled into view, inside one synchronized update (mode 2026). Terminals that
-animate region scrolls, like st's smooth-scroll branch, glide the pane; every
-terminal gets fewer bytes. Inline images and custom emoji are re-placed at
-their new rows in the same update.
+scrolled into view, inside one synchronized update (mode 2026). Every terminal
+gets fewer bytes. Inline images and custom emoji are re-placed at their new
+rows in the same update.
 
-A terminal region scroll moves whole rows (st has no left/right margins), so
-this applies only while the pane spans the full width: with the sidebar or
-member list open, or an overlay over the pane, Record repaints changed rows as
-before. Jumps of a pane height or more, resizes and full repaints are also
-unchanged.
+On other terminals a region scroll is used only while the pane spans the full
+width (a terminal region scroll moves whole rows; st has no left/right
+margins): with the sidebar or member list open, or an overlay over the pane,
+Record repaints changed rows. Jumps of a pane height or more, resizes and full
+repaints are also unchanged.
 
-To turn it off, set `"scrollRegions": false` in `config.json` and restart.
-Record then emits exactly what it did before this feature.
+#### Smooth scrolling (st)
+
+On a terminal with app-driven smooth scrolling (st's mode 2032,
+`~/Config/st/docs/app-smooth-scroll.md`) Record animates the message pane
+itself, the way the Exocortex TUI animates its conversation. At startup it asks
+with DECRQM (`CSI ? 2032 $ p`); if st says yes it turns the mode on
+(`CSI ? 2032 h`) and off again on exit, quit, signals and crashes. Other
+terminals never reply and see no difference.
+
+- Each scroll is one frame: the region scroll to where the scroll ends, the
+  rows it exposed, and one eased move (`OSC 2032 ; m`), in one synchronized
+  update. st then animates the whole glide itself at the display's refresh
+  rate (100 ms ease-out, like st's own glides), drawing the rows the scroll
+  pushed out in the strip it uncovers. Record keeps the same curve to know
+  where st is, sends nothing while it glides, and wakes once when it rests, so
+  over ssh the glide never waits on Record and the traffic is one frame per
+  scroll. (Exocortex lays its history out a row at a time because rows beside
+  its Tasks panel re-wrap as they glide; Record's never re-wrap.) A scroll
+  longer than the band minus three rows takes one more frame when due; a jump
+  further than a screen repaints one screen away and glides in from there.
+- What glides: every scroll key (`j`/`k` and other cursor motions that scroll,
+  `Ctrl+E`/`Ctrl+Y`, `Ctrl+D`/`Ctrl+U`, page jumps, `gg`/`G`), the mouse wheel,
+  messages arriving (or the typing line coming and going) while you follow the
+  bottom, and history pages arriving while you scroll (the glide carries on).
+  Jumps further than a screen glide in from one screen away.
+- What snaps: channel and pinned-view switches, resizes, sends, toggles and
+  anything else a key or click re-lays out, messages arriving below a
+  scrolled-up view (nothing moves), and frames that had to be repainted.
+- It works with the sidebar and member list open and around the autocomplete
+  popup and other overlays: the scrolled band is the longest run of message
+  rows no overlay touches, the moving rectangle (`OSC 2032 ; r`) is the pane's
+  columns only, and the side panels' segments of the moved rows (and their
+  server icons) are repainted in the same update, so they never move. That
+  repaint is most of a scroll's bytes with the panels open (about 6 KB with
+  the sidebar, 11 KB with both, under 1 KB with neither, at 240x50); st has no
+  left/right margins (DECLRMM) to avoid it. If an overlay or the typing line
+  changes the band's edge under a glide by more than a row, the rest of the
+  glide snaps rather than uncover an empty strip.
+- Inline images and custom emoji glide with their text. While a glide runs an
+  image cut off by the pane's bottom is placed whole past the edge (st clips it
+  to the moving rectangle) and one more frame crops it again when the glide
+  ends; st keeps the rows of images leaving at the top. Custom emoji use one
+  placement id per cell and are deleted one by one, so emoji on the lines st
+  keeps for the glide's edge are not erased mid-glide.
+- The sidebar and member list lists themselves do not glide: mode 2032 has one
+  offset shared by every moving rectangle, so they could not move
+  independently of the message pane.
+
+The pinned-messages view is the same pane and glides the same way.
+
+To turn region scrolls off (smooth scrolling included), set
+`"scrollRegions": false` in `config.json` and restart. Record then emits exactly
+what it did before region scrolls existed and never asks about mode 2032.
 
 ### Sidebar icons
 
