@@ -8,12 +8,14 @@
  * frame first tells the terminal to scroll just those rows (DECSTBM + SU/SD),
  * then writes only the rows that scroll exposed or that otherwise changed.
  *
- * With app-driven smooth scrolling (st mode 2032, smoothscroll.ts) frames
- * carry `afterScroll`: the scrolled band may then sit beside the sidebar and
- * member list (their `pinned` segments are repainted beside the moved rows),
- * end above an overlay, change between frames (the common rows scroll), and
- * the shift is also found from the rows themselves when older history arrives
- * in the same frame. Images and graphics learn which rows the scroll moved.
+ * Band frames (`bands`: the terminal confirmed synchronized updates, or it
+ * does app-driven smooth scrolling, st mode 2032, smoothscroll.ts) go
+ * further: the scrolled band may sit beside the sidebar and member list
+ * (their `pinned` segments are repainted beside the moved rows in the same
+ * synchronized update), end above an overlay, change between frames (the
+ * common rows scroll), and the shift is also found from the rows themselves
+ * when older history arrives in the same frame. Images and graphics learn
+ * which rows the scroll moved; smooth scrolling adds its motion last.
  */
 
 export const ESC = "\x1b[";
@@ -22,6 +24,16 @@ export const moveTo = (row: number, col: number) => `${ESC}${row};${col}H`;
 
 const beginSynchronizedUpdate = `${ESC}?2026h`;
 const endSynchronizedUpdate = `${ESC}?2026l`;
+
+/** DECRQM: does the terminal support synchronized updates (mode 2026)? */
+export const SYNCHRONIZED_UPDATES_QUERY = `${ESC}?2026$p`;
+
+/** DECRQM reply for mode 2026: true when supported (set or reset), null if not a reply. */
+export function parseSynchronizedUpdatesReport(sequence: string): boolean | null {
+  const match = /^\x1b\[\?2026;([0-4])\$y$/.exec(sequence);
+  if (!match) return null;
+  return match[1] === "1" || match[1] === "2";
+}
 
 export interface ScrollRegion {
   start: number;
@@ -51,6 +63,13 @@ export interface RenderFrame {
    * default on). False keeps the older upward-only line-feed heuristic.
    */
   regionScrolls?: boolean;
+  /**
+   * Band frames: `scrollRegion` may sit beside the `pinned` side panels and
+   * change between frames. Only for terminals that present synchronized
+   * updates atomically (they confirmed mode 2026, or do mode 2032), so the
+   * side panels a region scroll moves are never seen displaced.
+   */
+  bands?: boolean;
   /**
    * Retained graphics layer (custom emoji). A function is told which rows the
    * frame's region scroll moved (null without one): terminals move or drop
@@ -213,7 +232,7 @@ function detectRegionScroll(prevFrame: RenderFrame, nextFrame: RenderFrame): num
 }
 
 
-// ── Smooth-scroll frames (afterScroll set) ──────────────────────────
+// ── Band frames (bands or afterScroll set) ──────────────────────────
 
 /** Rows both frames' bands share: what a region scroll may move (null below 4 rows). */
 function commonRegion(a: ScrollRegion | null, b: ScrollRegion | null): ScrollRegion | null {
@@ -360,8 +379,8 @@ export interface FrameImageCommands {
 export type FrameImages = FrameImageCommands | ((scrolled: ScrollRegion | null) => FrameImageCommands);
 
 export function flushFrame(owner: object, nextFrame: RenderFrame, images?: FrameImages): void {
-  if (nextFrame.afterScroll) {
-    flushSmoothFrame(owner, nextFrame, images);
+  if (nextFrame.bands || nextFrame.afterScroll) {
+    flushBandFrame(owner, nextFrame, images);
     return;
   }
   const prevFrame = lastRenderedFrames.get(owner);
@@ -429,11 +448,11 @@ export function flushFrame(owner: object, nextFrame: RenderFrame, images?: Frame
 }
 
 /**
- * A frame under app-driven smooth scrolling: the band may sit beside pinned
- * side panels and change between frames, and the frame ends with the
- * scroller's rectangles and motion inside the same synchronized update.
+ * A band frame: the band may sit beside pinned side panels and change
+ * between frames; under smooth scrolling the frame ends with the scroller's
+ * rectangles and motion inside the same synchronized update.
  */
-function flushSmoothFrame(owner: object, nextFrame: RenderFrame, images?: FrameImages): void {
+function flushBandFrame(owner: object, nextFrame: RenderFrame, images?: FrameImages): void {
   const prevFrame = lastRenderedFrames.get(owner);
   const next: RetainedFrame = { ...nextFrame };
   const out: string[] = [];
@@ -499,7 +518,7 @@ function flushSmoothFrame(owner: object, nextFrame: RenderFrame, images?: FrameI
     hasDrawingUpdates = true;
   }
 
-  const smooth = nextFrame.afterScroll!(scrollShift, scrolledIntact, scrollRegion);
+  const smooth = nextFrame.afterScroll?.(scrollShift, scrolledIntact, scrollRegion);
   if (smooth) out.push(smooth);
 
   if (out.length > 0 || !prevFrame || prevFrame.cursor !== nextFrame.cursor) {
