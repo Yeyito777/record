@@ -15,7 +15,7 @@ What it does right now:
 - load servers, categories, channels, and recent messages
 - render Discord custom emoji inline with an aspect-preserving two-column footprint when the terminal reports Kitty graphics support
 - autocomplete and send server custom emoji: type `:name`, then press `Tab` to insert the selected emoji inline in the prompt
-- render the server tree as a collapsible sidebar
+- render the server tree as a collapsible sidebar, with server icons on terminals that support Kitty graphics
 - show active announcement/public/private threads beneath their text or forum parent, with live updates and full read/send support
 - show server voice/stage channels in the sidebar and join them from the terminal
 - start DM voice calls with `/call`, leave with `/hangup`, and toggle `/mute` or `/deafen`
@@ -132,6 +132,34 @@ unchanged.
 
 To turn it off, set `"scrollRegions": false` in `config.json` and restart.
 Record then emits exactly what it did before this feature.
+
+### Sidebar icons
+
+On terminals that answer Record's Kitty graphics query (such as st and Kitty),
+each Discord server in the sidebar shows its icon in a two-cell box
+between the expand marker and the name. Servers without an icon, and icons
+still loading or unavailable, show a tile with the server's initials in the
+same box. Direct-message rows show the other person's avatar (group DMs their
+group picture) in place of the `#` marker; the Direct Messages, WhatsApp and
+Instagram roots show DM / WA / IG tiles. WhatsApp and Instagram conversations
+show initials tiles: their pictures would need extra requests through the
+logged-in session, so Record does not fetch them. Elsewhere the sidebar looks
+exactly as before.
+
+- Icons and avatars are 64 px PNGs from Discord's CDN (animated ones show
+  their first frame). No login token is sent with these requests.
+- Only rows on screen and about a screen above and below are fetched, visible
+  rows first, four at a time. A failed download is retried after a minute.
+- Downloaded icons are kept in `~/.config/record/image-cache/sidebar/` (one
+  file per server or person; a changed picture replaces the old file) and reused after a
+  restart without a request.
+- The terminal keeps icon data once sent (up to 256 off-screen icons /
+  16 MiB), so scrolling, collapsing, toggling the sidebar or closing an
+  overlay only places them again. An icon the terminal rejects three times
+  falls back to its initials.
+- The selected row's icon stays visible over the highlight. Icons under the
+  image viewer are hidden while it is open; a resize or full repaint places
+  every icon again.
 
 ### Instagram Direct
 
@@ -267,6 +295,7 @@ scripts/dev/recorddemo --nested demo        # dwm start demo + st running the de
 dwm -e demo screenshot -o /tmp/record-demo.png
 dwm -e demo key j                           # send keys; type text with:
 printf 'hello\n' | dwm -e demo type
+dwm -e demo key ctrl+c                      # quit Record (deletes the demo home)
 dwm stop demo
 ```
 

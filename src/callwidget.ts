@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { debugLog } from "./debuglog";
+import { trackChildProcess } from "./childprocesses";
 
 export interface CallWidgetParticipant {
   id: string;
@@ -223,11 +224,11 @@ export class CallWidgetController {
     }
     try {
       this.closed = false;
-      const proc = Bun.spawn(command, {
+      const proc = trackChildProcess(Bun.spawn(command, {
         stdin: "pipe",
         stdout: "ignore",
         stderr: "pipe",
-      });
+      }));
       this.proc = proc;
       void drainWidgetStderr(proc);
       void proc.exited.then((code) => {
