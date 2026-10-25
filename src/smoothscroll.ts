@@ -1,0 +1,388 @@
+/**
+ * App-driven smooth scrolling of the message pane.
+ *
+ * On a terminal that supports it (st's mode 2032, ~/Config/st
+ * docs/app-smooth-scroll.md) Record animates scrolls itself: the history is
+ * laid out one whole row at a time, as usual, and the terminal draws the
+ * moving rectangles shifted by the remaining fraction of a row. Each row the
+ * animation crosses is an ordinary region scroll plus the rows it exposes, so
+ * the sidebar and member list are repainted beside it in the same
+ * synchronized update. Between rows nothing is sent. Ported from the
+ * Exocortex TUI (tui/src/smoothscroll.ts); see README "Scroll regions".
+ */
+
+const ESC = "\x1b";
+const ST = `${ESC}\\`;
+
+export const SMOOTH_SCROLL_QUERY = `${ESC}[?2032$p`;
+export const SMOOTH_SCROLL_ON = `${ESC}[?2032h`;
+export const SMOOTH_SCROLL_OFF = `${ESC}[?2032l`;
+/** Same feel as st's own glides (smoothscroll_ms). */
+export const SMOOTH_SCROLL_DURATION_MS = 100;
+/** Longest wait between checks while a glide moves (the next row is scheduled for when it is due). */
+export const SMOOTH_SCROLL_FRAME_MS = 16;
+
+/** DECRQM reply for mode 2032: true when the terminal can do it, null if not a reply. */
+export function parseSmoothScrollReport(sequence: string): boolean | null {
+  const match = /^\x1b\[\?2032;([0-4])\$y$/.exec(sequence);
+  if (!match) return null;
+  return match[1] === "1" || match[1] === "2";
+}
+
+/** A moving rectangle: 1-based, inclusive screen cells. */
+export interface ScrollRect {
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+}
+
+export function rectsPayload(rects: readonly ScrollRect[]): string {
+  const list = rects.map((rect) => `;${rect.top},${rect.left},${rect.bottom},${rect.right}`).join("");
+  return `${ESC}]2032;r${list}${ST}`;
+}
+
+export function offsetPayload(thousandths: number): string {
+  return `${ESC}]2032;o;${thousandths}${ST}`;
+}
+
+/** Cubic ease-out remainder, 1 at the start and exactly 0 at the end (st's curve). */
+export function easeRemaining(progress: number): number {
+  if (!(progress < 1)) return 0;
+  const rest = 1 - Math.max(0, progress);
+  return rest * rest * rest;
+}
+
+/** OSC 2032 move: offset += dA rows; plus `ease` rows easing to 0 over `ms` (st times it). */
+export function movePayload(deltaRows: number, easeRows = 0, ms = SMOOTH_SCROLL_DURATION_MS): string {
+  const delta = Math.round(deltaRows * 1000);
+  const ease = Math.round(easeRows * 1000);
+  return ease === 0
+    ? `${ESC}]2032;m;${delta}${ST}`
+    : `${ESC}]2032;m;${delta};${ease};${ms}${ST}`;
+}
+
+/**
+ * How far ahead of st's clock rows are laid out: covers the wake-up, a render
+ * and the trip through the pty (or ssh), so the glide st draws never runs
+ * past the lines its scrolls kept.
+ */
+export const SMOOTH_SCROLL_LEAD_MS = 30;
+/** How early (in rows) the next row may be laid out: the offset st draws stays within 1 + this. */
+export const SMOOTH_SCROLL_MARGIN_ROWS = 0.25;
+
+interface EaseTerm {
+  rows: number;
+  start: number;
+}
+
+/**
+ * Scroll animation in rows from the bottom of the history (0 is the newest
+ * row at the pane's bottom; larger is older history, so content moves down
+ * on screen as it grows).
+ *
+ * The terminal draws the moving rectangles `offset` rows lower than laid out
+ * (st's mode 2032), where offset = base + easing terms that st times itself
+ * at the display's refresh. This class keeps the same curve so it knows
+ * where st is: the eased position is `grid + offset`. Inputs move the
+ * target (one move message: base += step, plus an easing term of -step, so
+ * nothing jumps). The history is laid out at the whole row a little ahead of
+ * the position in the direction of travel, so the strip a shifted rectangle
+ * uncovers always shows lines st's own region scrolls kept; each row laid
+ * out is a region scroll plus `base -= rows` in the same synchronized update.
+ * Content that moved by itself (a message arriving while following the
+ * bottom) gets an easing term from where it was drawn.
+ */
+export class SmoothScroller {
+  private target = 0;
+  /** Whole offset of the last laid-out frame. */
+  private grid = 0;
+  private gridValid = false;
+  private base = 0;
+  private terms: EaseTerm[] = [];
+  /** Region shift (up positive) the last layout step makes. */
+  private expectedShift = 0;
+  private height = 0;
+  private maxOffset = 0;
+  private sentRects = "";
+  private context: string | null = null;
+  /** The user scrolled since the last layout (markScrollIntent). */
+  private intent = false;
+  /** An explicit re-layout (markRelayout) is being laid out: nothing it moves glides. */
+  private relayout = false;
+  /** This frame and the one before it both sat at the bottom (content arriving there may glide). */
+  private following = false;
+  /** Not yet sent: start over from `base` (`o`), then move by these. */
+  private pendingReset = false;
+  private pendingDelta = 0;
+  private pendingEase = 0;
+  private terminalNonzero = false;
+  /** Terms not sent yet: they start when st receives them. */
+  private unsent: EaseTerm[] = [];
+
+  constructor(
+    private readonly durationMs = SMOOTH_SCROLL_DURATION_MS,
+    private readonly now: () => number = () => performance.now(),
+    private readonly leadMs = SMOOTH_SCROLL_LEAD_MS,
+  ) {}
+
+  private offsetAt(time: number): number {
+    let offset = this.base;
+    for (const term of this.terms) offset += term.rows * easeRemaining((time - term.start) / this.durationMs);
+    return offset;
+  }
+
+  private prune(time: number): void {
+    this.terms = this.terms.filter((term) => easeRemaining((time - term.start) / this.durationMs) > 0);
+  }
+
+  private addTerm(rows: number, time: number): void {
+    if (rows === 0) return;
+    const term = { rows, start: time };
+    this.terms.push(term);
+    this.unsent.push(term);
+    this.pendingEase += rows;
+  }
+
+  /** Lay out at grid + offset from here on: base = target - grid, eased from `from`. */
+  private restart(from: number, time: number): void {
+    this.terms = [];
+    this.unsent = [];
+    this.base = this.target - this.grid;
+    this.pendingReset = true;
+    this.pendingDelta = 0;
+    this.pendingEase = 0;
+    this.addTerm(from - this.target, time);
+  }
+
+  private gridFor(time: number, maxOffset: number): number {
+    const position = this.grid + this.offsetAt(time);
+    if (position === this.target && this.terms.length === 0) return this.target;
+    // Lay out where the glide will be a little later, but never more than
+    // the row just past it: st draws the laid-out rows `offset` away from
+    // where they were laid out, so the offset must stay within about a row.
+    const ahead = this.grid + this.offsetAt(time + this.leadMs);
+    let grid: number;
+    // The next row may be laid out a quarter row early, so st (whose clock
+    // runs a little behind this one) never reaches the laid-out rows and has
+    // to hold the glide still while the next frame is on its way.
+    if (this.target > position) {
+      grid = Math.max(Math.ceil(position), Math.min(Math.ceil(ahead), Math.floor(position + SMOOTH_SCROLL_MARGIN_ROWS) + 1));
+      grid = Math.min(this.target, grid);
+    } else if (this.target < position) {
+      grid = Math.min(Math.floor(position), Math.max(Math.floor(ahead), Math.ceil(position - SMOOTH_SCROLL_MARGIN_ROWS) - 1));
+      grid = Math.max(this.target, grid);
+    } else {
+      grid = Math.round(position);
+    }
+    return Math.max(0, Math.min(maxOffset, grid));
+  }
+
+  /** Jump without animating: a different channel, a resize, a repaint. */
+  snap(logical: number): void {
+    this.target = this.grid = logical;
+    this.terms = [];
+    this.unsent = [];
+    this.base = 0;
+    this.gridValid = false;
+    this.expectedShift = 0;
+    this.following = false;
+    this.pendingReset = this.terminalNonzero;
+    this.pendingDelta = this.pendingEase = 0;
+    this.relayout = true;
+  }
+
+  /**
+   * The whole offset to lay this frame out at. `logical` is the frame's
+   * scroll position (rows from the bottom) after its adjustments; `pinDelta`
+   * is how far keeping the same content on screen moved it (messages
+   * arriving below a scrolled-up view; not a scroll). A different `context`
+   * (channel, pane geometry) starts over without animating.
+   */
+  layout(logical: number, maxOffset: number, pinDelta: number, height: number, context: string): number {
+    const time = this.now();
+    this.height = height;
+    this.maxOffset = maxOffset;
+    if (context !== this.context) {
+      this.context = context;
+      this.gridValid = false;
+    }
+    if (pinDelta !== 0) {
+      this.target += pinDelta;
+      this.grid += pinDelta;
+    }
+    if (!this.gridValid) {
+      this.snap(logical);
+      this.gridValid = true;
+      this.intent = false;
+      return logical;
+    }
+    this.prune(time);
+    const startGrid = this.grid;
+    const wasFollowing = this.target === 0;
+    if (logical !== this.target && !this.intent) {
+      // Not a scroll: Record jumped (to the bottom after a send, to a
+      // reloaded history). Keeping the same content in view is `pinDelta`,
+      // so what is left moves the content on screen. It never glides: the
+      // laid-out rows move with it and whatever glide is in flight carries
+      // on from there.
+      const step = logical - this.target;
+      this.target = logical;
+      this.grid = Math.max(0, Math.min(maxOffset, this.grid + step));
+    }
+    this.intent = false;
+    if (logical !== this.target) {
+      const position = this.grid + this.offsetAt(time);
+      const step = logical - this.target;
+      this.target = logical;
+      if (Math.abs(logical - position) > height) {
+        // Jumps further than a screen glide in from one screen away.
+        this.restart(logical - Math.sign(logical - position) * height, time);
+      } else {
+        this.base += step;
+        this.pendingDelta += step;
+        this.addTerm(-step, time);
+      }
+    }
+    const grid = this.gridFor(time, maxOffset);
+    // The region scroll this frame should make: the jump plus the glide's row.
+    this.expectedShift = startGrid - grid;
+    this.base -= grid - this.grid;
+    this.pendingDelta -= grid - this.grid;
+    this.grid = grid;
+    this.following = wasFollowing && this.target === 0;
+    return grid;
+  }
+
+  /**
+   * After the frame was flushed: `regionShift` is how far its region scroll
+   * moved the content (up positive, 0 when it was repainted) and `intact`
+   * whether every row it moved arrived unchanged. Returns what to send
+   * inside the same synchronized update (rectangles, motion).
+   */
+  afterFlush(regionShift: number, rects: readonly ScrollRect[], intact = false): string {
+    const time = this.now();
+    if (this.expectedShift !== 0 && regionShift === 0) {
+      // Repainted, not scrolled: nothing on screen to glide from; ease on from here.
+      this.restart(this.grid, time);
+    } else if (regionShift !== this.expectedShift) {
+      // Content moved by itself. Only what grows or shrinks at the bottom
+      // while following it (everything above moved intact: a message
+      // arriving, the typing line coming or going) eases from where it was;
+      // anything else (a toggle, a send, rows re-wrapped) is a re-layout and
+      // snaps.
+      const moved = regionShift - this.expectedShift;
+      if (intact && moved !== 0 && this.following && !this.relayout) this.addTerm(moved, time);
+    }
+    this.relayout = false;
+    this.expectedShift = 0;
+    if (rects.length === 0 || Math.abs(this.offsetAt(time)) >= Math.max(1, this.height - 1)) {
+      // Nothing to move, or further than the lines the terminal keeps.
+      this.restart(this.grid, time);
+      this.terms = [];
+      this.unsent = [];
+      this.pendingEase = 0;
+    }
+    let out = "";
+    const rectKey = rectsPayload(rects);
+    if (rectKey !== this.sentRects) {
+      out += rectKey;
+      this.sentRects = rectKey;
+    }
+    return out + this.takeMotion();
+  }
+
+  private takeMotion(): string {
+    let out = "";
+    // `o` starts over from the base before this frame's moves.
+    if (this.pendingReset) out += offsetPayload(Math.round((this.base - this.pendingDelta) * 1000));
+    if (this.pendingDelta !== 0 || this.pendingEase !== 0) out += movePayload(this.pendingDelta, this.pendingEase, this.durationMs);
+    const sentAt = this.now();
+    for (const term of this.unsent) term.start = sentAt;
+    this.unsent = [];
+    this.pendingReset = false;
+    this.pendingDelta = this.pendingEase = 0;
+    this.terminalNonzero = this.base !== 0 || this.terms.length > 0;
+    return out;
+  }
+
+  /** The animation crosses a row: lay the next frame out. */
+  needsLayout(): boolean {
+    return this.gridValid && this.gridFor(this.now(), this.maxOffset) !== this.grid;
+  }
+
+  /** Milliseconds (at most `limit`) until the glide needs its next row laid out. */
+  msUntilLayout(limit = SMOOTH_SCROLL_FRAME_MS): number {
+    if (!this.gridValid) return limit;
+    const time = this.now();
+    for (let ms = 0; ms < limit; ms++) {
+      if (this.gridFor(time + ms, this.maxOffset) !== this.grid) return ms;
+    }
+    return limit;
+  }
+
+  /**
+   * Milliseconds until the glide next needs a frame: its next row, or coming
+   * to rest (one more frame then crops images back to the pane).
+   */
+  nextWakeMs(): number {
+    if (!this.gridValid) return 0;
+    const time = this.now();
+    let idle = 0;
+    for (const term of this.terms) idle = Math.max(idle, term.start + this.durationMs - time);
+    return this.msUntilLayout(Math.max(1, Math.ceil(idle) + 1));
+  }
+
+  /** Frames (row crossings) may still be needed. */
+  busy(): boolean {
+    this.prune(this.now());
+    return this.gridValid && (this.terms.length > 0 || this.grid !== this.target);
+  }
+
+  /** The user scrolled: the next change of the offset glides. */
+  intend(): void {
+    this.intent = true;
+  }
+
+  /** An explicit re-layout (a toggle, a send, a resize): the next frame snaps. */
+  relayoutNext(): void {
+    this.relayout = true;
+  }
+
+  /** The terminal dropped its state (resize, screen switch): send it again. */
+  terminalReset(): void {
+    this.sentRects = "";
+    this.terminalNonzero = false;
+  }
+}
+
+const scrollers = new WeakMap<object, SmoothScroller>();
+
+/**
+ * The user is scrolling (wheel, scroll keys, history-cursor motions, jumps):
+ * the offset change the next frame lays out glides. Every other change of
+ * the offset (re-layouts keeping their anchor, jumps to the bottom after a
+ * send) snaps.
+ */
+export function markScrollIntent(owner: object): void {
+  scrollers.get(owner)?.intend();
+}
+
+/**
+ * A re-layout the user caused (a key or click, a resize): whatever it moves
+ * snaps, even content at the bottom that would otherwise glide as a message
+ * arriving while following it.
+ */
+export function markRelayout(owner: object): void {
+  scrollers.get(owner)?.relayoutNext();
+}
+
+/** Attach (or with null, detach) app-driven smooth scrolling to a render state. */
+export function setSmoothScroller(owner: object, scroller: SmoothScroller | null): void {
+  if (scroller) scrollers.set(owner, scroller);
+  else scrollers.delete(owner);
+}
+
+export function smoothScrollerFor(owner: object): SmoothScroller | null {
+  return scrollers.get(owner) ?? null;
+}

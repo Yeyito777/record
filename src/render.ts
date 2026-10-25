@@ -15,7 +15,7 @@ import {
 import { DIRECT_MESSAGES_GUILD_ID } from "./discord";
 import { customEmojiImages, customEmojiMarker, type CustomEmojiRenderBatch } from "./customemoji";
 import { renderBodyLines } from "./bodypanel";
-import { appendPositionedPayload, appendRowWrite, createFrameRows, flushFrame } from "./frame";
+import { appendPositionedPayload, appendRowWrite, createFrameRows, flushFrame, type FrameImages, type ScrollRegion } from "./frame";
 import {
   buildLineAnchorIndex,
   clampHistoryCursor,
@@ -53,6 +53,7 @@ import { theme } from "./theme";
 import { renderTimelineLines, setTimelineRenderContext, type RenderedTimeline } from "./timeline";
 import { planInlineTerminalImages, type InlineTerminalImagePlacement } from "./terminalimage";
 import { renderTopbar } from "./topbar";
+import { smoothScrollerFor, type ScrollRect } from "./smoothscroll";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
 import { voiceMessagePromptText } from "./voice-message";
 
@@ -286,6 +287,7 @@ function visibleInlineImagePlacements(
   bodyRows: number,
   imageCol: number,
   selectedRows: { first: number; last: number } | null,
+  extendBelow = false,
 ): InlineTerminalImagePlacement[] {
   if (bodyRows <= 0) return [];
   const viewEnd = viewStart + bodyRows;
@@ -295,7 +297,10 @@ function visibleInlineImagePlacements(
     const imageStart = placement.lineIndex;
     const imageEnd = imageStart + placement.rows;
     const visibleStart = Math.max(imageStart, viewStart);
-    const visibleEnd = Math.min(imageEnd, viewEnd);
+    // While a smooth glide runs, an image cut off by the pane's bottom keeps
+    // its rows below too, so the part leaving at the bottom still shows; the
+    // terminal clips it to the moving rectangle while it moves.
+    const visibleEnd = extendBelow && visibleStart < viewEnd ? imageEnd : Math.min(imageEnd, viewEnd);
     const visibleRows = visibleEnd - visibleStart;
     if (visibleRows <= 0) continue;
 
@@ -322,6 +327,45 @@ function visibleInlineImagePlacements(
 
   return placements;
 }
+
+/** What moves when the history scrolls smoothly: the pane's columns of the band. */
+export function smoothScrollRects(band: ScrollRegion | null, mainCol: number, mainW: number): ScrollRect[] {
+  return band ? [{ top: band.start, left: mainCol, bottom: band.end, right: mainCol + mainW - 1 }] : [];
+}
+
+/** The longest run of rows in [start, end] that no covered row range touches (null below 4 rows). */
+export function freeMessageBand(
+  start: number,
+  end: number,
+  covered: readonly { top: number; bottom: number }[],
+): ScrollRegion | null {
+  let best: ScrollRegion | null = null;
+  let runStart = start;
+  for (let row = start; row <= end + 1; row++) {
+    const blocked = row > end || covered.some((range) => range.top <= row && row <= range.bottom);
+    if (!blocked) continue;
+    if (row - runStart >= 4 && (!best || row - runStart > best.end - best.start + 1)) {
+      best = { start: runStart, end: row - 1 };
+    }
+    runStart = row + 1;
+  }
+  return best;
+}
+
+/** Rows a cursor-positioned overlay payload draws on. */
+function payloadRows(payload: string): { top: number; bottom: number } | null {
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const match of payload.matchAll(/\x1b\[(\d+);\d+H/g)) {
+    const row = Number(match[1]);
+    top = Math.min(top, row);
+    bottom = Math.max(bottom, row);
+  }
+  return top <= bottom ? { top, bottom } : null;
+}
+
+/** Each state's maxScroll at its previous smooth-scroll layout. */
+const smoothMaxScroll = new WeakMap<object, number>();
 
 export function render(state: AppState): void {
   const cols = Math.max(1, state.cols);
@@ -378,15 +422,24 @@ export function render(state: AppState): void {
     )
     : [];
 
+  // Side panels' segments of each row (RenderFrame.pinned): a smooth-scroll
+  // region scroll moves whole rows, so beside moved rows only these repaint.
+  const pinnedRows: string[][] = [];
+  const pinRow = (row: number, segment: string): void => {
+    (pinnedRows[row - 1] ??= []).push(segment);
+  };
+
   const emitSidebarCol = (row: number): void => {
     if (sidebarOpen && sidebarRows[row - 1]) {
       appendRowWrite(frameRows, row, 1, sidebarRows[row - 1]);
+      pinRow(row, moveTo(row, 1) + sidebarRows[row - 1]);
     }
   };
 
   const emitMemberListCol = (row: number): void => {
     if (memberListOpen && memberListRows[row - 1]) {
       appendRowWrite(frameRows, row, memberListCol, memberListRows[row - 1]);
+      pinRow(row, moveTo(row, memberListCol) + memberListRows[row - 1]);
     }
   };
 
@@ -508,6 +561,33 @@ export function render(state: AppState): void {
   const fallbackBody = renderBodyLines(state, bodyInnerWidth);
   const useTimeline = timeline.allLines.length > 0;
   const timelineLines = useTimeline ? timeline.lines : fallbackBody;
+
+  // App-driven smooth scrolling (st mode 2032, smoothscroll.ts) lays the
+  // history out at a whole row next to the animated position; input, the
+  // history cursor and pinning keep working on the logical scrollOffset.
+  const smooth = state.scrollRegions ? smoothScrollerFor(state) : null;
+  let viewStart = state.timeline.scrollOffset;
+  if (smooth) {
+    const maxScroll = useTimeline ? timeline.maxScroll : 0;
+    // The scroller counts rows from the bottom: following the bottom is 0,
+    // and older history arriving above the view changes nothing.
+    const logical = useTimeline ? maxScroll - state.timeline.scrollOffset : 0;
+    const followed = pinHistoryToBottom || pinPromptChromeToBottom || pinTypingToBottom;
+    const previousMaxScroll = smoothMaxScroll.get(state);
+    // How far keeping the same content in view moved the position (messages
+    // arriving below a scrolled-up view, the typing line): not a scroll.
+    const pinDelta = followed || !useTimeline || previousMaxScroll === undefined
+      ? 0
+      : (maxScroll - previousMaxScroll) - (state.timeline.scrollOffset - oldViewStart);
+    smoothMaxScroll.set(state, maxScroll);
+    // Another channel or view, or a different pane geometry, re-lays
+    // everything out: no glide. The typing line only moves the pane's bottom.
+    const context = [
+      state.timeline.channelId, state.timeline.view, useTimeline, cols, rows,
+      bodyTop, promptSeparatorRow, mainCol, bodyInnerWidth,
+    ].join("|");
+    viewStart = maxScroll - smooth.layout(logical, maxScroll, pinDelta, bodyRows, context);
+  }
   const customEmojiFrame = customEmojiImages.beginFrame();
   const selectedHistoryRows = historyVisualSelectionRows(state, historyFocused);
 
@@ -515,7 +595,7 @@ export function render(state: AppState): void {
     const row = bodyTop + i;
     emitSidebarCol(row);
 
-    const lineIndex = state.timeline.scrollOffset + i;
+    const lineIndex = viewStart + i;
     const pendingDeleteLine = useTimeline && isHistoryLinePendingDelete(state, lineIndex);
     const rawLine = useTimeline && lineIndex < state.historyLines.length
       ? (state.historyLines[lineIndex] ?? "")
@@ -560,8 +640,16 @@ export function render(state: AppState): void {
     emitMemberListCol(typingRow);
   }
 
+  // Overlays drawn over the message rows; a smooth-scroll band avoids them.
+  const overlayRows: { top: number; bottom: number }[] = [];
+  const addOverlay = (payload: string): void => {
+    appendPositionedPayload(frameRows, payload);
+    const covered = payloadRows(payload);
+    if (covered) overlayRows.push(covered);
+  };
+
   if (state.autocomplete) {
-    appendPositionedPayload(frameRows, renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol, customEmojiFrame));
+    addOverlay(renderAutocompletePopup(state, mainW, promptSeparatorRow, mainCol, customEmojiFrame));
   }
 
   emitSidebarCol(promptSeparatorRow);
@@ -629,7 +717,7 @@ export function render(state: AppState): void {
 
   if (sidebarOpen && state.sidebar.serverActionModal) {
     const selectedSidebarRow = 3 + state.sidebar.selectedIndex - state.sidebar.scrollOffset;
-    appendPositionedPayload(frameRows, renderServerActionModal(
+    addOverlay(renderServerActionModal(
       state.sidebar.serverActionModal,
       selectedSidebarRow,
       SIDEBAR_WIDTH + 1,
@@ -639,7 +727,7 @@ export function render(state: AppState): void {
   }
 
   if (state.whatsapp.loginModal) {
-    appendPositionedPayload(frameRows, renderLoginModal(state.whatsapp.loginModal, rows, cols));
+    addOverlay(renderLoginModal(state.whatsapp.loginModal, rows, cols));
   }
 
   const imageModal = state.imageModal
@@ -651,7 +739,7 @@ export function render(state: AppState): void {
       state.timeline.terminalCellHeightPixels,
     )
     : null;
-  if (imageModal) appendPositionedPayload(frameRows, imageModal.payload);
+  if (imageModal) addOverlay(imageModal.payload);
 
   const cursorPayload: string[] = [];
   if (state.whatsapp.loginModal || state.imageModal) {
@@ -662,7 +750,7 @@ export function render(state: AppState): void {
     cursorPayload.push(cursorBar);
     cursorPayload.push(showCursor);
   } else if (historyFocused && state.historyLines.length > 0) {
-    const visibleRow = state.historyCursor.row - state.timeline.scrollOffset;
+    const visibleRow = state.historyCursor.row - viewStart;
     if (visibleRow >= 0 && visibleRow < bodyRows) {
       const cursorRow = bodyTop + visibleRow;
       const cursorLine = stripAnsi(state.historyLines[state.historyCursor.row] ?? "");
@@ -707,31 +795,42 @@ export function render(state: AppState): void {
     && !state.whatsapp.loginModal
     && !state.imageModal
     && bodyRows > 0;
+  // With app-driven smooth scrolling the band is the longest run of message
+  // rows no overlay touches, beside the sidebar and member list too: their
+  // segments are repainted beside the moved rows in the same update, and
+  // the moving rectangle covers only the pane's columns.
+  const scrollRegion = smooth
+    ? freeMessageBand(bodyTop, bodyTop + bodyRows - 1, overlayRows)
+    : canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null;
+  const smoothRects = smooth ? smoothScrollRects(scrollRegion, mainCol, mainW) : [];
 
   const inlinePlacements = state.whatsapp.loginModal
     ? []
     : visibleInlineImagePlacements(
       timeline,
-      state.timeline.scrollOffset,
+      viewStart,
       bodyTop,
       bodyRows,
       mainCol + 1,
       state.imageModal ? null : selectedHistoryRows,
+      // Only while gliding, and only at the band's bottom edge: at rest images
+      // are cropped to the pane exactly as without smooth scrolling.
+      !!smooth?.busy() && scrollRegion?.end === bodyTop + bodyRows - 1,
     );
   if (imageModal?.placement) inlinePlacements.push(imageModal.placement);
-  const inlineImages = planInlineTerminalImages(
-    state,
-    readyInlineImages(state),
-    inlinePlacements,
-    { allowPlacementUpdates: !state.autocomplete || !!state.imageModal },
-  );
+  const inlineImageOptions = { allowPlacementUpdates: !state.autocomplete || !!state.imageModal };
+  const inlineImages: FrameImages = smooth
+    ? (scrolled) => planInlineTerminalImages(state, readyInlineImages(state), inlinePlacements, { ...inlineImageOptions, movedRows: scrolled })
+    : planInlineTerminalImages(state, readyInlineImages(state), inlinePlacements, inlineImageOptions);
 
   flushFrame(state, {
     rows: frameRows,
+    pinned: pinnedRows,
     cursor: cursorPayload.join(""),
-    scrollRegion: canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null,
-    viewStart: state.timeline.scrollOffset,
+    scrollRegion,
+    viewStart,
     regionScrolls: state.scrollRegions,
-    graphics: customEmojiImages.finishFrame(customEmojiFrame),
+    graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
+    afterScroll: smooth ? (regionShift, intact) => smooth.afterFlush(regionShift, smoothRects, intact) : undefined,
   }, inlineImages);
 }
