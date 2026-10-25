@@ -931,21 +931,35 @@ export function render(state: AppState): void {
     : canScrollMessageRegion ? { start: bodyTop, end: bodyTop + bodyRows - 1 } : null;
   const smoothRects = smooth ? smoothScrollRects(scrollRegion, mainCol, mainW) : [];
 
-  const inlinePlacements = state.whatsapp.loginModal
-    ? []
-    : visibleInlineImagePlacements(
-      timeline,
-      viewStart,
-      bodyTop,
-      bodyRows,
-      mainCol + 1,
-      state.imageModal ? null : selectedHistoryRows,
-      // Only while gliding, and only at the band's bottom edge: at rest images
-      // are cropped to the pane exactly as without smooth scrolling.
-      !!smooth?.busy() && scrollRegion?.end === bodyTop + bodyRows - 1,
-    );
-  if (imageModal?.placement) inlinePlacements.push(imageModal.placement);
-  const inlineImageOptions = { allowPlacementUpdates: !state.autocomplete || !!state.imageModal };
+  const paneBottom = bodyTop + bodyRows - 1;
+  // Smooth scrolling: decided once the frame's motion is known (planImages
+  // runs after it), so a glide the frame stops never keeps an image placed
+  // past the pane. Only while st may still draw the content higher than
+  // laid out, and only at the band's bottom edge: otherwise images are
+  // cropped to the pane exactly as without smooth scrolling.
+  const imagePlacements = (): InlineTerminalImagePlacement[] => {
+    const extend = !!smooth?.extendBelow() && scrollRegion?.end === paneBottom;
+    const placements = state.whatsapp.loginModal
+      ? []
+      : visibleInlineImagePlacements(
+        timeline,
+        viewStart,
+        bodyTop,
+        bodyRows,
+        mainCol + 1,
+        state.imageModal ? null : selectedHistoryRows,
+        extend,
+      );
+    smooth?.noteImagesExtended(placements.some((placement) => placement.row + placement.rows - 1 > paneBottom));
+    if (imageModal?.placement) placements.push(imageModal.placement);
+    return placements;
+  };
+  const inlineImageOptions = {
+    allowPlacementUpdates: !state.autocomplete || !!state.imageModal,
+    // Nothing placed past the pane may outlive a glide, even while placement
+    // updates wait for the autocomplete popup to close.
+    maxRow: paneBottom,
+  };
   const sidebarPlacements = visibleSidebarIconPlacements(state, sidebarIconFrame, rows, cols);
   const sidebarImageOptions = {
     replacePlacements: !hasRetainedFrame(state),
@@ -953,7 +967,7 @@ export function render(state: AppState): void {
     maxIdleBytes: SIDEBAR_ICON_MAX_IDLE_BYTES,
   };
   const planImages = (movedRows: ScrollRegion | null = null) => joinImageUpdates(
-    planInlineTerminalImages(state, readyInlineImages(state), inlinePlacements, { ...inlineImageOptions, movedRows }),
+    planInlineTerminalImages(state, readyInlineImages(state), imagePlacements(), { ...inlineImageOptions, movedRows }),
     planInlineTerminalImages(
       sidebarIconTerminalOwner,
       sidebarPlacements.map((placement) => placement.image),

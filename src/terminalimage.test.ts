@@ -222,6 +222,31 @@ describe("inline terminal graphics", () => {
     expect(writes[2]).toContain("\x1b[3;27H");
   });
 
+  test("while updates are deferred, a placement reaching past maxRow is deleted, not kept", () => {
+    const owner = {};
+    const writes: string[] = [];
+    const ready = image();
+    // Placed past the pane (rows 20..29) for a smooth-scroll glide.
+    const extended = { image: ready, placementId: 0x20000002, row: 20, col: 27, columns: 10, rows: 10 };
+    const write = (payload: string) => writes.push(payload);
+    syncInlineTerminalImages(owner, [ready], [extended], write, { allowPlacementUpdates: true });
+    expect(writes.at(-1)).toContain("a=p");
+
+    // The glide ended while the autocomplete popup defers updates: the crop
+    // to the pane (rows 20..25) cannot be placed, so the overflowing one goes.
+    const cropped = { ...extended, rows: 6, sourceY: 0, sourceHeight: 6 };
+    syncInlineTerminalImages(owner, [ready], [cropped], write, { allowPlacementUpdates: false, maxRow: 25 });
+    expect(writes.at(-1)).toContain(`a=d,d=i,i=${ready.imageId},p=${0x20000002}`);
+    expect(writes.at(-1)).not.toContain("a=p");
+
+    // A placement within maxRow is kept as before; the crop is placed once updates resume.
+    const count = writes.length;
+    syncInlineTerminalImages(owner, [ready], [cropped], write, { allowPlacementUpdates: false, maxRow: 25 });
+    expect(writes).toHaveLength(count);
+    syncInlineTerminalImages(owner, [ready], [cropped], write, { allowPlacementUpdates: true, maxRow: 25 });
+    expect(writes.at(-1)).toContain("a=p");
+  });
+
   test("retransmits only after the terminal reports real image eviction", () => {
     const owner = {};
     const writes: string[] = [];

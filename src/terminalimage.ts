@@ -47,6 +47,14 @@ export interface InlineTerminalImageSyncOptions {
    * when this frame wants them where they were.
    */
   movedRows?: { start: number; end: number } | null;
+  /**
+   * Last row (1-based) existing placements may reach while placement updates
+   * are deferred (allowPlacementUpdates false): one placed further down (an
+   * image placed past the pane for a smooth-scroll glide) is deleted rather
+   * than left drawing over the rows below. Desired placements may still
+   * reach further (they are placed only when updates are allowed).
+   */
+  maxRow?: number;
   /** Bound on images kept in the terminal with no placement (default 64). */
   maxIdleImages?: number;
   /** Bound on their charged bytes, base64 plus RGBA pixels (default 32 MiB). */
@@ -194,7 +202,14 @@ export function planInlineTerminalImages(
     const scrolled = !!moved && placedRow >= moved.start && placedRow <= moved.end;
     if (!options.replacePlacements && !retransmitted.has(placement.image.imageId)
       && state.placements.get(key) === fingerprint && !scrolled) continue;
-    if (options.allowPlacementUpdates === false) continue;
+    if (options.allowPlacementUpdates === false) {
+      const placed = state.placements.get(key)?.split(":").map(Number);
+      if (placed && options.maxRow !== undefined && placed[0]! + placed[3]! - 1 > options.maxRow) {
+        out.push(deletePlacement(placement.image.imageId, placement.placementId));
+        state.placements.delete(key);
+      }
+      continue;
+    }
     out.push(placeImage(placement));
     state.placements.set(key, fingerprint);
   }

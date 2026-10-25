@@ -69,6 +69,15 @@ export function movePayload(deltaRows: number, easeRows = 0, ms = SMOOTH_SCROLL_
 export const SMOOTH_SCROLL_LEAD_MS = 30;
 /** How early (in rows) the next row may be laid out: the offset st draws stays within 1 + this. */
 export const SMOOTH_SCROLL_MARGIN_ROWS = 0.25;
+/**
+ * Images placed past the pane's bottom for a glide are cropped again once
+ * less than this (rows) of the glide's upward offset is left: at rest st
+ * clips nothing, so the crop must reach st before its glide ends (and its
+ * clock runs behind Record's by the trip through the pty or ssh). Cropped
+ * this early, the image's lowest pixels may be missing for the glide's last
+ * 15-50 ms; never does it draw over the prompt.
+ */
+export const SMOOTH_SCROLL_IMAGE_CROP_ROWS = 0.125;
 
 interface EaseTerm {
   rows: number;
@@ -369,25 +378,55 @@ export class SmoothScroller {
     return this.msUntilLayout(Math.max(1, Math.ceil(idle) + 1));
   }
 
-  /** The previous frameDueIn() saw a glide running (one more frame at rest crops images). */
-  private wasBusy = false;
+  /** The last frame placed images past the pane's bottom (noteImagesExtended). */
+  private imagesExtended = false;
 
   /**
-   * When main should render next for the glide: 0 now, `ms` from now, or
-   * null when nothing is due until the next input. Called after every frame
-   * and when its timer fires.
+   * Whether images cut off by the pane's bottom must still be placed whole,
+   * past it: st may still draw the content higher than laid out (offset
+   * below -SMOOTH_SCROLL_IMAGE_CROP_ROWS), uncovering a strip at the bottom
+   * where the image continues. Only the upward easing counts (a lower bound
+   * of every offset still to come): content drawn lower needs nothing below
+   * the pane, and every term only eases out.
+   */
+  extendBelow(time = this.now()): boolean {
+    if (!this.gridValid) return false;
+    let lowest = this.base;
+    for (const term of this.terms) {
+      if (term.rows < 0) lowest += term.rows * easeRemaining((time - term.start) / this.durationMs);
+    }
+    return lowest < -SMOOTH_SCROLL_IMAGE_CROP_ROWS;
+  }
+
+  /** The frame just planned placed (true) or did not place images past the pane's bottom. */
+  noteImagesExtended(extended: boolean): void {
+    this.imagesExtended = extended;
+  }
+
+  /** Images placed past the pane's bottom must be cropped again now. */
+  private cropDue(time: number): boolean {
+    return this.imagesExtended && !this.extendBelow(time);
+  }
+
+  /**
+   * When main should render next for the glide: 0 now (images to crop), `ms`
+   * from now (the next row is due, or images must be cropped), or null when
+   * nothing is due until the next input; st animates the rest itself. Called
+   * after every frame and when its timer fires.
    */
   frameDueIn(): number | null {
-    if (!this.busy()) {
-      // At rest again: one more frame crops images back to the pane.
-      if (this.wasBusy) {
-        this.wasBusy = false;
-        return 0;
-      }
-      return null;
+    if (!this.gridValid) return null;
+    const time = this.now();
+    if (this.cropDue(time)) return 0;
+    if (!this.busy()) return null;
+    if (this.gridFor(time, this.maxOffset) !== this.grid) return 1;
+    let end = time;
+    for (const term of this.terms) end = Math.max(end, term.start + this.durationMs);
+    const limit = Math.max(2, Math.ceil(end - time) + 2);
+    for (let ms = 1; ms <= limit; ms++) {
+      if (this.gridFor(time + ms, this.maxOffset) !== this.grid || this.cropDue(time + ms)) return ms;
     }
-    this.wasBusy = true;
-    return Math.max(1, this.nextWakeMs());
+    return null;
   }
 
   /** Frames (row crossings) may still be needed. */
