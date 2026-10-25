@@ -43,6 +43,8 @@ export interface SidebarConfig {
 export interface ImagesConfig {
   /** Whether image attachments expand automatically when they enter the viewport. */
   mode?: ImageDisplayMode;
+  /** Show the filename/size row above images drawn inline (Ctrl+O). Default false. */
+  details?: boolean;
 }
 
 export interface AudioConfig {

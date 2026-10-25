@@ -9,6 +9,7 @@ import {
   pushTimelineSystemMessage,
   replaceTimelineMessage,
   renderTimelineLines,
+  setTimelineImageDetails,
   setTimelineInlineImageState,
   setTimelineMessages,
   setTimelineRenderContext,
@@ -1036,7 +1037,9 @@ describe("timeline rendering", () => {
       0,
     );
 
-    expect(rendered.lines.map(stripAnsi)).toContain("[sticker] catjam");
+    // The sticker is drawn, so it is the row (Ctrl+O shows its name row).
+    expect(rendered.lines.map(stripAnsi)).not.toContain("[sticker] catjam");
+    expect(rendered.lines.map(stripAnsi)).not.toContain("(empty message)");
     expect(rendered.inlineImages).toHaveLength(1);
     expect(rendered.inlineImages[0]?.image.attachmentId).toBe("sticker:message-1:sticker-1");
     expect(rendered.lineAnchors.some((anchor) => anchor.includes("image:sticker%3Amessage-1%3Asticker-1:"))).toBe(true);
@@ -1124,15 +1127,124 @@ describe("timeline rendering", () => {
 
     const rendered = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" });
     expect(rendered.inlineImages).toHaveLength(1);
+    // Header, "look", then the image itself (no name row without Ctrl+O).
     expect(rendered.inlineImages[0]).toMatchObject({
-      lineIndex: 3,
+      lineIndex: 2,
       columns: 50,
       rows: 13,
     });
-    expect(rendered.lineAnchors.slice(3, 16)).toEqual(
+    expect(rendered.lineAnchors.slice(2, 15)).toEqual(
       Array.from({ length: 13 }, (_unused, row) => `msg:message-1:image:a1:${row}`),
     );
-    expect(rendered.messageBounds[0]?.end).toBe(16);
+    expect(rendered.messageBounds[0]?.end).toBe(15);
+  });
+
+  describe("image details (Ctrl+O)", () => {
+    const ready = (attachmentId: string, url: string, imageId = 0x40000001) => ({
+      phase: "ready" as const,
+      attachmentId,
+      filename: url.split("/").at(-1)!,
+      sourceUrl: url,
+      requestId: 1,
+      imageId,
+      pngBase64: "cG5n",
+      pixelWidth: 32,
+      pixelHeight: 32,
+    });
+    const plain = (timeline: ReturnType<typeof createTimelineState>) => renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" }).allLines.map(stripAnsi);
+
+    test("an image drawn inline has no name row unless details are on, where it is exactly today's", () => {
+      const timeline = createTimelineState();
+      expect(timeline.showImageDetails).toBe(false);
+      const withImage = message("message-1", "look", { authorName: "Paramount" });
+      withImage.attachments = [
+        { id: "a1", filename: "cat.png", contentType: "image/png", size: 1536, url: "https://cdn.example/cat.png" },
+        { id: "a2", filename: "notes.pdf", contentType: "application/pdf", size: 42_000, url: "https://cdn.example/notes.pdf" },
+      ];
+      setTimelineMessages(timeline, "channel-1", [withImage]);
+      setTimelineInlineImageState(timeline, ready("a1", "https://cdn.example/cat.png"));
+
+      const hidden = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" });
+      expect(hidden.allLines.map(stripAnsi).slice(1, 3)).toEqual(["look", "📎 notes.pdf • 41 KB"]);
+      expect(hidden.inlineImages[0]?.lineIndex).toBe(3);
+
+      expect(setTimelineImageDetails(timeline, true)).toBe(true);
+      const shown = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" });
+      expect(shown.allLines.map(stripAnsi).slice(1, 4)).toEqual(["look", "📎 cat.png • 1.5 KB", "📎 notes.pdf • 41 KB"]);
+      expect(shown.inlineImages[0]?.lineIndex).toBe(4);
+      expect(setTimelineImageDetails(timeline, true)).toBe(false);
+    });
+
+    test("an image-only message is just its image, not \"(empty message)\"", () => {
+      const timeline = createTimelineState();
+      const withImage = message("message-1", "", { authorName: "Paramount" });
+      withImage.attachments = [{ id: "a1", filename: "cat.png", contentType: "image/png", size: 1536, url: "https://cdn.example/cat.png" }];
+      setTimelineMessages(timeline, "channel-1", [withImage]);
+      setTimelineInlineImageState(timeline, ready("a1", "https://cdn.example/cat.png"));
+
+      const rendered = renderTimelineLines(timeline, 80, 30, { text: "", tone: "muted" });
+      expect(rendered.allLines.map(stripAnsi)).not.toContain("(empty message)");
+      expect(rendered.inlineImages[0]?.lineIndex).toBe(1);
+      expect(rendered.lineAnchors[1]).toBe("msg:message-1:image:a1:0");
+
+      setTimelineImageDetails(timeline, true);
+      expect(plain(timeline).slice(1, 2)).toEqual(["📎 cat.png • 1.5 KB"]);
+    });
+
+    test("images not drawn keep their name row: collapsed, loading, waiting, failed", () => {
+      for (const state of [
+        null,
+        { phase: "loading" as const },
+        { phase: "waiting" as const },
+        { phase: "error" as const, error: "bad pixels" },
+      ]) {
+        const timeline = createTimelineState();
+        const withImage = message("message-1", "", { authorName: "Paramount" });
+        withImage.attachments = [{ id: "a1", filename: "cat.png", contentType: "image/png", size: 1536, url: "https://cdn.example/cat.png" }];
+        setTimelineMessages(timeline, "channel-1", [withImage]);
+        if (state) {
+          setTimelineInlineImageState(timeline, { ...state, attachmentId: "a1", filename: "cat.png", sourceUrl: "https://cdn.example/cat.png", requestId: 1 });
+        }
+        expect(plain(timeline)).toContain("📎 cat.png • 1.5 KB");
+      }
+    });
+
+    test("stickers and forwarded images drop only the names of what is drawn", () => {
+      const timeline = createTimelineState();
+      const stickers = message("message-1", "", { authorName: "Paramount" });
+      stickers.stickerNames = ["catjam", "wave"];
+      stickers.stickers = [{ id: "s1", name: "catjam", formatType: 1 }, { id: "s2", name: "wave", formatType: 1 }];
+      const forwarded = message("message-2", "", {
+        authorName: "Paramount",
+        forwarded: {
+          content: "",
+          originMessageId: "o1",
+          originChannelId: "c0",
+          originGuildId: null,
+          mentionEveryone: false,
+          mentionRoleIds: [],
+          mentionUsers: [],
+          attachments: [
+            { id: "f1", filename: "dog.png", contentType: "image/png", size: 2048, url: "https://cdn.example/dog.png" },
+            { id: "f2", filename: "bird.png", contentType: "image/png", size: 2048, url: "https://cdn.example/bird.png" },
+          ],
+          stickerNames: [],
+          embedsCount: 0,
+          embeds: [],
+        },
+        timestamp: Date.UTC(2026, 0, 1, 13, 0, 0),
+      });
+      setTimelineMessages(timeline, "channel-1", [stickers, forwarded]);
+      const wave = inlineImageSourcesForMessage(stickers)[1]!;
+      setTimelineInlineImageState(timeline, ready(wave.id, wave.url, 0x40000002));
+      setTimelineInlineImageState(timeline, ready("f1", "https://cdn.example/dog.png", 0x40000003));
+
+      const lines = plain(timeline);
+      expect(lines).toContain("[sticker] catjam");
+      expect(lines).not.toContain("[sticker] catjam, wave");
+      expect(lines).toContain("📎 bird.png • 2.0 KB");
+      expect(lines).not.toContain("📎 dog.png • 2.0 KB");
+    });
   });
 
   test("shows inline loading and conversion errors beside the attachment", () => {
