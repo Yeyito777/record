@@ -10,6 +10,7 @@ import type {
   WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
   WhatsAppSendReactionParams,
+  WhatsAppProfilePictureParams,
   WhatsAppSetChatMutedParams,
   WhatsAppWorkerEvent,
   WhatsAppWorkerRequest,
@@ -19,6 +20,7 @@ import { toWhatsAppMessage } from "./converters";
 import { startWhatsAppDiagnosticsServer, WhatsAppDiagnostics } from "./diagnostics";
 import { buildWhatsAppSendOptions, resolveWhatsAppEphemeralExpiration, sendWhatsAppImages, sendWhatsAppReaction } from "./sending";
 import { downloadWhatsAppMediaToFile } from "./media";
+import { fetchWhatsAppProfilePictureUrl } from "./profilepicture";
 
 // Baileys creates credential/key files itself. A private process umask ensures
 // they are private from the instant they are opened, before our auth wrapper's
@@ -204,6 +206,11 @@ async function handle(request: WhatsAppWorkerRequest): Promise<unknown> {
       return {
         mutedUntilMs: muteEnd,
       };
+    }
+    case "profile-picture": {
+      const params = request.params as unknown as WhatsAppProfilePictureParams;
+      if (typeof params?.jid !== "string") throw new Error("Invalid profile-picture request.");
+      return { url: await fetchWhatsAppProfilePictureUrl(backend.getSocket(), params.jid) };
     }
     case "logout":
       await backend.getSocket().logout();

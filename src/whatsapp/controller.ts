@@ -98,6 +98,8 @@ export interface WhatsAppBackendHandle {
     recoveryAnchor?: import("./types").WhatsAppMediaRecoveryAnchor,
   ): Promise<import("./worker-protocol").WhatsAppDownloadMediaResult>;
   setChatMuted(chatId: string, muted: boolean): Promise<import("./worker-protocol").WhatsAppSetChatMutedResult>;
+  /** Preview picture URL for a chat, null when it has none (sidebar icons). */
+  profilePictureUrl?(jid: string): Promise<string | null>;
   on<K extends WhatsAppBackendEventName>(event: K, listener: WhatsAppBackendEventListener<K>): () => void;
 }
 
@@ -231,6 +233,17 @@ export class WhatsAppController {
 
   get isConnected(): boolean {
     return this.backend.isConnected;
+  }
+
+  /**
+   * One normal profile-picture query through the logged-in session. Never
+   * queued while disconnected: the sidebar retries later, after backing off.
+   */
+  async profilePictureUrl(jid: string): Promise<string | null> {
+    if (!this.backend.isConnected || this.backendResetPromise || this.shuttingDown || !this.backend.profilePictureUrl) {
+      throw new Error("WhatsApp is not connected.");
+    }
+    return await this.backend.profilePictureUrl(jid);
   }
 
   get hasStoredAuth(): boolean {
