@@ -1,5 +1,6 @@
 import { isThreadChannel, type DiscordMessageAttachment } from "./discord";
 import { contentBounds, logicalLineRange, stripAnsi } from "./historycursor";
+import { embedForSourceId, embedGroupForKey, embedVideoTarget, isEmbedSourceId, parseEmbedSourceId, type EmbedVideoTarget } from "./embeds";
 import { inlineImageSourcesForMessage } from "./inlineimage";
 import { findOpenableTargetMatches } from "./openable";
 import type { AppState } from "./state";
@@ -135,6 +136,8 @@ export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttach
   if (!message || attachments.length === 0) return null;
 
   for (const attachment of attachments) {
+    // Embed pictures have no name row to match.
+    if (isEmbedSourceId(attachment.id)) continue;
     const providerSticker = [...(message.stickers ?? []), ...(message.forwarded?.stickers ?? [])]
       .find((item) => item.attachment?.id === attachment.id);
     const sticker = Boolean(providerSticker) || attachment.id.startsWith("sticker:");
@@ -157,11 +160,28 @@ export function attachmentAtHistoryCursor(state: AppState): DiscordMessageAttach
   return null;
 }
 
+/** The image drawn under the cursor's cell, for pictures beside text or each other (embeds). */
+function inlineImageIdUnderHistoryCursor(state: AppState): string | null {
+  return inlineImageIdAtHistoryCell(state, state.historyCursor.row, state.historyCursor.col);
+}
+
+/** The inline image drawn over a history cell (row, column from the line's start), if any. */
+export function inlineImageIdAtHistoryCell(state: AppState, row: number, col: number): string | null {
+  for (const placement of state.historyInlineImages) {
+    const offset = placement.columnOffset ?? 0;
+    if (row >= placement.lineIndex && row < placement.lineIndex + placement.rows && col >= offset && col < offset + placement.columns) {
+      return placement.image.attachmentId;
+    }
+  }
+  return null;
+}
+
 /** Return an attachment only when the cursor is on its rendered image body. */
 export function inlineImageBodyAttachmentAtHistoryCursor(state: AppState): DiscordMessageAttachment | null {
   const message = selectedHistoryMessage(state);
   if (!message) return null;
-  const attachmentId = attachmentIdFromInlineImageBodyAnchor(state.historyLineAnchors[state.historyCursor.row]);
+  const attachmentId = inlineImageIdUnderHistoryCursor(state)
+    ?? attachmentIdFromInlineImageBodyAnchor(state.historyLineAnchors[state.historyCursor.row]);
   if (!attachmentId) return null;
   return inlineImageSourcesForMessage(message)
     .find((attachment) => attachment.id === attachmentId)
@@ -177,13 +197,65 @@ export function inlineImageBodyAttachmentAtHistoryCursor(state: AppState): Disco
  */
 export function openableTargetAtHistoryCursor(state: AppState): string | null {
   const logicalLine = logicalLineAtHistoryCursor(state);
-  if (!logicalLine) return null;
-
-  for (const match of findOpenableTargetMatches(logicalLine.text)) {
-    if (logicalLine.cursorOffset >= match.start && logicalLine.cursorOffset < match.end) return match.target;
+  if (logicalLine) {
+    for (const match of findOpenableTargetMatches(logicalLine.text)) {
+      if (logicalLine.cursorOffset >= match.start && logicalLine.cursorOffset < match.end) return match.target;
+    }
   }
 
+  const embedLink = embedLinkAtHistoryCursor(state);
+  if (embedLink) return embedLink;
+  if (!logicalLine) return null;
   return attachmentAtHistoryCursor(state)?.url ?? null;
+}
+
+const EMBED_ROW_ANCHOR_RE = /^msg:(.+):embed:([^:]+):(\d+):([a-z]+)\d*:(\d+)$/;
+
+function embedRowAtHistoryCursor(state: AppState) {
+  const match = EMBED_ROW_ANCHOR_RE.exec(state.historyLineAnchors[state.historyCursor.row] ?? "");
+  if (!match) return null;
+  const message = selectedHistoryMessage(state);
+  if (!message || message.id !== match[1]) return null;
+  let occurrence: string;
+  try {
+    occurrence = decodeURIComponent(match[2]!);
+  } catch {
+    return null;
+  }
+  const group = embedGroupForKey(message, occurrence, Number(match[3]));
+  return group ? { group, occurrence, part: match[4]! } : null;
+}
+
+/** The link an embed row opens: its title's URL, its author's, its provider's. */
+export function embedLinkAtHistoryCursor(state: AppState): string | null {
+  const row = embedRowAtHistoryCursor(state);
+  if (!row) return null;
+  const { embed } = row.group;
+  switch (row.part) {
+    case "title":
+    case "host":
+      return embed.url ?? null;
+    case "author":
+      return embed.authorUrl ?? null;
+    case "provider":
+      return embed.providerUrl ?? null;
+    default:
+      return null;
+  }
+}
+
+/** The video a cursor on a video embed's poster or play row opens. */
+export function embedVideoAtHistoryCursor(state: AppState): EmbedVideoTarget | null {
+  const row = embedRowAtHistoryCursor(state);
+  if (row?.part === "video") return embedVideoTarget(row.group.embed, row.occurrence, row.group.index);
+  if (row) return null;
+  const message = selectedHistoryMessage(state);
+  if (!message) return null;
+  const sourceId = inlineImageIdUnderHistoryCursor(state)
+    ?? attachmentIdFromInlineImageAnchor(state.historyLineAnchors[state.historyCursor.row]);
+  if (!sourceId || parseEmbedSourceId(sourceId)?.role !== "poster") return null;
+  const found = embedForSourceId(message, sourceId);
+  return found ? embedVideoTarget(found.group.embed, parseEmbedSourceId(sourceId)!.occurrence, found.group.index) : null;
 }
 
 /** Whether a click at this history position opens something: an image, attachment, link or path. */
@@ -191,7 +263,9 @@ export function historyTargetAt(state: AppState, position: { row: number; col: n
   const saved = state.historyCursor;
   state.historyCursor = { ...saved, row: position.row, col: position.col };
   try {
-    return inlineImageBodyAttachmentAtHistoryCursor(state) !== null || openableTargetAtHistoryCursor(state) !== null;
+    return embedVideoAtHistoryCursor(state) !== null
+      || inlineImageBodyAttachmentAtHistoryCursor(state) !== null
+      || openableTargetAtHistoryCursor(state) !== null;
   } finally {
     state.historyCursor = saved;
   }

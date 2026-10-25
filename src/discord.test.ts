@@ -1023,7 +1023,10 @@ describe("discord helpers", () => {
       stickerNames: [],
       stickers: [],
       embedsCount: 1,
-      embeds: [{ type: null, title: "Snapshot", url: "https://example.com/snapshot", description: null, providerName: "Example", authorName: null }],
+      embeds: [{
+        type: null, title: "Snapshot", url: "https://example.com/snapshot", description: null, providerName: "Example", authorName: null,
+        providerUrl: null, authorUrl: null, authorIconUrl: null, color: null, timestamp: null, footer: null, fields: [], image: null, thumbnail: null, video: null,
+      }],
     });
   });
 

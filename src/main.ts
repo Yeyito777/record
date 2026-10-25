@@ -40,7 +40,8 @@ import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isI
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
-import { attachmentAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
+import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
+import type { EmbedVideoTarget } from "./embeds";
 import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input";
 import { handleMouseEvent } from "./mouse";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
@@ -2250,8 +2251,19 @@ function openHistoryLink(target: string, joinInvites: boolean): void {
   }
 }
 
+/** A video embed plays like a video attachment (a media file) or opens its page (YouTube, Tenor). */
+function openEmbedVideo(target: EmbedVideoTarget): void {
+  if (target.kind === "file") downloadAndOpenAttachment(target.attachment);
+  else openHistoryLink(target.url, false);
+}
+
 /** A click in history: open the image, attachment or link under the cursor. Returns whether one was there. */
 function openHistoryTargetAtCursor(): boolean {
+  const video = embedVideoAtHistoryCursor(state);
+  if (video) {
+    openEmbedVideo(video);
+    return true;
+  }
   const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
   if (imageBodyAttachment) {
     openInlineImageModal(imageBodyAttachment);
@@ -2348,6 +2360,11 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       scheduleRender();
       return true;
     case "nav_select": {
+      const video = embedVideoAtHistoryCursor(state);
+      if (video) {
+        openEmbedVideo(video);
+        return true;
+      }
       const imageBodyAttachment = inlineImageBodyAttachmentAtHistoryCursor(state);
       if (imageBodyAttachment && openInlineImageModal(imageBodyAttachment)) return true;
 

@@ -7,7 +7,9 @@ import { customEmojiMarker, replaceCustomEmojiTokens } from "./customemoji";
 import { inlineImageCellLayout, inlineImageId, inlineImagePlacementId, inlineImageSourcesForMessage, stickerImageAttachment, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
-import { summarizeDisplayMessageParts } from "./messageparts";
+import { layoutEmbed } from "./embedlayout";
+import { embedGroups, forwardedEmbedOccurrence, isEmbedSourceId, type EmbedGroup } from "./embeds";
+import { displayMessageParts, type DisplayMessagePart } from "./messageparts";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { ansiTrueColor, dmAuthorColor, theme, toneColor } from "./theme";
 
@@ -78,6 +80,8 @@ export interface TimelineInlineImagePlacement {
   placementId: number;
   /** Absolute line index within allLines. */
   lineIndex: number;
+  /** Cells from the row's start (embed pictures); 0 or absent for attachments. */
+  columnOffset?: number;
   columns: number;
   rows: number;
 }
@@ -929,7 +933,7 @@ function getRenderedTimelineContent(
 
 function messageIsLive(timeline: TimelineState, message: DiscordMessage): boolean {
   if (message.call && message.call.endedTimestamp === null) return true;
-  if (message.attachments.length === 0 && !message.stickers?.length && !message.forwarded) return false;
+  if (message.attachments.length === 0 && !message.stickers?.length && !message.forwarded && !message.embeds?.length) return false;
   return inlineImageStatesForMessage(message, timeline.inlineImages).some((image) => image.phase === "loading");
 }
 
@@ -1119,7 +1123,7 @@ function renderInlineImageExtras(
   const inlineImages: TimelineInlineImagePlacement[] = [];
 
   for (const state of states) {
-    if (state.phase === "ready") continue;
+    if (state.phase === "ready" || isEmbedSourceId(state.attachmentId)) continue;
     const encodedId = encodeURIComponent(state.attachmentId);
     const label = state.phase === "loading"
       ? loadingLabel(`Loading ${state.filename}…`, loadingFrameIndex)
@@ -1136,7 +1140,8 @@ function renderInlineImageExtras(
   }
 
   for (const state of states) {
-    if (state.phase !== "ready") continue;
+    // Embed pictures are drawn inside their embed (embedlayout.ts).
+    if (state.phase !== "ready" || isEmbedSourceId(state.attachmentId)) continue;
     const layout = inlineImageCellLayout(
       state,
       width,
@@ -1209,7 +1214,8 @@ function renderMessage(
 
   const contentColor = message.localStatus ? theme.muted : theme.text;
   const summarized = showImageDetails ? message : withoutShownImageNames(message, inlineImages);
-  const content = summarizeMessage(
+  const contentRestoreStyle = `${messageBackground}${contentColor}`;
+  const parts = summarizeMessageParts(
     summarized,
     viewerId,
     accentViewerInDirectMessages,
@@ -1221,7 +1227,7 @@ function renderMessage(
     contentColor,
   );
   if (isCompactSystemMessageType(message.type)) {
-    const systemText = content || "System event";
+    const systemText = parts.flatMap((part) => (part.kind === "text" ? [part.text] : [])).join("\n") || "System event";
     const wrappedSystem = wrapMarkdownText(systemText, width, theme.muted);
     const lines = wrappedSystem.map((line) => `${theme.dim}${line.text}${theme.reset}`);
     return {
@@ -1233,48 +1239,17 @@ function renderMessage(
     };
   }
   const reactionLines = wrapReactionSummary(message, width);
-  if (content === "") {
-    // Nothing but images drawn below: they are the message, not "(empty message)".
-    const emptyLines = summarized === message ? [`${theme.dim}(empty message)${theme.reset}`] : [];
-    const extras = renderInlineImageExtras(
-      message.id,
-      inlineImages,
-      width,
-      loadingFrameIndex,
-      terminalCellWidthPixels,
-      terminalCellHeightPixels,
-      replyPreview.length + headerLines.length + emptyLines.length,
-    );
-    const lines = [
-      ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
-      ...headerLines,
-      ...emptyLines,
-      ...extras.lines,
-      ...reactionLines.map((line) => `${theme.muted}${line.text}${theme.reset}`),
-    ];
-    return {
-      lines,
-      lineAnchors: [
-        ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
-        ...headerAnchors,
-        ...emptyLines.map(() => `msg:${message.id}:empty`),
-        ...extras.lineAnchors,
-        ...reactionLines.map((line) => `msg:${message.id}:reactions:${line.visualIndex}`),
-      ],
-      lineBackgrounds: messageLineBackgrounds(lines, messageBackground),
-      wrapContinuation: [
-        ...replyPreview.map((line) => line.wrapContinuation),
-        ...headerWrapContinuation,
-        ...emptyLines.map(() => false),
-        ...extras.wrapContinuation,
-        ...reactionLines.map((line) => line.wrapContinuation),
-      ],
-      inlineImages: extras.inlineImages,
-    };
-  }
-
-  const contentRestoreStyle = `${messageBackground}${contentColor}`;
-  const wrappedContent = wrapMarkdownText(content, width, contentRestoreStyle);
+  const firstBodyRow = replyPreview.length + headerLines.length;
+  const body = renderMessageBody(message.id, parts, width, contentColor, contentRestoreStyle, firstBodyRow, {
+    states: Object.fromEntries(inlineImages.map((state) => [state.attachmentId, state])),
+    showDetails: showImageDetails,
+    loadingFrameIndex,
+    cellWidthPixels: terminalCellWidthPixels,
+    cellHeightPixels: terminalCellHeightPixels,
+  });
+  const bodyEmpty = body.lines.length === 0;
+  // Nothing but images drawn below: they are the message, not "(empty message)".
+  const emptyLines = bodyEmpty && summarized === message ? [`${theme.dim}(empty message)${theme.reset}`] : [];
   const extras = renderInlineImageExtras(
     message.id,
     inlineImages,
@@ -1282,13 +1257,14 @@ function renderMessage(
     loadingFrameIndex,
     terminalCellWidthPixels,
     terminalCellHeightPixels,
-    replyPreview.length + headerLines.length + wrappedContent.length,
+    firstBodyRow + emptyLines.length + body.lines.length,
   );
-  const failureLines = wrapFailureMessage(message, width);
+  const failureLines = bodyEmpty ? [] : wrapFailureMessage(message, width);
   const lines = [
     ...replyPreview.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ...headerLines,
-    ...wrappedContent.map((line) => `${contentColor}${line.text}${theme.reset}`),
+    ...emptyLines,
+    ...body.lines,
     ...extras.lines,
     ...reactionLines.map((line) => `${theme.muted}${line.text}${theme.reset}`),
     ...failureLines.map((line) => `${theme.failure}${line.text}${theme.reset}`),
@@ -1298,7 +1274,8 @@ function renderMessage(
     lineAnchors: [
       ...replyPreview.map((line) => `msg:${message.id}:reply:${line.visualIndex}`),
       ...headerAnchors,
-      ...wrappedContent.map((line) => `msg:${message.id}:content:${line.visualIndex}`),
+      ...emptyLines.map(() => `msg:${message.id}:empty`),
+      ...body.lineAnchors,
       ...extras.lineAnchors,
       ...reactionLines.map((line) => `msg:${message.id}:reactions:${line.visualIndex}`),
       ...failureLines.map((line) => `msg:${message.id}:failure:${line.visualIndex}`),
@@ -1307,13 +1284,81 @@ function renderMessage(
     wrapContinuation: [
       ...replyPreview.map((line) => line.wrapContinuation),
       ...headerWrapContinuation,
-      ...wrappedContent.map((line) => line.wrapContinuation),
+      ...emptyLines.map(() => false),
+      ...body.wrapContinuation,
       ...extras.wrapContinuation,
       ...reactionLines.map((line) => line.wrapContinuation),
       ...failureLines.map((line) => line.wrapContinuation),
     ],
-    inlineImages: extras.inlineImages,
+    inlineImages: [...body.inlineImages, ...extras.inlineImages],
   };
+}
+
+type MessageContentPart =
+  | { kind: "text"; text: string }
+  | {
+    kind: "embed";
+    group: EmbedGroup;
+    occurrence: string;
+    /** Drawn right under the line holding its URL. */
+    placed: boolean;
+    /** Mentions, custom emoji and links in embed text, as in the message's own. */
+    formatText: (text: string, restore: string) => string;
+  };
+
+interface EmbedRenderContext {
+  states: Readonly<Record<string, InlineChatImageState>>;
+  showDetails: boolean;
+  loadingFrameIndex: number;
+  cellWidthPixels: number;
+  cellHeightPixels: number;
+}
+
+/** Text rows (wrapped markdown) with embeds between them. */
+function renderMessageBody(
+  messageId: string,
+  parts: readonly MessageContentPart[],
+  width: number,
+  contentColor: string,
+  restore: string,
+  firstRow: number,
+  context: EmbedRenderContext,
+): RenderedInlineImageExtras & { lineAnchors: string[] } {
+  const body: RenderedInlineImageExtras = { lines: [], lineAnchors: [], wrapContinuation: [], inlineImages: [] };
+  // Text rows keep counting across embeds, so a preview arriving later
+  // leaves every text row's anchor (and the reading position) where it was.
+  let visualBase = 0;
+  for (const part of parts) {
+    if (part.kind === "text") {
+      const wrapped = wrapMarkdownText(part.text, width, restore);
+      for (const line of wrapped) {
+        body.lines.push(`${contentColor}${line.text}${theme.reset}`);
+        body.lineAnchors.push(`msg:${messageId}:content:${visualBase + line.visualIndex}`);
+        body.wrapContinuation.push(line.wrapContinuation);
+      }
+      visualBase += wrapped.length;
+      continue;
+    }
+    const layout = layoutEmbed(part.group, {
+      messageId,
+      occurrence: part.occurrence,
+      width,
+      lineOffset: firstRow + body.lines.length,
+      states: context.states,
+      showDetails: context.showDetails,
+      loadingFrameIndex: context.loadingFrameIndex,
+      cellWidthPixels: context.cellWidthPixels,
+      cellHeightPixels: context.cellHeightPixels,
+      restore,
+      formatText: part.formatText,
+      urlShown: part.placed,
+    });
+    body.lines.push(...layout.lines.map((line) => `${contentColor}${line}${theme.reset}`));
+    body.lineAnchors.push(...layout.lineAnchors);
+    body.wrapContinuation.push(...layout.wrapContinuation);
+    body.inlineImages.push(...layout.inlineImages);
+  }
+  return body;
 }
 
 /**
@@ -1447,7 +1492,7 @@ function formatReactionChip(reaction: NonNullable<DiscordMessage["reactions"]>[n
   return `${emoji} ${reaction.count}`;
 }
 
-function summarizeMessage(
+function summarizeMessageParts(
   message: DiscordMessage,
   viewerId: string | null,
   accentViewerInDirectMessages: boolean,
@@ -1457,89 +1502,56 @@ function summarizeMessage(
   loadingFrameIndex: number,
   nowMs: number,
   contentColor: string,
-): string {
+): MessageContentPart[] {
   if (message.call || message.type === 3) {
-    return summarizeCallMessage(message, viewerId, loadingFrameIndex, nowMs);
+    return [{ kind: "text", text: summarizeCallMessage(message, viewerId, loadingFrameIndex, nowMs) }];
   }
 
-  if (message.forwarded) {
-    return summarizeForwardedMessage(
-      message,
-      viewerId,
-      accentViewerInDirectMessages,
-      rolesByGuildId,
-      memberRoleIdsByGuildId,
-      activeGuildId,
-      contentColor,
-    );
-  }
-
-  const mentionsRendered = renderUserMentions(
-    replaceCustomEmojiTokens(message.content),
-    message,
-    viewerId,
-    accentViewerInDirectMessages,
-    rolesByGuildId,
-    memberRoleIdsByGuildId,
-    activeGuildId,
-    contentColor,
-  );
-  const content = renderOpenableLinks(mentionsRendered, contentColor);
-  return summarizeDisplayMessageParts(
-    content,
-    message.attachments,
-    message.embeds ?? message.embedsCount,
-    message.stickerNames,
-    { muted: theme.muted, accent: theme.accent, restore: contentColor },
-  ).join("\n");
-}
-
-function summarizeForwardedMessage(
-  message: DiscordMessage,
-  viewerId: string | null,
-  accentViewerInDirectMessages: boolean,
-  rolesByGuildId: Record<string, DiscordRole[]>,
-  memberRoleIdsByGuildId: Record<string, Record<string, string[]>>,
-  activeGuildId: string | null,
-  contentColor: string,
-): string {
   const forwarded = message.forwarded;
-  if (!forwarded) return "";
-
-  const forwardedContext: DiscordMessage = {
-    ...message,
-    content: forwarded.content,
-    mentionEveryone: forwarded.mentionEveryone,
-    mentionRoleIds: forwarded.mentionRoleIds,
-    mentionUserIds: forwarded.mentionUsers.map((user) => user.id),
-    mentionUsers: forwarded.mentionUsers,
-    attachments: forwarded.attachments,
-    stickerNames: forwarded.stickerNames,
-    stickers: forwarded.stickers,
-    embedsCount: forwarded.embedsCount,
-    embeds: forwarded.embeds,
-    forwarded: null,
-  };
-  const mentionsRendered = renderUserMentions(
-    replaceCustomEmojiTokens(forwarded.content),
-    forwardedContext,
+  // A forward shows the original's text and embeds; mentions resolve against it.
+  const context: DiscordMessage = forwarded
+    ? {
+      ...message,
+      content: forwarded.content,
+      mentionEveryone: forwarded.mentionEveryone,
+      mentionRoleIds: forwarded.mentionRoleIds,
+      mentionUserIds: forwarded.mentionUsers.map((user) => user.id),
+      mentionUsers: forwarded.mentionUsers,
+      attachments: forwarded.attachments,
+      stickerNames: forwarded.stickerNames,
+      stickers: forwarded.stickers,
+      embedsCount: forwarded.embedsCount,
+      embeds: forwarded.embeds,
+      forwarded: null,
+    }
+    : message;
+  const formatText = (text: string, restore: string): string => renderOpenableLinks(renderUserMentions(
+    replaceCustomEmojiTokens(text),
+    context,
     viewerId,
     accentViewerInDirectMessages,
     rolesByGuildId,
     memberRoleIdsByGuildId,
     activeGuildId,
-    contentColor,
-  );
-  const linkedContent = renderOpenableLinks(mentionsRendered, contentColor);
+    restore,
+  ), restore);
+  const linkedContent = formatText(context.content, contentColor);
   const forwardedLabel = `${theme.muted}[Forwarded]${contentColor}`;
-  const content = linkedContent.trim() ? `${forwardedLabel}: ${linkedContent}` : forwardedLabel;
-  return summarizeDisplayMessageParts(
+  const content = forwarded
+    ? linkedContent.trim() ? `${forwardedLabel}: ${linkedContent}` : forwardedLabel
+    : linkedContent;
+  const occurrence = forwarded ? forwardedEmbedOccurrence(message.id) : message.id;
+  const groups = embedGroups(context.embeds ?? [], occurrence).map((group) => ({ url: group.embed.url, group }));
+  const parts: DisplayMessagePart<(typeof groups)[number]>[] = displayMessageParts(
     content,
-    forwarded.attachments,
-    forwarded.embeds,
-    forwarded.stickerNames,
+    context.attachments,
+    groups,
+    context.stickerNames,
     { muted: theme.muted, accent: theme.accent, restore: contentColor },
-  ).join("\n");
+  );
+  return parts.map((part) => part.kind === "text"
+    ? part
+    : { kind: "embed", group: part.embed.group, occurrence, placed: part.placed, formatText });
 }
 
 function summarizeCallMessage(
@@ -1976,9 +1988,8 @@ function messageRenderFingerprint(
   const stickerKey = (message.stickers ?? []).map((sticker) => (
     [sticker.id, sticker.name, String(sticker.formatType ?? "")].join("\u0002")
   )).join("\u0000") || message.stickerNames.join("\u0000");
-  const embedKey = (message.embeds ?? [])
-    .map((embed) => [embed.type ?? "", embed.providerName ?? "", embed.authorName ?? "", embed.title ?? "", embed.url ?? "", embed.description ?? ""].join("\u0002"))
-    .join("\u0000");
+  // Every embed field is drawn now; embeds are small.
+  const embedKey = message.embeds?.length ? JSON.stringify(message.embeds) : "";
   const reactionKey = (message.reactions ?? [])
     .map((reaction) => [reaction.emoji.id ?? "", reaction.emoji.name, reaction.emoji.animated ? "1" : "0", String(reaction.count), reaction.me ? "1" : "0"].join("\u0002"))
     .join("\u0000");
@@ -1993,7 +2004,7 @@ function messageRenderFingerprint(
       (forwarded.stickers ?? []).map((sticker) => [sticker.id, sticker.name, String(sticker.formatType ?? "")].join("\u0002")).join("\u0000")
         || forwarded.stickerNames.join("\u0000"),
       String(forwarded.embedsCount),
-      forwarded.embeds.map((embed) => [embed.type ?? "", embed.providerName ?? "", embed.authorName ?? "", embed.title ?? "", embed.url ?? "", embed.description ?? ""].join("\u0002")).join("\u0000"),
+      forwarded.embeds.length ? JSON.stringify(forwarded.embeds) : "",
     ].join("\u0001")
     : "";
   const replyKey = message.reply
