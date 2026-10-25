@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# recorddemo — run Record in offline demo mode: synthetic Discord data, an
+# isolated temporary config dir, and no network connections at all.
+#
+# Usage:
+#   recorddemo [--nested NAME] [record args...]
+#
+#   recorddemo                 Run the demo in this terminal.
+#   recorddemo --nested NAME   Start nested dwm env NAME (if needed) and open the
+#                              demo in /usr/local/bin/st there. Prints the demo
+#                              home, pid file and screenshot/signal commands.
+#
+# Runs the checkout this script lives in (main or a worktree).
+#
+# Environment (all optional):
+#   RECORD_DEMO_OPEN=NAME            channel to open first: a channel name such as
+#                                    general (default), images, code-review,
+#                                    "dm" for the 1,500-message DM, or "none"
+#   RECORD_DEMO_INCOMING_SECONDS=N   append an incoming message every N seconds
+#   RECORD_DEMO_OLDER_DELAY_MS=N     delay for older-history pages (default 450)
+#   RECORD_DEMO_LATENCY_MS=N         delay for other API calls (default 20)
+#   RECORD_DEMO_NOW=ISO|MS           end of the synthetic history (default fixed)
+#   RECORD_DEMO_HOME=DIR             reuse a demo home (kept after exit)
+#   RECORD_DEMO_KEEP=1               keep the temporary demo home after exit
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BUN_BIN="$(command -v bun || true)"
+[[ -n "$BUN_BIN" ]] || { echo "recorddemo: bun not found in PATH" >&2; exit 1; }
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+if [[ "${1:-}" == "--nested" ]]; then
+  NAME="${2:-}"
+  [[ -n "$NAME" ]] || { echo "recorddemo: --nested needs an env name" >&2; exit 2; }
+  shift 2
+  HOME_DIR="${RECORD_DEMO_HOME:-$(mktemp -d "${TMPDIR:-/tmp}/record-demo-$NAME.XXXXXX")}"
+  # Carry RECORD_DEMO_* settings into the nested terminal explicitly.
+  ENV_ARGS=("RECORD_DEMO_HOME=$HOME_DIR")
+  while IFS='=' read -r key value; do
+    [[ "$key" == RECORD_DEMO_* && "$key" != RECORD_DEMO_HOME ]] && ENV_ARGS+=("$key=$value")
+  done < <(env)
+  [[ -n "${RECORD_DEMO_HOME:-}" ]] || ENV_ARGS+=("RECORD_DEMO_CLEANUP=1")
+
+  dwm start "$NAME" >/dev/null
+  dwm -e "$NAME" run -- /usr/local/bin/st -e env "${ENV_ARGS[@]}" "$BUN_BIN" run "$REPO_DIR/src/main.ts" --demo "$@"
+
+  cat <<EOF
+Record demo starting in nested env '$NAME' (checkout: $REPO_DIR)
+  demo home:   $HOME_DIR   (config in record/, request log in record/demo.log)
+  screenshot:  dwm -e $NAME screenshot -o /tmp/record-demo.png
+  keys:        dwm -e $NAME key j   |   printf 'hello\n' | dwm -e $NAME type
+  incoming:    kill -USR1 \$(cat $HOME_DIR/record-demo.pid)   (USR2 = 10 messages)
+  stop:        dwm -e $NAME key q   (or: dwm stop $NAME)
+EOF
+  exit 0
+fi
+
+cd "$REPO_DIR"
+exec "$BUN_BIN" run src/main.ts --demo "$@"
