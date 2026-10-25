@@ -197,6 +197,8 @@ import {
   SMOOTH_SCROLL_OFF,
   SMOOTH_SCROLL_ON,
   SMOOTH_SCROLL_QUERY,
+  IMAGE_CLIP_QUERY,
+  parseImageClipReport,
   SmoothScroller,
   markRelayout,
   markScrollIntent,
@@ -379,6 +381,10 @@ function renderImmediately(): void {
 
 /** RECORD_SMOOTH_SCROLL=off: never ask for st's mode 2032 (testing). */
 const smoothScrollAllowed = process.env.RECORD_SMOOTH_SCROLL !== "off";
+/** RECORD_IMAGE_CLIP=off: ignore st's image clip regions (testing the crop path). */
+const imageClipAllowed = process.env.RECORD_IMAGE_CLIP !== "off";
+/** st reported image clip regions (DECRQM ? 2033); applies to the scroller once it exists. */
+let imageClipSupported = false;
 let smoothScrollTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
@@ -2679,7 +2685,7 @@ function setupTerminal(): void {
       // needs region scrolls. RECORD_SMOOTH_SCROLL=off skips the latter
       // (testing the plain region scrolls in st).
       + (state.scrollRegions ? SYNCHRONIZED_UPDATES_QUERY : "")
-      + (state.scrollRegions && smoothScrollAllowed ? SMOOTH_SCROLL_QUERY : "")
+      + (state.scrollRegions && smoothScrollAllowed ? SMOOTH_SCROLL_QUERY + IMAGE_CLIP_QUERY : "")
       + enableBracketedPaste
       + queryClipboardPasteEvents
       + enableClipboardPasteEvents
@@ -2864,11 +2870,20 @@ async function main(): Promise<void> {
         }
         return;
       }
+      const imageClip = parseImageClipReport(sequence);
+      if (imageClip !== null) {
+        imageClipSupported = imageClip && imageClipAllowed;
+        smoothScrollerFor(state)?.useImageClip(imageClipSupported);
+        scheduleRender();
+        return;
+      }
       const smoothSupported = parseSmoothScrollReport(sequence);
       if (smoothSupported !== null) {
         if (smoothSupported && state.scrollRegions && smoothScrollAllowed && !smoothScrollerFor(state)) {
           process.stdout.write(SMOOTH_SCROLL_ON);
-          setSmoothScroller(state, new SmoothScroller());
+          const smooth = new SmoothScroller();
+          smooth.useImageClip(imageClipSupported);
+          setSmoothScroller(state, smooth);
           invalidateFrame(state);
           renderImmediately();
         }

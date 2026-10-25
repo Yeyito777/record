@@ -197,7 +197,15 @@ terminals never reply and see no difference.
   typing line, the prompt's rows, an overlay) crops at once. That whole-image
   placement has its own placement id, so the prompt rows st saw under it are
   never mistaken for the image's own cells once it rests. st keeps the rows of
-  images leaving at the top. Custom emoji use one
+  images leaving at the top.
+- On an st with image clip regions (it answers DECRQM `CSI ? 2033 $ p` with 3)
+  Record declares the message pane as the clip region (`OSC 2032 ; k`, sent
+  again whenever the pane's size changes) and st never draws a chat image
+  outside it, at rest or while gliding. An image cut off by the pane's bottom
+  then simply stays placed whole: it slides in and out smoothly and nothing has
+  to be cropped against st's clock. While the image viewer is open (its image
+  sits in the pane) the clip region is cleared and the crop above applies.
+  `RECORD_IMAGE_CLIP=off` ignores st's support (testing). Custom emoji use one
   placement id per cell and are deleted one by one, so emoji on the lines st
   keeps for the glide's edge are not erased mid-glide.
 - The sidebar and member list lists themselves do not glide: mode 2032 has one
