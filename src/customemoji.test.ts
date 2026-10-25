@@ -10,6 +10,13 @@ const PNG = Buffer.from(
 );
 
 describe("Discord custom emoji images", () => {
+  test("once every private-use marker is taken, new emoji show their name instead of a stuck loading glyph", () => {
+    const renderer = new CustomEmojiImageRenderer();
+    for (let index = 0; index <= 0xf8ff - 0xe000; index++) renderer.markerFor({ id: String(1000 + index), name: `e${index}`, animated: false });
+    expect(renderer.markerFor({ id: "1000", name: "e0", animated: false })).toBe("\ue000");
+    expect(renderer.markerFor({ id: "999999", name: "late_emoji", animated: false })).toBe(":late_emoji:");
+  });
+
   test("replaces static and animated syntax with atomic two-column markers", () => {
     const renderer = new CustomEmojiImageRenderer();
     const source = "x <:aliencat_stare_2:1478284001298087936> <a:dance:1478284001298087937> y";
