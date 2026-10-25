@@ -138,8 +138,10 @@ between the expand marker and the name. Servers without an icon, and icons
 still loading or unavailable, show a tile with the server's initials in the
 same box. Direct-message rows show the other person's avatar (group DMs their
 group picture) in place of the `#` marker; the Direct Messages, WhatsApp and
-Instagram roots show DM / WA / IG tiles. Elsewhere the sidebar looks exactly
-as before.
+Instagram roots show DM / WA / IG tiles. WhatsApp and Instagram conversations
+show initials tiles: their pictures would need extra requests through the
+logged-in session, so Record does not fetch them. Elsewhere the sidebar looks
+exactly as before.
 
 - Icons and avatars are 64 px PNGs from Discord's CDN (animated ones show
   their first frame). No login token is sent with these requests.

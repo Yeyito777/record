@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, mapDirectMessageChannel, type DiscordChannel } from "./discord";
 import { invalidateFrame } from "./frame";
 import { openImageModalState } from "./imagemodal";
@@ -279,6 +280,21 @@ describe("sidebar rows with icons", () => {
     expect(rows.some((row) => row.startsWith("    TG the group"))).toBe(true);
     expect(rows.some((row) => row.startsWith("    Bo bob"))).toBe(true);
     expect(frame.visible.map((iconSource) => iconSource.key).sort()).toEqual(["group-12-grp", "guild-1-hash1", "user-u1-ava"]);
+  });
+
+  test("WhatsApp conversations get initials tiles and never a download", () => {
+    const sidebar = sidebarWith([]);
+    setSidebarGuilds(sidebar, [{ id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null }]);
+    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, [{
+      id: "123@s.whatsapp.net", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Mom", topic: null, position: 0, type: 1, nsfw: false,
+    }]);
+    sidebar.expandedGuildId = WHATSAPP_GUILD_ID;
+    const frame = createSidebarIconFrame(() => null);
+    const rows = renderSidebar(sidebar, [], 8, false, null, 0, new Set(), "⋯", new Map(), new Map(), {}, frame).map(stripAnsi);
+    expect(rows[2]).toStartWith("▸ ▾ WA WhatsApp");
+    expect(rows.some((row) => row.startsWith("    Mo Mom"))).toBe(true);
+    expect(frame.visible).toEqual([]);
+    expect(frame.nearby).toEqual([]);
   });
 
   test("prefetches about a screen around the viewport, nearest first", () => {

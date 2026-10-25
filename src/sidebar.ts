@@ -2771,7 +2771,8 @@ const GROUP_DIRECT_MESSAGE_CHANNEL_TYPE = 3;
 
 interface SidebarIconLookup {
   guildsById: ReadonlyMap<string, DiscordGuild>;
-  directMessage: (channelId: string) => DiscordChannel | undefined;
+  /** A private conversation by provider root and id. */
+  conversation: (guildId: string, channelId: string) => DiscordChannel | undefined;
 }
 
 /** Whether a row draws an icon box, and the picture behind it if it has one. */
@@ -2780,10 +2781,13 @@ function entryIcon(entry: SidebarEntry, lookup: SidebarIconLookup): SidebarEntry
     const guild = lookup.guildsById.get(entry.id);
     return { source: guild ? discordGuildIconSource(guild) : null, initials: FIXED_ROOT_INITIALS[entry.id] };
   }
-  if (entry.kind === "channel" && entry.guildId === DIRECT_MESSAGES_GUILD_ID) {
-    const channel = lookup.directMessage(entry.id);
+  if (entry.kind === "channel" && Object.hasOwn(FIXED_ROOT_INITIALS, entry.guildId)) {
+    const channel = lookup.conversation(entry.guildId, entry.id);
     if (!channel) return null;
     const initials = sidebarIconInitials(channel.name);
+    // WhatsApp and Instagram pictures would need extra requests through the
+    // logged-in session, so their conversations get initials only.
+    if (entry.guildId !== DIRECT_MESSAGES_GUILD_ID) return { source: null, initials, replacesMarker: true };
     if (channel.type === DIRECT_MESSAGE_CHANNEL_TYPE) {
       const recipient = channel.recipients?.[0];
       return { source: recipient ? discordUserAvatarSource(recipient) : null, initials, replacesMarker: true };
@@ -2853,15 +2857,18 @@ export function renderSidebar(
       + theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   } else {
-    let directMessagesById: Map<string, DiscordChannel> | null = null;
+    const conversationsByRoot = new Map<string, Map<string, DiscordChannel>>();
     const iconLookup: SidebarIconLookup | null = icons
       ? {
         guildsById: new Map(sidebar.guilds.map((guild) => [guild.id, guild])),
-        // Built only when Direct Messages is expanded on screen.
-        directMessage: (channelId) => {
-          directMessagesById ??= new Map(sidebarChannelsForGuild(sidebar, channels, DIRECT_MESSAGES_GUILD_ID)
-            .map((channel) => [channel.id, channel]));
-          return directMessagesById.get(channelId);
+        // Built only for a root expanded on screen.
+        conversation: (guildId, channelId) => {
+          let byId = conversationsByRoot.get(guildId);
+          if (!byId) {
+            byId = new Map(sidebarChannelsForGuild(sidebar, channels, guildId).map((channel) => [channel.id, channel]));
+            conversationsByRoot.set(guildId, byId);
+          }
+          return byId.get(channelId);
         },
       }
       : null;
