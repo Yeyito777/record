@@ -9,6 +9,7 @@ import {
   type SidebarVisibilityOptions,
 } from "./sidebar";
 import { clampHistoryCol, stripAnsi } from "./historycursor";
+import { historyTargetAt, isInlineImageBodyRow } from "./historyopenable";
 import { focusSidebar, type AppState } from "./state";
 import { mouseCursorHand, mouseCursorPointer, mouseCursorText } from "./terminal";
 import { nextWidthClusterEnd, termWidth } from "./textwidth";
@@ -18,7 +19,14 @@ export type MouseResult =
   | { type: "activate_sidebar" }
   | { type: "scroll_chat"; delta: number }
   | { type: "focus_prompt" }
-  | { type: "focus_history"; row: number; col: number };
+  /** Left press in history: focus it and start a selection at the cell. */
+  | { type: "history_press"; row: number; col: number }
+  /** Drag with the left button held: extend the selection. */
+  | { type: "history_drag"; row: number; col: number }
+  /** Release on the pressed character: open what is there (image, attachment, link). */
+  | { type: "history_click"; row: number; col: number }
+  /** Release after a drag (position null outside the history rows). */
+  | { type: "history_release"; position: { row: number; col: number } | null };
 
 type CursorWriter = (sequence: string) => void;
 
@@ -42,11 +50,15 @@ function chatAreaAt(state: AppState, col: number, row: number): ChatArea {
   return null;
 }
 
-/** The history line and column under a screen cell, or null past the content. */
-function historyPositionAt(state: AppState, col: number, row: number): { row: number; col: number } | null {
+/**
+ * The history line and column under a screen cell, or null past the content.
+ * `exact` is false when the cell is beyond the end of the line's text, where
+ * the column clamps to the last character (selection) but nothing is clicked.
+ */
+function historyPositionAt(state: AppState, col: number, row: number): { row: number; col: number; exact: boolean } | null {
   const layout = state.chatMouseLayout;
   if (!layout) return null;
-  const line = state.timeline.scrollOffset + (row - layout.bodyTop);
+  const line = layout.firstLine + (row - layout.bodyTop);
   if (line < 0 || line >= state.historyLines.length) return null;
   const plain = stripAnsi(state.historyLines[line] ?? "");
   const target = col - (layout.firstCol + 1);
@@ -59,7 +71,20 @@ function historyPositionAt(state: AppState, col: number, row: number): { row: nu
     width += size;
     offset = end;
   }
-  return { row: line, col: clampHistoryCol(offset, state.historyLines, line) };
+  // Image rows have no text: anywhere on one is the image.
+  const exact = target >= 0 && (offset < plain.length || isInlineImageBodyRow(state, line));
+  return { row: line, col: clampHistoryCol(offset, state.historyLines, line), exact };
+}
+
+/** I-beam over text; a hand over history images, attachments and links a click opens. */
+function chatCursorShape(state: AppState, col: number, row: number): "hand" | "text" | "pointer" {
+  const area = chatAreaAt(state, col, row);
+  if (!area) return "pointer";
+  if (area === "history") {
+    const position = historyPositionAt(state, col, row);
+    if (position?.exact && historyTargetAt(state, position)) return "hand";
+  }
+  return "text";
 }
 
 function updateMouseCursor(ev: MouseEvent, state: AppState, writeCursor: CursorWriter): void {
@@ -72,7 +97,7 @@ function updateMouseCursor(ev: MouseEvent, state: AppState, writeCursor: CursorW
     sidebarVisibilityOptions(state),
   )
     ? "hand"
-    : !inSidebar && chatAreaAt(state, ev.col, ev.row) ? "text" : "pointer";
+    : !inSidebar ? chatCursorShape(state, ev.col, ev.row) : "pointer";
   if (shape === state.mouseCursor) return;
   state.mouseCursor = shape;
   writeCursor(shape === "hand" ? mouseCursorHand : shape === "text" ? mouseCursorText : mouseCursorPointer);
@@ -92,6 +117,20 @@ export function handleMouseEvent(
 
   // Do not click through full-screen or sidebar-anchored modal overlays.
   if (state.whatsapp.loginModal || state.sidebar.serverActionModal) return { type: "handled" };
+
+  const press = state.mouseHistoryPress;
+  if (press && ev.button === 0 && ev.action === "motion") {
+    const position = historyPositionAt(state, ev.col, ev.row);
+    return position ? { type: "history_drag", row: position.row, col: position.col } : { type: "handled" };
+  }
+  if (press && ev.action === "release") {
+    state.mouseHistoryPress = null;
+    const position = historyPositionAt(state, ev.col, ev.row);
+    if (position && press.exact && press.col === ev.col && press.row === ev.row) {
+      return { type: "history_click", row: position.row, col: position.col };
+    }
+    return { type: "history_release", position: position && { row: position.row, col: position.col } };
+  }
 
   const inSidebar = state.sidebar.open && ev.col >= 1 && ev.col <= SIDEBAR_WIDTH;
 
@@ -138,14 +177,19 @@ export function handleMouseEvent(
     return entry ? { type: "activate_sidebar" } : { type: "handled" };
   }
 
-  // A click in the prompt focuses it; a click in history focuses history with
-  // the cursor on the clicked character (like Exocortex).
+  // A click in the prompt focuses it. In history a press starts a selection
+  // that a drag extends, and a click on an image, attachment or link opens it
+  // (like Exocortex).
   if (!inSidebar && ev.button === 0 && ev.action === "press") {
+    state.mouseHistoryPress = null;
     const area = chatAreaAt(state, ev.col, ev.row);
     if (area === "prompt") return { type: "focus_prompt" };
     if (area === "history") {
       const position = historyPositionAt(state, ev.col, ev.row);
-      if (position) return { type: "focus_history", ...position };
+      if (position) {
+        state.mouseHistoryPress = { col: ev.col, row: ev.row, exact: position.exact };
+        return { type: "history_press", row: position.row, col: position.col };
+      }
     }
   }
 

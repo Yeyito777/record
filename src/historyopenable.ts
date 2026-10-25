@@ -185,3 +185,19 @@ export function openableTargetAtHistoryCursor(state: AppState): string | null {
 
   return attachmentAtHistoryCursor(state)?.url ?? null;
 }
+
+/** Whether a click at this history position opens something: an image, attachment, link or path. */
+export function historyTargetAt(state: AppState, position: { row: number; col: number }): boolean {
+  const saved = state.historyCursor;
+  state.historyCursor = { ...saved, row: position.row, col: position.col };
+  try {
+    return inlineImageBodyAttachmentAtHistoryCursor(state) !== null || openableTargetAtHistoryCursor(state) !== null;
+  } finally {
+    state.historyCursor = saved;
+  }
+}
+
+/** Whether a history row is part of an inline image's body (a click anywhere on it opens the image). */
+export function isInlineImageBodyRow(state: AppState, row: number): boolean {
+  return attachmentIdFromInlineImageBodyAnchor(state.historyLineAnchors[row]) !== null;
+}
