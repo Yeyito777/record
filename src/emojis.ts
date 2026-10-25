@@ -7,6 +7,7 @@
 
 import type { CompletionItem } from "./commands";
 import type { DiscordCustomEmoji } from "./discord";
+import { completionTailStart } from "./prompttext";
 import { theme } from "./theme";
 import { activity, food, nature, objects, people, symbols, travel } from "discord-emoji";
 
@@ -520,7 +521,7 @@ function emojiDisplayName(candidate: EmojiCandidate, query: string): string {
 
 export function emojiQueryAtCursor(buffer: string, cursor: number): EmojiQuery | null {
   const clampedCursor = Math.max(0, Math.min(cursor, buffer.length));
-  const beforeCursor = buffer.slice(0, clampedCursor);
+  const beforeCursor = buffer.slice(completionTailStart(buffer, clampedCursor), clampedCursor);
   const match = beforeCursor.match(EMOJI_BOUNDARY_RE);
   if (!match) return null;
 

@@ -69,53 +69,56 @@ function findCommandSpans(buffer: string, state: AppState): Span[] {
   return spans;
 }
 
+export interface PromptHighlightRegion {
+  start: number;
+  end: number;
+  color: string;
+}
+
+/**
+ * Highlighted regions of the whole prompt buffer: valid slash commands, then
+ * resolvable mentions, never overlapping. Compute once per frame and share
+ * across the visible rows; it scans the whole buffer.
+ */
+export function promptHighlightRegions(buffer: string, state: AppState): PromptHighlightRegion[] {
+  const regions: Array<PromptHighlightRegion & { priority: number }> = [];
+  if (buffer.includes("/")) {
+    for (const span of findCommandSpans(buffer, state)) regions.push({ ...span, color: theme.command, priority: 2 });
+  }
+  if (buffer.includes("@")) {
+    for (const span of promptMentionSpans(state, buffer)) regions.push({ ...span, priority: 1 });
+  }
+
+  const selected: PromptHighlightRegion[] = [];
+  let lastEnd = -1;
+  for (const region of regions.sort((left, right) => left.start - right.start || right.priority - left.priority)) {
+    if (region.end <= region.start || region.start < lastEnd) continue;
+    selected.push({ start: region.start, end: region.end, color: region.color });
+    lastEnd = region.end;
+  }
+  return selected;
+}
+
 export function highlightPromptViewport(
   visibleText: string,
   buffer: string,
   viewportStart: number,
   state: AppState,
+  regions: readonly PromptHighlightRegion[] = promptHighlightRegions(buffer, state),
 ): string {
   if (visibleText.length === 0) return visibleText;
 
   const viewportEnd = viewportStart + visibleText.length;
-  const regions: Array<{ start: number; end: number; color: string; priority: number }> = [];
-
-  for (const span of findCommandSpans(buffer, state)) {
-    if (span.end <= viewportStart || span.start >= viewportEnd) continue;
-    regions.push({
-      start: Math.max(0, span.start - viewportStart),
-      end: Math.min(visibleText.length, span.end - viewportStart),
-      color: theme.command,
-      priority: 2,
-    });
-  }
-
-  for (const span of promptMentionSpans(state, buffer)) {
-    if (span.end <= viewportStart || span.start >= viewportEnd) continue;
-    regions.push({
-      start: Math.max(0, span.start - viewportStart),
-      end: Math.min(visibleText.length, span.end - viewportStart),
-      color: span.color,
-      priority: 1,
-    });
-  }
-
-  const selected: Array<{ start: number; end: number; color: string }> = [];
-  for (const region of regions.sort((left, right) => left.start - right.start || right.priority - left.priority)) {
-    if (region.end <= region.start) continue;
-    if (selected.some((existing) => region.start < existing.end && region.end > existing.start)) continue;
-    selected.push(region);
-  }
-  selected.sort((left, right) => left.start - right.start);
-
-  if (selected.length === 0) return `${theme.text}${visibleText}${theme.reset}`;
-
   let out = theme.text;
   let pos = 0;
-  for (const region of selected) {
-    if (region.start > pos) out += visibleText.slice(pos, region.start);
-    out += region.color + visibleText.slice(region.start, region.end) + theme.text;
-    pos = region.end;
+  for (const region of regions) {
+    if (region.end <= viewportStart) continue;
+    if (region.start >= viewportEnd) break;
+    const start = Math.max(0, region.start - viewportStart);
+    const end = Math.min(visibleText.length, region.end - viewportStart);
+    if (start > pos) out += visibleText.slice(pos, start);
+    out += region.color + visibleText.slice(start, end) + theme.text;
+    pos = end;
   }
   if (pos < visibleText.length) out += visibleText.slice(pos);
   return out + theme.reset;
