@@ -27,14 +27,29 @@ interface GatewayPayload {
   d?: unknown;
 }
 
+export interface MemberListUpdateInfo {
+  /**
+   * Rows replayed from another channel of the same guild while this channel's
+   * own list loads: show them, but do not treat or persist them as its list.
+   */
+  provisional?: boolean;
+}
+
 interface MemberListCallbacks {
-  onMembers: (members: DiscordGuildMember[]) => void;
+  onMembers: (members: DiscordGuildMember[], info?: MemberListUpdateInfo) => void;
   onError: (error: Error) => void;
 }
 
 interface MemberListGatewayCallbacks {
   onAuthTokenRefresh?: (token: string) => void;
+  /** Status to identify with; this is a second session of the user's account. */
+  presenceStatus?: () => string;
 }
+
+/** Close codes after which reconnecting cannot succeed (auth, intents, sharding). */
+const FATAL_CLOSE_CODES = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
+const RECONNECT_BASE_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 60_000;
 
 interface ActiveSubscription extends MemberListCallbacks {
   guildId: string;
@@ -60,6 +75,10 @@ export class MemberListGatewayClient {
   private seq: number | null = null;
   private manualDisconnect = false;
   private reconnectPromise: Promise<void> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private heartbeatAcked = true;
+  private presenceStatusOverride: string | null = null;
   private subscription: ActiveSubscription | null = null;
 
   constructor(private token: string, private readonly callbacks: MemberListGatewayCallbacks = {}) {}
@@ -100,7 +119,7 @@ export class MemberListGatewayClient {
         ...callbacks,
       };
       if (canReplayGuildRows) {
-        callbacks.onMembers(extractGatewayMembers(current.rows));
+        callbacks.onMembers(extractGatewayMembers(current.rows), { provisional: true });
       }
     }
 
@@ -111,7 +130,37 @@ export class MemberListGatewayClient {
   disconnect(): void {
     debugLog("member_gateway.disconnect", { guildId: this.subscription?.guildId ?? null, channelId: this.subscription?.channelId ?? null });
     this.subscription = null;
+    this.clearReconnectTimer();
     this.closeSocket(true);
+  }
+
+  /** Mirror the main session's status so this session never shows the user online. */
+  updatePresenceStatus(status: string): void {
+    this.presenceStatusOverride = status;
+    if (!this.ready) return;
+    this.send({ op: 3, d: { status, afk: false, since: 0, activities: [] } });
+  }
+
+  private presenceStatus(): string {
+    return this.presenceStatusOverride ?? this.callbacks.presenceStatus?.() ?? "invisible";
+  }
+
+  private clearReconnectTimer(): void {
+    if (!this.reconnectTimer) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  /** Reconnect after an unexpected close, backing off on repeated failures. */
+  private scheduleReconnect(reason: string): void {
+    if (!this.subscription || this.reconnectTimer) return;
+    const delayMs = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempts);
+    this.reconnectAttempts += 1;
+    debugLog("member_gateway.reconnect_scheduled", { reason, delayMs, attempt: this.reconnectAttempts });
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.reconnect();
+    }, delayMs);
   }
 
   private async ensureConnected(): Promise<void> {
@@ -179,7 +228,7 @@ export class MemberListGatewayClient {
           properties: createGatewayProperties(),
           presence: {
             activities: [],
-            status: "online",
+            status: this.presenceStatus(),
             since: null,
             afk: false,
           },
@@ -189,6 +238,7 @@ export class MemberListGatewayClient {
     }
 
     if (payload.op === 11) {
+      this.heartbeatAcked = true;
       return;
     }
 
@@ -202,6 +252,7 @@ export class MemberListGatewayClient {
       this.handleAuthTokenRefresh(payload.d);
       debugLog("member_gateway.ready");
       this.ready = true;
+      this.reconnectAttempts = 0;
       this.readyResolve?.();
       this.readyResolve = null;
       this.readyReject = null;
@@ -228,12 +279,19 @@ export class MemberListGatewayClient {
         : `Discord member list gateway closed (code ${event.code}).`,
     );
     const manualDisconnect = this.manualDisconnect;
+    const wasReady = this.ready;
     this.cleanupSocketState();
 
     if (!manualDisconnect) {
       this.readyReject?.(error);
       this.readyResolve = null;
       this.readyReject = null;
+      // A live list that drops (network change, Discord restart) reconnects by
+      // itself instead of silently going stale until the next channel switch.
+      if (wasReady && this.subscription && !FATAL_CLOSE_CODES.has(event.code)) {
+        this.scheduleReconnect(`close_${event.code}`);
+        return;
+      }
       this.subscription?.onError(error);
     }
   };
@@ -306,10 +364,20 @@ export class MemberListGatewayClient {
 
   private startHeartbeat(intervalMs: number): void {
     this.heartbeatIntervalMs = intervalMs;
+    this.heartbeatAcked = true;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
     }
     this.heartbeatTimer = setInterval(() => {
+      if (!this.heartbeatAcked) {
+        // No ACK for the previous heartbeat: the connection is dead even if
+        // the socket still looks open (sleep, Wi-Fi change). Reconnect now.
+        debugLog("member_gateway.heartbeat_timeout", {});
+        this.resetSocket();
+        this.scheduleReconnect("heartbeat_timeout");
+        return;
+      }
+      this.heartbeatAcked = false;
       this.send({ op: 1, d: this.seq });
     }, Math.max(1_000, this.heartbeatIntervalMs));
   }
@@ -367,6 +435,10 @@ export class MemberListGatewayClient {
       this.sendSubscription(subscription.guildId, subscription.channelId);
     })().catch((error) => {
       if (this.subscription !== subscription) return;
+      if (this.reconnectAttempts > 0) {
+        this.scheduleReconnect("reconnect_failed");
+        return;
+      }
       subscription.onError(asError(error, "Failed to reconnect Discord member list gateway."));
     }).finally(() => {
       this.reconnectPromise = null;
