@@ -35,6 +35,16 @@ interface TerminalImageSyncState {
 export interface InlineTerminalImageSyncOptions {
   /** Keep established placements but defer creating or moving them. */
   allowPlacementUpdates?: boolean;
+  /**
+   * Send every placement again even if it looks unchanged: the screen was
+   * repainted from scratch (resize, alternate-screen re-entry), which can
+   * drop or move placements behind our back. Image data stays resident.
+   */
+  replacePlacements?: boolean;
+  /** Bound on images kept in the terminal with no placement (default 64). */
+  maxIdleImages?: number;
+  /** Bound on their charged bytes, base64 plus RGBA pixels (default 32 MiB). */
+  maxIdleBytes?: number;
 }
 
 const syncStates = new WeakMap<object, TerminalImageSyncState>();
@@ -173,7 +183,8 @@ export function planInlineTerminalImages(
   for (const placement of placements) {
     const key = placementKey(placement);
     const fingerprint = placementFingerprint(placement);
-    if (!retransmitted.has(placement.image.imageId) && state.placements.get(key) === fingerprint) continue;
+    if (!options.replacePlacements && !retransmitted.has(placement.image.imageId)
+      && state.placements.get(key) === fingerprint) continue;
     if (options.allowPlacementUpdates === false) continue;
     out.push(placeImage(placement));
     state.placements.set(key, fingerprint);
@@ -182,6 +193,8 @@ export function planInlineTerminalImages(
   // Visible images are pinned; the *additional* idle working set is bounded.
   // Prune only after removing old placements so hard deletes cannot erase a
   // current placement. Large modal images are reclaimed as soon as they close.
+  const maxIdleImages = options.maxIdleImages ?? MAX_IDLE_IMAGES;
+  const maxIdleBytes = options.maxIdleBytes ?? MAX_IDLE_IMAGE_BYTES;
   const idle = [...state.images].filter(([imageId]) => !desiredImageIds.has(imageId));
   let idleBytes = idle.reduce((sum, [, image]) => sum + image.bytes, 0);
   let idleCount = idle.length;
@@ -193,10 +206,10 @@ export function planInlineTerminalImages(
   };
   // An oversized modal must not flush all the smaller cached chat previews.
   for (const [imageId, image] of idle) {
-    if (image.bytes > MAX_IDLE_IMAGE_BYTES) evict(imageId, image.bytes);
+    if (image.bytes > maxIdleBytes) evict(imageId, image.bytes);
   }
   for (const [imageId, image] of idle) {
-    if (idleCount <= MAX_IDLE_IMAGES && idleBytes <= MAX_IDLE_IMAGE_BYTES) break;
+    if (idleCount <= maxIdleImages && idleBytes <= maxIdleBytes) break;
     if (state.images.has(imageId)) evict(imageId, image.bytes);
   }
 
@@ -215,6 +228,14 @@ export function syncInlineTerminalImages(
   if (transmit || update) write(transmit + update);
 }
 
+/** Image id of a Kitty "image not found" placement reply, else null. */
+export function terminalImageNotFoundId(sequence: string): number | null {
+  const match = /^\x1b_Gi=(\d+)(?:,p=\d+)?;(ENOENT:image not found)\x1b\\$/.exec(sequence);
+  if (!match) return null;
+  const imageId = Number(match[1]);
+  return Number.isSafeInteger(imageId) && imageId > 0 ? imageId : null;
+}
+
 /**
  * Consume a Kitty placement failure. st retains explicitly addressed image
  * data after a soft placement deletion, so viewport re-entry normally needs
@@ -222,10 +243,8 @@ export function syncInlineTerminalImages(
  * forget its residency here; the next render retransmits it exactly once.
  */
 export function handleInlineTerminalImageResponse(owner: object, sequence: string): boolean {
-  const match = /^\x1b_Gi=(\d+)(?:,p=\d+)?;(ENOENT:image not found)\x1b\\$/.exec(sequence);
-  if (!match) return false;
-  const imageId = Number(match[1]);
-  if (!Number.isSafeInteger(imageId) || imageId <= 0) return false;
+  const imageId = terminalImageNotFoundId(sequence);
+  if (imageId === null) return false;
 
   const state = syncStates.get(owner);
   if (!state) return true;

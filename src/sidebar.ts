@@ -10,7 +10,16 @@ import { DIRECT_MESSAGES_GUILD_ID, compareSnowflakesDesc, isThreadChannel, type 
 import { graphemeBoundaryAtOrAfter, nextGraphemeEnd, previousGraphemeStart } from "./editor-buffer";
 import type { KeyEvent } from "./input";
 import { loadingLabel } from "./loading";
+import type { InlineChatImageReady } from "./inlineimage";
 import type { ServerActionModalState } from "./serveractions";
+import {
+  discordGroupIconSource,
+  discordGuildIconSource,
+  discordUserAvatarSource,
+  SIDEBAR_ICON_COLUMNS,
+  sidebarIconInitials,
+  type SidebarIconSource,
+} from "./sidebaricons";
 import { getViewportByWidth, padRight, termWidth, truncate } from "./textwidth";
 import { theme } from "./theme";
 import {
@@ -2716,6 +2725,80 @@ function sidebarVisualKeys(sidebar: SidebarState, entries: SidebarEntry[]): Set<
   return new Set(movableEntries.slice(start, end + 1).map((entry) => sidebarItemKey(entry.item)));
 }
 
+export interface SidebarIconPlacement {
+  image: InlineChatImageReady;
+  /** 1-based terminal row and column of the icon's first cell. */
+  row: number;
+  col: number;
+  /** Whether the cells under the icon carry the selection background. */
+  highlighted: boolean;
+}
+
+/**
+ * Per-frame icon context. Present only on Kitty-graphics terminals; without
+ * it every row renders exactly as it did before icons existed.
+ */
+export interface SidebarIconFrame {
+  /** Ready pixels for a source, or null to draw its initials tile. */
+  lookup: (source: SidebarIconSource) => InlineChatImageReady | null;
+  placements: SidebarIconPlacement[];
+  /** Sources drawn this frame, top to bottom. */
+  visible: SidebarIconSource[];
+  /** Sources within a screen above and below, nearest first. */
+  nearby: SidebarIconSource[];
+}
+
+export function createSidebarIconFrame(lookup: SidebarIconFrame["lookup"]): SidebarIconFrame {
+  return { lookup, placements: [], visible: [], nearby: [] };
+}
+
+interface SidebarEntryIcon {
+  source: SidebarIconSource | null;
+  /** Tile text when there is no picture; defaults to the label's initials. */
+  initials?: string;
+  /** Conversation rows show the picture after their indent instead of a `#` marker. */
+  replacesMarker?: boolean;
+}
+
+const FIXED_ROOT_INITIALS: Record<string, string> = {
+  [DIRECT_MESSAGES_GUILD_ID]: "DM",
+  [WHATSAPP_GUILD_ID]: "WA",
+  [INSTAGRAM_GUILD_ID]: "IG",
+};
+
+const DIRECT_MESSAGE_CHANNEL_TYPE = 1;
+const GROUP_DIRECT_MESSAGE_CHANNEL_TYPE = 3;
+
+interface SidebarIconLookup {
+  guildsById: ReadonlyMap<string, DiscordGuild>;
+  /** A private conversation by provider root and id. */
+  conversation: (guildId: string, channelId: string) => DiscordChannel | undefined;
+}
+
+/** Whether a row draws an icon box, and the picture behind it if it has one. */
+function entryIcon(entry: SidebarEntry, lookup: SidebarIconLookup): SidebarEntryIcon | null {
+  if (entry.kind === "guild") {
+    const guild = lookup.guildsById.get(entry.id);
+    return { source: guild ? discordGuildIconSource(guild) : null, initials: FIXED_ROOT_INITIALS[entry.id] };
+  }
+  if (entry.kind === "channel" && Object.hasOwn(FIXED_ROOT_INITIALS, entry.guildId)) {
+    const channel = lookup.conversation(entry.guildId, entry.id);
+    if (!channel) return null;
+    const initials = sidebarIconInitials(channel.name);
+    // WhatsApp and Instagram pictures would need extra requests through the
+    // logged-in session, so their conversations get initials only.
+    if (entry.guildId !== DIRECT_MESSAGES_GUILD_ID) return { source: null, initials, replacesMarker: true };
+    if (channel.type === DIRECT_MESSAGE_CHANNEL_TYPE) {
+      const recipient = channel.recipients?.[0];
+      return { source: recipient ? discordUserAvatarSource(recipient) : null, initials, replacesMarker: true };
+    }
+    if (channel.type === GROUP_DIRECT_MESSAGE_CHANNEL_TYPE) {
+      return { source: discordGroupIconSource(channel), initials, replacesMarker: true };
+    }
+  }
+  return null;
+}
+
 export function renderSidebar(
   sidebar: SidebarState,
   channels: DiscordChannel[],
@@ -2728,6 +2811,7 @@ export function renderSidebar(
   channelNotificationCounts: ReadonlyMap<string, number> = new Map(),
   guildNotificationCounts: ReadonlyMap<string, number> = new Map(),
   options: SidebarVisibilityOptions = {},
+  icons: SidebarIconFrame | null = null,
 ): string[] {
   if (!sidebar.open) return [];
 
@@ -2773,10 +2857,43 @@ export function renderSidebar(
       + theme.reset + borderBg + borderFg + "│" + theme.reset,
     );
   } else {
+    const conversationsByRoot = new Map<string, Map<string, DiscordChannel>>();
+    const iconLookup: SidebarIconLookup | null = icons
+      ? {
+        guildsById: new Map(sidebar.guilds.map((guild) => [guild.id, guild])),
+        // Built only for a root expanded on screen.
+        conversation: (guildId, channelId) => {
+          let byId = conversationsByRoot.get(guildId);
+          if (!byId) {
+            byId = new Map(sidebarChannelsForGuild(sidebar, channels, guildId).map((channel) => [channel.id, channel]));
+            conversationsByRoot.set(guildId, byId);
+          }
+          return byId.get(channelId);
+        },
+      }
+      : null;
     for (let i = 0; i < listRows; i++) {
       const entry = entries[scrollOffset + i];
       if (!entry) break;
-      rows.push(renderEntryRow(entry, visualKeys, innerWidth, borderBg, borderFg, activeChannelId));
+      const icon = iconLookup ? entryIcon(entry, iconLookup) : null;
+      if (icons && icon?.source) icons.visible.push(icon.source);
+      rows.push(renderEntryRow(entry, visualKeys, innerWidth, borderBg, borderFg, activeChannelId, icon && icons ? {
+        ...icon,
+        row: rows.length + 1,
+        image: icon.source ? icons.lookup(icon.source) : null,
+        placements: icons.placements,
+      } : null));
+    }
+    if (icons && iconLookup) {
+      // Prefetch about a screen each way, nearest rows first.
+      const end = scrollOffset + listRows;
+      for (let distance = 0; distance < Math.max(1, listRows); distance++) {
+        for (const index of [end + distance, scrollOffset - 1 - distance]) {
+          const entry = entries[index];
+          const source = entry ? entryIcon(entry, iconLookup)?.source : null;
+          if (source) icons.nearby.push(source);
+        }
+      }
     }
   }
 
@@ -2822,6 +2939,7 @@ function renderEntryRow(
   borderBg: string,
   borderFg: string,
   activeChannelId: string | null,
+  icon: SidebarEntryIcon & { row: number; image: InlineChatImageReady | null; placements: SidebarIconPlacement[] } | null = null,
 ): string {
   if (entry.kind === "delimiter") {
     const indent = "  ".repeat(entry.depth);
@@ -2858,7 +2976,25 @@ function renderEntryRow(
         : entry.kind === "voice-member"
           ? "• "
         : "";
-  const prefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${marker}` : `${selectPrefix}${marker}`;
+  // A conversation's picture takes its marker's place, lined up under the
+  // parent's icon so the names line up too.
+  const rowMarker = icon?.replacesMarker ? " ".repeat(termWidth(marker)) : marker;
+  const basePrefix = entry.kind === "channel" || entry.kind === "category" || entry.kind === "voice-member" ? `${indent}${rowMarker}` : `${selectPrefix}${rowMarker}`;
+  // The icon box sits between the marker and the name. A ready picture leaves
+  // blank cells for the Kitty placement; anything else shows initials there.
+  let prefix = basePrefix;
+  let prefixWidth = termWidth(basePrefix);
+  if (icon) {
+    prefixWidth += SIDEBAR_ICON_COLUMNS + 1;
+    const highlighted = entry.selected || isVisual;
+    if (icon.image) {
+      icon.placements.push({ image: icon.image, row: icon.row, col: 1 + termWidth(basePrefix), highlighted });
+      prefix += `${" ".repeat(SIDEBAR_ICON_COLUMNS)} `;
+    } else {
+      const tileFg = entry.muted ? theme.muted : entry.selected || isActive ? theme.text : theme.command;
+      prefix += `${theme.userBg}${tileFg}${icon.initials ?? sidebarIconInitials(entry.label)}${bg}${fg} `;
+    }
+  }
 
   if (entry.kind === "voice-member") {
     const rawLabel = voiceMemberNameLabel(entry);
@@ -2867,7 +3003,7 @@ function renderEntryRow(
     const liveBadge = renderLiveBadge(Boolean(entry.streaming));
     const cameraWidth = cameraIndicator ? 1 + termWidth(cameraIndicator) : 0;
     const liveWidth = liveBadge ? 1 + liveBadge.width : 0;
-    const contentWidth = Math.max(0, innerWidth - termWidth(prefix));
+    const contentWidth = Math.max(0, innerWidth - prefixWidth);
     const textWidth = Math.max(0, contentWidth - cameraWidth - liveWidth);
     const labelWidth = Math.max(0, textWidth - termWidth(statusSuffix));
     const clippedLabel = truncate(rawLabel, labelWidth);
@@ -2889,7 +3025,7 @@ function renderEntryRow(
   const badgeWidth = badge?.width ?? 0;
   const muteWidth = termWidth(muteIcon);
   const suffix = `${muteIcon}${badge ? `${" ".repeat(badgeGap)}${badge.text}` : ""}`;
-  const labelWidth = Math.max(0, innerWidth - termWidth(prefix) - muteWidth - badgeGap - badgeWidth);
+  const labelWidth = Math.max(0, innerWidth - prefixWidth - muteWidth - badgeGap - badgeWidth);
   const title = padRight(rawLabel, labelWidth);
   const text = isActive ? `${theme.bold}${title}${theme.boldOff}` : title;
 
