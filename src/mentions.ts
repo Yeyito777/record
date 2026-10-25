@@ -6,7 +6,7 @@ import { DIRECT_MESSAGES_GUILD_ID, type DiscordGuildMember, type DiscordMessage,
 import { completionTailStart } from "./prompttext";
 import type { AppState } from "./state";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
-import { resolvePrimaryRoleColor } from "./timeline";
+import { resolvePrimaryRoleColor, timelineContentVersion } from "./timeline";
 
 export type MentionCandidateKind = "user" | "broadcast" | "role";
 
@@ -173,7 +173,79 @@ function addMessageUsers(state: AppState, byId: Map<string, MentionCandidate>, m
   for (const mention of message.mentionUsers ?? []) addCandidate(state, byId, mention);
 }
 
+interface MentionIndex {
+  signature: string;
+  candidates: MentionCandidate[];
+  /** First candidate (in rank order) for each alias. */
+  byAlias: Map<string, MentionCandidate>;
+}
+
+const mentionIndexes = new WeakMap<AppState, MentionIndex>();
+const objectIds = new WeakMap<object, number>();
+let nextObjectId = 1;
+
+function objectId(value: object | null | undefined): number {
+  if (!value) return 0;
+  let id = objectIds.get(value);
+  if (id === undefined) {
+    id = nextObjectId++;
+    objectIds.set(value, id);
+  }
+  return id;
+}
+
+/**
+ * Everything loadedMentionCandidates reads. Arrays that are replaced on change
+ * are keyed by identity; the timeline by its content version.
+ */
+function mentionInputsSignature(state: AppState): string {
+  const guildId = activeGuildId(state);
+  const parts: Array<string | number | null> = [
+    guildId,
+    state.channelList.activeChannelId ?? state.timeline.channelId,
+    objectId(state.channelList.activeChannel),
+    state.auth.user?.id ?? null,
+    state.memberList.guildId,
+    state.memberList.channelId,
+    objectId(state.memberList.members),
+    state.timeline.channelId,
+    timelineContentVersion(state.timeline),
+    state.memberRoleCacheVersion,
+    objectId(guildId ? state.guildRolesByGuildId[guildId] : null),
+    theme.accent,
+  ];
+  for (const [key, members] of state.memberList.cache) parts.push(key, objectId(members));
+  for (const [channelId, entry] of Object.entries(state.messageCacheByChannelId)) parts.push(channelId, objectId(entry.messages));
+  return parts.join("\u0000");
+}
+
+function mentionIndex(state: AppState): MentionIndex {
+  const signature = mentionInputsSignature(state);
+  const cached = mentionIndexes.get(state);
+  if (cached && cached.signature === signature) return cached;
+  const candidates = buildMentionCandidates(state);
+  const byAlias = new Map<string, MentionCandidate>();
+  for (const candidate of candidates) {
+    for (const alias of mentionAliases(candidate)) {
+      if (!byAlias.has(alias)) byAlias.set(alias, candidate);
+    }
+  }
+  const index = { signature, candidates, byAlias };
+  mentionIndexes.set(state, index);
+  return index;
+}
+
+/**
+ * Loaded users, roles and @here/@everyone for the active conversation, in
+ * rank order. Rebuilt only when an input changes: the prompt resolves every
+ * @token on each keystroke and redraw, and a rebuild scans the member list,
+ * the timeline and every cached message.
+ */
 export function loadedMentionCandidates(state: AppState): MentionCandidate[] {
+  return mentionIndex(state).candidates;
+}
+
+function buildMentionCandidates(state: AppState): MentionCandidate[] {
   const byId = new Map<string, MentionCandidate>();
   const guildId = activeGuildId(state);
   const channelId = state.channelList.activeChannelId ?? state.timeline.channelId;
@@ -236,7 +308,7 @@ export function mentionCandidateMatches(candidate: MentionCandidate, query: stri
 export function mentionCandidateForToken(state: AppState, token: string): MentionCandidate | null {
   const key = compactMentionKey(token);
   if (!key) return null;
-  return loadedMentionCandidates(state).find((candidate) => mentionAliases(candidate).some((alias) => alias === key)) ?? null;
+  return mentionIndex(state).byAlias.get(key) ?? null;
 }
 
 export function promptMentionSpans(state: AppState, buffer: string): PromptMentionSpan[] {

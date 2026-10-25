@@ -1688,6 +1688,11 @@ function getTimelineCacheState(timeline: TimelineState): TimelineCacheState {
   return cacheState;
 }
 
+/** Changes whenever the timeline's messages or render inputs change. */
+export function timelineContentVersion(timeline: TimelineState): number {
+  return getTimelineCacheState(timeline).version;
+}
+
 function invalidateTimelineContentCache(timeline: TimelineState): void {
   const cacheState = getTimelineCacheState(timeline);
   cacheState.version += 1;
