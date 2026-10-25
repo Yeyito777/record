@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME } from "./chatproviders";
+import { INSTAGRAM_GUILD_ID, WHATSAPP_GUILD_ID, WHATSAPP_GUILD_NAME, whatsappChannelId } from "./chatproviders";
 import { DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, mapDirectMessageChannel, type DiscordChannel } from "./discord";
 import { invalidateFrame } from "./frame";
 import { openImageModalState } from "./imagemodal";
@@ -22,7 +22,9 @@ import {
   discordGroupIconSource,
   discordGuildIconSource,
   discordUserAvatarSource,
+  instagramUserPictureSource,
   SidebarIconStore,
+  whatsappChatPictureSource,
   sidebarIconInitials,
   sidebarIconTerminalOwner,
   sidebarIcons,
@@ -93,6 +95,7 @@ afterEach(() => {
 describe("sidebar icon sources", () => {
   test("uses small static PNGs from the Discord CDN", () => {
     expect(discordGuildIconSource({ id: "123", icon: "a_abc" })).toEqual({
+      platform: "discord",
       key: "guild-123-a_abc",
       owner: "guild-123-",
       url: "https://cdn.discordapp.com/icons/123/a_abc.png?size=64",
@@ -130,12 +133,12 @@ describe("SidebarIconStore", () => {
   test("fetches visible icons first, then nearby ones, each once", async () => {
     const { urls, fetch } = recordingFetch();
     let updates = 0;
-    const store = new SidebarIconStore({ fetch, cacheDir: null, concurrency: 1, onUpdate: () => updates++ });
+    const store = new SidebarIconStore({ fetch, cacheDir: null, concurrency: { discord: 1 }, onUpdate: () => updates++ });
     store.setEnabled(true);
     store.want([source("1"), source("2")], [source("3")]);
     store.want([source("1"), source("2")], [source("3")]);
     await store.idle();
-    expect(urls).toEqual([source("1").url, source("2").url, source("3").url]);
+    expect(urls).toEqual([source("1").url!, source("2").url!, source("3").url!]);
     expect(store.get(source("1"))?.pixelWidth).toBe(1);
     expect(store.get(source("3"))).not.toBeNull();
     // Only icons drawn on screen ask for a repaint.
@@ -144,12 +147,12 @@ describe("SidebarIconStore", () => {
 
   test("never fetches rows that scrolled away before their turn", async () => {
     const { urls, fetch } = recordingFetch();
-    const store = new SidebarIconStore({ fetch, cacheDir: null, concurrency: 1 });
+    const store = new SidebarIconStore({ fetch, cacheDir: null, concurrency: { discord: 1 } });
     store.setEnabled(true);
     store.want([source("1")], [source("2"), source("3")]);
     store.want([source("9")], []);
     await store.idle();
-    expect(urls).toEqual([source("1").url, source("9").url]);
+    expect(urls).toEqual([source("1").url!, source("9").url!]);
   });
 
   test("does nothing until the terminal supports graphics", async () => {
@@ -182,30 +185,148 @@ describe("SidebarIconStore", () => {
     expect(restarted.get(source("1", "new"))?.pngBase64).toBe(PNG.toString("base64"));
   });
 
-  test("rejects non-PNG and failed responses, then retries only after a pause", async () => {
+  test("never asks again about a picture that does not exist, even after a restart", async () => {
+    const dir = tempDir();
+    const { urls, fetch } = recordingFetch((url) => url.includes("/1/")
+      ? new Response("<html>", { status: 200 })
+      : new Response("", { status: 404 }));
+    const store = new SidebarIconStore({ fetch, cacheDir: dir, convert: async () => { throw new Error("not an image"); } });
+    store.setEnabled(true);
+    store.want([source("1"), source("2")]);
+    await store.idle();
+    expect(store.get(source("1"))).toBeNull();
+    expect(store.get(source("2"))).toBeNull();
+    store.want([source("1"), source("2")]);
+    await store.idle();
+    expect(urls).toHaveLength(2);
+    for (let i = 0; i < 50 && readdirSync(dir).length < 2; i++) await Bun.sleep(2);
+    expect(readdirSync(dir).sort()).toEqual(["guild-1-hash1.none", "guild-2-hash2.none"]);
+
+    const restarted = new SidebarIconStore({ fetch, cacheDir: dir });
+    restarted.setEnabled(true);
+    restarted.want([source("1"), source("2")]);
+    await restarted.idle();
+    expect(urls).toHaveLength(2);
+  });
+
+  test("WhatsApp asks through the session one chat at a time and remembers chats without a picture", async () => {
+    const dir = tempDir();
+    const asked: string[] = [];
+    const resolvers = {
+      whatsapp: async (iconSource: SidebarIconSource) => {
+        asked.push(iconSource.ref!);
+        return iconSource.ref!.startsWith("1") ? `https://pps.whatsapp.net/${iconSource.ref}.jpg` : null;
+      },
+    };
+    const { urls, fetch } = recordingFetch(() => new Response(Buffer.from([0xff, 0xd8, 0xff, 0xe0]), { status: 200 }));
+    let converted = 0;
+    const convert = async () => { converted++; return PNG; };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slowFetch = (async (input: string | URL | Request) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(2);
+      inFlight--;
+      return fetch(input);
+    }) as typeof globalThis.fetch;
+    const store = new SidebarIconStore({ fetch: slowFetch, cacheDir: dir, resolvers, convert });
+    store.setEnabled(true);
+    const people = ["15550001@s.whatsapp.net", "15550002@s.whatsapp.net", "25550003@s.whatsapp.net"].map(whatsappChatPictureSource);
+    store.want(people);
+    await store.idle();
+    expect(asked).toEqual(people.map((person) => person.ref!));
+    expect(urls).toHaveLength(2);
+    expect(maxInFlight).toBe(1);
+    expect(converted).toBe(2);
+    expect(store.get(people[0]!)).not.toBeNull();
+    expect(store.get(people[2]!)).toBeNull();
+    for (let i = 0; i < 50 && readdirSync(dir).length < 3; i++) await Bun.sleep(2);
+
+    // A restart within the cache's lifetime asks nothing at all.
+    const restarted = new SidebarIconStore({ fetch, cacheDir: dir, resolvers, convert });
+    restarted.setEnabled(true);
+    restarted.want(people);
+    await restarted.idle();
+    expect(asked).toHaveLength(3);
+    expect(urls).toHaveLength(2);
+    expect(restarted.get(people[1]!)).not.toBeNull();
+  });
+
+  test("old pictures are asked for again after days; a failed refresh keeps the old one", async () => {
+    const dir = tempDir();
+    const ig = instagramUserPictureSource("55", "https://scontent.cdninstagram.com/a.jpg")!;
+    writeFileSync(join(dir, `${ig.key}.png`), PNG);
+    let now = Date.now();
+    const { urls, fetch } = recordingFetch(() => new Response("", { status: 503 }));
+    const fresh = new SidebarIconStore({ fetch, cacheDir: dir, now: () => now });
+    fresh.setEnabled(true);
+    fresh.want([ig]);
+    await fresh.idle();
+    expect(urls).toHaveLength(0);
+    expect(fresh.get(ig)).not.toBeNull();
+
+    now += 8 * 24 * 60 * 60_000;
+    const later = new SidebarIconStore({ fetch, cacheDir: dir, now: () => now });
+    later.setEnabled(true);
+    later.want([ig]);
+    await later.idle();
+    expect(urls).toHaveLength(1);
+    expect(later.get(ig)).not.toBeNull();
+  });
+
+  test("a WhatsApp resolver error backs off instead of retrying", async () => {
     let now = 1_000_000;
-    const realNow = Date.now;
-    Date.now = () => now;
-    try {
-      const { urls, fetch } = recordingFetch((url) => url.includes("/1/")
-        ? new Response("<html>", { status: 200 })
-        : new Response("", { status: 404 }));
-      const store = new SidebarIconStore({ fetch, cacheDir: null });
-      store.setEnabled(true);
-      store.want([source("1"), source("2")]);
+    let calls = 0;
+    const store = new SidebarIconStore({
+      fetch: recordingFetch().fetch, cacheDir: null, now: () => now,
+      resolvers: { whatsapp: async () => { calls++; throw new Error("rate-overlimit"); } },
+    });
+    store.setEnabled(true);
+    const people = ["15550001@s.whatsapp.net", "15550002@s.whatsapp.net"].map(whatsappChatPictureSource);
+    for (let i = 0; i < 5; i++) {
+      store.want(people);
       await store.idle();
-      expect(store.get(source("1"))).toBeNull();
-      expect(store.get(source("2"))).toBeNull();
-      store.want([source("1"), source("2")]);
-      await store.idle();
-      expect(urls).toHaveLength(2);
-      now += 60_000;
-      store.want([source("1")]);
-      await store.idle();
-      expect(urls).toHaveLength(3);
-    } finally {
-      Date.now = realNow;
     }
+    expect(calls).toBe(1);
+    now += 60_000;
+    store.want(people);
+    await store.idle();
+    expect(calls).toBe(2);
+  });
+
+  test("errors back the platform off, doubling, and keep other platforms going", async () => {
+    let now = 1_000_000;
+    let failing = true;
+    const { urls, fetch } = recordingFetch((url) => failing && url.includes("cdn.discordapp.com")
+      ? new Response("", { status: 429 })
+      : pngResponse());
+    const store = new SidebarIconStore({ fetch, cacheDir: null, now: () => now, concurrency: { discord: 1 } });
+    store.setEnabled(true);
+    const ig = instagramUserPictureSource("55", "https://scontent.cdninstagram.com/a.jpg")!;
+    store.want([source("1"), source("2"), ig]);
+    await store.idle();
+    // The first 429 pauses Discord: source 2 waits; Instagram is unaffected.
+    expect(urls).toEqual([source("1").url!, ig.url!]);
+    store.want([source("1"), source("2")]);
+    await store.idle();
+    expect(urls).toHaveLength(2);
+
+    now += 60_000;
+    store.want([source("1"), source("2")]);
+    await store.idle();
+    expect(urls.slice(2)).toEqual([source("1").url!]);
+    // Second error: two minutes this time.
+    now += 60_000;
+    store.want([source("1"), source("2")]);
+    await store.idle();
+    expect(urls).toHaveLength(3);
+    now += 60_000;
+    failing = false;
+    store.want([source("1"), source("2")]);
+    await store.idle();
+    expect(urls).toHaveLength(5);
+    expect(store.get(source("2"))).not.toBeNull();
   });
 
   test("falls back to the tile after the terminal rejects an icon three times", async () => {
@@ -284,19 +405,42 @@ describe("sidebar rows with icons", () => {
     expect(frame.visible.map((iconSource) => iconSource.key).sort()).toEqual(["group-12-grp", "guild-1-hash1", "user-u1-ava"]);
   });
 
-  test("WhatsApp conversations get initials tiles and never a download", () => {
+  test("WhatsApp and Instagram rows ask for their pictures, a few rows ahead only", () => {
     const sidebar = sidebarWith([]);
-    setSidebarGuilds(sidebar, [{ id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null }]);
-    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, [{
-      id: "123@s.whatsapp.net", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Mom", topic: null, position: 0, type: 1, nsfw: false,
-    }]);
+    setSidebarGuilds(sidebar, [
+      { id: WHATSAPP_GUILD_ID, name: WHATSAPP_GUILD_NAME, icon: null },
+      { id: INSTAGRAM_GUILD_ID, name: "Instagram", icon: null },
+    ]);
+    const chat = (index: number): DiscordChannel => ({
+      id: whatsappChannelId(`1555000${String(index).padStart(4, "0")}@s.whatsapp.net`), guildId: WHATSAPP_GUILD_ID, parentId: null,
+      name: `Chat ${index}`, topic: null, position: index, type: 1, nsfw: false, lastMessageId: String(1000 - index),
+    });
+    setSidebarCachedChannels(sidebar, WHATSAPP_GUILD_ID, [
+      ...Array.from({ length: 30 }, (_, index) => chat(index)),
+      { ...chat(99), id: whatsappChannelId("status@broadcast"), name: "Status", lastMessageId: "1" },
+    ]);
     sidebar.expandedGuildId = WHATSAPP_GUILD_ID;
     const frame = createSidebarIconFrame(() => null);
-    const rows = renderSidebar(sidebar, [], 8, false, null, 0, new Set(), "⋯", new Map(), new Map(), {}, frame).map(stripAnsi);
+    const rows = renderSidebar(sidebar, [], 10, false, null, 0, new Set(), "⋯", new Map(), new Map(), {}, frame).map(stripAnsi);
     expect(rows[2]).toStartWith("▸ ▾ WA WhatsApp");
-    expect(rows.some((row) => row.startsWith("    Mo Mom"))).toBe(true);
-    expect(frame.visible).toEqual([]);
-    expect(frame.nearby).toEqual([]);
+    expect(rows[3]).toStartWith("    C0 Chat 0");
+    // Eight list rows: the root plus seven chats on screen, three more ahead.
+    expect(frame.visible).toHaveLength(7);
+    expect(frame.visible[0]).toEqual(whatsappChatPictureSource("15550000000@s.whatsapp.net"));
+    expect(frame.nearby).toHaveLength(3);
+    expect(frame.nearby.every((iconSource) => iconSource.platform === "whatsapp")).toBe(true);
+
+    setSidebarCachedChannels(sidebar, INSTAGRAM_GUILD_ID, [
+      { id: "ig-1", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "ana", topic: null, position: 0, type: 1, nsfw: false,
+        recipients: [{ id: "77", username: "ana", displayName: "Ana", bot: false }], pictureUrl: "https://scontent.cdninstagram.com/a.jpg" },
+      { id: "ig-2", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "group", topic: null, position: 1, type: 3, nsfw: false,
+        recipients: [{ id: "78", username: "bo", displayName: "Bo", bot: false }], pictureUrl: "https://scontent.cdninstagram.com/b.jpg" },
+    ]);
+    sidebar.expandedGuildId = INSTAGRAM_GUILD_ID;
+    const igFrame = createSidebarIconFrame(() => null);
+    renderSidebar(sidebar, [], 10, false, null, 0, new Set(), "⋯", new Map(), new Map(), {}, igFrame);
+    // Groups keep their initials tile.
+    expect(igFrame.visible).toEqual([instagramUserPictureSource("77", "https://scontent.cdninstagram.com/a.jpg")!]);
   });
 
   test("prefetches about a screen around the viewport, nearest first", () => {

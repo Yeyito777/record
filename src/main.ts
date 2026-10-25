@@ -2724,6 +2724,8 @@ async function main(): Promise<void> {
       if (!running) return;
       scheduleRender();
     },
+    // WhatsApp chat pictures need one profile-picture query per shown chat.
+    resolvers: { whatsapp: (source) => whatsAppController.profilePictureUrl(source.ref ?? "") },
   });
   terminalGraphicsClient = new TerminalGraphicsClient({
     write: (sequence) => process.stdout.write(sequence),

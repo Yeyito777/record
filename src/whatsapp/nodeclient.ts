@@ -20,6 +20,8 @@ import type {
   WhatsAppImageUpload,
   WhatsAppSendImagesParams,
   WhatsAppSendTextParams,
+  WhatsAppProfilePictureParams,
+  WhatsAppProfilePictureResult,
   WhatsAppSetChatMutedParams,
   WhatsAppSetChatMutedResult,
   WhatsAppWorkerMessage,
@@ -144,6 +146,12 @@ export class NodeWhatsAppBackendClient implements WhatsAppBackendHandle {
   async setChatMuted(chatId: string, muted: boolean): Promise<WhatsAppSetChatMutedResult> {
     const params: WhatsAppSetChatMutedParams = { chatId, muted };
     return await this.request("set-chat-muted", params as unknown as Record<string, unknown>) as WhatsAppSetChatMutedResult;
+  }
+
+  async profilePictureUrl(jid: string): Promise<string | null> {
+    const params: WhatsAppProfilePictureParams = { jid };
+    const result = await this.request("profile-picture", params as unknown as Record<string, unknown>) as WhatsAppProfilePictureResult;
+    return typeof result?.url === "string" ? result.url : null;
   }
 
   async logout(): Promise<void> {
