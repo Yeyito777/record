@@ -128,6 +128,19 @@ describe("OSC 5522 clipboard client", () => {
 });
 
 describe("terminal control stream framing", () => {
+  test("keeps multibyte characters split across stdin reads intact", () => {
+    const pasted = "\x1b[200~canción 日本語 🎤\x1b[201~";
+    const bytes = Buffer.from(pasted);
+    for (let split = 1; split < bytes.length; split++) {
+      const input: string[] = [];
+      const buffer = new TerminalControlBuffer((data) => input.push(data), () => {});
+      buffer.feed(bytes.subarray(0, split));
+      buffer.feed(bytes.subarray(split));
+      expect(input.join("")).toBe(pasted);
+      buffer.dispose();
+    }
+  });
+
   test("extracts an OSC response fragmented at every byte boundary", () => {
     const input: string[] = [];
     const controls: string[] = [];

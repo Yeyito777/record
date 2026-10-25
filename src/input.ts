@@ -5,6 +5,9 @@
  * what record currently needs.
  */
 
+import { StringDecoder } from "node:string_decoder";
+import { nextGraphemeEnd } from "./editor-buffer";
+
 export interface KeyEvent {
   type:
     | "char"
@@ -179,6 +182,23 @@ function csiUKeyType(keyCode: number, modifiers: number): KeyEvent["type"] | nul
   return null;
 }
 
+/** Kitty keypad keys (numbers in the Unicode private-use area) sent without text. */
+const KITTY_KEYPAD_CHARS: Record<number, string> = {
+  57399: "0", 57400: "1", 57401: "2", 57402: "3", 57403: "4",
+  57404: "5", 57405: "6", 57406: "7", 57407: "8", 57408: "9",
+  57409: ".", 57410: "/", 57411: "*", 57412: "-", 57413: "+", 57415: "=", 57416: ",",
+};
+const KITTY_KEYPAD_KEYS: Record<number, KeyEvent["type"]> = {
+  57417: "left", 57418: "right", 57419: "up", 57420: "down",
+  57423: "home", 57424: "end", 57426: "delete",
+};
+const KITTY_KP_ENTER = 57414;
+
+/** Kitty reports keys without a Unicode character (Shift, Caps Lock, F13…) in the private-use area. */
+function isPrivateUseCodepoint(cp: number): boolean {
+  return cp >= 0xE000 && cp <= 0xF8FF;
+}
+
 function parseCsiU(params: string): KeyEvent | null {
   const legacyType = CSI_U_MAP[params];
   if (legacyType) return { type: legacyType };
@@ -192,14 +212,61 @@ function parseCsiU(params: string): KeyEvent | null {
   if (!Number.isFinite(modifiers)) return null;
   const event = KITTY_EVENT_TYPES[modifierParts[1] ?? "1"] ?? "press";
 
-  const keyType = csiUKeyType(keyCode, modifiers);
+  const keyType = csiUKeyType(keyCode === KITTY_KP_ENTER ? 13 : keyCode, modifiers)
+    ?? (modifiers === 1 ? KITTY_KEYPAD_KEYS[keyCode] : undefined);
   if (keyType) return { type: keyType, event };
 
   // With kitty keyboard protocol's all-keys + associated-text flags, printable
-  // input (including releases) arrives as CSI u rather than raw UTF-8.
+  // input (including releases) arrives as CSI u rather than raw UTF-8. Other
+  // functional keys (modifiers, locks, F13+, media) are not text: their
+  // private-use codes would type invisible characters (and Record draws
+  // private-use characters as custom emoji).
+  const plain = modifiers === 1 || modifiers === 2;
   const text = decodeCodepoints(fields[2])
-    ?? (modifiers === 1 || modifiers === 2 ? String.fromCodePoint(keyCode) : null);
+    ?? (plain ? KITTY_KEYPAD_CHARS[keyCode] : undefined)
+    ?? (plain && !isPrivateUseCodepoint(keyCode) ? String.fromCodePoint(keyCode) : null);
   if (text) return { type: "char", char: text, event };
+  return null;
+}
+
+/**
+ * Legacy CSI keys: ESC [ <number> ; <modifiers>[:<event>] <final>. The kitty
+ * protocol reports repeats and releases of arrows, Home/End and ~ keys with
+ * these parameters (a repeated Left is ESC [ 1;1:2 D). Only the modifier
+ * combinations below are keys; others (Ctrl+Left, …) stay unmapped.
+ */
+function parseCsiKey(params: string, final: string): KeyEvent | null {
+  const match = /^(\d*)(?:;(\d*)(?::(\d+))?)?$/.exec(params);
+  if (!match) return null;
+  const number = match[1] ? parseInt(match[1], 10) : 1;
+  const modifiers = match[2] ? parseInt(match[2], 10) : 1;
+  const event = match[3] === undefined ? undefined : KITTY_EVENT_TYPES[match[3]];
+  if (match[3] !== undefined && !event) return null;
+  const type = csiKeyType(number, modifiers, final);
+  if (!type) return null;
+  return event ? { type, event } : { type };
+}
+
+/** Function keys F17-F24: CSI NN;2~ (st maps Ctrl+4 through Ctrl+-). */
+const SHIFTED_TILDE_KEYS: Partial<Record<number, KeyEvent["type"]>> = {
+  15: "f17", 17: "f18", 18: "f19", 19: "f20", 20: "f21", 21: "f22", 23: "f23", 24: "f24",
+};
+const TILDE_KEYS: Partial<Record<number, KeyEvent["type"]>> = { 1: "home", 3: "delete", 4: "end" };
+const LETTER_KEYS: Partial<Record<string, KeyEvent["type"]>> = {
+  A: "up", B: "down", C: "right", D: "left", H: "home", F: "end", Z: "backtab",
+};
+/** Function keys F14-F16: CSI 1;2Q/R/S (Shift+F1/F2/F3 — st maps Ctrl+1/2/3). */
+const SHIFTED_LETTER_KEYS: Partial<Record<string, KeyEvent["type"]>> = { Q: "f14", R: "f15", S: "f16" };
+
+function csiKeyType(number: number, modifiers: number, final: string): KeyEvent["type"] | null {
+  if (final === "~") {
+    if (modifiers === 1) return TILDE_KEYS[number] ?? null;
+    if (modifiers === 2) return SHIFTED_TILDE_KEYS[number] ?? null;
+    return null;
+  }
+  if (number !== 1) return null;
+  if (modifiers === 1) return LETTER_KEYS[final] ?? null;
+  if (modifiers === 2) return SHIFTED_LETTER_KEYS[final] ?? null;
   return null;
 }
 
@@ -211,13 +278,15 @@ const SGR_BUTTON_MASK = 0x43;
 
 export class PasteBuffer {
   private buf = "";
+  // A read can end inside a multibyte character (large pastes); decode across reads.
+  private decoder = new StringDecoder("utf8");
   private timer: ReturnType<typeof setTimeout> | null = null;
   private static TIMEOUT_MS = 2000;
 
   constructor(private readonly onFlush: (data: string) => void) {}
 
   feed(data: Buffer): string | null {
-    this.buf += data.toString("utf8");
+    this.buf += this.decoder.write(data);
 
     const startIdx = this.buf.indexOf(PASTE_START);
     if (startIdx === -1) return this.drain();
@@ -227,7 +296,8 @@ export class PasteBuffer {
     return null;
   }
 
-  private drain(): string | null {
+  private drain(flushDecoder = false): string | null {
+    if (flushDecoder) this.buf += this.decoder.end();
     if (!this.buf) return null;
     const out = this.buf;
     this.buf = "";
@@ -239,7 +309,7 @@ export class PasteBuffer {
     this.clearTimer();
     this.timer = setTimeout(() => {
       this.timer = null;
-      const data = this.drain();
+      const data = this.drain(true);
       if (data) this.onFlush(data);
     }, PasteBuffer.TIMEOUT_MS);
   }
@@ -270,7 +340,6 @@ export function parseInput(data: Buffer | string): InputEvent[] {
     }
 
     const code = str.charCodeAt(i);
-    const ch = str[i];
 
     const controlType = CONTROL_BYTE_MAP[code] ?? (code === 8 ? "backspace" : undefined);
     if (controlType) {
@@ -339,116 +408,10 @@ export function parseInput(data: Buffer | string): InputEvent[] {
             continue;
           }
 
-          if (params === "" && final === "A") {
-            events.push({ type: "up" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "" && final === "B") {
-            events.push({ type: "down" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "" && final === "C") {
-            events.push({ type: "right" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "" && final === "D") {
-            events.push({ type: "left" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "" && final === "H") {
-            events.push({ type: "home" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "" && final === "F") {
-            events.push({ type: "end" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "" && final === "Z") {
-            events.push({ type: "backtab" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "1" && final === "~") {
-            events.push({ type: "home" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "3" && final === "~") {
-            events.push({ type: "delete" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "4" && final === "~") {
-            events.push({ type: "end" });
-            i += seqLen;
-            continue;
-          }
-
-          // Function keys F14-F16: CSI 1;2Q/R/S (Shift+F1/F2/F3 — st maps Ctrl+1/2/3)
-          if (params === "1;2" && final === "Q") {
-            events.push({ type: "f14" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "1;2" && final === "R") {
-            events.push({ type: "f15" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "1;2" && final === "S") {
-            events.push({ type: "f16" });
-            i += seqLen;
-            continue;
-          }
-
-          // Function keys F17-F24: CSI NN;2~ (st maps Ctrl+4 through Ctrl+-)
-          if (params === "15;2" && final === "~") {
-            events.push({ type: "f17" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "17;2" && final === "~") {
-            events.push({ type: "f18" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "18;2" && final === "~") {
-            events.push({ type: "f19" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "19;2" && final === "~") {
-            events.push({ type: "f20" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "20;2" && final === "~") {
-            events.push({ type: "f21" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "21;2" && final === "~") {
-            events.push({ type: "f22" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "23;2" && final === "~") {
-            events.push({ type: "f23" });
-            i += seqLen;
-            continue;
-          }
-          if (params === "24;2" && final === "~") {
-            events.push({ type: "f24" });
-            i += seqLen;
-            continue;
-          }
-
+          // Standard CSI keys (arrows, Home/End, Delete, F14-F24), with
+          // kitty repeat/release event types; unknown sequences are skipped.
+          const csiEvent = parseCsiKey(params, final);
+          if (csiEvent) events.push(csiEvent);
           i += seqLen;
           continue;
         }
@@ -459,9 +422,13 @@ export function parseInput(data: Buffer | string): InputEvent[] {
       continue;
     }
 
+    // Regular character. Consume the whole grapheme cluster so emoji and
+    // composed characters arrive at the editor as one user-visible glyph
+    // (r and f take a whole emoji, not half a surrogate pair).
     if (code >= 32) {
-      events.push({ type: "char", char: ch });
-      i++;
+      const end = nextGraphemeEnd(str, i);
+      events.push({ type: "char", char: str.slice(i, end) });
+      i = end;
       continue;
     }
 
