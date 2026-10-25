@@ -58,7 +58,24 @@ interface RegisteredCustomEmoji extends RenderableCustomEmoji {
 }
 
 export interface CustomEmojiRenderBatch {
-  placements: Array<{ emoji: RegisteredCustomEmoji; row: number; col: number; selected: boolean }>;
+  placements: Array<{
+    emoji: RegisteredCustomEmoji;
+    row: number;
+    col: number;
+    selected: boolean;
+    /** The attributes the placeholder cells under the image were drawn with. */
+    cells: string;
+  }>;
+}
+
+/** FNV-1a, folded into the placement ids applications may use (st's kept copies use 0xff000000+). */
+function placementIdFor(text: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return ((hash >>> 0) % 0xfe000000) + 1;
 }
 
 export interface CustomEmojiRenderLineOptions {
@@ -189,6 +206,8 @@ export class CustomEmojiImageRenderer {
     let chunkStart = 0;
     let col = startCol;
     let selected = false;
+    // Every attribute set so far: what the placeholder cells end up drawn with.
+    let attributes = "";
 
     for (let index = 0; index < text.length; index++) {
       const emoji = this.byMarker.get(text[index]!);
@@ -198,11 +217,13 @@ export class CustomEmojiImageRenderer {
       result += chunk;
       col += termWidth(chunk);
       selected = selectionStateAfter(chunk, selected);
+      for (const match of chunk.matchAll(SGR_RE)) attributes += match[0];
 
       if (this.enabled) this.ensureLoaded(emoji);
       if (this.enabled && emoji.status === "ready") {
         result += `${options.imageBackground ?? ""}${IMAGE_PLACEHOLDER}${options.restoreBackground ?? ""}`;
-        batch.placements.push({ emoji, row, col, selected });
+        batch.placements.push({ emoji, row, col, selected, cells: `${attributes}|${options.imageBackground ?? ""}` });
+        attributes += `${options.imageBackground ?? ""}${options.restoreBackground ?? ""}`;
       } else {
         result += `${LOADING_GLYPH} `;
       }
@@ -249,13 +270,21 @@ export class CustomEmojiImageRenderer {
   }
 
   /**
-   * Smooth scrolling (st mode 2032): one placement id per screen cell, and
-   * only the placements that changed are deleted or placed. While a glide
-   * runs st keeps the lines a region scroll pushed out, with their emoji
-   * under ids nothing addresses; the delete-everything sweep of finishFrame
-   * would erase those copies too. The returned function is told which rows
-   * the frame's region scroll moved: emoji anchored there moved with them
-   * and are placed again where this frame wants them.
+   * Smooth scrolling (st mode 2032): explicit placement ids, and only the
+   * placements that changed are deleted or placed. While a glide runs st
+   * keeps the lines a region scroll pushed out, with their emoji under ids
+   * nothing addresses; the delete-everything sweep of finishFrame would
+   * erase those copies too. The returned function is told which rows the
+   * frame's region scroll moved: emoji anchored there moved with them and
+   * are placed again where this frame wants them.
+   *
+   * A placement's id comes from its cell and the attributes its placeholder
+   * cells were drawn with. st remembers the cells under an image when it is
+   * first shown and hides it once they change (and the second half of a
+   * wide placeholder keeps the background it had before, so a cursor-line
+   * highlight changes it): a row rewritten differently (the cursor line, a
+   * selection, a pending delete) gets new placements, shown over its new
+   * cells.
    */
   finishTrackedFrame(batch: CustomEmojiRenderBatch): (scrolled: { start: number; end: number } | null) => string {
     const placements = this.enabled ? batch.placements : [];
@@ -268,7 +297,7 @@ export class CustomEmojiImageRenderer {
       }
       const desired = new Map<string, CustomEmojiRenderBatch["placements"][number] & { placementId: number }>();
       for (const placement of placements) {
-        const placementId = placement.row * 1024 + placement.col;
+        const placementId = placementIdFor(`${placement.row}:${placement.col}:${placement.cells}`);
         desired.set(`${placement.emoji.imageId}:${placementId}`, { ...placement, placementId });
       }
       for (const [key, placed] of this.tracked) {
