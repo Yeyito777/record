@@ -40,7 +40,17 @@ interface MemberListCallbacks {
   onError: (error: Error) => void;
 }
 
+/**
+ * The main app gateway, when member lists ride on it instead of a second
+ * Discord session (the web client uses one). subscribe() sends the op 37
+ * channel subscription; GUILD_MEMBER_LIST_UPDATE comes back via handleDispatch.
+ */
+export interface MemberListTransport {
+  subscribe(guildId: string, channelId: string, resend: boolean): void;
+}
+
 interface MemberListGatewayCallbacks {
+  transport?: MemberListTransport;
   onAuthTokenRefresh?: (token: string) => void;
   /** Status to identify with; this is a second session of the user's account. */
   presenceStatus?: () => string;
@@ -123,20 +133,42 @@ export class MemberListGatewayClient {
       }
     }
 
+    const transport = this.callbacks.transport;
+    if (transport) {
+      // A repeated subscribe for the same target is a retry: send it again.
+      transport.subscribe(guildId, channelId, current?.guildId === guildId && current.channelId === channelId);
+      return;
+    }
     await this.ensureConnected();
     this.sendSubscription(guildId, channelId);
+  }
+
+  /** GUILD_MEMBER_LIST_UPDATE from the transport (app gateway). */
+  handleDispatch(data: unknown): void {
+    this.handleMemberListUpdate(data);
+  }
+
+  /** The transport started a new session (fresh READY): lists start over. */
+  resetForNewSession(): void {
+    const subscription = this.subscription;
+    if (!subscription) return;
+    subscription.listId = null;
+    subscription.waitingForSync = true;
+    subscription.rows = [];
   }
 
   disconnect(): void {
     debugLog("member_gateway.disconnect", { guildId: this.subscription?.guildId ?? null, channelId: this.subscription?.channelId ?? null });
     this.subscription = null;
     this.clearReconnectTimer();
+    if (this.callbacks.transport) return;
     this.closeSocket(true);
   }
 
   /** Mirror the main session's status so this session never shows the user online. */
   updatePresenceStatus(status: string): void {
     this.presenceStatusOverride = status;
+    if (this.callbacks.transport) return;
     if (!this.ready) return;
     this.send({ op: 3, d: { status, afk: false, since: 0, activities: [] } });
   }

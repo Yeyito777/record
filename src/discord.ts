@@ -370,6 +370,8 @@ export interface DiscordGuild {
   icon: string | null;
   /** Available custom emoji advertised by READY/GUILD_CREATE. */
   emojis?: DiscordCustomEmoji[];
+  /** Roles advertised by READY/GUILD_CREATE (user accounts receive them there). */
+  roles?: DiscordRole[];
   muted?: boolean;
   /** Whether the authenticated user owns this guild (from /users/@me/guilds). */
   owner?: boolean;
@@ -1713,14 +1715,19 @@ export async function fetchCurrentUserGuildRoleIds(token: string, guildId: strin
 }
 
 export async function fetchGuildRoles(token: string, guildId: string): Promise<DiscordRole[]> {
-  const roles = await apiGetJson<DiscordRoleResponse[]>(token, `/guilds/${guildId}/roles`);
-  return roles.map((role) => ({
+  return mapDiscordRoles(await apiGetJson<unknown>(token, `/guilds/${guildId}/roles`));
+}
+
+/** Role objects as REST and the gateway (READY, GUILD_CREATE, GUILD_ROLE_*) send them. */
+export function mapDiscordRoles(raw: unknown): DiscordRole[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((role: DiscordRoleResponse) => (role && typeof role.id === "string" ? [{
     id: role.id,
     name: typeof role.name === "string" ? role.name : undefined,
     color: typeof role.color === "number" ? role.color : 0,
     position: typeof role.position === "number" ? role.position : 0,
     permissions: typeof role.permissions === "string" ? role.permissions : "0",
-  }));
+  }] : []));
 }
 
 function mapMentionedUser(mention: DiscordMessageMentionResponse): DiscordGuildMember {
