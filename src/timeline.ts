@@ -278,7 +278,25 @@ export function setTimelineMessages(
   timeline.loadingNewer = false;
   timeline.hasOlder = options.hasOlder ?? messages.length > 0;
   timeline.hasNewer = options.hasNewer ?? false;
-  resetTimelineRenderCaches(timeline);
+  if (sameTimeline) {
+    // A refresh of the open chat (provider history events, REST revalidation)
+    // keeps rendered messages: the per-message cache is keyed by id, width and
+    // a fingerprint of everything drawn. Re-rendering them all cost ~100 ms
+    // per WhatsApp event in a 300-message chat.
+    pruneMessageRenderCache(timeline);
+    invalidateTimelineContentCache(timeline);
+  } else {
+    resetTimelineRenderCaches(timeline);
+  }
+}
+
+function pruneMessageRenderCache(timeline: TimelineState): void {
+  const cache = getTimelineCacheState(timeline).messageRenderCache;
+  if (cache.size <= timeline.messages.length * 2 + 64) return;
+  const live = new Set(timeline.messages.map((message) => message.id));
+  for (const key of cache.keys()) {
+    if (!live.has(key.slice(0, key.lastIndexOf(":")))) cache.delete(key);
+  }
 }
 
 export function startLoadingOlderMessages(timeline: TimelineState): void {
@@ -1718,6 +1736,9 @@ function callLiveRenderKey(message: DiscordMessage, loadingFrameIndex: number, n
   return `${loadingFrameIndex}:${Math.floor(nowMs / 1000)}`;
 }
 
+/** Role lists are replaced, never mutated, when roles change. */
+const roleListFingerprints = new WeakMap<readonly DiscordRole[], string>();
+
 function rolesByGuildFingerprint(
   rolesByGuildId: Record<string, DiscordRole[]>,
   messageGuildId: string | null | undefined,
@@ -1725,9 +1746,16 @@ function rolesByGuildFingerprint(
 ): string {
   const guildId = messageGuildId ?? activeGuildId;
   if (!guildId) return "";
-  return (rolesByGuildId[guildId] ?? [])
-    .map((role) => [role.id, role.name ?? "", String(role.color)].join("\u0002"))
-    .join("\u0000");
+  const roles = rolesByGuildId[guildId];
+  if (!roles) return "";
+  let fingerprint = roleListFingerprints.get(roles);
+  if (fingerprint === undefined) {
+    // Joined once per role list instead of once per message per rebuild
+    // (57% of appending a message to a long channel in a 200-role server).
+    fingerprint = roles.map((role) => [role.id, role.name ?? "", String(role.color)].join("\u0002")).join("\u0000");
+    roleListFingerprints.set(roles, fingerprint);
+  }
+  return fingerprint;
 }
 
 function messageRenderFingerprint(
