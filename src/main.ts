@@ -371,7 +371,6 @@ function renderImmediately(): void {
 /** RECORD_SMOOTH_SCROLL=off: never ask for st's mode 2032 (testing). */
 const smoothScrollAllowed = process.env.RECORD_SMOOTH_SCROLL !== "off";
 let smoothScrollTimer: ReturnType<typeof setTimeout> | null = null;
-let smoothScrollWasBusy = false;
 
 /**
  * While a smooth scroll moves, lay out each row it is about to cross: st
@@ -386,15 +385,12 @@ function scheduleSmoothScrollFrame(): void {
     smoothScrollTimer = null;
   }
   if (!smooth) return;
-  if (!smooth.busy()) {
-    // At rest again: one more frame crops images back to the pane.
-    if (smoothScrollWasBusy) {
-      smoothScrollWasBusy = false;
-      renderImmediately();
-    }
+  const due = smooth.frameDueIn();
+  if (due === null) return;
+  if (due <= 0) {
+    renderImmediately();
     return;
   }
-  smoothScrollWasBusy = true;
   smoothScrollTimer = setTimeout(() => {
     smoothScrollTimer = null;
     if (!running || smoothScrollerFor(state) !== smooth) return;
@@ -403,7 +399,7 @@ function scheduleSmoothScrollFrame(): void {
       return;
     }
     scheduleSmoothScrollFrame();
-  }, Math.max(1, smooth.nextWakeMs()));
+  }, due);
 }
 
 let voiceMessageController: ReturnType<typeof createVoiceMessageController> | null = null;

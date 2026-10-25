@@ -369,6 +369,27 @@ export class SmoothScroller {
     return this.msUntilLayout(Math.max(1, Math.ceil(idle) + 1));
   }
 
+  /** The previous frameDueIn() saw a glide running (one more frame at rest crops images). */
+  private wasBusy = false;
+
+  /**
+   * When main should render next for the glide: 0 now, `ms` from now, or
+   * null when nothing is due until the next input. Called after every frame
+   * and when its timer fires.
+   */
+  frameDueIn(): number | null {
+    if (!this.busy()) {
+      // At rest again: one more frame crops images back to the pane.
+      if (this.wasBusy) {
+        this.wasBusy = false;
+        return 0;
+      }
+      return null;
+    }
+    this.wasBusy = true;
+    return Math.max(1, this.nextWakeMs());
+  }
+
   /** Frames (row crossings) may still be needed. */
   busy(): boolean {
     this.prune(this.now());
