@@ -46,7 +46,13 @@ import {
   leaveGuild,
   setGuildMemberServerDeafen,
   setGuildMemberServerMute,
+  setChannelMessageReaction,
+  leaveThread,
 } from "./discord";
+import { flushDebugLog, resetDebugLogForTest } from "./debuglog";
+import { mkdtempSync, readFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 const originalFetch = globalThis.fetch;
 
@@ -361,7 +367,7 @@ describe("discord helpers", () => {
     expect(requests).toEqual([{
       url: "https://discord.com/api/v9/users/@me/guilds/guild-1",
       method: "DELETE",
-      body: undefined,
+      body: JSON.stringify({ lurking: false }),
     }]);
   });
 
@@ -1979,5 +1985,69 @@ describe("local send echoes", () => {
     expect(isPendingLocalMessageEcho(failed as any, { ...base, id: "99" } as any)).toBe(true);
     expect(isPendingLocalMessageEcho(failed as any, { ...base, id: "99", nonce: "other" } as any)).toBe(false);
     expect(isPendingLocalMessageEcho(failed as any, { ...base, id: "99", nonce: null } as any)).toBe(false);
+  });
+});
+
+describe("Discord REST request shapes", () => {
+  type Seen = { method: string; url: string; body: unknown; contentType: string | null };
+  const capture = (status = 204, response = "") => {
+    const seen: Seen[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      seen.push({
+        method: init?.method ?? "GET",
+        url: String(input).replace("https://discord.com/api/v9", ""),
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : init?.body ?? null,
+        contentType: headers.get("Content-Type"),
+      });
+      return new Response(response, { status });
+    }) as unknown as typeof fetch;
+    return seen;
+  };
+
+  test("bodyless calls send no JSON Content-Type; Leave Server sends the web client's body", async () => {
+    const seen = capture();
+    await leaveGuild("token", "g");
+    await kickGuildMember("token", "g", "u");
+    await deleteChannel("token", "c");
+    await deleteChannelMessage("token", "c", "m");
+    await setChannelMessageReaction("token", "c", "m", { id: null, name: "👍", animated: false });
+    await setChannelMessageReaction("token", "c", "m", { id: "1", name: "blob", animated: false }, true);
+    await joinThread("token", "t");
+    await leaveThread("token", "t");
+    await banGuildMember("token", "g", "u");
+    expect(seen).toEqual([
+      { method: "DELETE", url: "/users/@me/guilds/g", body: { lurking: false }, contentType: "application/json" },
+      { method: "DELETE", url: "/guilds/g/members/u", body: null, contentType: null },
+      { method: "DELETE", url: "/channels/c", body: null, contentType: null },
+      { method: "DELETE", url: "/channels/c/messages/m", body: null, contentType: null },
+      { method: "PUT", url: `/channels/c/messages/m/reactions/${encodeURIComponent("👍")}/@me`, body: null, contentType: null },
+      { method: "DELETE", url: `/channels/c/messages/m/reactions/${encodeURIComponent("blob:1")}/@me`, body: null, contentType: null },
+      { method: "POST", url: "/channels/t/thread-members/@me?location=Sidebar%20Overflow", body: null, contentType: null },
+      { method: "DELETE", url: "/channels/t/thread-members/@me?location=Sidebar%20Overflow", body: null, contentType: null },
+      { method: "PUT", url: "/guilds/g/bans/u", body: { delete_message_seconds: 0 }, contentType: "application/json" },
+    ]);
+  });
+
+  test("GET requests carry no Content-Type", async () => {
+    const seen = capture(200, "[]");
+    await fetchGuilds("token");
+    expect(seen[0]).toMatchObject({ method: "GET", contentType: null });
+  });
+
+  test("a failed request is logged with status, Discord code and message, never the token", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "record-discord-log-")), "debug.log");
+    resetDebugLogForTest({ enabled: true, verbose: false, path });
+    try {
+      capture(400, JSON.stringify({ message: "The request body contains invalid JSON.", code: 50109 }));
+      await expect(leaveGuild("secret-token-value", "g")).rejects.toThrow("invalid JSON");
+      flushDebugLog();
+      const log = readFileSync(path, "utf8");
+      const entry = JSON.parse(log.trim().split("\n").at(-1)!);
+      expect(entry).toMatchObject({ event: "discord.request_failed", method: "DELETE", route: "/users/@me/guilds/g", status: 400, code: 50109, message: "The request body contains invalid JSON." });
+      expect(log).not.toContain("secret-token-value");
+    } finally {
+      resetDebugLogForTest();
+    }
   });
 });

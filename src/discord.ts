@@ -2,6 +2,7 @@
  * Discord REST client.
  */
 
+import { debugLog } from "./debuglog";
 import { summarizeInlineMessageParts, type DisplayAttachment, type DisplayEmbed } from "./messageparts";
 import type { ServerCommandInteractionRequest } from "./servercommands";
 
@@ -1629,8 +1630,10 @@ function inviteChannelPriority(channelType: number): number {
 }
 
 export async function leaveGuild(token: string, guildId: string): Promise<void> {
+  // Same body as discord.com's Leave Server.
   await requestJson<unknown>(token, `/users/@me/guilds/${guildId}`, {
     method: "DELETE",
+    body: JSON.stringify({ lurking: false }),
   });
 }
 
@@ -2437,6 +2440,12 @@ export async function acceptDiscordInvite(token: string, invite: string, options
   };
 }
 
+/** Path without the query string (search terms, invite lookups) for the debug log. */
+function logRoute(path: string): string {
+  const query = path.indexOf("?");
+  return query >= 0 ? path.slice(0, query) : path;
+}
+
 async function apiGetJson<T>(token: string, path: string): Promise<T> {
   return requestJson<T>(token, path, { method: "GET" });
 }
@@ -2459,9 +2468,19 @@ async function requestJson<T>(token: string, path: string, init: RequestInit, ti
       return body as T;
     }
 
-    throw buildDiscordError(response.status, body as DiscordErrorResponse | null, response.headers.get("retry-after"));
+    const errorBody = body as DiscordErrorResponse | null;
+    debugLog("discord.request_failed", {
+      method: init.method ?? "GET",
+      route: logRoute(path),
+      status: response.status,
+      code: typeof errorBody?.code === "number" ? errorBody.code : null,
+      message: typeof errorBody?.message === "string" ? errorBody.message : null,
+      errors: summarizeDiscordErrorObject(errorBody?.errors),
+    });
+    throw buildDiscordError(response.status, errorBody, response.headers.get("retry-after"));
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
+      debugLog("discord.request_failed", { method: init.method ?? "GET", route: logRoute(path), status: null, message: "timed out" });
       throw new Error("Discord request timed out.");
     }
     throw error;
@@ -2487,7 +2506,9 @@ function requestHeaders(token: string, init: RequestInit): HeadersInit {
     "X-Discord-Timezone": Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     "X-Super-Properties": discordSuperProperties(),
   };
-  if (!(init.body instanceof FormData)) {
+  // JSON bodies only. discord.com sends no Content-Type on requests without a
+  // body; announcing JSON with an empty body gets some routes rejected.
+  if (typeof init.body === "string") {
     headers["Content-Type"] = "application/json";
   }
   return {
