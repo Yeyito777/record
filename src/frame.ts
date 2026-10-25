@@ -42,6 +42,11 @@ export interface RenderFrame {
 
 const lastRenderedFrames = new WeakMap<object, RenderFrame>();
 
+/** False until the next flush after `invalidateFrame`: that flush repaints every row. */
+export function hasRetainedFrame(owner: object): boolean {
+  return lastRenderedFrames.has(owner);
+}
+
 export function invalidateFrame(owner: object): void {
   lastRenderedFrames.delete(owner);
 }

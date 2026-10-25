@@ -194,6 +194,8 @@ export interface DiscordChannelResponse {
   last_message_id?: string | null;
   muted?: boolean;
   recipients?: DiscordDMRecipientResponse[];
+  /** Group DM picture hash. */
+  icon?: string | null;
   permission_overwrites?: DiscordPermissionOverwriteResponse[];
   owner_id?: string;
   thread_metadata?: DiscordThreadMetadataResponse;
@@ -407,6 +409,8 @@ export interface DiscordChannel {
   pinned?: boolean;
   muted?: boolean;
   recipients?: DiscordGuildMember[];
+  /** Group DM picture hash (CDN channel-icons). */
+  icon?: string;
   permissionOverwrites?: DiscordPermissionOverwrite[];
   /** Present for announcement, public, and private thread channel types. */
   thread?: DiscordThreadInfo;
@@ -1326,6 +1330,7 @@ export function mapDirectMessageChannel(channel: DiscordChannelResponse, positio
       bot: false,
       ...(recipient.avatar ? { avatar: recipient.avatar } : {}),
     })),
+    ...(channel.icon ? { icon: channel.icon } : {}),
   };
 }
 
