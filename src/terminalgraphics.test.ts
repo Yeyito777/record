@@ -50,6 +50,28 @@ describe("Kitty terminal graphics", () => {
     client.dispose();
   });
 
+  test("inside tmux or screen nothing is asked: graphics are unsupported without a byte sent", () => {
+    for (const env of [{ TMUX: "/tmp/tmux-1000/default,1234,0", TERM: "xterm-256color" }, { TERM: "tmux-256color" }, { TERM: "screen.xterm-256color" }, { TERM: "screen" }]) {
+      const writes: string[] = [];
+      const support: boolean[] = [];
+      const client = new TerminalGraphicsClient({ write: (sequence) => writes.push(sequence), onSupportChanged: (supported) => support.push(supported) });
+      client.detect(env);
+      expect(writes).toEqual([]);
+      expect(client.isSupported()).toBe(false);
+      expect(support).toEqual([false]);
+      client.dispose();
+    }
+    // Anywhere else the terminal is asked (TERM alone proves nothing).
+    for (const env of [{ TERM: "st-256color" }, { TERM: "xterm-kitty" }, {}]) {
+      const writes: string[] = [];
+      const client = new TerminalGraphicsClient({ write: (sequence) => writes.push(sequence), onSupportChanged: () => {}, queryTimeoutMs: 10_000 });
+      client.detect(env);
+      expect(writes).toEqual([kittyGraphicsQuery()]);
+      expect(client.isSupported()).toBeNull();
+      client.dispose();
+    }
+  });
+
   test("uses a hard image-range deletion for lifecycle cleanup", () => {
     expect(kittyGraphicsDeleteImageRange(0x72000000, 0x720018ff)).toBe(
       "\x1b_Ga=d,d=R,x=1912602624,y=1912609023,q=2\x1b\\",
