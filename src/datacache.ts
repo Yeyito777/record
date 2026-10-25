@@ -63,6 +63,12 @@ const CACHE_SAVE_MAX_WAIT_MS = 15_000;
 const MAX_PERSISTED_MESSAGE_CHANNELS = 30;
 const MAX_PERSISTED_MESSAGES_PER_CHANNEL = 75;
 const MAX_PERSISTED_PIN_CHANNELS = 30;
+/**
+ * Saved member lists per server (most recently saved first). One list was kept
+ * for every channel ever opened; a saved list is only a placeholder until the
+ * live list arrives, and a server's channels mostly share one list.
+ */
+const MAX_PERSISTED_MEMBER_LISTS_PER_GUILD = 3;
 
 let cacheMemo: DataCacheFile | null = null;
 let cacheMemoPath: string | null = null;
@@ -221,6 +227,11 @@ function loadCacheFile(): DataCacheFile {
       }
       const entries = loadShard(path, accountId, section);
       if (entries) (account as unknown as Record<string, unknown>)[section] = entries;
+    }
+    if (account.memberLists) {
+      const before = Object.keys(account.memberLists).length;
+      pruneMemberLists(account.memberLists);
+      if (Object.keys(account.memberLists).length !== before) dirtyShards.add(shardKey(accountId, "memberLists"));
     }
   }
   return cacheMemo;
@@ -738,6 +749,21 @@ function memberListCacheKey(guildId: string, channelId: string): string {
   return `${guildId}:${channelId}`;
 }
 
+/** Keep each server's (or only `guildId`'s) newest saved lists; keys are in save order. */
+function pruneMemberLists(memberLists: Record<string, unknown>, guildId?: string): void {
+  const keysByGuild = new Map<string, string[]>();
+  for (const key of Object.keys(memberLists)) {
+    const keyGuildId = key.slice(0, key.indexOf(":"));
+    if (guildId !== undefined && keyGuildId !== guildId) continue;
+    const keys = keysByGuild.get(keyGuildId) ?? [];
+    keys.push(key);
+    keysByGuild.set(keyGuildId, keys);
+  }
+  for (const keys of keysByGuild.values()) {
+    for (const key of keys.slice(0, Math.max(0, keys.length - MAX_PERSISTED_MEMBER_LISTS_PER_GUILD))) delete memberLists[key];
+  }
+}
+
 export function loadCachedMemberList(accountId: string, guildId: string, channelId: string): DiscordGuildMember[] | null {
   return loadCacheFile().accounts[accountId]?.memberLists?.[memberListCacheKey(guildId, channelId)] ?? null;
 }
@@ -818,7 +844,10 @@ export function saveCachedMemberList(
   const key = memberListCacheKey(guildId, channelId);
   forgetSerialized(account.memberLists[key]);
   forgetSerialized(members);
+  // Re-insert so key order is save order, then drop this server's oldest lists.
+  delete account.memberLists[key];
   account.memberLists[key] = members;
+  pruneMemberLists(account.memberLists, guildId);
   account.savedAt = Date.now();
   saveCacheFile(cache, accountId, "memberLists");
 }

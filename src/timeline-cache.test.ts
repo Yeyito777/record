@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { renderTimelineLines, setTimelineMessages, setTimelineRenderContext, createTimelineState } from "./timeline";
+import { createTimelineState, renderTimelineLines, setTimelineInlineImageState, setTimelineMessages, setTimelineRenderContext } from "./timeline";
 
 const message = (id: string, content: string, extra: Record<string, unknown> = {}) => ({
   id, channelId: "c1", guildId: "g1", type: 0, content, mentionEveryone: false, mentionRoleIds: [], mentionUserIds: [], mentionUsers: [],
@@ -36,5 +36,28 @@ describe("timeline render cache", () => {
     setTimelineRenderContext(timeline, "viewer", false, roles, memberRoles, 1, "g1");
     const after = renderTimelineLines(timeline, 60, 20, notice).allLines.join("\n");
     expect(after).not.toBe(before);
+  });
+});
+
+describe("live spinner frames", () => {
+  test("re-rendering only loading-image messages gives the same rows as a full rebuild", () => {
+    const attachment = (id: string) => ({ id, filename: `${id}.png`, contentType: "image/png", size: 10, url: `https://cdn.example/${id}.png`, width: 100, height: 80 });
+    const messages = Array.from({ length: 40 }, (_unused, index) => message(String(index + 1), `line ${index}`, index % 7 === 3 ? { attachments: [attachment(`a${index}`)] } : {}));
+    const build = (frame: number, fresh: boolean) => {
+      const timeline = createTimelineState();
+      setTimelineMessages(timeline, "c1", messages);
+      for (const entry of messages) {
+        for (const source of entry.attachments) setTimelineInlineImageState(timeline, { phase: "loading", attachmentId: source.id, filename: source.filename, sourceUrl: source.url, requestId: 1 });
+      }
+      if (!fresh) renderTimelineLines(timeline, 70, 30, notice, 0);
+      return renderTimelineLines(timeline, 70, 30, notice, frame);
+    };
+    for (const frame of [1, 2, 5]) {
+      const spliced = build(frame, false);
+      const full = build(frame, true);
+      expect(spliced.allLines).toEqual(full.allLines);
+      expect(spliced.lineAnchors).toEqual(full.lineAnchors);
+      expect(spliced.messageBounds).toEqual(full.messageBounds);
+    }
   });
 });
