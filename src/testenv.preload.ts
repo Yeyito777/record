@@ -7,6 +7,7 @@
  * when it forgets to set up its own temporary directory.
  */
 
+import { afterAll } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -37,6 +38,8 @@ delete process.env.RECORD_DEBUG_LOG;
 delete process.env.RECORD_WHATSAPP_AUTH_DIR;
 delete process.env.RECORD_PLAYBACK_TRACE_DIR;
 
-process.once("exit", () => {
+// bun test never fires process "exit" listeners from a preload; a global
+// afterAll here runs once, after the last test file.
+afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });

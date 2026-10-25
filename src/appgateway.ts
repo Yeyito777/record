@@ -158,6 +158,8 @@ export interface AppGatewayCallbacks {
    * missed while disconnected (sleep, network loss) were not replayed.
    */
   onSessionReset?: () => void;
+  /** Member sidebar updates for the subscribed channel (op 37 channel ranges). */
+  onGuildMemberListUpdate?: (data: unknown) => void;
   onError?: (error: Error) => void;
 }
 
@@ -174,6 +176,8 @@ export class AppGatewayClient implements VoiceSignalingClient {
   private hasBeenReady = false;
   private sessionId: string | null = null;
   private readonly memberRequestQueue = new Map<string, Set<string>>();
+  /** Whether the current channel subscription went out on this session. */
+  private channelSubscriptionSent = false;
   private memberRequestTimer: ReturnType<typeof setTimeout> | null = null;
   private lastMemberRequestAt = 0;
   private manualDisconnect = false;
@@ -218,12 +222,18 @@ export class AppGatewayClient implements VoiceSignalingClient {
     return true;
   }
 
-  subscribeToGuildChannel(guildId: string | null | undefined, channelId: string | null | undefined): void {
+  /**
+   * Subscribe to a channel's typing, threads and member list (range 0-99).
+   * The same subscription is not re-sent unless `resend` (a member-list retry).
+   */
+  subscribeToGuildChannel(guildId: string | null | undefined, channelId: string | null | undefined, resend = false): void {
     if (!guildId || !channelId || guildId === DIRECT_MESSAGES_GUILD_ID) {
       this.guildChannelSubscription = null;
       return;
     }
 
+    const current = this.guildChannelSubscription;
+    if (current && current.guildId === guildId && current.channelId === channelId && this.channelSubscriptionSent && !resend) return;
     this.guildChannelSubscription = { guildId, channelId };
     this.sendGuildChannelSubscription();
   }
@@ -776,6 +786,9 @@ export class AppGatewayClient implements VoiceSignalingClient {
           this.callbacks.onGuildRoleDelete?.(data.guild_id, data.role_id);
           break;
         }
+        case "GUILD_MEMBER_LIST_UPDATE":
+          this.callbacks.onGuildMemberListUpdate?.(data);
+          break;
         case "GUILD_MEMBERS_CHUNK": {
           const chunk = mapGuildMembersChunk(data);
           if (chunk) this.callbacks.onGuildMembersChunk?.(chunk.guildId, chunk.members);
@@ -959,7 +972,9 @@ export class AppGatewayClient implements VoiceSignalingClient {
   }
 
   private sendGuildChannelSubscription(): void {
+    this.channelSubscriptionSent = false;
     if (!this.ready || !this.guildChannelSubscription) return;
+    this.channelSubscriptionSent = true;
     const { guildId, channelId } = this.guildChannelSubscription;
     this.send({
       op: 37,
@@ -1011,6 +1026,7 @@ export class AppGatewayClient implements VoiceSignalingClient {
     if (this.memberRequestTimer) clearTimeout(this.memberRequestTimer);
     this.memberRequestTimer = null;
     this.memberRequestQueue.clear();
+    this.channelSubscriptionSent = false;
     this.ready = false;
     const socket = this.ws;
     this.ws = null;
@@ -1275,6 +1291,7 @@ function mapGatewayGuild(data: unknown): DiscordGuild | null {
     name,
     icon: typeof properties.icon === "string" ? properties.icon : null,
     ...(Array.isArray(data.emojis) ? { emojis: mapGatewayCustomEmojis(data.emojis) } : {}),
+    ...(Array.isArray(data.roles) ? { roles: data.roles.map(mapGatewayRole).filter((role): role is DiscordRole => role !== null) } : {}),
     ...(typeof properties.owner_id === "string" ? { ownerId: properties.owner_id } : {}),
   };
 }

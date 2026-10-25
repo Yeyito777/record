@@ -665,6 +665,7 @@ export class DemoDiscordServer {
   }
 
   handleClientPayload(socket: FakeGatewaySocket, payload: { op?: number; d?: any }): void {
+    this.log(`GATEWAY op ${payload.op}${payload.op === 8 ? ` guild ${payload.d?.guild_id} users ${payload.d?.user_ids?.length ?? 0}` : ""}`);
     switch (payload.op) {
       case 1:
         socket.deliver({ op: 11 });
