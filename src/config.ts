@@ -33,6 +33,13 @@ export interface ChannelsConfig {
 
 export type ImageDisplayMode = "show" | "hide";
 
+export interface SidebarConfig {
+  /** How server folders open: expand in place ("tree", default) or as their own list ("navigate"). */
+  folders?: "tree" | "navigate";
+  /** Whether the sidebar shows ▸/▾ arrows (default "hide"). */
+  arrows?: "show" | "hide";
+}
+
 export interface ImagesConfig {
   /** Whether image attachments expand automatically when they enter the viewport. */
   mode?: ImageDisplayMode;
@@ -55,6 +62,8 @@ export interface RecordConfig {
   openers?: OpenersConfig;
   /** Sidebar/channel display preferences. */
   channels?: ChannelsConfig;
+  /** Sidebar folder view and arrows. */
+  sidebar?: SidebarConfig;
   /** Chat image attachment display preferences. */
   images?: ImagesConfig;
   /** Local audio capture/playback preferences. */
@@ -178,6 +187,7 @@ export function saveConfig(config: RecordConfig): void {
     ...config,
     ...(existing.openers || config.openers ? { openers: { ...existing.openers, ...config.openers } } : {}),
     ...(existing.channels || config.channels ? { channels: { ...existing.channels, ...config.channels } } : {}),
+    ...(existing.sidebar || config.sidebar ? { sidebar: { ...existing.sidebar, ...config.sidebar } } : {}),
     ...(existing.images || config.images ? { images: { ...existing.images, ...config.images } } : {}),
     ...(existing.audio || config.audio ? { audio: { ...existing.audio, ...config.audio } } : {}),
   });

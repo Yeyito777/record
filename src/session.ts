@@ -98,6 +98,7 @@ import {
   saveCachedGuildOrder,
   saveCachedGuildRoles,
   saveCachedSidebarChannelLayout,
+  saveCachedSidebarFolderExpansion,
   saveCachedSidebarFolders,
   saveCachedGuilds,
   saveCachedMemberList,
@@ -2464,7 +2465,22 @@ function persistSidebarGuilds(state: AppState, options: { order?: boolean } = {}
 export function persistSidebarFolders(state: AppState): void {
   const accountId = currentAccountId(state);
   if (!accountId) return;
-  saveCachedSidebarFolders(accountId, sidebarFolderLayout(state.sidebar));
+  const layout = sidebarFolderLayout(state.sidebar);
+  saveCachedSidebarFolders(accountId, layout);
+  lastPersistedFolderExpansion = `${accountId}\n${(layout.expandedFolderIds ?? []).slice().sort().join("\n")}`;
+}
+
+let lastPersistedFolderExpansion: string | null = null;
+
+/** Save the tree view's expanded folders when they changed; the rest of the layout is left as saved. */
+export function persistSidebarFolderExpansion(state: AppState): void {
+  const accountId = currentAccountId(state);
+  if (!accountId || state.sidebar.folders.length === 0) return;
+  const expanded = [...state.sidebar.expandedFolderIds].sort();
+  const signature = `${accountId}\n${expanded.join("\n")}`;
+  if (signature === lastPersistedFolderExpansion) return;
+  lastPersistedFolderExpansion = signature;
+  saveCachedSidebarFolderExpansion(accountId, state.sidebar.folders.map((folder) => folder.id), expanded);
 }
 
 function privateConversationLayoutScope(state: AppState, guildId: string): string | null {

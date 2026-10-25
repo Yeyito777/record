@@ -33,8 +33,15 @@ interface TerminalImageSyncState {
 }
 
 export interface InlineTerminalImageSyncOptions {
-  /** Keep established placements but defer creating or moving them. */
-  allowPlacementUpdates?: boolean;
+  /**
+   * Whether an overlay covers this placement's cells. A covered placement
+   * that is already in place stays (the terminal draws the overlay's cells
+   * over it); one that would be created or moved there is taken down until
+   * the cover goes: placed now, st would remember the overlay's cells as
+   * the image's own and hide the image there once the overlay closes, and
+   * other terminals would draw it over the overlay.
+   */
+  covered?: (placement: InlineTerminalImagePlacement) => boolean;
   /**
    * Send every placement again even if it looks unchanged: the screen was
    * repainted from scratch (resize, alternate-screen re-entry), which can
@@ -194,7 +201,10 @@ export function planInlineTerminalImages(
     const scrolled = !!moved && placedRow >= moved.start && placedRow <= moved.end;
     if (!options.replacePlacements && !retransmitted.has(placement.image.imageId)
       && state.placements.get(key) === fingerprint && !scrolled) continue;
-    if (options.allowPlacementUpdates === false) continue;
+    if (options.covered?.(placement)) {
+      if (state.placements.delete(key)) out.push(deletePlacement(placement.image.imageId, placement.placementId));
+      continue;
+    }
     out.push(placeImage(placement));
     state.placements.set(key, fingerprint);
   }

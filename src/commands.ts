@@ -7,6 +7,7 @@
 import { saveConfig, type ImageDisplayMode } from "./config";
 import { DISCORD_CUSTOM_STATUS_MAX_LENGTH, DISCORD_PRESENCE_STATUSES, type DiscordCustomEmoji, type DiscordPresenceStatus } from "./discord";
 import { clearPrompt } from "./promptstate";
+import { setSidebarFolderView, type SidebarFolderView } from "./sidebar";
 import type { AppState } from "./state";
 import { setNotice } from "./state";
 import { THEME_NAMES, setTheme, theme, type ThemeName } from "./theme";
@@ -93,6 +94,21 @@ const IMAGE_MODE_ARGS: CompletionItem[] = [
   { name: "hide", desc: "Keep images collapsed until Enter is pressed" },
 ];
 
+const FOLDER_VIEW_ARGS: CompletionItem[] = [
+  { name: "tree", desc: "Expand folders in place" },
+  { name: "navigate", desc: "Open folders as their own list" },
+];
+
+const FOLDER_VIEW_DESCRIPTIONS: Record<SidebarFolderView, string> = {
+  tree: "folders expand in place",
+  navigate: "opening a folder shows only its contents",
+};
+
+const ARROW_MODE_ARGS: CompletionItem[] = [
+  { name: "show", desc: "Show ▸/▾ arrows on servers, categories and the cursor" },
+  { name: "hide", desc: "Hide the arrows and give their columns to the names" },
+];
+
 const VOICE_TOGGLE_ARGS: CompletionItem[] = [
   { name: "on", desc: "Turn this voice setting on" },
   { name: "off", desc: "Turn this voice setting off" },
@@ -175,6 +191,47 @@ function handleChannelsCommand(text: string, state: AppState): CommandResult {
   }
 
   return { type: "handled" };
+}
+
+/** Show a setting's state or the usage in the timeline, like /images. */
+function reportInTimeline(state: AppState, text: string): CommandResult {
+  pushTimelineSystemMessage(state.timeline, text);
+  setNotice(state, "", "muted", { statusLine: false, chat: false });
+  clearPrompt(state);
+  return { type: "handled" };
+}
+
+function handleFoldersCommand(text: string, state: AppState): CommandResult {
+  const usageText = "Usage: /folders tree|navigate";
+  const parts = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const requested = parts[1];
+  if (parts.length > 2 || (requested !== undefined && requested !== "tree" && requested !== "navigate")) return reportInTimeline(state, usageText);
+  if (requested === undefined) {
+    const view = state.sidebar.folderView;
+    return reportInTimeline(state, `Folders: ${view} (${FOLDER_VIEW_DESCRIPTIONS[view]}).\n\n${usageText}`);
+  }
+  setSidebarFolderView(state.sidebar, requested);
+  try {
+    saveConfig({ sidebar: { folders: requested } });
+    return reportInTimeline(state, `Folders: ${requested} (${FOLDER_VIEW_DESCRIPTIONS[requested]}).`);
+  } catch (error) {
+    return reportInTimeline(state, `Folders: ${requested}, but saving failed: ${(error as Error).message}`);
+  }
+}
+
+function handleArrowsCommand(text: string, state: AppState): CommandResult {
+  const usageText = "Usage: /arrows hide|show";
+  const parts = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const requested = parts[1];
+  if (parts.length > 2 || (requested !== undefined && requested !== "show" && requested !== "hide")) return reportInTimeline(state, usageText);
+  if (requested === undefined) return reportInTimeline(state, `Sidebar arrows: ${state.sidebar.arrows}`);
+  state.sidebar.arrows = requested;
+  try {
+    saveConfig({ sidebar: { arrows: requested } });
+    return reportInTimeline(state, requested === "show" ? "Sidebar arrows shown." : "Sidebar arrows hidden.");
+  } catch (error) {
+    return reportInTimeline(state, `Sidebar arrows ${requested === "show" ? "shown" : "hidden"}, but saving failed: ${(error as Error).message}`);
+  }
 }
 
 function handleImagesCommand(text: string, state: AppState): CommandResult {
@@ -584,6 +641,18 @@ const commands: SlashCommand[] = [
     description: "Set whether image attachments expand automatically",
     args: IMAGE_MODE_ARGS,
     handler: handleImagesCommand,
+  },
+  {
+    name: "/folders",
+    description: "Set how sidebar folders open (saved)",
+    args: FOLDER_VIEW_ARGS,
+    handler: handleFoldersCommand,
+  },
+  {
+    name: "/arrows",
+    description: "Show or hide the sidebar's ▸/▾ arrows (saved)",
+    args: ARROW_MODE_ARGS,
+    handler: handleArrowsCommand,
   },
   {
     name: "/theme",
