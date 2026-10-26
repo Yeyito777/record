@@ -3,6 +3,7 @@
  * outlives the session, independent of the active timeline.
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -32,6 +33,10 @@ export class InlineImageCache {
     private readonly maxEntries = 64,
     private readonly maxBytes = 16 * 1024 * 1024,
   ) {}
+
+  has(key: string): boolean {
+    return this.entries.has(key);
+  }
 
   get(key: string): PreparedInlineImage | undefined {
     const image = this.entries.get(key);
@@ -79,6 +84,8 @@ export const PREVIEW_DISK_CACHE_MAX_BYTES = 256 * 1024 * 1024;
 export class InlinePreviewDiskCache {
   /** Bytes on disk as of the last scan plus what was written since; null until scanned. */
   private bytes: number | null = null;
+  /** Previews written or read this session: known to load again from disk. */
+  private readonly stored = new Set<string>();
 
   constructor(private readonly dir: string, private readonly maxBytes = PREVIEW_DISK_CACHE_MAX_BYTES) {}
 
@@ -86,27 +93,57 @@ export class InlinePreviewDiskCache {
     attachment: Pick<DiscordMessageAttachment, "id" | "cacheKey" | "url">,
     options: InlineImagePrepareOptions,
   ): Promise<PreparedInlineImage | null> {
+    return this.read(attachment, options, (path) => readFile(path).catch(() => null));
+  }
+
+  /**
+   * The same, read at once: a picture already in view that was let go comes
+   * back in the frame that shows it (a preview file reads in well under a
+   * millisecond), instead of a frame of its empty box first.
+   */
+  getSync(
+    attachment: Pick<DiscordMessageAttachment, "id" | "cacheKey" | "url">,
+    options: InlineImagePrepareOptions,
+  ): PreparedInlineImage | null {
     const base = this.base(attachment, options);
     for (const exact of [false, true]) {
-      const path = join(this.dir, `${base}${exact ? ".src" : ""}.png`);
       let png: Buffer;
       try {
-        png = await readFile(path);
+        png = readFileSync(join(this.dir, `${base}${exact ? ".src" : ""}.png`));
       } catch {
         continue;
       }
-      const dimensions = pngDimensions(png);
-      if (!dimensions) return null;
-      const now = new Date();
-      void utimes(path, now, now).catch(() => {});
-      return {
-        pngBase64: png.toString("base64"),
-        pixelWidth: dimensions.width,
-        pixelHeight: dimensions.height,
-        ...(exact ? { sourcePixelWidth: dimensions.width, sourcePixelHeight: dimensions.height } : {}),
-      };
+      return this.loaded(base, join(this.dir, `${base}${exact ? ".src" : ""}.png`), png, exact);
     }
     return null;
+  }
+
+  private async read(
+    attachment: Pick<DiscordMessageAttachment, "id" | "cacheKey" | "url">,
+    options: InlineImagePrepareOptions,
+    load: (path: string) => Promise<Buffer | null>,
+  ): Promise<PreparedInlineImage | null> {
+    const base = this.base(attachment, options);
+    for (const exact of [false, true]) {
+      const path = join(this.dir, `${base}${exact ? ".src" : ""}.png`);
+      const png = await load(path);
+      if (png) return this.loaded(base, path, png, exact);
+    }
+    return null;
+  }
+
+  private loaded(base: string, path: string, png: Buffer, exact: boolean): PreparedInlineImage | null {
+    const dimensions = pngDimensions(png);
+    if (!dimensions) return null;
+    this.stored.add(base);
+    const now = new Date();
+    void utimes(path, now, now).catch(() => {});
+    return {
+      pngBase64: png.toString("base64"),
+      pixelWidth: dimensions.width,
+      pixelHeight: dimensions.height,
+      ...(exact ? { sourcePixelWidth: dimensions.width, sourcePixelHeight: dimensions.height } : {}),
+    };
   }
 
   async set(
@@ -115,18 +152,25 @@ export class InlinePreviewDiskCache {
     prepared: PreparedInlineImage,
   ): Promise<void> {
     const exact = prepared.sourcePixelWidth === prepared.pixelWidth && prepared.sourcePixelHeight === prepared.pixelHeight;
-    const path = join(this.dir, `${this.base(attachment, options)}${exact ? ".src" : ""}.png`);
+    const base = this.base(attachment, options);
+    const path = join(this.dir, `${base}${exact ? ".src" : ""}.png`);
     const png = Buffer.from(prepared.pngBase64, "base64");
     try {
       await mkdir(this.dir, { recursive: true, mode: 0o700 });
       const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
       await writeFile(temporary, png, { mode: 0o600 });
       await rename(temporary, path);
+      this.stored.add(base);
       if (this.bytes !== null) this.bytes += png.length;
       if (this.bytes === null || this.bytes > this.maxBytes) await this.prune(path);
     } catch {
       // The disk cache is an optimization only.
     }
+  }
+
+  /** This preview was written or read this session, so it should load from disk again (it may since have been pruned). */
+  has(attachment: Pick<DiscordMessageAttachment, "id" | "cacheKey" | "url">, options: InlineImagePrepareOptions): boolean {
+    return this.stored.has(this.base(attachment, options));
   }
 
   private base(attachment: Pick<DiscordMessageAttachment, "id" | "cacheKey" | "url">, options: InlineImagePrepareOptions): string {
@@ -154,6 +198,7 @@ export class InlinePreviewDiskCache {
       if (total <= this.maxBytes) break;
       if (entry.path === keep) continue;
       await unlink(entry.path).catch(() => {});
+      this.stored.delete(entry.path.slice(this.dir.length + 1).replace(/(\.src)?\.png$/, ""));
       total -= entry.bytes;
     }
     this.bytes = total;

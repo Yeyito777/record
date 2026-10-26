@@ -12,6 +12,7 @@ import {
   renderTimelineLines,
   setTimelineImageAutoShow,
   setTimelineImageDetails,
+  removeTimelineInlineImageStates,
   setTimelineInlineImageState,
   setTimelineMessages,
   setTimelineRenderContext,
@@ -1254,6 +1255,32 @@ describe("timeline rendering", () => {
       expect(done.lineAnchors).toEqual(whileLoading);
       expect(done.inlineImages[0]).toMatchObject({ rows: 8, columns: 16 });
     });
+  });
+
+  test("letting loaded pictures go (far from the view) gives back exactly the rows they held before", () => {
+    const timeline = createTimelineState();
+    const picture = message("m2", "", { authorName: "Brook" });
+    picture.attachments = [
+      { id: "a1", filename: "one.jpg", contentType: "image/jpeg", size: 0, url: "https://cdn.example/one.jpg", width: 1600, height: 1200 },
+      { id: "a2", filename: "two.jpg", contentType: "image/jpeg", size: 0, url: "https://cdn.example/two.jpg", width: 1200, height: 1600 },
+    ];
+    setTimelineMessages(timeline, "channel-1", [message("m1", "above", { authorName: "Ada" }), picture]);
+    setTimelineImageAutoShow(timeline, true);
+    const render = () => renderTimelineLines(timeline, 100, 60, { text: "", tone: "muted" });
+    const pending = render();
+    for (const [id, pixelWidth, pixelHeight] of [["a1", 341, 256], ["a2", 192, 256]] as const) {
+      setTimelineInlineImageState(timeline, {
+        phase: "ready", attachmentId: id, filename: `${id}.jpg`, sourceUrl: `https://cdn.example/${id === "a1" ? "one" : "two"}.jpg`,
+        requestId: 1, imageId: id === "a1" ? 0x40000001 : 0x40000002, pngBase64: "cG5n", pixelWidth, pixelHeight,
+      });
+    }
+    expect(render().inlineImages).toHaveLength(2);
+    expect(removeTimelineInlineImageStates(timeline, ["a1", "a2", "gone"])).toBe(2);
+    expect(timeline.inlineImages).toEqual({});
+    const released = render();
+    expect(released.allLines).toEqual(pending.allLines);
+    expect(released.lineAnchors).toEqual(pending.lineAnchors);
+    expect(removeTimelineInlineImageStates(timeline, ["a1"])).toBe(0);
   });
 
   describe("a picture arriving changes no row outside its own box", () => {
