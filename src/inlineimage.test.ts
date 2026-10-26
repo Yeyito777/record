@@ -61,7 +61,7 @@ test.skipIf(!Bun.which("ffmpeg"))("previews static and animated WebP stickers fr
   expect([preview.pixelWidth, preview.pixelHeight]).toEqual([20, 20]);
 });
 
-test.skipIf(!Bun.which("ffmpeg"))("photo previews use a palette; pictures that may be transparent and the viewer keep full colour", async () => {
+test.skipIf(!Bun.which("ffmpeg"))("photo previews use a palette; pictures that may be transparent and the viewer keep full colour, the viewer at its box", async () => {
   const directory = mkdtempSync(join(tmpdir(), "record-palette-preview-"));
   tempDirs.push(directory);
   const make = (name: string, source: string) => {
@@ -81,6 +81,15 @@ test.skipIf(!Bun.which("ffmpeg"))("photo previews use a palette; pictures that m
 
   const transparent = make("alpha.png", "color=c=red@0.5:size=640x480,format=rgba");
   expect(colourType(await prepareInlineImage(transparent, bounds))).toBe(6);
+
+  // The viewer: full colour, bounded to its box when one is given, else the source's pixels.
+  const viewer = await prepareInlineImage(jpeg, { preserveSourceResolution: true, ...bounds });
+  expect([viewer.pixelWidth, viewer.pixelHeight, colourType(viewer)]).toEqual([320, 240, 2]);
+  const screenshot = make("screenshot.png", "testsrc2=size=640x480");
+  const boxed = await prepareInlineImage(screenshot, { preserveSourceResolution: true, ...bounds });
+  expect([boxed.pixelWidth, boxed.pixelHeight]).toEqual([320, 240]);
+  const source = await prepareInlineImage(screenshot, { preserveSourceResolution: true });
+  expect([source.pixelWidth, source.pixelHeight]).toEqual([640, 480]);
 });
 
 afterEach(() => {

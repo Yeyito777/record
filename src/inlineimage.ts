@@ -106,7 +106,10 @@ export interface InlineImagePrepareOptions {
   /** Bound the encoded preview to the largest size it can occupy in chat. */
   maxPixelWidth?: number;
   maxPixelHeight?: number;
-  /** Preserve source pixels up to the terminal protocol's safety limits. */
+  /**
+   * Full colour, up to the terminal protocol's safety limits (and the bounds
+   * above, when given): the viewer's picture, not a chat preview.
+   */
   preserveSourceResolution?: boolean;
 }
 
@@ -542,7 +545,7 @@ function convertedAtSourceSize(dimensions: { width: number; height: number } | n
 }
 
 function exceedsPreviewBounds(dimensions: { width: number; height: number }, options: InlineImagePrepareOptions): boolean {
-  if (options.preserveSourceResolution) return false;
+  if (options.preserveSourceResolution && !Number.isFinite(options.maxPixelWidth) && !Number.isFinite(options.maxPixelHeight)) return false;
   const bounds = normalizedPreviewBounds(options);
   return dimensions.width > bounds.width || dimensions.height > bounds.height;
 }
