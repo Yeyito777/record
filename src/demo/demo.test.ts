@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 
 import { fetchChannelMessages, fetchDirectMessages, fetchGuildChannels, fetchGuilds, validateToken } from "../discord";
 import { buildDemoWorld, DEMO_TOKEN } from "./data";
-import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, isDemoRequested, realRecordConfigDirs } from "./env";
+import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, DEMO_WHATSAPP_CREDS, isDemoRequested, realRecordConfigDirs } from "./env";
 import { DemoDiscordServer, DemoNetworkBlockedError } from "./server";
 
 const REPO = resolve(import.meta.dir, "../..");
@@ -57,6 +57,20 @@ describe("demo config safety", () => {
     writeFileSync(join(dir, "config.json"), JSON.stringify({ token: DEMO_TOKEN }));
     expect(() => assertSafeDemoConfigDir(dir, [])).not.toThrow();
     writeFileSync(join(dir, "saved-logins.json"), "{}");
+    expect(() => assertSafeDemoConfigDir(dir, [])).toThrow(/real login data/);
+  });
+
+  test("a demo home's WhatsApp marker is reusable; anything else in auth is refused", () => {
+    const dir = join(temp(), "record");
+    const auth = join(dir, "whatsapp", "auth");
+    mkdirSync(auth, { recursive: true });
+    expect(() => assertSafeDemoConfigDir(dir, [])).not.toThrow();
+    writeFileSync(join(auth, "creds.json"), `${JSON.stringify(DEMO_WHATSAPP_CREDS)}\n`);
+    expect(() => assertSafeDemoConfigDir(dir, [])).not.toThrow();
+    writeFileSync(join(auth, "creds.json"), JSON.stringify({ noiseKey: { private: "x" }, me: { id: "1@s.whatsapp.net" } }));
+    expect(() => assertSafeDemoConfigDir(dir, [])).toThrow(/real login data/);
+    writeFileSync(join(auth, "creds.json"), `${JSON.stringify(DEMO_WHATSAPP_CREDS)}\n`);
+    writeFileSync(join(auth, "pre-key-1.json"), "{}");
     expect(() => assertSafeDemoConfigDir(dir, [])).toThrow(/real login data/);
   });
 
