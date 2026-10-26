@@ -20,6 +20,8 @@ import {
   inlineImagesDrawable,
   nextInlineImageId,
   shouldLoadInlineImage,
+  inlineImageSourcesNearView,
+  inlineImageViewDistance,
   visibleInlineImageSources,
 } from "./inlineimage";
 
@@ -206,5 +208,20 @@ describe("inline chat images", () => {
     expect(visibleInlineImageSources(messages, bounds, 0, 6)).toEqual([sticker, secondImage, image]);
     expect(visibleInlineImageSources(messages, bounds, 6, 4)).toEqual([below]);
     expect(visibleInlineImageSources(messages, bounds, 0, 10)).toEqual([below, sticker, secondImage, image]);
+  });
+
+  test("looks a screen ahead both ways, nearest first, and measures how far an image is from the view", () => {
+    const at = (index: number) => ({ id: `a${index}`, filename: `p${index}.png`, contentType: "image/png", size: 10, url: `p${index}` });
+    // Ten messages of ten rows each, one image apiece.
+    const messages = Array.from({ length: 10 }, (_, index) => ({ id: `m${index}`, attachments: [at(index)] }));
+    const bounds = messages.map((message, index) => ({ messageId: message.id, start: index * 10, end: index * 10 + 10 }));
+    // View rows 40-59: m4 and m5 in view; 20 rows ahead each way reach m2-m3 and m6-m7.
+    const near = inlineImageSourcesNearView(messages, bounds, 40, 20, 20);
+    expect(near.visible.map((source) => source.id)).toEqual(["a5", "a4"]);
+    expect(near.nearby.map((source) => source.id)).toEqual(["a3", "a6", "a2", "a7"]);
+    expect(inlineImageViewDistance(bounds, "m4", 40, 20)).toBe(0);
+    expect(inlineImageViewDistance(bounds, "m6", 40, 20)).toBe(1);
+    expect(inlineImageViewDistance(bounds, "m2", 40, 20)).toBe(11);
+    expect(inlineImageViewDistance(bounds, "gone", 40, 20)).toBe(Infinity);
   });
 });

@@ -89,6 +89,12 @@ export interface RenderFrame {
    * 0 without one) and whether every row it moved arrived intact.
    */
   afterScroll?: (regionShift: number, intact: boolean, scrolled: ScrollRegion | null) => string;
+  /**
+   * Band frames under smooth scrolling: whether the region may scroll by
+   * `shift` (up positive). False repaints the rows instead: a scroll against
+   * a glide still being drawn drops the lines st keeps for it.
+   */
+  scrollAllowed?: (shift: number) => boolean;
 }
 
 interface RetainedFrame extends RenderFrame {
@@ -508,9 +514,10 @@ function flushBandFrame(owner: object, nextFrame: RenderFrame, images?: FrameIma
     return key !== undefined && key === contentKey(prevFrame!, prevIndex);
   };
   const identityShift = prevFrame && region ? detectIdentityScroll(prevFrame, next, region) : null;
-  const scrollShift = !prevFrame || !region
+  const detectedShift = !prevFrame || !region
     ? 0
     : identityShift ?? (detectViewportScroll(prevFrame, next, region, sameContent) || detectContentScroll(prevFrame, next, region, sameContent));
+  const scrollShift = detectedShift !== 0 && nextFrame.scrollAllowed?.(detectedShift) === false ? 0 : detectedShift;
   const scrollRegion = scrollShift !== 0 ? region : null;
   let hasDrawingUpdates = false;
   /** Every row the region scroll supplied matches this frame (near the bottom edge aside). */
@@ -579,5 +586,6 @@ function flushBandFrame(owner: object, nextFrame: RenderFrame, images?: FrameIma
 
   next.graphics = typeof graphics === "object" ? graphics : undefined;
   next.afterScroll = undefined;
+  next.scrollAllowed = undefined;
   lastRenderedFrames.set(owner, next);
 }

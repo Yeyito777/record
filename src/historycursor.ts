@@ -186,6 +186,19 @@ export function shiftHistorySelection(state: AppState, deltaRows: number): void 
   };
 }
 
+/**
+ * The view and the cursor's row brought into it: scroll keys move the view
+ * from what is on screen, even when a re-layout (photos loading, messages
+ * arriving while following the bottom) pushed the cursor's line out of view;
+ * otherwise the view jumped to the cursor, sometimes the opposite way.
+ */
+function viewWithCursorInView(state: AppState, visibleRows: number): { viewStart: number; cursorRow: number } {
+  const lines = state.historyLines.length;
+  const viewStart = Math.max(0, Math.min(state.timeline.scrollOffset, Math.max(0, lines - visibleRows)));
+  const lastVisible = Math.min(lines - 1, viewStart + Math.max(1, visibleRows) - 1);
+  return { viewStart, cursorRow: Math.max(viewStart, Math.min(lastVisible, state.historyCursor.row)) };
+}
+
 export function scrollHistoryWithCursor(state: AppState, dir: number, amount: number, visibleRows: number): void {
   const lines = state.historyLines;
   if (lines.length === 0) return;
@@ -193,8 +206,7 @@ export function scrollHistoryWithCursor(state: AppState, dir: number, amount: nu
   const next = scrollByAmountWithCursorInViewport({
     totalLines: lines.length,
     viewportHeight: visibleRows,
-    viewStart: state.timeline.scrollOffset,
-    cursorRow: state.historyCursor.row,
+    ...viewWithCursorInView(state, visibleRows),
   }, dir, amount);
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
@@ -209,8 +221,7 @@ export function scrollHistoryPageWithCursor(state: AppState, dir: number, amount
   const next = scrollPageWithCursorInViewport({
     totalLines: lines.length,
     viewportHeight: visibleRows,
-    viewStart: state.timeline.scrollOffset,
-    cursorRow: state.historyCursor.row,
+    ...viewWithCursorInView(state, visibleRows),
   }, dir, amount);
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);
@@ -225,8 +236,7 @@ export function scrollHistoryViewportSticky(state: AppState, dir: number, visibl
   const next = scrollLineWithStickyCursorInViewport({
     totalLines: lines.length,
     viewportHeight: visibleRows,
-    viewStart: state.timeline.scrollOffset,
-    cursorRow: state.historyCursor.row,
+    ...viewWithCursorInView(state, visibleRows),
   }, dir);
 
   state.historyCursor = clampHistoryCursor({ row: next.cursorRow, col: state.historyCursor.col }, lines);

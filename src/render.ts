@@ -80,6 +80,7 @@ import {
   type InlineTerminalImageUpdate,
 } from "./terminalimage";
 import { renderTopbar } from "./topbar";
+import { debugLog } from "./debuglog";
 import { smoothScrollerFor, type ScrollRect } from "./smoothscroll";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
 import { voiceMessagePromptText } from "./voice-message";
@@ -452,6 +453,9 @@ function visibleSidebarIconPlacements(
 }
 
 function joinImageUpdates(a: InlineTerminalImageUpdate, b: InlineTerminalImageUpdate): InlineTerminalImageUpdate {
+  // Image data sent to the terminal: the debug log's record of what scrolling costs.
+  if (a.transmitted) debugLog("image.transmit", { owner: "chat", ...a.transmitted });
+  if (b.transmitted) debugLog("image.transmit", { owner: "sidebar", ...b.transmitted });
   return { transmit: a.transmit + b.transmit, update: a.update + b.update };
 }
 
@@ -689,9 +693,15 @@ export function render(state: AppState): void {
 
   // Same anchors array = the cached content was reused and no row moved;
   // indexing every row of a long channel per frame was 40% of a scroll step.
-  if (oldAnchors.length > 0 && timeline.lineAnchors !== oldAnchors && !state.historyCursorPendingVisibleBottom && !pinHistoryToBottom && !pinPromptChromeToBottom && !pinTypingToBottom) {
+  if (oldAnchors.length > 0 && timeline.lineAnchors !== oldAnchors && !state.historyCursorPendingVisibleBottom) {
     const anchorIndex = buildLineAnchorIndex(timeline.lineAnchors);
-    state.timeline.scrollOffset = Math.max(0, Math.min(remapRenderedRow(oldViewStart, oldAnchors, anchorIndex), timeline.maxScroll));
+    // A view pinned to the bottom stays there; the history cursor and the
+    // visual anchor always stay on their lines (older history arriving while
+    // following the bottom left them on their old row numbers, on other
+    // messages above the view, and the next scroll key jumped there).
+    if (!pinHistoryToBottom && !pinPromptChromeToBottom && !pinTypingToBottom) {
+      state.timeline.scrollOffset = Math.max(0, Math.min(remapRenderedRow(oldViewStart, oldAnchors, anchorIndex), timeline.maxScroll));
+    }
     state.historyCursor = { ...state.historyCursor, row: remapRenderedRow(oldCursorRow, oldAnchors, anchorIndex) };
     state.historyVisualAnchor = {
       ...state.historyVisualAnchor,
@@ -1066,5 +1076,6 @@ export function render(state: AppState): void {
     bands,
     graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
     afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled, imageClips) : undefined,
+    scrollAllowed: smooth ? (shift) => smooth.regionScrollKeepsGlide(shift) : undefined,
   }, images);
 }

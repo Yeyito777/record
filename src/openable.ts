@@ -244,16 +244,19 @@ export function pruneAttachmentCache(protectedPath?: string): void {
   if (removeCount <= 0) return;
 
   entries.sort((left, right) => left.modifiedAtMs - right.modifiedAtMs || left.path.localeCompare(right.path));
+  let removed = 0;
   for (const entry of entries) {
     if (removeCount <= 0) break;
     if (entry.path === protectedPath) continue;
     try {
       rmSync(entry.path, { force: true });
       removeCount -= 1;
+      removed += 1;
     } catch {
       // Cache maintenance is best effort and must not fail a usable download.
     }
   }
+  if (removed > 0) debugLog("attachment_cache.prune", { removed, kept: entries.length - removed });
 }
 
 /** Refresh an attachment cache hit so LRU pruning keeps recently used media. */
