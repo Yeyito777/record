@@ -103,6 +103,13 @@ export interface WhatsAppBackendHandle {
   on<K extends WhatsAppBackendEventName>(event: K, listener: WhatsAppBackendEventListener<K>): () => void;
 }
 
+/** Offline demo mode installs its fake WhatsApp here; null is the real Node worker. */
+let defaultBackendFactory: (() => WhatsAppBackendHandle) | null = null;
+
+export function setDefaultWhatsAppBackendFactory(factory: (() => WhatsAppBackendHandle) | null): void {
+  defaultBackendFactory = factory;
+}
+
 export interface WhatsAppControllerOptions {
   backendFactory?: () => WhatsAppBackendHandle;
   authDirectory?: string;
@@ -250,7 +257,8 @@ export class WhatsAppController {
     this.newerFooterGraceMs = options.newerFooterGraceMs ?? DEFAULT_NEWER_FOOTER_GRACE_MS;
     this.resyncAfterOfflineMs = options.resyncAfterOfflineMs ?? DEFAULT_RESYNC_AFTER_OFFLINE_MS;
     this.chatIsBehindOverride = options.chatIsBehind ?? null;
-    this.backendFactory = options.backendFactory ?? (() => createNodeWhatsAppBackendClient({ authDirectory: this.authDirectory }));
+    this.backendFactory = options.backendFactory ?? defaultBackendFactory
+      ?? (() => createNodeWhatsAppBackendClient({ authDirectory: this.authDirectory }));
     this.backend = this.backendFactory();
     this.bindBackend();
     ensureWhatsAppRoot(this.state);

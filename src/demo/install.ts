@@ -7,11 +7,13 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { DEMO_TOKEN, demoServerFolderLayout } from "./data";
 import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, parseAnchor, realRecordConfigDirs, type Env } from "./env";
+import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { DemoDiscordServer } from "./server";
+import { buildDemoWhatsAppData, DEMO_WHATSAPP_PHOTOS_CHAT, DemoWhatsAppBackend, demoWhatsAppCacheSnapshot } from "./whatsapp";
 
 export interface DemoInstall {
   server: DemoDiscordServer;
@@ -96,7 +98,7 @@ export function installDemoMode(env: Env = process.env): DemoInstall {
     }, 0);
   }
 
-  disableWhatsAppLogin();
+  installDemoWhatsApp(server, home, numberEnv(env.RECORD_DEMO_OLDER_DELAY_MS, 450), env);
   installed = { server, home, configDir, temporary };
   return installed;
 }
@@ -116,7 +118,9 @@ function writeStartingState(server: DemoDiscordServer, configDir: string, open: 
   if (existsSync(path) || open === "none") return;
   const world = server.world;
   let target = world.defaultChannel;
-  if (open === "dm") {
+  if (open === "wa-photos" || open === "whatsapp") {
+    target = { guildId: WHATSAPP_GUILD_ID, channelId: whatsappChannelId(DEMO_WHATSAPP_PHOTOS_CHAT) };
+  } else if (open === "dm") {
     target = { guildId: "@me::dms", channelId: world.directMessages[0]!.id };
   } else if (open) {
     const name = open.replace(/^#/, "");
@@ -156,15 +160,41 @@ function writeServerFolders(server: DemoDiscordServer, configDir: string): void 
   writeFileSync(path, `${JSON.stringify(file)}\n`);
 }
 
-/** WhatsApp runs in a Node child process with its own sockets; keep it off. */
-function disableWhatsAppLogin(): void {
+/**
+ * The real WhatsApp runs in a Node child process with its own sockets; the
+ * demo replaces it with a fake backend (src/demo/whatsapp.ts). A marker
+ * creds.json in the demo home's auth directory makes Record reconnect it at
+ * startup as it would a saved session, and a seeded cache holds the recent
+ * messages, as after an earlier run.
+ */
+function installDemoWhatsApp(server: DemoDiscordServer, home: string, olderPageDelayMs: number, env: Env): void {
   const require = createRequire(import.meta.url);
-  const { WhatsAppController } = require("../whatsapp/controller") as typeof import("../whatsapp/controller");
-  const { setNotice } = require("../state") as typeof import("../state");
-  const prototype = WhatsAppController.prototype as unknown as Record<string, unknown>;
-  prototype.login = function (this: { state: Parameters<typeof setNotice>[0]; scheduleRender: () => void }) {
-    setNotice(this.state, "WhatsApp is not available in demo mode.", "warning");
-    this.scheduleRender();
-  };
-  prototype.restoreSavedSession = function () {};
+  const { setDefaultWhatsAppBackendFactory } = require("../whatsapp/controller") as typeof import("../whatsapp/controller");
+  const { getRecordWhatsAppPaths } = require("../whatsapp/paths") as typeof import("../whatsapp/paths");
+  const { authDirectory } = getRecordWhatsAppPaths();
+  // Never anywhere but the demo home: the real auth directory holds a real login.
+  if (!resolve(authDirectory).startsWith(`${resolve(home)}/`)) {
+    throw new Error(`Refusing demo WhatsApp outside the demo home: ${authDirectory}`);
+  }
+  const data = buildDemoWhatsAppData(server.world.anchorMs);
+  const pictures = [...server.world.users.values()].filter((user) => user.avatar);
+  setDefaultWhatsAppBackendFactory(() => new DemoWhatsAppBackend({
+    data,
+    olderPageDelayMs,
+    mediaDelayMinMs: numberEnv(env.RECORD_DEMO_WA_MEDIA_MIN_MS, 100),
+    mediaDelayMaxMs: numberEnv(env.RECORD_DEMO_WA_MEDIA_MAX_MS, 800),
+    pictureUrl: (jid) => {
+      const index = [...jid].reduce((sum, char) => sum + char.charCodeAt(0), 0) % (pictures.length + 2);
+      const user = pictures[index];
+      return user ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=64` : null;
+    },
+    log: (line) => server.log(line),
+  }));
+  mkdirSync(authDirectory, { recursive: true, mode: 0o700 });
+  const creds = join(authDirectory, "creds.json");
+  if (!existsSync(creds)) writeFileSync(creds, `${JSON.stringify({ demo: "Record offline demo; not a WhatsApp login" })}\n`, { mode: 0o600 });
+  const cacheFile = join(dirname(authDirectory), "cache.json");
+  if (!existsSync(cacheFile)) {
+    writeFileSync(cacheFile, JSON.stringify(demoWhatsAppCacheSnapshot(data, server.world.anchorMs)), { mode: 0o600 });
+  }
 }

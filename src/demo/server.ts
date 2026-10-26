@@ -820,7 +820,7 @@ export class DemoDiscordServer {
     };
   }
 
-  private log(line: string): void {
+  log(line: string): void {
     if (!this.logPath) return;
     try {
       appendFileSync(this.logPath, `${new Date().toISOString()} ${line}\n`);
