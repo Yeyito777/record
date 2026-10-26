@@ -8,8 +8,16 @@ const ST = "\x1b\\";
 const SAVE_CURSOR = "\x1b7";
 const RESTORE_CURSOR = "\x1b8";
 const BASE64_CHUNK_CHARS = 4096;
-const MAX_IDLE_IMAGES = 64;
-const MAX_IDLE_IMAGE_BYTES = 32 * 1024 * 1024;
+/**
+ * Images kept in the terminal with no placement, so scrolling back places
+ * them again instead of sending them again. Charged as st, kitty and ghostty
+ * charge them (PNG bytes plus decoded RGBA) and kept well under their 320 MB
+ * default quota, which also holds the visible images, icons and emoji.
+ */
+const MAX_IDLE_IMAGES = 256;
+const MAX_IDLE_IMAGE_BYTES = 160 * 1024 * 1024;
+/** One idle image larger than this (a full-size viewer picture) goes as soon as it is not shown. */
+const MAX_IDLE_SINGLE_IMAGE_BYTES = 16 * 1024 * 1024;
 
 export interface InlineTerminalImagePlacement {
   image: InlineChatImageReady;
@@ -27,7 +35,7 @@ export interface InlineTerminalImagePlacement {
 }
 
 interface TerminalImageSyncState {
-  /** In LRU order; bytes charge both retained base64 and terminal RGBA pixels. */
+  /** In LRU order; bytes are what the terminal holds: PNG data plus RGBA pixels. */
   images: Map<number, { fingerprint: string; bytes: number }>;
   placements: Map<string, string>;
 }
@@ -54,9 +62,9 @@ export interface InlineTerminalImageSyncOptions {
    * when this frame wants them where they were.
    */
   movedRows?: { start: number; end: number } | null;
-  /** Bound on images kept in the terminal with no placement (default 64). */
+  /** Bound on images kept in the terminal with no placement (default 256). */
   maxIdleImages?: number;
-  /** Bound on their charged bytes, base64 plus RGBA pixels (default 32 MiB). */
+  /** Bound on their charged bytes, PNG data plus RGBA pixels (default 160 MiB). */
   maxIdleBytes?: number;
 }
 
@@ -124,8 +132,16 @@ function placeImage(placement: InlineTerminalImagePlacement): string {
     );
 }
 
+const fingerprints = new WeakMap<InlineChatImageReady, string>();
+
+/** The image data's identity, without keeping its base64 alive once the chat lets it go. */
 function imageFingerprint(image: InlineChatImageReady): string {
-  return image.pngBase64;
+  let fingerprint = fingerprints.get(image);
+  if (fingerprint === undefined) {
+    fingerprint = `${image.pngBase64.length}:${Bun.hash(image.pngBase64).toString(36)}`;
+    fingerprints.set(image, fingerprint);
+  }
+  return fingerprint;
 }
 
 /** Terminal commands for one reconciliation, split by visibility. */
@@ -184,7 +200,7 @@ export function planInlineTerminalImages(
     state.images.delete(image.imageId);
     state.images.set(image.imageId, {
       fingerprint,
-      bytes: image.pngBase64.length * 2 + image.pixelWidth * image.pixelHeight * 4,
+      bytes: Math.ceil((image.pngBase64.length * 3) / 4) + image.pixelWidth * image.pixelHeight * 4,
     });
     retransmitted.add(image.imageId);
     for (const key of [...state.placements.keys()]) {
@@ -230,8 +246,9 @@ export function planInlineTerminalImages(
     idleCount--;
   };
   // An oversized modal must not flush all the smaller cached chat previews.
+  const maxSingle = Math.min(maxIdleBytes, MAX_IDLE_SINGLE_IMAGE_BYTES);
   for (const [imageId, image] of idle) {
-    if (image.bytes > maxIdleBytes) evict(imageId, image.bytes);
+    if (image.bytes > maxSingle) evict(imageId, image.bytes);
   }
   for (const [imageId, image] of idle) {
     if (idleCount <= maxIdleImages && idleBytes <= maxIdleBytes) break;

@@ -151,14 +151,31 @@ describe("inline terminal graphics", () => {
         image: ready, placementId: 1, row: 1, col: 1, columns: 10, rows: 3,
       }], (payload) => { output += payload; });
     };
-    for (let id = 1; id <= 65; id++) show(id);
+    for (let id = 1; id <= 257; id++) show(id);
     show(1); // refresh age
     expect(output).not.toContain("a=t");
-    show(66);
+    show(258);
     expect(output).toContain("a=d,d=I,i=2,");
     expect(output).not.toContain("a=d,d=I,i=1,");
     show(2);
     expect(output).toContain("a=t");
+  });
+
+  test("keeps a long scroll of Retina-size previews resident, and the same data in a new object is not sent again", () => {
+    const owner = {};
+    let output = "";
+    const show = (ready: ReturnType<typeof image>) => {
+      output = "";
+      syncInlineTerminalImages(owner, [ready], [{
+        image: ready, placementId: 1, row: 1, col: 1, columns: 10, rows: 3,
+      }], (payload) => { output += payload; });
+    };
+    // 864x576 RGBA is about 2 MB in the terminal: 60 of them stay.
+    const previews = Array.from({ length: 60 }, (_, index) => image({ imageId: 100 + index, pixelWidth: 864, pixelHeight: 576 }));
+    for (const preview of previews) show(preview);
+    show({ ...previews[0]! });
+    expect(output).not.toContain("a=t");
+    expect(output).not.toContain("d=I");
   });
 
   test("bounds idle decoded bytes without evicting a visible oversized image", () => {
