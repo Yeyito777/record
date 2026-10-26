@@ -4,13 +4,14 @@
 
 // Must stay the first import: demo mode redirects config paths and the network.
 import "./demo/bootstrap";
+import { join } from "node:path";
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { AsyncWorkQueue } from "./asyncwork";
 import { visiblePanels } from "./panels";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
-import { configPath, loadConfig, loadSavedLogins, saveConfig, type ImageDisplayMode } from "./config";
+import { configDir, configPath, loadConfig, loadSavedLogins, saveConfig, type ImageDisplayMode } from "./config";
 import { DEFAULT_LOCAL_GAIN_DB, DEFAULT_NOISE_SUPPRESSION_MODE, REMOTE_USER_VOLUME_STEP_PERCENT, normalizeGainDb, normalizeParticipantVolumes, parseNoiseSuppressionMode, type NoiseSuppressionMode, type ParticipantVolumes } from "./volume";
 import { acceptAutocomplete, cycleAutocomplete, dismissAutocomplete, handleAutocompleteArrow, tryPathComplete, updateAutocomplete } from "./autocomplete";
 import { LOADING_FRAMES } from "./loading";
@@ -38,7 +39,7 @@ import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
 import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewDistance, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareReport } from "./inlineimage";
-import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
+import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
@@ -292,6 +293,11 @@ const inlineImageConvertQueue = new AsyncWorkQueue(INLINE_IMAGE_CONVERT_CONCURRE
 // Viewer work has its own bounded lane, ahead of background thumbnail queues.
 const inlineImageModalLoadQueue = new AsyncWorkQueue(1);
 const inlineImageCache = new InlineImageCache();
+let inlinePreviewDiskCacheInstance: InlinePreviewDiskCache | null = null;
+/** Created on first use: the config directory is known by then (demo mode included). */
+function inlinePreviewDiskCache(): InlinePreviewDiskCache {
+  return inlinePreviewDiskCacheInstance ??= new InlinePreviewDiskCache(join(configDir(), "image-cache", "previews"));
+}
 
 function syncTerminalGraphicsCells(): void {
   const modal = state.whatsapp.loginModal;
@@ -573,8 +579,17 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
     try {
       // Another occurrence may have prepared this source while this one waited.
       let prepared = inlineImageCache.get(cacheKey);
+      if (!prepared && !local) {
+        // Converted in an earlier session, or before the memory cache let it go.
+        const diskStart = performance.now();
+        prepared = await inlinePreviewDiskCache().get(attachment, previewBounds) ?? undefined;
+        if (prepared) {
+          timing.source = "preview-disk";
+          timing.fetchMs = Math.round(performance.now() - diskStart);
+        }
+      }
       if (prepared) {
-        timing.source = "memory";
+        timing.source ??= "memory";
       } else if (local) {
         timing.source = "local";
       } else {
@@ -611,6 +626,7 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
           timing.convertMs = Math.round(performance.now() - convertStart);
           return result;
         }, priority);
+        if (prepared) void inlinePreviewDiskCache().set(attachment, previewBounds, prepared);
       }
       if (!prepared && local) {
         prepared = await inlineImageConvertQueue.enqueue(async () => {
