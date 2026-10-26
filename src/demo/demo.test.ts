@@ -204,6 +204,12 @@ describe("demo launch", () => {
     expect(existsSync(join(home, ".config", DEMO_HOME_MARKER))).toBe(false);
   }, 30_000);
 
+  test("the demo bootstrap is main.ts's first import (nothing reads a config path before it)", () => {
+    const source = readFileSync(join(REPO, "src/main.ts"), "utf8");
+    const firstImport = source.split("\n").find((line) => line.startsWith("import "));
+    expect(firstImport).toBe(`import "./demo/bootstrap";`);
+  });
+
   test("bootstrap swaps fetch/WebSocket for the fake server and WhatsApp and Instagram for fake ones, inside the demo home", () => {
     const { home, configFile, original } = fakeRealHome();
     const script = join(temp(), "probe.ts");

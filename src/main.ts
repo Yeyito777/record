@@ -3,10 +3,10 @@
  */
 
 // Must stay the first import: demo mode redirects config paths and the network.
-import { visiblePanels } from "./panels";
 import "./demo/bootstrap";
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { AsyncWorkQueue } from "./asyncwork";
+import { visiblePanels } from "./panels";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
