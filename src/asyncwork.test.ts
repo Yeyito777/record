@@ -51,4 +51,18 @@ describe("async work queue", () => {
     await expect(first).rejects.toThrow("nope");
     await expect(second).resolves.toBe("ok");
   });
+  test("with priorities, the most wanted pending work starts first, judged when a slot frees", async () => {
+    const queue = new AsyncWorkQueue(1);
+    const gate = deferred();
+    const started: string[] = [];
+    const rank: Record<string, number> = { a: 5, b: 3, c: 9 };
+    void queue.enqueue(async () => { started.push("first"); await gate.promise; });
+    const jobs = ["a", "b", "c"].map((name) => queue.enqueue(async () => { started.push(name); }, () => rank[name]!));
+    await Promise.resolve();
+    // Priorities change while waiting (the view scrolled): c is now nearest.
+    rank.c = 0;
+    gate.resolve();
+    await Promise.all(jobs);
+    expect(started).toEqual(["first", "c", "b", "a"]);
+  });
 });
