@@ -343,12 +343,12 @@ function reduced(message: IgMessage, viewerFbid: string): IgMessage {
   if (message.content.kind === "system" && /reacted|liked/.test(message.content.text)) {
     // The inbox's copy of a reaction notice: only Instagram's snippet line.
     const text = message.content.text.replace(/^\S+ /, "");
-    return { ...message, reactions: [], content: { kind: "unsupported", text: "Message" }, snippet: `${text[0]!.toUpperCase()}${text.slice(1)}` };
+    return { ...message, reactions: [], content: { kind: "unsupported", text: "Message" }, snippet: `${text[0]!.toUpperCase()}${text.slice(1)}`, listPreview: true };
   }
   if (kind === "text" || kind === "heart" || kind === "call" || kind === "system") return { ...message, reactions: [] };
   const summary = contentSummary(message.content);
   const snippet = message.senderFbid === viewerFbid ? `You: ${summary}` : summary;
-  return { ...message, reactions: [], content: { kind: "unsupported", text: summary }, snippet };
+  return { ...message, reactions: [], content: { kind: "unsupported", text: summary }, snippet, listPreview: true };
 }
 
 const PAGE = 20;

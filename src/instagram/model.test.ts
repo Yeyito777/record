@@ -189,6 +189,32 @@ describe("Instagram pages and threads", () => {
     expect(mergeThreadDetail({ ...full, folder: "pending" }, igThread("1")).folder).toBe("pending");
   });
 
+  test("inbox-list copies are only placeholders: a detail page that doesn't cover them pages them in again", () => {
+    // Inbox lists carry `__typename` + `text_body` only: a photo is "unsupported" with Instagram's snippet.
+    const page = parseInboxPage({ get_slide_mailbox_for_iris_subscription: { id: "mb", threads_by_folder: { edges: [{ node: { as_ig_direct_thread: {
+      thread_fbid: "100", viewer: { id: "1", interop_messaging_user_fbid: VIEWER_FBID },
+      slide_messages: { edges: [
+        { node: node({ __typename: "SlideMessageImageContent" }, "IMAGES", { message_id: "mid.$p", timestamp_ms: "3000", igd_snippet: "Maya sent a photo" }) },
+        { node: node({ __typename: "SlideMessageText", text_body: "hi" }, "TEXT", { message_id: "mid.$t", timestamp_ms: "2000" }) },
+      ] },
+    } } }] } } })!;
+    const [photo, text] = [page.threads[0]!.messages.find(m => m.id === "mid.$p")!, page.threads[0]!.messages.find(m => m.id === "mid.$t")!];
+    expect(photo.listPreview).toBe(true);
+    expect(text.listPreview).toBeUndefined();
+
+    const opened = igThread("1", { detailLoaded: true, cursor: "old", hasOlder: true, messages: [igMessage("1", { timestampMs: 1 })] });
+    const polled = mergeThreadPreview(opened, igThread("1", { messages: [{ ...photo, timestampMs: 5 }] }));
+    // 20+ messages later the chat opens: its newest page starts after the list copy.
+    const detail = mergeThreadDetail(polled, igThread("1", { messages: [igMessage("30", { timestampMs: 30 })], cursor: "c30", hasOlder: true }));
+    expect(detail.messages.map(m => m.id)).toEqual(["30"]);
+    expect(detail).toMatchObject({ cursor: "c30", hasOlder: true });
+    // An older page's real copy replaces a placeholder it meets.
+    const withPlaceholder = { ...detail, messages: [{ ...photo, timestampMs: 5 }, ...detail.messages] };
+    const realPhoto = igMessage("mid.$p", { timestampMs: 5, content: { kind: "media", items: [] } });
+    expect(prependOlder(withPlaceholder, [realPhoto], null, false).messages.map(m => [m.id, m.content.kind]))
+      .toEqual([["mid.$p", "media"], ["30", "text"]]);
+  });
+
   test("offline threading ids follow the web's format", () => {
     expect(offlineThreadingId(1_792_360_800_000, 5)).toBe(String((1_792_360_800_000n << 22n) | 5n));
     expect(offlineThreadingId()).not.toBe(offlineThreadingId());
