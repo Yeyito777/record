@@ -200,7 +200,8 @@ import { InstagramController } from "./instagram/controller";
 import { isTimelineNearBottom } from "./timeline";
 import { INSTAGRAM_GUILD_ID, instagramGuild, isInstagramChannelId, isExternalChannelId } from "./chatproviders";
 import { handleLoginModalKey } from "./whatsapp/loginmodal";
-import { applyTuiStartingState, availableStartingChannel, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
+import { applyTuiStartingState, captureTuiStartingState, loadTuiStartingState, saveTuiStartingState } from "./startingstate";
+import { StartingStateRestorer } from "./startuprestore";
 import {
   SMOOTH_SCROLL_OFF,
   SMOOTH_SCROLL_ON,
@@ -266,7 +267,6 @@ try {
 
 const savedStartingState = loadTuiStartingState();
 const state = createInitialState(initialToken, configPath(), initialSavedLogins, { showHiddenChannels: initialShowHiddenChannels, sidebar: initialSidebarPreferences, imageDisplayMode: initialImageDisplayMode, imageDetails: initialImageDetails, noiseSuppression: initialNoiseSuppression, micGainDb: initialMicGainDb, participantVolumes: initialParticipantVolumes, quickReactionEmoji: initialQuickReactionEmoji, scrollRegions: initialScrollRegions });
-let pendingStartingState = savedStartingState;
 setSidebarGuilds(state.sidebar, [
   { id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null },
   whatsappGuild(),
@@ -1399,82 +1399,11 @@ function sidebarVisibilityOptions(): { showHiddenChannels: boolean; currentUserI
   };
 }
 
-async function restorePendingStartingState(
+function restorePendingStartingState(
   token: string | null,
   options: { deferUnavailableGuild?: boolean } = {},
 ): Promise<void> {
-  const startingState = pendingStartingState;
-  if (!startingState) return;
-
-  const savedChannel = startingState.focusedChannel;
-  if (savedChannel?.guildId === INSTAGRAM_GUILD_ID) {
-    if (!instagramController.isConnected) return;
-    pendingStartingState = null;
-    const restored = await instagramController.restoreChannel(savedChannel.channelId).catch(() => false);
-    applyTuiStartingState(state, restored ? startingState : { ...startingState, focusedChannel: null });
-    scheduleRender();
-    return;
-  }
-  if (savedChannel?.guildId === WHATSAPP_GUILD_ID) {
-    pendingStartingState = null;
-    const restored = await whatsAppController.restoreCachedChannel(savedChannel.channelId);
-    applyTuiStartingState(state, restored ? startingState : { ...startingState, focusedChannel: null });
-    scheduleRender();
-    return;
-  }
-
-  const accountId = state.auth.user?.id;
-  if (!token || !accountId) return;
-  if (startingState.accountId && startingState.accountId !== accountId) {
-    pendingStartingState = null;
-    return;
-  }
-
-  const channelLocation = availableStartingChannel(startingState, accountId, state.sidebar.guilds);
-  if (savedChannel && !channelLocation && options.deferUnavailableGuild) return;
-  pendingStartingState = null;
-  let restoredFocusedChannel = savedChannel === null;
-  if (channelLocation) {
-    const cachedChannel = state.channelList.guildId === channelLocation.guildId
-      ? findTimelineChannel(state.channelList.channels, channelLocation.channelId)
-      : null;
-    // The first frame already contains this channel and its messages. Start
-    // message hydration now instead of waiting for the channel-list REST call.
-    const messageHydration = cachedChannel && !cachedChannel.hidden
-      ? loadChannelMessages(state, token, cachedChannel.id, { scheduleRender })
-      : null;
-    await loadGuildChannels(
-      state,
-      token,
-      channelLocation.guildId,
-      { scheduleRender },
-      { openFirstChannel: false, focusGuild: false },
-    );
-    const channel = findTimelineChannel(state.channelList.channels, channelLocation.channelId);
-    if (channel && !channel.hidden) {
-      if (messageHydration) await messageHydration;
-      else await loadChannelMessages(state, token, channel.id, { scheduleRender });
-      setActiveChannelEntry(state.channelList, channel);
-      restoredFocusedChannel = true;
-    }
-  }
-
-  if (savedChannel && !restoredFocusedChannel) {
-    // Authentication has now disproved the optimistic cache preview. Invalidate
-    // any in-flight message refresh before dropping inaccessible stale content.
-    state.timeline.requestId += 1;
-    clearTimeline(state.timeline);
-    setActiveChannelEntry(state.channelList, null);
-    if (state.sidebar.activeGuildId === savedChannel.guildId) state.sidebar.activeGuildId = null;
-  }
-
-  // Loading the active channel necessarily focuses its guild. Restore the
-  // independently saved sidebar cursor only after that work has completed.
-  applyTuiStartingState(
-    state,
-    restoredFocusedChannel ? startingState : { ...startingState, focusedChannel: null },
-  );
-  scheduleRender();
+  return startingStateRestorer.restore(token, options);
 }
 
 function scrollFocusedPanel(delta: number, visibleRows: number, mode: "cursor" | "page" = "cursor"): void {
@@ -3476,6 +3405,14 @@ voiceMessageController = createVoiceMessageController(state, scheduleRender, {
 
 const whatsAppController = new WhatsAppController(state, scheduleRender);
 const instagramController = new InstagramController(state, scheduleRender);
+const startingStateRestorer = new StartingStateRestorer({
+  state,
+  scheduleRender,
+  instagram: instagramController,
+  whatsapp: whatsAppController,
+  loadGuildChannels,
+  loadChannelMessages,
+}, savedStartingState);
 if (savedStartingState) applyTuiStartingState(state, savedStartingState);
 if (initialToken) restoreCachedSessionPreview(state, savedStartingState);
 if (savedStartingState?.focusedChannel?.guildId === WHATSAPP_GUILD_ID) {
@@ -3644,11 +3581,15 @@ function processInput(input: string): void {
   if (!running) return;
 
   const events = parseInput(input);
-  for (const event of events) {
-    if (event.type === "mouse") handleMouse(event);
-    else handleKey(event);
-    if (!running) break;
-  }
+  // Until the saved starting state is fully restored, whatever this input
+  // changes (sidebar toggled or moved, another chat opened) is kept by it.
+  startingStateRestorer.userInput(() => {
+    for (const event of events) {
+      if (event.type === "mouse") handleMouse(event);
+      else handleKey(event);
+      if (!running) break;
+    }
+  });
   // Folders expand from keys, clicks and jumps alike; save the set once per batch.
   bestEffort("sidebar_folder_expansion", () => persistSidebarFolderExpansion(state));
 }
@@ -3658,7 +3599,7 @@ let startingStatePersisted = false;
 function persistStartingStateOnce(): void {
   if (startingStatePersisted) return;
   try {
-    saveTuiStartingState(captureTuiStartingState(state, pendingStartingState?.accountId ?? null));
+    saveTuiStartingState(captureTuiStartingState(state, startingStateRestorer.pendingState?.accountId ?? null));
     startingStatePersisted = true;
   } catch (error) {
     debugLog("starting_state.save_failed", { error: error instanceof Error ? error.message : String(error) });
