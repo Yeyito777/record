@@ -1113,6 +1113,23 @@ function inlineImageErrorText(error: string): string {
     .slice(0, 240) || "unknown image error";
 }
 
+/** Provider-reported sizes of a message's images, by attachment id. */
+function inlineImageDimensions(message: DiscordMessage): Map<string, { width: number; height: number }> {
+  const dimensions = new Map<string, { width: number; height: number }>();
+  for (const source of inlineImageSourcesForMessage(message)) {
+    if (source.width && source.height && source.width > 0 && source.height > 0) {
+      dimensions.set(source.id, { width: source.width, height: source.height });
+    }
+  }
+  return dimensions;
+}
+
+/** The decoded picture has the provider's shape (a scaled preview of it), not a rotated or wrong one. */
+function sameShape(known: { width: number; height: number }, picture: { pixelWidth: number; pixelHeight: number }): boolean {
+  const expectedHeight = (picture.pixelWidth * known.height) / known.width;
+  return Math.abs(expectedHeight - picture.pixelHeight) <= Math.max(2, picture.pixelHeight * 0.02);
+}
+
 function renderInlineImageExtras(
   messageId: string,
   states: readonly InlineChatImageState[],
@@ -1121,15 +1138,47 @@ function renderInlineImageExtras(
   terminalCellWidthPixels: number,
   terminalCellHeightPixels: number,
   lineOffset: number,
+  dimensions: ReadonlyMap<string, { width: number; height: number }> = new Map(),
 ): RenderedInlineImageExtras {
   const lines: string[] = [];
   const lineAnchors: string[] = [];
   const wrapContinuation: boolean[] = [];
   const inlineImages: TimelineInlineImagePlacement[] = [];
+  const boxRows = (encodedId: string, rows: number, first = ""): void => {
+    for (let row = 0; row < rows; row++) {
+      lines.push(row === 0 ? first : "");
+      lineAnchors.push(`msg:${messageId}:image:${encodedId}:${row}`);
+      wrapContinuation.push(false);
+    }
+  };
 
+  // In the message's order: each image keeps its place as it loads.
   for (const state of states) {
-    if (state.phase === "ready" || isEmbedSourceId(state.attachmentId)) continue;
+    // Embed pictures are drawn inside their embed (embedlayout.ts).
+    if (isEmbedSourceId(state.attachmentId)) continue;
     const encodedId = encodeURIComponent(state.attachmentId);
+    const known = dimensions.get(state.attachmentId);
+    if (state.phase === "ready") {
+      // The box it was given while loading, when the picture has that shape.
+      const box = known && sameShape(known, state) ? { pixelWidth: known.width, pixelHeight: known.height } : state;
+      const layout = inlineImageCellLayout(box, width, terminalCellWidthPixels, terminalCellHeightPixels);
+      inlineImages.push({
+        image: state,
+        placementId: inlineImagePlacementId(state.imageId, messageId),
+        lineIndex: lineOffset + lines.length,
+        columns: layout.columns,
+        rows: layout.rows,
+      });
+      boxRows(encodedId, layout.rows);
+      continue;
+    }
+    if (state.phase === "loading" && known) {
+      // Its final box, so nothing moves when the picture arrives.
+      const layout = inlineImageCellLayout({ pixelWidth: known.width, pixelHeight: known.height }, width, terminalCellWidthPixels, terminalCellHeightPixels);
+      const label = truncate(loadingLabel(`Loading ${state.filename}…`, loadingFrameIndex), Math.max(1, width));
+      boxRows(encodedId, layout.rows, `${theme.muted}${label}${theme.reset}`);
+      continue;
+    }
     const label = state.phase === "loading"
       ? loadingLabel(`Loading ${state.filename}…`, loadingFrameIndex)
       : state.phase === "waiting"
@@ -1142,30 +1191,6 @@ function renderInlineImageExtras(
       lineAnchors.push(`msg:${messageId}:image-status:${encodedId}:${index}`);
       wrapContinuation.push(index > 0);
     });
-  }
-
-  for (const state of states) {
-    // Embed pictures are drawn inside their embed (embedlayout.ts).
-    if (state.phase !== "ready" || isEmbedSourceId(state.attachmentId)) continue;
-    const layout = inlineImageCellLayout(
-      state,
-      width,
-      terminalCellWidthPixels,
-      terminalCellHeightPixels,
-    );
-    const encodedId = encodeURIComponent(state.attachmentId);
-    inlineImages.push({
-      image: state,
-      placementId: inlineImagePlacementId(state.imageId, messageId),
-      lineIndex: lineOffset + lines.length,
-      columns: layout.columns,
-      rows: layout.rows,
-    });
-    for (let row = 0; row < layout.rows; row++) {
-      lines.push("");
-      lineAnchors.push(`msg:${messageId}:image:${encodedId}:${row}`);
-      wrapContinuation.push(false);
-    }
   }
 
   return { lines, lineAnchors, wrapContinuation, inlineImages };
@@ -1263,6 +1288,7 @@ function renderMessage(
     terminalCellWidthPixels,
     terminalCellHeightPixels,
     firstBodyRow + emptyLines.length + body.lines.length,
+    inlineImageDimensions(message),
   );
   const failureLines = bodyEmpty ? [] : wrapFailureMessage(message, width);
   const lines = [
@@ -1372,7 +1398,12 @@ function renderMessageBody(
  * preview is ready). The same object when nothing is drawn inline.
  */
 function withoutShownImageNames(message: DiscordMessage, images: readonly InlineChatImageState[]): DiscordMessage {
-  const shown = new Set(images.filter((image) => image.phase === "ready").map((image) => image.attachmentId));
+  // Drawn, or loading in its final box (whose first row names it): either
+  // way the image has rows of its own, which keep their place as it arrives.
+  const dimensions = inlineImageDimensions(message);
+  const shown = new Set(images
+    .filter((image) => image.phase === "ready" || (image.phase === "loading" && dimensions.has(image.attachmentId)))
+    .map((image) => image.attachmentId));
   if (shown.size === 0) return message;
   const attachments = (list: DiscordMessage["attachments"]) => list.filter((attachment) => !shown.has(attachment.id));
   const stickerNames = (names: readonly string[], stickers: DiscordMessage["stickers"]) => {
