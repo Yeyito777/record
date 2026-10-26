@@ -1072,5 +1072,6 @@ export function render(state: AppState): void {
     bands,
     graphics: smooth ? customEmojiImages.finishTrackedFrame(customEmojiFrame) : customEmojiImages.finishFrame(customEmojiFrame),
     afterScroll: smooth ? (regionShift, intact, scrolled) => smooth.afterFlush(regionShift, smoothRects, intact, scrolled, imageClips) : undefined,
+    scrollAllowed: smooth ? (shift) => smooth.regionScrollKeepsGlide(shift) : undefined,
   }, images);
 }
