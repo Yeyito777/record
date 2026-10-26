@@ -4,7 +4,7 @@
 
 import { applyDiscordMessagePatch, isCompactSystemMessageType, isPendingLocalMessageEcho, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { customEmojiMarker, replaceCustomEmojiTokens } from "./customemoji";
-import { inlineImageCellLayout, inlineImageId, inlineImagePlacementId, inlineImageSourcesForMessage, stickerImageAttachment, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
+import { inlineImageCellLayout, inlineImageHasShape, inlineImageId, inlineImagePlacementId, inlineImageShape, inlineImageSourcesForMessage, isImageAttachment, isPendingInlineImage, pendingInlineImage, stickerImageAttachment, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { layoutEmbed } from "./embedlayout";
@@ -47,6 +47,13 @@ export interface TimelineState {
    * a shown image is its own row; images not drawn keep their name row.
    */
   showImageDetails: boolean;
+  /**
+   * Pictures near the view load by themselves (`/images show` on a terminal
+   * that draws them): one not requested yet already holds its box.
+   */
+  imageAutoShow: boolean;
+  /** Pictures the user collapsed: never given a box until reopened. */
+  hiddenImageIds: ReadonlySet<string>;
 }
 
 export interface TimelineSystemMessage {
@@ -158,6 +165,8 @@ export function createTimelineState(): TimelineState {
     activeGuildId: null,
     inlineImages: {},
     showImageDetails: false,
+    imageAutoShow: false,
+    hiddenImageIds: new Set(),
     terminalCellWidthPixels: 8,
     terminalCellHeightPixels: 16,
   };
@@ -257,6 +266,15 @@ export function invalidateTimelineLayout(timeline: TimelineState): void {
 export function setTimelineImageDetails(timeline: TimelineState, show: boolean): boolean {
   if (timeline.showImageDetails === show) return false;
   timeline.showImageDetails = show;
+  resetTimelineRenderCaches(timeline);
+  return true;
+}
+
+/** Whether pictures near the view load by themselves, and which the user collapsed. Returns whether it changed. */
+export function setTimelineImageAutoShow(timeline: TimelineState, autoShow: boolean, hidden: ReadonlySet<string> = timeline.hiddenImageIds): boolean {
+  if (timeline.imageAutoShow === autoShow && timeline.hiddenImageIds === hidden) return false;
+  timeline.imageAutoShow = autoShow;
+  timeline.hiddenImageIds = hidden;
   resetTimelineRenderCaches(timeline);
   return true;
 }
@@ -1037,9 +1055,16 @@ function timelineRenderEntries(timeline: TimelineState): TimelineRenderEntry[] {
   return entries;
 }
 
+/**
+ * The image states of a message's pictures. With `autoShowHidden` (auto-show
+ * on: the pictures the user collapsed), a picture whose shape is known and
+ * that will load once near the view counts as loading before it is
+ * requested, so it holds its box from its first frame.
+ */
 function inlineImageStatesForMessage(
   message: DiscordMessage,
   states: Readonly<Record<string, InlineChatImageState>>,
+  autoShowHidden: ReadonlySet<string> | null = null,
 ): InlineChatImageState[] {
   const attachments = inlineImageSourcesForMessage(message);
   const seen = new Set<string>();
@@ -1048,7 +1073,12 @@ function inlineImageStatesForMessage(
     if (seen.has(attachment.id)) continue;
     seen.add(attachment.id);
     const state = states[attachment.id];
-    if (!state || state.sourceUrl !== attachment.url) continue;
+    if (!state || state.sourceUrl !== attachment.url) {
+      if (autoShowHidden && !state && !autoShowHidden.has(attachment.id) && isImageAttachment(attachment) && inlineImageShape(attachment)) {
+        matched.push(pendingInlineImage(attachment));
+      }
+      continue;
+    }
     matched.push(state);
   }
   return matched;
@@ -1063,7 +1093,7 @@ function renderMessageCached(
   groupedWithPrevious = false,
 ): RenderedMessage {
   const cacheState = getTimelineCacheState(timeline);
-  const inlineImages = inlineImageStatesForMessage(message, timeline.inlineImages);
+  const inlineImages = inlineImageStatesForMessage(message, timeline.inlineImages, timeline.imageAutoShow ? timeline.hiddenImageIds : null);
   const fingerprint = messageRenderFingerprint(message, loadingFrameIndex, nowMs, timeline.rolesByGuildId, timeline.activeGuildId, groupedWithPrevious, inlineImages);
   const cacheKey = `${message.id}:${groupedWithPrevious ? "grouped" : "full"}`;
   const cached = cacheState.messageRenderCache.get(cacheKey);
@@ -1113,21 +1143,19 @@ function inlineImageErrorText(error: string): string {
     .slice(0, 240) || "unknown image error";
 }
 
-/** Provider-reported sizes of a message's images, by attachment id. */
+/** Sizes of a message's images known before they arrive (provider-reported or assumed), by attachment id. */
 function inlineImageDimensions(message: DiscordMessage): Map<string, { width: number; height: number }> {
   const dimensions = new Map<string, { width: number; height: number }>();
   for (const source of inlineImageSourcesForMessage(message)) {
-    if (source.width && source.height && source.width > 0 && source.height > 0) {
-      dimensions.set(source.id, { width: source.width, height: source.height });
-    }
+    const shape = inlineImageShape(source);
+    if (shape) dimensions.set(source.id, shape);
   }
   return dimensions;
 }
 
-/** The decoded picture has the provider's shape (a scaled preview of it), not a rotated or wrong one. */
-function sameShape(known: { width: number; height: number }, picture: { pixelWidth: number; pixelHeight: number }): boolean {
-  const expectedHeight = (picture.pixelWidth * known.height) / known.width;
-  return Math.abs(expectedHeight - picture.pixelHeight) <= Math.max(2, picture.pixelHeight * 0.02);
+/** Loading, waiting for a connection, or about to load: a picture with a known shape holds its box. */
+function holdsImageBox(image: InlineChatImageState, dimensions: ReadonlyMap<string, unknown>): boolean {
+  return (image.phase === "loading" || image.phase === "waiting") && dimensions.has(image.attachmentId);
 }
 
 function renderInlineImageExtras(
@@ -1160,7 +1188,7 @@ function renderInlineImageExtras(
     const known = dimensions.get(state.attachmentId);
     if (state.phase === "ready") {
       // The box it was given while loading, when the picture has that shape.
-      const box = known && sameShape(known, state) ? { pixelWidth: known.width, pixelHeight: known.height } : state;
+      const box = known && inlineImageHasShape(known, state) ? { pixelWidth: known.width, pixelHeight: known.height } : state;
       const layout = inlineImageCellLayout(box, width, terminalCellWidthPixels, terminalCellHeightPixels);
       inlineImages.push({
         image: state,
@@ -1172,11 +1200,13 @@ function renderInlineImageExtras(
       boxRows(encodedId, layout.rows);
       continue;
     }
-    if (state.phase === "loading" && known) {
+    if (known && holdsImageBox(state, dimensions)) {
       // Its final box, so nothing moves when the picture arrives.
       const layout = inlineImageCellLayout({ pixelWidth: known.width, pixelHeight: known.height }, width, terminalCellWidthPixels, terminalCellHeightPixels);
-      const label = truncate(loadingLabel(`Loading ${state.filename}…`, loadingFrameIndex), Math.max(1, width));
-      boxRows(encodedId, layout.rows, `${theme.muted}${label}${theme.reset}`);
+      const status = state.phase === "loading"
+        ? loadingLabel(`Loading ${state.filename}…`, isPendingInlineImage(state) ? 0 : loadingFrameIndex)
+        : `Waiting for connection to load ${state.filename}…`;
+      boxRows(encodedId, layout.rows, `${theme.muted}${truncate(status, Math.max(1, width))}${theme.reset}`);
       continue;
     }
     const label = state.phase === "loading"
@@ -1402,7 +1432,7 @@ function withoutShownImageNames(message: DiscordMessage, images: readonly Inline
   // way the image has rows of its own, which keep their place as it arrives.
   const dimensions = inlineImageDimensions(message);
   const shown = new Set(images
-    .filter((image) => image.phase === "ready" || (image.phase === "loading" && dimensions.has(image.attachmentId)))
+    .filter((image) => image.phase === "ready" || holdsImageBox(image, dimensions))
     .map((image) => image.attachmentId));
   if (shown.size === 0) return message;
   const attachments = (list: DiscordMessage["attachments"]) => list.filter((attachment) => !shown.has(attachment.id));
@@ -2061,7 +2091,7 @@ function messageRenderFingerprint(
   const inlineImageKey = inlineImages.map((image) => image.phase === "ready"
     ? [image.attachmentId, image.phase, String(image.imageId), String(image.pixelWidth), String(image.pixelHeight)].join("\u0002")
     : image.phase === "loading"
-      ? [image.attachmentId, image.phase, String(image.requestId), String(loadingFrameIndex)].join("\u0002")
+      ? [image.attachmentId, image.phase, String(image.requestId), isPendingInlineImage(image) ? "" : String(loadingFrameIndex)].join("\u0002")
       : [image.attachmentId, image.phase, String(image.requestId), image.phase === "error" ? image.error : ""].join("\u0002"))
     .join("\u0000");
   return [

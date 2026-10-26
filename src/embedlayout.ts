@@ -8,7 +8,7 @@
 import type { DiscordMessageEmbed, DiscordMessageEmbedField } from "./discord";
 import { embedHasText, embedHost, formatVideoDuration, isBareMediaEmbed, isVideoEmbed, type EmbedGroup, type EmbedMediaSource } from "./embeds";
 import type { InlineChatImageReady, InlineChatImageState } from "./inlineimage";
-import { inlineImagePlacementId } from "./inlineimage";
+import { fitPictureCells, inlineImageHasShape, inlineImagePlacementId, inlineImageShape, isPendingInlineImage } from "./inlineimage";
 import { loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
@@ -108,17 +108,7 @@ export function fitImageCells(
   cellWidthPixels: number,
   cellHeightPixels: number,
 ): { columns: number; rows: number } {
-  const pixelWidth = Math.max(1, image.pixelWidth);
-  const pixelHeight = Math.max(1, image.pixelHeight);
-  const cellWidth = Math.max(1, cellWidthPixels);
-  const cellHeight = Math.max(1, cellHeightPixels);
-  const columns = Math.max(1, Math.floor(maxColumns));
-  const rows = Math.max(1, Math.floor(maxRows));
-  const scale = Math.min(1, (columns * cellWidth) / pixelWidth, (rows * cellHeight) / pixelHeight);
-  return {
-    columns: Math.max(1, Math.min(columns, Math.ceil((pixelWidth * scale) / cellWidth))),
-    rows: Math.max(1, Math.min(rows, Math.ceil((pixelHeight * scale) / cellHeight))),
-  };
+  return fitPictureCells(image.pixelWidth, image.pixelHeight, maxColumns, maxRows, cellWidthPixels, cellHeightPixels, 1);
 }
 
 function wrapMarkdown(text: string, width: number, restore: string): { lines: string[]; cont: boolean[] } {
@@ -159,7 +149,7 @@ export function formatEmbedTimestamp(timestamp: number, nowMs = Date.now()): str
 function statusLabel(state: InlineChatImageState | undefined, source: EmbedMediaSource, embed: DiscordMessageEmbed, loadingFrameIndex: number): { text: string; color: string } {
   const host = embedHost(embed.url) || embedHost(source.media.url);
   const what = source.role === "poster" ? (embed.type === "gifv" ? "GIF" : "video") : source.role === "thumbnail" ? "thumbnail" : "image";
-  if (state?.phase === "loading") return { text: loadingLabel(`Loading ${what}…`, loadingFrameIndex), color: theme.muted };
+  if (state?.phase === "loading") return { text: loadingLabel(`Loading ${what}…`, isPendingInlineImage(state) ? 0 : loadingFrameIndex), color: theme.muted };
   if (state?.phase === "waiting") return { text: `Waiting for connection to load ${what}…`, color: theme.muted };
   if (state?.phase === "error" && source.role !== "poster") {
     const reason = oneLine(state.error).slice(0, 120) || "unknown error";
@@ -249,18 +239,36 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
     });
   };
 
+  const stateOf = (source: EmbedMediaSource | undefined): InlineChatImageState | null => {
+    const state = source ? options.states[source.attachment.id] : undefined;
+    return state && state.sourceUrl === source!.attachment.url ? state : null;
+  };
   const readyState = (source: EmbedMediaSource | undefined): InlineChatImageReady | null => {
-    if (!source) return null;
-    const state = options.states[source.attachment.id];
-    return state?.phase === "ready" && state.sourceUrl === source.attachment.url ? state : null;
+    const state = stateOf(source);
+    return state?.phase === "ready" ? state : null;
+  };
+  /** Loading, waiting or about to load, with a size known before it arrives: it holds its final box. */
+  const holdsBox = (source: EmbedMediaSource | undefined): boolean => {
+    const state = stateOf(source);
+    return (state?.phase === "loading" || state?.phase === "waiting") && inlineImageShape(source!.attachment) !== null;
+  };
+  /**
+   * The cells a picture takes within these bounds: its final box while it
+   * loads, the same box once drawn when it has the shape it was expected to
+   * (otherwise its own), or null while it holds none.
+   */
+  const cellsOf = (source: EmbedMediaSource | undefined, maxColumns: number, maxRows: number): { columns: number; rows: number } | null => {
+    const ready = readyState(source);
+    const shape = source ? inlineImageShape(source.attachment) : null;
+    const box = shape ? { pixelWidth: shape.width, pixelHeight: shape.height } : null;
+    const fit = ready ? (box && inlineImageHasShape(shape!, ready) ? box : ready) : holdsBox(source) ? box : null;
+    return fit ? fitImageCells(fit, maxColumns, maxRows, options.cellWidthPixels, options.cellHeightPixels) : null;
   };
 
   const thumbnail = group.media.find((source) => source.role === "thumbnail");
   const largeMedia = group.media.filter((source) => source.role !== "thumbnail");
   const thumbnailReady = readyState(thumbnail);
-  const thumbnailCells = thumbnailReady
-    ? fitImageCells(thumbnailReady, THUMBNAIL_MAX_COLUMNS, THUMBNAIL_MAX_ROWS, options.cellWidthPixels, options.cellHeightPixels)
-    : null;
+  const thumbnailCells = cellsOf(thumbnail, THUMBNAIL_MAX_COLUMNS, THUMBNAIL_MAX_ROWS);
   const thumbnailBeside = Boolean(thumbnailCells && contentWidth - thumbnailCells.columns - THUMBNAIL_GAP >= THUMBNAIL_MIN_TEXT_WIDTH);
   const textWidth = thumbnailBeside ? contentWidth - thumbnailCells!.columns - THUMBNAIL_GAP : contentWidth;
 
@@ -310,14 +318,15 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
     text.push({ text: `${theme.muted}${truncate(host, textWidth)}${theme.reset}${restore}`, anchor: anchor("host", 0), cont: false });
   }
 
-  if (thumbnailBeside && thumbnailReady && thumbnailCells && thumbnail) {
+  if (thumbnailBeside && thumbnailCells && thumbnail) {
     const columnOffset = indent + textWidth + THUMBNAIL_GAP;
     const sourceId = encodeURIComponent(thumbnail.attachment.id);
     // Rows below the text keep the picture's own anchor: Enter there opens it.
     while (text.length < thumbnailCells.rows) {
       text.push({ text: "", anchor: `msg:${options.messageId}:image:${sourceId}:${text.length}`, cont: false });
     }
-    place(thumbnailReady, thumbnail.attachment.id, out.lines.length, columnOffset, thumbnailCells);
+    // Held blank while it loads: the text beside it is the same either way.
+    if (thumbnailReady) place(thumbnailReady, thumbnail.attachment.id, out.lines.length, columnOffset, thumbnailCells);
     // The rows beside it end exactly where it starts (render.ts restores the cells under it).
     for (let index = 0; index < thumbnailCells.rows; index++) text[index] = { ...text[index]!, text: padTo(text[index]!.text, textWidth + THUMBNAIL_GAP) };
   }
@@ -325,50 +334,61 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
 
   // Pictures below: a thumbnail without room beside, the large image or poster, a gallery.
   const below = [...largeMedia, ...(thumbnail && !thumbnailBeside ? [thumbnail] : [])];
-  const ready = below.map((source) => ({ source, state: readyState(source) }));
-  const galleryReady = ready.filter((entry) => entry.state && entry.source.role === "image");
-  if (galleryReady.length > 1) {
+  const entries = below.map((source) => ({ source, state: readyState(source) }));
+  const status = (source: EmbedMediaSource) => statusLabel(options.states[source.attachment.id], source, embed, options.loadingFrameIndex);
+  // Drawn, or holding its box: two or more images make a gallery.
+  const gallery = entries.filter((entry) => entry.source.role === "image" && (entry.state || holdsBox(entry.source)));
+  if (gallery.length > 1) {
     // Side by side, up to two per row, like Discord's mosaic.
-    for (let start = 0; start < galleryReady.length; start += 2) {
-      const pair = galleryReady.slice(start, start + 2);
+    for (let start = 0; start < gallery.length; start += 2) {
+      const pair = gallery.slice(start, start + 2);
       const columnWidth = Math.floor((Math.min(contentWidth, IMAGE_MAX_COLUMNS) - GALLERY_GAP * (pair.length - 1)) / pair.length);
-      const cells = pair.map((entry) => fitImageCells(entry.state!, columnWidth, Math.floor(IMAGE_MAX_ROWS / 2), options.cellWidthPixels, options.cellHeightPixels));
+      const cells = pair.map((entry) => cellsOf(entry.source, columnWidth, Math.floor(IMAGE_MAX_ROWS / 2))!);
       const height = Math.max(...cells.map((cell) => cell.rows));
       const first = out.lines.length;
       let offset = indent;
+      // The status of each picture still loading, at the top of its cells.
+      const statuses: string[] = [];
       pair.forEach((entry, index) => {
-        place(entry.state!, entry.source.attachment.id, first, offset, cells[index]!);
-        offset += cells[index]!.columns + GALLERY_GAP;
+        const cell = cells[index]!;
+        if (entry.state) place(entry.state, entry.source.attachment.id, first, offset, cell);
+        const label = entry.state ? null : status(entry.source);
+        statuses.push(label ? `${label.color}${padTo(truncate(label.text, cell.columns), cell.columns)}${theme.reset}${restore}` : " ".repeat(cell.columns));
+        offset += cell.columns + GALLERY_GAP;
       });
+      const statusRow = pair.every((entry) => entry.state) ? "" : statuses.join(" ".repeat(GALLERY_GAP));
       const sourceId = encodeURIComponent(pair[0]!.source.attachment.id);
-      for (let row = 0; row < height; row++) push({ text: "", anchor: `msg:${options.messageId}:image:${sourceId}:${row}`, cont: false });
+      for (let row = 0; row < height; row++) push({ text: row === 0 ? statusRow : "", anchor: `msg:${options.messageId}:image:${sourceId}:${row}`, cont: false });
     }
   }
-  for (const { source, state } of ready) {
-    if (state && galleryReady.length > 1 && source.role === "image") continue;
+  for (const { source, state } of entries) {
+    if (gallery.length > 1 && gallery.some((entry) => entry.source === source)) continue;
     const sourceId = encodeURIComponent(source.attachment.id);
-    if (!state) {
+    const thumbnailRole = source.role === "thumbnail";
+    const cells = cellsOf(
+      source,
+      Math.min(contentWidth, thumbnailRole ? THUMBNAIL_MAX_COLUMNS * 2 : IMAGE_MAX_COLUMNS),
+      thumbnailRole ? THUMBNAIL_MAX_ROWS * 2 : IMAGE_MAX_ROWS,
+    );
+    if (!cells) {
       // A thumbnail shows only once drawn: no placeholder rows to come and go.
-      if (source.role === "thumbnail" && (embedHasText(embed) || below.length > 1)) continue;
-      const label = statusLabel(options.states[source.attachment.id], source, embed, options.loadingFrameIndex);
+      if (thumbnailRole && (embedHasText(embed) || below.length > 1)) continue;
+      const label = status(source);
       push({ text: `${label.color}${truncate(label.text, contentWidth)}${theme.reset}${restore}`, anchor: `msg:${options.messageId}:image-status:${sourceId}:0`, cont: false });
       continue;
     }
-    const thumbnailRole = source.role === "thumbnail";
-    const cells = fitImageCells(
-      state,
-      Math.min(contentWidth, thumbnailRole ? THUMBNAIL_MAX_COLUMNS * 2 : IMAGE_MAX_COLUMNS),
-      thumbnailRole ? THUMBNAIL_MAX_ROWS * 2 : IMAGE_MAX_ROWS,
-      options.cellWidthPixels,
-      options.cellHeightPixels,
-    );
-    place(state, source.attachment.id, out.lines.length, indent, cells);
-    for (let row = 0; row < cells.rows; row++) push({ text: "", anchor: `msg:${options.messageId}:image:${sourceId}:${row}`, cont: false });
+    if (state) place(state, source.attachment.id, out.lines.length, indent, cells);
+    // Held while it loads, its status on the first row: nothing moves when it lands.
+    const label = state ? null : status(source);
+    for (let row = 0; row < cells.rows; row++) {
+      const text = row === 0 && label ? `${label.color}${truncate(label.text, contentWidth)}${theme.reset}${restore}` : "";
+      push({ text, anchor: `msg:${options.messageId}:image:${sourceId}:${row}`, cont: false });
+    }
     if (source.role === "poster") {
       const duration = formatVideoDuration(embed.video?.durationSecs);
       const play = embed.type === "gifv" ? "▶ GIF" : "▶ Play";
-      const label = `${theme.accent}${play}${theme.reset}${restore}${duration ? `${theme.muted} · ${duration}${theme.reset}${restore}` : ""}`;
-      push({ text: label, anchor: anchor("video", 0), cont: false });
+      const playLabel = `${theme.accent}${play}${theme.reset}${restore}${duration ? `${theme.muted} · ${duration}${theme.reset}${restore}` : ""}`;
+      push({ text: playLabel, anchor: anchor("video", 0), cont: false });
     }
   }
   // A video with no picture to show still gets its play row.
