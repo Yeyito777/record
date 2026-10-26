@@ -137,6 +137,8 @@ export interface InlineTerminalImageUpdate {
   transmit: string;
   /** Placement changes, to present atomically with the frame's text. */
   update: string;
+  /** Image data sent this time (debug log): how many images, how many base64 bytes. */
+  transmitted?: { images: number; bytes: number };
 }
 
 /**
@@ -163,6 +165,8 @@ export function planInlineTerminalImages(
   const desiredImageIds = new Set(placements.map((placement) => placement.image.imageId));
 
   const retransmitted = new Set<number>();
+  let transmittedImages = 0;
+  let transmittedBytes = 0;
   for (const image of images) {
     if (!desiredImageIds.has(image.imageId)) continue;
     const fingerprint = imageFingerprint(image);
@@ -175,6 +179,8 @@ export function planInlineTerminalImages(
     const placed = [...state.placements.keys()].some((key) => key.startsWith(`${image.imageId}:`));
     // Replacing a placed image's data is visible, so it stays in the frame.
     (placed ? out : transmit).push(transmitInlinePng(image));
+    transmittedImages += 1;
+    transmittedBytes += image.pngBase64.length;
     state.images.delete(image.imageId);
     state.images.set(image.imageId, {
       fingerprint,
@@ -233,7 +239,11 @@ export function planInlineTerminalImages(
   }
 
   const wrap = (commands: string[]) => commands.length > 0 ? `${SAVE_CURSOR}${commands.join("")}${RESTORE_CURSOR}` : "";
-  return { transmit: wrap(transmit), update: wrap(out) };
+  return {
+    transmit: wrap(transmit),
+    update: wrap(out),
+    ...(transmittedImages ? { transmitted: { images: transmittedImages, bytes: transmittedBytes } } : {}),
+  };
 }
 
 export function syncInlineTerminalImages(

@@ -80,6 +80,7 @@ import {
   type InlineTerminalImageUpdate,
 } from "./terminalimage";
 import { renderTopbar } from "./topbar";
+import { debugLog } from "./debuglog";
 import { smoothScrollerFor, type ScrollRect } from "./smoothscroll";
 import { channelsWithTyping, formatTypingUsers, getTypingUsers, typingFrame } from "./typing";
 import { voiceMessagePromptText } from "./voice-message";
@@ -452,6 +453,9 @@ function visibleSidebarIconPlacements(
 }
 
 function joinImageUpdates(a: InlineTerminalImageUpdate, b: InlineTerminalImageUpdate): InlineTerminalImageUpdate {
+  // Image data sent to the terminal: the debug log's record of what scrolling costs.
+  if (a.transmitted) debugLog("image.transmit", { owner: "chat", ...a.transmitted });
+  if (b.transmitted) debugLog("image.transmit", { owner: "sidebar", ...b.transmitted });
   return { transmit: a.transmit + b.transmit, update: a.update + b.update };
 }
 

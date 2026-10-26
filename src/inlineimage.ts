@@ -201,6 +201,7 @@ export function visibleInlineImageSources(
   bounds: readonly { messageId: string; start: number; end: number }[],
   viewStart: number,
   viewRows: number,
+  messageIds?: Map<string, string>,
 ): DiscordMessageAttachment[] {
   const viewEnd = viewStart + Math.max(0, viewRows);
   const seen = new Set<string>();
@@ -223,9 +224,75 @@ export function visibleInlineImageSources(
       if (seen.has(source.id) || !isImageAttachment(source)) continue;
       seen.add(source.id);
       visible.push(source);
+      messageIds?.set(source.id, message.id);
     }
   }
   return visible;
+}
+
+type ViewBound = { messageId: string; start: number; end: number };
+
+/** messageId -> bound, per bounds array (bounds are replaced, never mutated, on re-layout). */
+const boundIndexes = new WeakMap<readonly ViewBound[], Map<string, ViewBound>>();
+
+/**
+ * Rows between a message and the view (0 when any of it is in view), or
+ * Infinity when it is not laid out: how much an image load is wanted now.
+ */
+export function inlineImageViewDistance(
+  bounds: readonly ViewBound[],
+  messageId: string,
+  viewStart: number,
+  viewRows: number,
+): number {
+  let index = boundIndexes.get(bounds);
+  if (!index) {
+    index = new Map(bounds.map((bound) => [bound.messageId, bound]));
+    boundIndexes.set(bounds, index);
+  }
+  const bound = index.get(messageId);
+  if (!bound) return Infinity;
+  const viewEnd = viewStart + Math.max(0, viewRows);
+  if (bound.end <= viewStart) return viewStart - bound.end + 1;
+  if (bound.start >= viewEnd) return bound.start - viewEnd + 1;
+  return 0;
+}
+
+/**
+ * Images to load for a view: those in it (bottom first), then those within
+ * `aheadRows` above and below it, nearest first, so scrolling finds them
+ * ready instead of popping in.
+ */
+export function inlineImageSourcesNearView(
+  messages: readonly InlineImageMessage[],
+  bounds: readonly ViewBound[],
+  viewStart: number,
+  viewRows: number,
+  aheadRows: number,
+): { visible: DiscordMessageAttachment[]; nearby: DiscordMessageAttachment[]; messageIds: Map<string, string> } {
+  const messageIds = new Map<string, string>();
+  const visible = visibleInlineImageSources(messages, bounds, viewStart, viewRows, messageIds);
+  const seen = new Set(visible.map((source) => source.id));
+  const viewEnd = viewStart + Math.max(0, viewRows);
+  const candidates: { distance: number; sources: DiscordMessageAttachment[] }[] = [];
+  const first = firstBoundAtOrAfter(bounds, viewStart - aheadRows) - 1;
+  for (let boundIndex = Math.max(0, first); boundIndex < bounds.length; boundIndex++) {
+    const bound = bounds[boundIndex]!;
+    if (bound.start >= viewEnd + aheadRows) break;
+    if (bound.end <= viewStart - aheadRows) continue;
+    const distance = inlineImageViewDistance(bounds, bound.messageId, viewStart, viewRows);
+    if (distance === 0) continue;
+    const message = findMessage(messages, bound.messageId);
+    if (!message) continue;
+    const sources = inlineImageSourcesForMessage(message).filter((source) => !seen.has(source.id) && isImageAttachment(source));
+    for (const source of sources) {
+      seen.add(source.id);
+      messageIds.set(source.id, message.id);
+    }
+    if (sources.length) candidates.push({ distance, sources });
+  }
+  candidates.sort((left, right) => left.distance - right.distance);
+  return { visible, nearby: candidates.flatMap((candidate) => candidate.sources), messageIds };
 }
 
 export function pngDimensions(data: Uint8Array): { width: number; height: number } | null {
@@ -374,22 +441,36 @@ function exceedsPreviewBounds(dimensions: { width: number; height: number }, opt
   return dimensions.width > bounds.width || dimensions.height > bounds.height;
 }
 
-export async function prepareInlineImage(path: string, options: InlineImagePrepareOptions = {}): Promise<PreparedInlineImage> {
+/** What preparing one image took (debug log timings). */
+export interface InlineImagePrepareReport {
+  /** Bytes of the source file or data. */
+  sourceBytes?: number;
+  /** ffmpeg converted it (it was not already a fitting PNG). */
+  converted?: boolean;
+}
+
+export async function prepareInlineImage(path: string, options: InlineImagePrepareOptions = {}, report: InlineImagePrepareReport = {}): Promise<PreparedInlineImage> {
   let png: Buffer = Buffer.from(await readFile(path));
+  report.sourceBytes = png.length;
   let dimensions = pngDimensions(png);
   if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
+    report.converted = true;
     png = await convertLoadedImageToPng(path, png, options);
     dimensions = pngDimensions(png);
     return preparedPng(png, dimensions, convertedAtSourceSize(dimensions, options));
   }
 
+  report.converted = false;
   return preparedPng(png, dimensions, true);
 }
 
-export async function prepareInlineImageBytes(data: Buffer, options: InlineImagePrepareOptions = {}): Promise<PreparedInlineImage> {
+export async function prepareInlineImageBytes(data: Buffer, options: InlineImagePrepareOptions = {}, report: InlineImagePrepareReport = {}): Promise<PreparedInlineImage> {
   let png = data;
+  report.sourceBytes = data.length;
+  report.converted = false;
   let dimensions = pngDimensions(png);
   if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
+    report.converted = true;
     png = await convertImageBytesToPng(data, options);
     dimensions = pngDimensions(png);
     return preparedPng(png, dimensions, convertedAtSourceSize(dimensions, options));

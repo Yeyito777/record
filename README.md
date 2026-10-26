@@ -121,6 +121,7 @@ Notes:
 - switching chats reuses a session-only LRU of prepared image previews (64 entries / 16 MiB); terminal image data also stays resident for recent images (up to 64 idle images / 32 MiB, plus visible images), avoiding reconversion and retransmission on return
 - `/watch` playback prefers `mpv` (hardware decode via `--hwdec=auto-safe`) and falls back to `ffplay`; override with `RECORD_WATCH_PLAYER=mpv|ffplay`
 - default theme is `whale`
+- images in view load first, then those a screen above and below, nearest first (4 downloads and 2 conversions at a time); the debug log records each image's load (`image.load`: from memory, disk or network, queue/fetch/convert ms, bytes), the image data sent to the terminal (`image.transmit`), prefetches, dropped and evicted images, the viewer's full-size loads and frames slower than 50 ms (`render.slow`)
 - runtime debug events go to `$XDG_CONFIG_HOME/record/debug.log`, written in batches and rotated to `debug.log.1` at 16 MiB (`RECORD_DEBUG_LOG_MAX_BYTES`); `RECORD_DEBUG=0` turns it off, `RECORD_DEBUG=verbose` also records per-packet/per-speaking-flip call and voice events
 - `bun test` runs against a throwaway config/cache/home directory (bunfig.toml preload), never your real `~/.config/record`
 - preview the cloned cerberus palette with `RECORD_THEME=cerberus bun run start`
