@@ -4,6 +4,7 @@ import {
   handleImageModalKey,
   imageModalFrame,
   imageModalLayout,
+  imageModalPixelBounds,
   openImageModalState,
   renderImageModal,
   upgradeImageModal,
@@ -52,6 +53,16 @@ describe("full-resolution image modal", () => {
     expect(rendered.payload).toContain("desktop.png · 1920×1080");
     expect(rendered.payload).toContain("Enter or Esc to close");
     expect(rendered.placement).toEqual(layout?.placement ?? null);
+  });
+
+  test("bounds the full picture to the pixels the viewer can show, the box any placement fits in", () => {
+    // 180x60 cells of 9x18 px: the frame and margins leave 172x54 cells.
+    expect(imageModalPixelBounds(60, 180, 9, 18)).toEqual({ maxPixelWidth: 172 * 9, maxPixelHeight: 54 * 18 });
+    const bounds = imageModalPixelBounds(60, 180, 9, 18)!;
+    const { columns, rows } = imageModalLayout(modal(), 60, 180, 9, 18)!.placement;
+    expect(columns * 9).toBeLessThanOrEqual(bounds.maxPixelWidth);
+    expect(rows * 18).toBeLessThanOrEqual(bounds.maxPixelHeight);
+    expect(imageModalPixelBounds(6, 10, 9, 18)).toBeNull();
   });
 
   test("in an album, l/→ and h/← step to the next and previous photo; the title says which", () => {

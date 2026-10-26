@@ -140,6 +140,26 @@ function centeredText(value: string, width: number): string {
   return " ".repeat(left) + text + " ".repeat(Math.max(0, width - left - visible));
 }
 
+/**
+ * The most pixels the viewer can show a picture at on this screen: its full
+ * image is prepared at this size, not the source's (a 4000x2667 photo is a
+ * 15 MB PNG that st takes a quarter of a second to decode).
+ */
+export function imageModalPixelBounds(
+  totalRows: number,
+  totalCols: number,
+  cellWidthPixels = 8,
+  cellHeightPixels = 16,
+): { maxPixelWidth: number; maxPixelHeight: number } | null {
+  const maxColumns = normalizeDimension(totalCols) - (MARGIN_COLUMNS * 2) - MODAL_EXTRA_COLUMNS;
+  const maxRows = normalizeDimension(totalRows) - (MARGIN_ROWS * 2) - MODAL_EXTRA_ROWS;
+  if (maxColumns < 1 || maxRows < 1) return null;
+  return {
+    maxPixelWidth: maxColumns * Math.max(1, Math.floor(cellWidthPixels)),
+    maxPixelHeight: maxRows * Math.max(1, Math.floor(cellHeightPixels)),
+  };
+}
+
 export function imageModalLayout(
   state: Readonly<ImageModalState>,
   totalRows: number,

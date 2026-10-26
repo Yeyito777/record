@@ -40,7 +40,7 @@ import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./ch
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
 import { inlineImageId, inlineImagePreviewPixelBounds, inlineImageSourcesForMessage, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewAnchor, inlineImageViewDistance, inlineImageViewMovedRows, inlineImageViewOffset, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareReport, type InlineImageViewAnchor } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
-import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
+import { handleImageModalKey, imageModalPixelBounds, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import type { EmbedVideoTarget } from "./embeds";
@@ -758,6 +758,11 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   const isCurrent = () => running && state.imageModal === modal
     && state.timeline.channelId === channelId
     && state.timeline.inlineImages[attachment.id]?.sourceUrl === sourceUrl;
+  // Full colour at the most pixels the viewer can show on this screen, not the source's.
+  const viewerBounds = {
+    preserveSourceResolution: true,
+    ...imageModalPixelBounds(state.rows, state.cols, state.timeline.terminalCellWidthPixels, state.timeline.terminalCellHeightPixels),
+  };
   void upgradeImageModal(modal, () => inlineImageModalLoadQueue.enqueue(async () => {
     if (!isCurrent()) return existing;
     const local = state.localAttachmentImages[attachment.id];
@@ -766,7 +771,7 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
     const fetchStart = performance.now();
     let fetchMs = 0;
     if (local) {
-      prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), { preserveSourceResolution: true }, report);
+      prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), viewerBounds, report);
     } else {
       const downloaded = isWhatsAppChannelId(channelId)
         ? await whatsAppController.downloadAttachment(attachment)
@@ -775,7 +780,7 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
           : await downloadAttachment(attachment);
       if (!downloaded.ok || !downloaded.path) throw new Error(downloaded.error ?? "unknown download error");
       fetchMs = performance.now() - fetchStart;
-      prepared = await prepareInlineImage(downloaded.path, { preserveSourceResolution: true }, report);
+      prepared = await prepareInlineImage(downloaded.path, viewerBounds, report);
     }
     debugLog("image.viewer", {
       fetchMs: Math.round(fetchMs),
