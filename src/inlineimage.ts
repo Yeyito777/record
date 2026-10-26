@@ -495,22 +495,59 @@ export function inlineImageCellLayout(
   cellWidthPixels = 8,
   cellHeightPixels = 16,
 ): InlineImageCellLayout {
-  const pixelWidth = Math.max(1, image.pixelWidth);
-  const pixelHeight = Math.max(1, image.pixelHeight);
+  const maxColumns = Math.max(1, Math.min(INLINE_IMAGE_MAX_COLUMNS, Math.floor(availableColumns)));
+  return fitPictureCells(image.pixelWidth, image.pixelHeight, maxColumns, INLINE_IMAGE_MAX_ROWS, cellWidthPixels, cellHeightPixels, 1);
+}
+
+/**
+ * The cells a picture fills at `scale` (at most `maxScale`, fitting the
+ * bounds), rounded to whole cells without stretching it: the terminal scales
+ * a picture to fill its cells, so rounding rows and columns separately (up)
+ * stretched a 4000x700 picture 18% taller. Of rounding the rows and fitting
+ * the columns to them, or the other way round, the closer shape wins.
+ */
+export function fitPictureCells(
+  pixelWidth: number,
+  pixelHeight: number,
+  maxColumns: number,
+  maxRows: number,
+  cellWidthPixels: number,
+  cellHeightPixels: number,
+  maxScale: number,
+): InlineImageCellLayout {
+  const width = Math.max(1, pixelWidth);
+  const height = Math.max(1, pixelHeight);
   const cellWidth = Math.max(1, cellWidthPixels);
   const cellHeight = Math.max(1, cellHeightPixels);
-  const maxColumns = Math.max(1, Math.min(INLINE_IMAGE_MAX_COLUMNS, Math.floor(availableColumns)));
-  const maxRows = INLINE_IMAGE_MAX_ROWS;
-  const scale = Math.min(
-    1,
-    (maxColumns * cellWidth) / pixelWidth,
-    (maxRows * cellHeight) / pixelHeight,
-  );
-
-  return {
-    columns: Math.max(1, Math.min(maxColumns, Math.ceil((pixelWidth * scale) / cellWidth))),
-    rows: Math.max(1, Math.min(maxRows, Math.ceil((pixelHeight * scale) / cellHeight))),
-  };
+  let columnsLimit = Math.max(1, Math.floor(maxColumns));
+  let rowsLimit = Math.max(1, Math.floor(maxRows));
+  const scale = Math.min(maxScale, (columnsLimit * cellWidth) / width, (rowsLimit * cellHeight) / height);
+  if (scale === maxScale) {
+    // At its own size a small picture never grows past the cells it covers.
+    columnsLimit = Math.min(columnsLimit, Math.max(1, Math.ceil((width * scale) / cellWidth - 1e-9)));
+    rowsLimit = Math.min(rowsLimit, Math.max(1, Math.ceil((height * scale) / cellHeight - 1e-9)));
+  }
+  const aspect = (width * cellHeight) / (height * cellWidth); // columns per row
+  const clamp = (value: number, limit: number) => Math.max(1, Math.min(limit, Math.round(value)));
+  const exactRows = (height * scale) / cellHeight;
+  const exactColumns = (width * scale) / cellWidth;
+  const candidates: InlineImageCellLayout[] = [];
+  for (const rows of new Set([Math.floor(exactRows), Math.ceil(exactRows)])) {
+    const kept = clamp(rows, rowsLimit);
+    const columns = clamp(kept * aspect, columnsLimit);
+    candidates.push({ columns, rows: columns === columnsLimit ? clamp(columns / aspect, rowsLimit) : kept });
+  }
+  for (const columns of new Set([Math.floor(exactColumns), Math.ceil(exactColumns)])) {
+    const kept = clamp(columns, columnsLimit);
+    const rows = clamp(kept / aspect, rowsLimit);
+    candidates.push({ columns: rows === rowsLimit ? clamp(rows * aspect, columnsLimit) : kept, rows });
+  }
+  const error = (cells: InlineImageCellLayout) => Math.abs(Math.log(cells.columns / cells.rows / aspect));
+  // The closest shape; of near-equal shapes, the larger.
+  return candidates.reduce((best, cells) => {
+    const difference = error(cells) - error(best);
+    return difference < -0.005 || (Math.abs(difference) <= 0.005 && cells.columns * cells.rows > best.columns * best.rows) ? cells : best;
+  });
 }
 
 function fnv1a32(value: string): number {

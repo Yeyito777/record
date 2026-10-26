@@ -1131,13 +1131,14 @@ describe("timeline rendering", () => {
     // Header, "look", then the image itself (no name row without Ctrl+O).
     expect(rendered.inlineImages[0]).toMatchObject({
       lineIndex: 2,
-      columns: 50,
-      rows: 13,
+      // 400x200 in 8x16 cells: exactly 48x12 (50x13 would stretch it 4%).
+      columns: 48,
+      rows: 12,
     });
-    expect(rendered.lineAnchors.slice(2, 15)).toEqual(
-      Array.from({ length: 13 }, (_unused, row) => `msg:message-1:image:a1:${row}`),
+    expect(rendered.lineAnchors.slice(2, 14)).toEqual(
+      Array.from({ length: 12 }, (_unused, row) => `msg:message-1:image:a1:${row}`),
     );
-    expect(rendered.messageBounds[0]?.end).toBe(15);
+    expect(rendered.messageBounds[0]?.end).toBe(14);
   });
 
   test("without Kitty graphics, custom emoji wrap as their :name:", () => {

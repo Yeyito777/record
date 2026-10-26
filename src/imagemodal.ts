@@ -2,7 +2,7 @@
 
 import type { DiscordMessageAttachment } from "./discord";
 import type { InlineChatImageReady } from "./inlineimage";
-import { inlineImagePlacementId } from "./inlineimage";
+import { fitPictureCells, inlineImagePlacementId } from "./inlineimage";
 import type { KeyEvent } from "./input";
 import { moveTo } from "./terminal";
 import type { InlineTerminalImagePlacement } from "./terminalimage";
@@ -150,17 +150,8 @@ export function imageModalLayout(
   if (maxColumns < 1 || maxRows < 1) return null;
 
   const frame = state.frame ?? { pixelWidth: state.image.pixelWidth, pixelHeight: state.image.pixelHeight, enlarge: false };
-  const pixelWidth = Math.max(1, frame.pixelWidth);
-  const pixelHeight = Math.max(1, frame.pixelHeight);
-  const cellWidth = Math.max(1, cellWidthPixels);
-  const cellHeight = Math.max(1, cellHeightPixels);
-  const scale = Math.min(
-    frame.enlarge ? Infinity : 1,
-    (maxColumns * cellWidth) / pixelWidth,
-    (maxRows * cellHeight) / pixelHeight,
-  );
-  const imageColumns = Math.max(1, Math.min(maxColumns, Math.ceil((pixelWidth * scale) / cellWidth)));
-  const imageRows = Math.max(1, Math.min(maxRows, Math.ceil((pixelHeight * scale) / cellHeight)));
+  const { columns: imageColumns, rows: imageRows } = fitPictureCells(
+    frame.pixelWidth, frame.pixelHeight, maxColumns, maxRows, cellWidthPixels, cellHeightPixels, frame.enlarge ? Infinity : 1);
   const width = imageColumns + MODAL_EXTRA_COLUMNS;
   const height = imageRows + MODAL_EXTRA_ROWS;
   const top = Math.floor((rows - height) / 2) + 1;
