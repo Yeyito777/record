@@ -61,8 +61,9 @@ Controls:
 - `Shift+Enter` or `o` on a voice/stage channel: open its text chat without joining
 - `;` on a server, category, channel, or voice member: open its actions (including permission-gated voice moderation)
 - `m` on a server, category, channel, or voice member: toggle mute directly
-- `e` / `Shift+E` on a Direct Message or WhatsApp conversation: move it up/down within its pinned or unpinned section
-- `p` on a Direct Message or WhatsApp conversation: pin/unpin it
+- Direct Messages, WhatsApp and Instagram list unpinned chats by recent activity, newest first, like Discord: a new message (received, sent here or from another device) or a newly opened DM moves its chat to the top live; edits, reactions and typing don't, and muted chats move too. The sidebar cursor stays on the same chat and the list doesn't scroll unless that chat would leave the screen
+- `p` on a Direct Message, WhatsApp or Instagram chat: pin/unpin it. Pinned chats sit above the rest in your own order (saved per account in `private-channel-layout.json`)
+- `e` / `Shift+E` on a pinned chat: move it up/down among the pinned ones. On an unpinned chat they only show that unpinned chats follow recent activity
 - `h` / `l` on a voice member's Volume action: lower/raise that user's playback volume by 10%; the per-user setting persists across sessions
 - `-` / `+` / `=` on a selected voice member: lower/raise that user's playback volume by 10% directly
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
@@ -345,7 +346,7 @@ identify as mobile Safari, the browser profile that API accepts without
 desktop client hints. The sidebar lists individual and group chats with
 Instagram's unread state and badges; the section badge counts unread chats.
 Opening a chat loads its recent history and marks it read; scroll up for older
-pages. Pin/reorder chats with the usual sidebar keys. The inbox is paginated at
+pages. Pin and reorder pinned chats with the usual sidebar keys; the others follow recent activity. The inbox is paginated at
 startup and polled every 30 seconds (message requests less often); `/refresh`
 updates immediately. Temporary failures retry with backoff and resume
 unfinished pagination; HTTP errors show their status code without exposing
@@ -468,7 +469,9 @@ account:
   receive 20 messages in the open channel, `!demo typing` for a typing
   indicator, `!demo every 3` for one message every 3 s (`!demo every 0` stops),
   `!demo unfurl` for a link whose preview arrives a moment later (a partial
-  `MESSAGE_UPDATE`), `!demo suppress` to remove the newest preview (flag 4).
+  `MESSAGE_UPDATE`), `!demo suppress` to remove the newest preview (flag 4),
+  `!demo dm [N]` for a message in the least recent DM (or the Nth from the
+  bottom) so it jumps to the top.
   `kill -USR1 <pid>` appends one message, `-USR2` ten; the pid is in
   `<demo home>/record-demo.pid`.
 
