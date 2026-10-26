@@ -37,7 +37,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, nextInlineImageId, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, nextInlineImageId, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, visibleInlineImageSources, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareReport } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
@@ -367,10 +367,18 @@ function scheduleRender(): void {
 }
 
 function renderFrame(): void {
+  const started = performance.now();
   render(state);
+  const ms = performance.now() - started;
+  if (ms >= SLOW_RENDER_MS) {
+    debugLog("render.slow", { ms: Math.round(ms), lines: state.historyLines.length, images: Object.keys(state.timeline.inlineImages).length });
+  }
   autoShowVisibleInlineImages();
   scheduleSmoothScrollFrame();
 }
+
+/** Frames slower than this go to the debug log (a frame budget is 16 ms). */
+const SLOW_RENDER_MS = 50;
 
 function renderImmediately(): void {
   if (renderTimer) {
@@ -492,8 +500,11 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
     state.timeline.terminalCellHeightPixels,
   );
   const cacheKey = inlineImageCacheKey(attachment, previewBounds);
+  const provider = isWhatsAppChannelId(channelId) ? "whatsapp" : isInstagramChannelId(channelId) ? "instagram" : "discord";
+  const requestedAt = performance.now();
   const cached = inlineImageCache.get(cacheKey);
   if (cached) {
+    debugLog("image.load", { provider, source: "memory", ms: 0, previewBytes: cached.pngBase64.length, width: cached.pixelWidth, height: cached.pixelHeight });
     setTimelineInlineImageState(state.timeline, {
       phase: "ready",
       attachmentId: attachment.id,
@@ -519,19 +530,30 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
   // necessarily starts this job. Retain the bytes with the queued request.
   const local = state.localAttachmentImages[attachment.id];
   void inlineImageLoadQueue.enqueue(async () => {
+    const startedAt = performance.now();
+    const timing: Record<string, unknown> = { provider, queueMs: Math.round(startedAt - requestedAt) };
     try {
       const queued = currentInlineImageRequest(requestId);
       if (!running || state.timeline.channelId !== channelId || !queued) return;
       // Another queued occurrence may have prepared this source already.
       let prepared = inlineImageCache.get(cacheKey);
-      if (!prepared && local) {
-        prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), previewBounds);
-      } else if (!prepared) {
+      const report: InlineImagePrepareReport = {};
+      if (prepared) {
+        timing.source = "memory";
+      } else if (local) {
+        timing.source = "local";
+        const convertStart = performance.now();
+        prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), previewBounds, report);
+        timing.convertMs = Math.round(performance.now() - convertStart);
+      } else {
+        const fetchStart = performance.now();
         const downloaded = isWhatsAppChannelId(channelId)
           ? await whatsAppController.downloadAttachment(attachment)
           : isInstagramChannelId(channelId)
             ? await instagramController.downloadAttachment(attachment)
             : await downloadAttachment(attachment);
+        timing.fetchMs = Math.round(performance.now() - fetchStart);
+        timing.source = downloaded.cached ? "disk" : "network";
         const current = currentInlineImageRequest(requestId);
         if (!downloaded.ok || !downloaded.path) {
           if (!running || state.timeline.channelId !== channelId || !current) return;
@@ -543,8 +565,12 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
           setInlineImageError(current, downloaded.error ?? "unknown download error");
           return;
         }
-        prepared = await prepareInlineImage(downloaded.path, previewBounds);
+        const convertStart = performance.now();
+        prepared = await prepareInlineImage(downloaded.path, previewBounds, report);
+        timing.convertMs = Math.round(performance.now() - convertStart);
       }
+      if (report.sourceBytes !== undefined) timing.sourceBytes = report.sourceBytes;
+      if (report.converted !== undefined) timing.converted = report.converted;
 
       // Finish warming the cache even if the user left while this job ran.
       // Only the current request may publish UI state below.
@@ -562,6 +588,13 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment): void 
           inlineImageId({ id: current.attachmentId, url: current.sourceUrl }),
         ),
         ...prepared,
+      });
+      debugLog("image.load", {
+        ...timing,
+        previewBytes: prepared.pngBase64.length,
+        width: prepared.pixelWidth,
+        height: prepared.pixelHeight,
+        totalMs: Math.round(performance.now() - requestedAt),
       });
       scheduleRender();
     } catch (error) {
@@ -611,8 +644,11 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
     if (!isCurrent()) return existing;
     const local = state.localAttachmentImages[attachment.id];
     let prepared: Awaited<ReturnType<typeof prepareInlineImage>>;
+    const report: InlineImagePrepareReport = {};
+    const fetchStart = performance.now();
+    let fetchMs = 0;
     if (local) {
-      prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), { preserveSourceResolution: true });
+      prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), { preserveSourceResolution: true }, report);
     } else {
       const downloaded = isWhatsAppChannelId(channelId)
         ? await whatsAppController.downloadAttachment(attachment)
@@ -620,8 +656,18 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
           ? await instagramController.downloadAttachment(attachment)
           : await downloadAttachment(attachment);
       if (!downloaded.ok || !downloaded.path) throw new Error(downloaded.error ?? "unknown download error");
-      prepared = await prepareInlineImage(downloaded.path, { preserveSourceResolution: true });
+      fetchMs = performance.now() - fetchStart;
+      prepared = await prepareInlineImage(downloaded.path, { preserveSourceResolution: true }, report);
     }
+    debugLog("image.viewer", {
+      fetchMs: Math.round(fetchMs),
+      convertMs: Math.round(performance.now() - fetchStart - fetchMs),
+      converted: report.converted,
+      sourceBytes: report.sourceBytes,
+      previewBytes: prepared.pngBase64.length,
+      width: prepared.pixelWidth,
+      height: prepared.pixelHeight,
+    });
 
     const modalAttachmentId = `modal:${attachment.id}`;
     return {
@@ -655,6 +701,7 @@ function autoShowVisibleInlineImages(): void {
     viewportStart,
     timelinePageSize(),
   );
+  let started = 0;
   for (const attachment of attachments) {
     if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
     const existing = state.timeline.inlineImages[attachment.id];
@@ -662,7 +709,9 @@ function autoShowVisibleInlineImages(): void {
       !isWhatsAppChannelId(state.timeline.channelId) || whatsAppController.isConnected,
       inlineImagesDrawable(terminalGraphicsClient?.isSupported()))) continue;
     startInlineAttachmentImage(attachment);
+    started += 1;
   }
+  if (started > 0) debugLog("image.prefetch", { started, inView: attachments.length });
 }
 
 function downloadAndOpenTarget(target: string): void {
@@ -2911,6 +2960,8 @@ async function main(): Promise<void> {
         return;
       }
       if (handleInlineTerminalImageResponse(state, sequence)) {
+        // The terminal dropped image data (memory pressure): it is sent again.
+        debugLog("image.evicted", { imageId: rejectedImageId });
         scheduleRender();
         return;
       }

@@ -374,22 +374,36 @@ function exceedsPreviewBounds(dimensions: { width: number; height: number }, opt
   return dimensions.width > bounds.width || dimensions.height > bounds.height;
 }
 
-export async function prepareInlineImage(path: string, options: InlineImagePrepareOptions = {}): Promise<PreparedInlineImage> {
+/** What preparing one image took (debug log timings). */
+export interface InlineImagePrepareReport {
+  /** Bytes of the source file or data. */
+  sourceBytes?: number;
+  /** ffmpeg converted it (it was not already a fitting PNG). */
+  converted?: boolean;
+}
+
+export async function prepareInlineImage(path: string, options: InlineImagePrepareOptions = {}, report: InlineImagePrepareReport = {}): Promise<PreparedInlineImage> {
   let png: Buffer = Buffer.from(await readFile(path));
+  report.sourceBytes = png.length;
   let dimensions = pngDimensions(png);
   if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
+    report.converted = true;
     png = await convertLoadedImageToPng(path, png, options);
     dimensions = pngDimensions(png);
     return preparedPng(png, dimensions, convertedAtSourceSize(dimensions, options));
   }
 
+  report.converted = false;
   return preparedPng(png, dimensions, true);
 }
 
-export async function prepareInlineImageBytes(data: Buffer, options: InlineImagePrepareOptions = {}): Promise<PreparedInlineImage> {
+export async function prepareInlineImageBytes(data: Buffer, options: InlineImagePrepareOptions = {}, report: InlineImagePrepareReport = {}): Promise<PreparedInlineImage> {
   let png = data;
+  report.sourceBytes = data.length;
+  report.converted = false;
   let dimensions = pngDimensions(png);
   if (!dimensions || !pngFitsTerminal(png, dimensions) || exceedsPreviewBounds(dimensions, options)) {
+    report.converted = true;
     png = await convertImageBytesToPng(data, options);
     dimensions = pngDimensions(png);
     return preparedPng(png, dimensions, convertedAtSourceSize(dimensions, options));
