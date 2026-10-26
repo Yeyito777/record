@@ -29,7 +29,7 @@ describe("demo Instagram", () => {
     const world = data();
     const client = new DemoInstagramClient({ data: world, olderPageDelayMs: 30, latencyMs: 0 });
     const inbox = await client.inbox();
-    expect(inbox.threads.length).toBe(4);
+    expect(inbox.threads.length).toBe(5);
     expect(inbox.threads.every((thread) => thread.messages.length <= 5 && !thread.detailLoaded)).toBe(true);
     const thread = await client.thread(DEMO_INSTAGRAM_SHARES_THREAD, "");
     expect(thread.messages.length).toBe(20);

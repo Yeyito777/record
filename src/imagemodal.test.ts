@@ -28,14 +28,25 @@ function modal(): ImageModalState {
 }
 
 describe("full-resolution image modal", () => {
+  test("keeps the picture's shape in the viewer, wide or tall", () => {
+    for (const [pixelWidth, pixelHeight] of [[4000, 700], [1170, 6000], [1080, 566], [100, 100], [3000, 400]] as const) {
+      const viewer = modal();
+      viewer.image = { ...viewer.image, pixelWidth, pixelHeight };
+      viewer.frame = { pixelWidth, pixelHeight, enlarge: true };
+      const { columns, rows } = imageModalLayout(viewer, 51, 239, 8, 20)!.placement;
+      expect(Math.abs((columns * 8) / (rows * 20) / (pixelWidth / pixelHeight) - 1)).toBeLessThan(0.03);
+    }
+  });
+
   test("centers the largest aspect-correct placement inside the terminal", () => {
     const layout = imageModalLayout(modal(), 60, 180, 9, 18);
     expect(layout).toMatchObject({
-      top: 4,
+      top: 5,
       left: 3,
-      width: 176,
-      height: 53,
-      placement: { row: 6, col: 5, columns: 172, rows: 49, z: 2 },
+      width: 175,
+      height: 52,
+      // 171x48 cells of 9x18 px: 1539x864, 16:9 to 0.2% (172x49 was 1.3% off).
+      placement: { row: 7, col: 5, columns: 171, rows: 48, z: 2 },
     });
     const rendered = renderImageModal(modal(), 60, 180, 9, 18);
     expect(rendered.payload).toContain("desktop.png · 1920×1080");
@@ -59,7 +70,7 @@ describe("full-resolution image modal", () => {
     expect(rendered.payload).toContain("Loading full image");
     expect(rendered.payload).toContain("desktop.png · 1920×1080");
     expect(rendered.placement?.image).toBe(preview);
-    expect(rendered.placement?.columns).toBe(172);
+    expect(rendered.placement?.columns).toBe(171);
     finish(full);
     await pending;
     expect(viewer.image).toBe(full);
@@ -97,7 +108,8 @@ describe("full-resolution image modal", () => {
   test("known small images open at native size instead of filling the viewer", () => {
     const tiny = { ...modal().image, pixelWidth: 40, pixelHeight: 30, sourcePixelWidth: 40, sourcePixelHeight: 30 };
     const layout = imageModalLayout(openImageModalState({ filename: "tiny.png" }, tiny), 51, 239, 8, 20);
-    expect(layout?.placement).toMatchObject({ columns: 5, rows: 2 });
+    // 40x30 px in 8x20 cells: 3x1 keeps its shape (5x2 stretched it 33% taller).
+    expect(layout?.placement).toMatchObject({ columns: 3, rows: 1 });
   });
 
   test("metadata that does not match the decoded preview shape is ignored", () => {

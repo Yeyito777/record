@@ -131,13 +131,28 @@ describe("inline chat images", () => {
       rows: 16,
     });
     expect(inlineImageCellLayout({ pixelWidth: 100, pixelHeight: 100 }, 80, 8, 16)).toEqual({
-      columns: 13,
-      rows: 7,
+      columns: 12,
+      rows: 6,
     });
     expect(inlineImagePreviewPixelBounds(9, 18)).toEqual({
       maxPixelWidth: 648,
       maxPixelHeight: 288,
     });
+  });
+
+  test("keeps the picture's shape: rounding to cells never stretches it more than a few percent", () => {
+    const shapes = [[4000, 700], [1170, 6000], [1080, 566], [100, 100], [1920, 1080], [720, 1280], [3000, 400], [300, 10]] as const;
+    for (const [cellWidth, cellHeight] of [[8, 20], [8, 16], [9, 18], [10, 22]] as const) {
+      for (const [pixelWidth, pixelHeight] of shapes) {
+        const layout = inlineImageCellLayout({ pixelWidth, pixelHeight }, 80, cellWidth, cellHeight);
+        const drawn = (layout.columns * cellWidth) / (layout.rows * cellHeight);
+        const error = Math.abs(drawn / (pixelWidth / pixelHeight) - 1);
+        // Within half a cell (a one-row picture can only be as thin as one row).
+        if (layout.rows > 1) expect({ pixelWidth, pixelHeight, cellWidth, cellHeight, error: error <= 0.05 }).toMatchObject({ error: true });
+        expect(layout.columns).toBeLessThanOrEqual(72);
+        expect(layout.rows).toBeLessThanOrEqual(16);
+      }
+    }
   });
 
   test("assigns stable namespaced image IDs", () => {
