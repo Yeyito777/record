@@ -38,7 +38,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewDistance, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareReport } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewAnchor, inlineImageViewDistance, inlineImageViewMovedRows, inlineImageViewOffset, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareReport, type InlineImageViewAnchor } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
@@ -271,8 +271,8 @@ if (startupWarnings.length > 0) {
 }
 
 const LOADING_INTERVAL_MS = 80;
-/** Image downloads at once (network-bound: WhatsApp fetch + decrypt, CDNs). */
-const INLINE_IMAGE_FETCH_CONCURRENCY = 4;
+/** Image downloads at once per provider: WhatsApp media goes through its worker, CDNs take a few. */
+const INLINE_IMAGE_FETCH_CONCURRENCY = { whatsapp: 2, instagram: 4, discord: 4 } as const;
 /** Image conversions at once (ffmpeg, CPU-bound). */
 const INLINE_IMAGE_CONVERT_CONCURRENCY = 2;
 const OPEN_NOTICE_MS = 1200;
@@ -288,7 +288,13 @@ let terminalControlBuffer: TerminalControlBuffer | null = null;
 let terminalGraphicsClient: TerminalGraphicsClient | null = null;
 let nextInlineImageRequestId = 0;
 // Both serve the image nearest the view first, judged when a slot frees.
-const inlineImageFetchQueue = new AsyncWorkQueue(INLINE_IMAGE_FETCH_CONCURRENCY);
+const inlineImageFetchQueues = {
+  whatsapp: new AsyncWorkQueue(INLINE_IMAGE_FETCH_CONCURRENCY.whatsapp),
+  instagram: new AsyncWorkQueue(INLINE_IMAGE_FETCH_CONCURRENCY.instagram),
+  discord: new AsyncWorkQueue(INLINE_IMAGE_FETCH_CONCURRENCY.discord),
+};
+/** Loads waiting for a download slot, by attachment id; dropped when the view leaves them far behind. */
+const queuedInlineImageFetches = new Map<string, { channelId: string | null; messageId: string; requestId: number }>();
 const inlineImageConvertQueue = new AsyncWorkQueue(INLINE_IMAGE_CONVERT_CONCURRENCY);
 // Viewer work has its own bounded lane, ahead of background thumbnail queues.
 const inlineImageModalLoadQueue = new AsyncWorkQueue(1);
@@ -513,8 +519,27 @@ function inlineImageLoadPriority(messageId: string | undefined): number {
   return inlineImageViewDistance(state.historyMessageBounds, messageId, layout.firstLine, layout.bodyRows);
 }
 
-/** A queued load whose image is now this many screens away is dropped (asked for again on return). */
-const INLINE_IMAGE_DROP_SCREENS = 2;
+/** Pictures loaded ahead of the view in the direction it moves (or two screens, if more), and behind it. */
+const INLINE_IMAGE_AHEAD_PICTURES = 12;
+const INLINE_IMAGE_AHEAD_SCREENS = 2;
+const INLINE_IMAGE_BEHIND_PICTURES = 4;
+/** How far the lookahead looks for pictures at most, in screens. */
+const INLINE_IMAGE_LOOKAHEAD_MAX_SCREENS = 12;
+/** Rows above and below the view the last lookahead reached; loads past them by a screen are dropped. */
+let inlineImageReach = { above: Infinity, below: Infinity };
+
+/**
+ * A queued load the view has left behind: more than a screen past the
+ * farthest picture the lookahead now takes on its side (asked for again if
+ * the view comes back).
+ */
+function inlineImageLoadOutOfReach(messageId: string): boolean {
+  const layout = state.chatMouseLayout;
+  if (!layout) return false;
+  const offset = inlineImageViewOffset(state.historyMessageBounds, messageId, layout.firstLine, layout.bodyRows);
+  const margin = Math.max(1, layout.bodyRows);
+  return offset < 0 ? -offset > inlineImageReach.above + margin : offset > inlineImageReach.below + margin;
+}
 
 function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messageId?: string): void {
   const existing = state.timeline.inlineImages[attachment.id];
@@ -564,10 +589,9 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
   const wanted = (): boolean => {
     const request = current();
     if (!request) return false;
-    const layout = state.chatMouseLayout;
-    if (messageId && layout && priority() > INLINE_IMAGE_DROP_SCREENS * Math.max(1, layout.bodyRows)) {
+    if (messageId && inlineImageLoadOutOfReach(messageId)) {
       removeTimelineInlineImageState(state.timeline, request.attachmentId);
-      debugLog("image.dropped", { provider, waitedMs: Math.round(performance.now() - requestedAt) });
+      debugLog("image.dropped", { provider, count: 1 });
       scheduleRender();
       return false;
     }
@@ -593,7 +617,9 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
       } else if (local) {
         timing.source = "local";
       } else {
-        const downloaded = await inlineImageFetchQueue.enqueue(async () => {
+        if (messageId) queuedInlineImageFetches.set(attachment.id, { channelId, messageId, requestId });
+        const downloaded = await inlineImageFetchQueues[provider].enqueue(async () => {
+          if (queuedInlineImageFetches.get(attachment.id)?.requestId === requestId) queuedInlineImageFetches.delete(attachment.id);
           if (!wanted()) return null;
           timing.queueMs = Math.round(performance.now() - requestedAt);
           const fetchStart = performance.now();
@@ -761,6 +787,28 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   return true;
 }
 
+/** Queued downloads the view has left behind go before they take a slot, so a long fling queues no backlog. */
+function dropInlineImageLoadsOutOfReach(channelId: string | null): void {
+  let dropped = 0;
+  for (const [attachmentId, queued] of queuedInlineImageFetches) {
+    if (queued.channelId !== channelId) {
+      queuedInlineImageFetches.delete(attachmentId);
+      continue;
+    }
+    if (!inlineImageLoadOutOfReach(queued.messageId)) continue;
+    queuedInlineImageFetches.delete(attachmentId);
+    const existing = state.timeline.inlineImages[attachmentId];
+    if (existing?.phase === "loading" && existing.requestId === queued.requestId) {
+      removeTimelineInlineImageState(state.timeline, attachmentId);
+      dropped += 1;
+    }
+  }
+  if (dropped > 0) {
+    debugLog("image.dropped", { count: dropped });
+    scheduleRender();
+  }
+}
+
 /** Pictures that came into view this chat visit, and since when the unready ones wait there. */
 const inlineImageSight = { channelId: null as string | null, seen: new Set<string>(), waiting: new Map<string, number>() };
 
@@ -797,6 +845,13 @@ function noteInlineImagesInView(visible: readonly DiscordMessageAttachment[]): v
   }
 }
 
+/** Which way the chat view last moved through the content (up, toward older, on opening a chat). */
+const inlineImageTravel = {
+  channelId: null as string | null,
+  anchor: null as InlineImageViewAnchor | null,
+  direction: "up" as "up" | "down",
+};
+
 function autoShowVisibleInlineImages(): void {
   if (!running) return;
   // The rows actually drawn (smooth scrolling lays them out ahead of the
@@ -804,14 +859,27 @@ function autoShowVisibleInlineImages(): void {
   const layout = state.chatMouseLayout;
   const viewStart = layout?.firstLine ?? state.timeline.scrollOffset;
   const viewRows = layout?.bodyRows ?? timelinePageSize();
-  // In view first, then a screen above and below, nearest first.
-  const near = inlineImageSourcesNearView(
-    state.timeline.messages,
-    state.historyMessageBounds,
-    viewStart,
-    viewRows,
-    viewRows,
-  );
+  const bounds = state.historyMessageBounds;
+  const channelId = state.timeline.channelId;
+  if (inlineImageTravel.channelId !== channelId) {
+    inlineImageTravel.channelId = channelId;
+    inlineImageTravel.direction = "up";
+  } else if (inlineImageTravel.anchor) {
+    const moved = inlineImageViewMovedRows(bounds, inlineImageTravel.anchor, viewStart);
+    if (moved) inlineImageTravel.direction = moved < 0 ? "up" : "down";
+  }
+  inlineImageTravel.anchor = inlineImageViewAnchor(bounds, viewStart);
+  // In view first, then ahead in the direction of travel and a few behind, nearest first.
+  const screen = Math.max(1, viewRows);
+  const near = inlineImageSourcesNearView(state.timeline.messages, bounds, viewStart, viewRows, {
+    direction: inlineImageTravel.direction,
+    aheadPictures: INLINE_IMAGE_AHEAD_PICTURES,
+    aheadRows: INLINE_IMAGE_AHEAD_SCREENS * screen,
+    behindPictures: INLINE_IMAGE_BEHIND_PICTURES,
+    maxRows: INLINE_IMAGE_LOOKAHEAD_MAX_SCREENS * screen,
+  });
+  inlineImageReach = near.reach;
+  dropInlineImageLoadsOutOfReach(channelId);
   noteInlineImagesInView(near.visible);
   const attachments = [...near.visible, ...near.nearby];
   let started = 0;

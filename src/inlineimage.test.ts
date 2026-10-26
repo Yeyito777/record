@@ -21,7 +21,10 @@ import {
   nextInlineImageId,
   shouldLoadInlineImage,
   inlineImageSourcesNearView,
+  inlineImageViewAnchor,
   inlineImageViewDistance,
+  inlineImageViewMovedRows,
+  inlineImageViewOffset,
   visibleInlineImageSources,
 } from "./inlineimage";
 
@@ -225,18 +228,70 @@ describe("inline chat images", () => {
     expect(visibleInlineImageSources(messages, bounds, 0, 10)).toEqual([below, sticker, secondImage, image]);
   });
 
-  test("looks a screen ahead both ways, nearest first, and measures how far an image is from the view", () => {
+  test("looks ahead in pictures in the direction of travel, a few behind, nearest first", () => {
     const at = (index: number) => ({ id: `a${index}`, filename: `p${index}.png`, contentType: "image/png", size: 10, url: `p${index}` });
-    // Ten messages of ten rows each, one image apiece.
-    const messages = Array.from({ length: 10 }, (_, index) => ({ id: `m${index}`, attachments: [at(index)] }));
+    // Forty messages of ten rows each, one image apiece; the view is rows 200-219 (m20, m21).
+    const messages = Array.from({ length: 40 }, (_, index) => ({ id: `m${index}`, attachments: [at(index)] }));
     const bounds = messages.map((message, index) => ({ messageId: message.id, start: index * 10, end: index * 10 + 10 }));
-    // View rows 40-59: m4 and m5 in view; 20 rows ahead each way reach m2-m3 and m6-m7.
-    const near = inlineImageSourcesNearView(messages, bounds, 40, 20, 20);
-    expect(near.visible.map((source) => source.id)).toEqual(["a5", "a4"]);
-    expect(near.nearby.map((source) => source.id)).toEqual(["a3", "a6", "a2", "a7"]);
+    const lookahead = { direction: "up" as const, aheadPictures: 6, aheadRows: 40, behindPictures: 2, maxRows: 1000 };
+    const ids = (sources: { id: string }[]) => sources.map((source) => source.id);
+
+    // Up: six pictures above (more than the 40 rows' four), two below, merged nearest first.
+    const up = inlineImageSourcesNearView(messages, bounds, 200, 20, lookahead);
+    expect(ids(up.visible)).toEqual(["a21", "a20"]);
+    expect(ids(up.nearby)).toEqual(["a19", "a22", "a18", "a23", "a17", "a16", "a15", "a14"]);
+    expect(up.reach).toEqual({ above: 51, below: 11 });
+    expect(up.messageIds.get("a14")).toBe("m14");
+
+    // Down: the same the other way.
+    const down = inlineImageSourcesNearView(messages, bounds, 200, 20, { ...lookahead, direction: "down" });
+    expect(ids(down.nearby)).toEqual(["a19", "a22", "a18", "a23", "a24", "a25", "a26", "a27"]);
+    expect(down.reach).toEqual({ above: 11, below: 51 });
+
+    // Rows win when they hold more pictures than the count.
+    const rows = inlineImageSourcesNearView(messages, bounds, 200, 20, { ...lookahead, aheadPictures: 1, aheadRows: 60 });
+    expect(rows.reach.above).toBe(51);
+
+    // At the bottom nothing is below: ahead is up whatever the last move was.
+    const bottom = inlineImageSourcesNearView(messages, bounds, 380, 20, { ...lookahead, direction: "down" });
+    expect(ids(bottom.visible)).toEqual(["a39", "a38"]);
+    expect(bottom.nearby).toHaveLength(6);
+    expect(bottom.reach).toEqual({ above: 51, below: 0 });
+
+    // Never past maxRows, however few pictures were found.
+    const capped = inlineImageSourcesNearView(messages, bounds, 200, 20, { ...lookahead, maxRows: 15 });
+    expect(ids(capped.nearby)).toEqual(["a19", "a22", "a18", "a23"]);
+
+    // Messages without pictures cost rows, not pictures.
+    const sparse = messages.map((message, index) => (index % 5 === 0 ? message : { id: message.id, attachments: [] }));
+    const sparseNear = inlineImageSourcesNearView(sparse, bounds, 200, 20, { ...lookahead, aheadPictures: 2, behindPictures: 1 });
+    expect(ids(sparseNear.visible)).toEqual(["a20"]);
+    expect(ids(sparseNear.nearby)).toEqual(["a25", "a15", "a10"]);
+  });
+
+  test("tells which way the view moved through the content, not through the layout", () => {
+    const bounds = Array.from({ length: 10 }, (_, index) => ({ messageId: `m${index}`, start: index * 10, end: index * 10 + 10 }));
+    const anchor = inlineImageViewAnchor(bounds, 43)!;
+    expect(anchor).toEqual({ messageId: "m4", row: 3 });
+    expect(inlineImageViewMovedRows(bounds, anchor, 43)).toBe(0);
+    expect(inlineImageViewMovedRows(bounds, anchor, 30)).toBe(-13);
+    // Older messages loaded above shift every row; the view kept its place.
+    const prepended = [{ messageId: "older", start: 0, end: 25 }, ...bounds.map((bound) => ({ ...bound, start: bound.start + 25, end: bound.end + 25 }))];
+    expect(inlineImageViewMovedRows(prepended, anchor, 68)).toBe(0);
+    // A picture below the view growing is not a move either.
+    const grown = bounds.map((bound, index) => (index < 7 ? bound : { ...bound, start: bound.start + 1, end: bound.end + 1 }));
+    expect(inlineImageViewMovedRows(grown, anchor, 43)).toBe(0);
+    expect(inlineImageViewMovedRows(bounds.slice(5), anchor, 43)).toBeNull();
+  });
+
+  test("measures how far an image is from the view, signed by side", () => {
+    const messages = Array.from({ length: 10 }, (_, index) => ({ id: `m${index}`, attachments: [] }));
+    const bounds = messages.map((message, index) => ({ messageId: message.id, start: index * 10, end: index * 10 + 10 }));
     expect(inlineImageViewDistance(bounds, "m4", 40, 20)).toBe(0);
     expect(inlineImageViewDistance(bounds, "m6", 40, 20)).toBe(1);
     expect(inlineImageViewDistance(bounds, "m2", 40, 20)).toBe(11);
+    expect(inlineImageViewOffset(bounds, "m2", 40, 20)).toBe(-11);
+    expect(inlineImageViewOffset(bounds, "m7", 40, 20)).toBe(11);
     expect(inlineImageViewDistance(bounds, "gone", 40, 20)).toBe(Infinity);
-  });
+});
 });

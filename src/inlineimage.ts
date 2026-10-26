@@ -238,6 +238,15 @@ type ViewBound = { messageId: string; start: number; end: number };
 /** messageId -> bound, per bounds array (bounds are replaced, never mutated, on re-layout). */
 const boundIndexes = new WeakMap<readonly ViewBound[], Map<string, ViewBound>>();
 
+function boundById(bounds: readonly ViewBound[], messageId: string): ViewBound | undefined {
+  let index = boundIndexes.get(bounds);
+  if (!index) {
+    index = new Map(bounds.map((bound) => [bound.messageId, bound]));
+    boundIndexes.set(bounds, index);
+  }
+  return index.get(messageId);
+}
+
 /**
  * Rows between a message and the view (0 when any of it is in view), or
  * Infinity when it is not laid out: how much an image load is wanted now.
@@ -248,54 +257,130 @@ export function inlineImageViewDistance(
   viewStart: number,
   viewRows: number,
 ): number {
-  let index = boundIndexes.get(bounds);
-  if (!index) {
-    index = new Map(bounds.map((bound) => [bound.messageId, bound]));
-    boundIndexes.set(bounds, index);
-  }
-  const bound = index.get(messageId);
+  return Math.abs(inlineImageViewOffset(bounds, messageId, viewStart, viewRows));
+}
+
+/**
+ * Like inlineImageViewDistance, signed: negative above the view (older),
+ * positive below it, 0 in it, Infinity when the message is not laid out.
+ */
+export function inlineImageViewOffset(
+  bounds: readonly ViewBound[],
+  messageId: string,
+  viewStart: number,
+  viewRows: number,
+): number {
+  const bound = boundById(bounds, messageId);
   if (!bound) return Infinity;
   const viewEnd = viewStart + Math.max(0, viewRows);
-  if (bound.end <= viewStart) return viewStart - bound.end + 1;
+  if (bound.end <= viewStart) return -(viewStart - bound.end + 1);
   if (bound.start >= viewEnd) return bound.start - viewEnd + 1;
   return 0;
 }
 
+/** Where the view's top row is in content terms: the message there and the row within it. */
+export interface InlineImageViewAnchor {
+  messageId: string;
+  row: number;
+}
+
+export function inlineImageViewAnchor(bounds: readonly ViewBound[], viewStart: number): InlineImageViewAnchor | null {
+  const bound = bounds[firstBoundAtOrAfter(bounds, viewStart + 1) - 1];
+  return bound ? { messageId: bound.messageId, row: viewStart - bound.start } : null;
+}
+
 /**
- * Images to load for a view: those in it (bottom first), then those within
- * `aheadRows` above and below it, nearest first, so scrolling finds them
- * ready instead of popping in.
+ * Rows the view moved through the content since `anchor` was taken
+ * (negative: up, toward older messages); null when its message is gone.
+ * Layout changes elsewhere, such as older pages loading above or a picture
+ * changing size below, do not count as moves.
+ */
+export function inlineImageViewMovedRows(bounds: readonly ViewBound[], anchor: InlineImageViewAnchor, viewStart: number): number | null {
+  const bound = boundById(bounds, anchor.messageId);
+  return bound ? viewStart - (bound.start + anchor.row) : null;
+}
+
+/** How far ahead of the view pictures are loaded. */
+export interface InlineImageLookahead {
+  /** Which way the view last moved: "up" is toward older messages. */
+  direction: "up" | "down";
+  /** In the direction of travel: at least this many pictures, and every picture within aheadRows. */
+  aheadPictures: number;
+  aheadRows: number;
+  /** Pictures kept loaded on the side the view came from. */
+  behindPictures: number;
+  /** Nothing farther than this is looked at (this runs after every frame). */
+  maxRows: number;
+}
+
+export interface InlineImagesNearView {
+  /** In the view, bottom first. */
+  visible: DiscordMessageAttachment[];
+  /** Ahead of and behind the view, nearest first. */
+  nearby: DiscordMessageAttachment[];
+  /** Source id -> the message it is in. */
+  messageIds: Map<string, string>;
+  /** Rows to the farthest picture taken above and below the view (0: none). */
+  reach: { above: number; below: number };
+}
+
+/**
+ * Images to load for a view: those in it, then those ahead of it in the
+ * direction of travel and a few behind, nearest first, so scrolling finds
+ * them ready instead of popping in. Counted in pictures, not rows, so tall
+ * photos do not shrink how far ahead it reaches. At either end of the laid
+ * out history the view can only move the other way, which becomes ahead.
  */
 export function inlineImageSourcesNearView(
   messages: readonly InlineImageMessage[],
   bounds: readonly ViewBound[],
   viewStart: number,
   viewRows: number,
-  aheadRows: number,
-): { visible: DiscordMessageAttachment[]; nearby: DiscordMessageAttachment[]; messageIds: Map<string, string> } {
+  lookahead: InlineImageLookahead,
+): InlineImagesNearView {
   const messageIds = new Map<string, string>();
   const visible = visibleInlineImageSources(messages, bounds, viewStart, viewRows, messageIds);
   const seen = new Set(visible.map((source) => source.id));
   const viewEnd = viewStart + Math.max(0, viewRows);
+  let direction = lookahead.direction;
+  if (direction === "down" && viewEnd >= (bounds.at(-1)?.end ?? 0)) direction = "up";
+  else if (direction === "up" && viewStart <= (bounds[0]?.start ?? 0)) direction = "down";
   const candidates: { distance: number; sources: DiscordMessageAttachment[] }[] = [];
-  const first = firstBoundAtOrAfter(bounds, viewStart - aheadRows) - 1;
-  for (let boundIndex = Math.max(0, first); boundIndex < bounds.length; boundIndex++) {
-    const bound = bounds[boundIndex]!;
-    if (bound.start >= viewEnd + aheadRows) break;
-    if (bound.end <= viewStart - aheadRows) continue;
-    const distance = inlineImageViewDistance(bounds, bound.messageId, viewStart, viewRows);
-    if (distance === 0) continue;
-    const message = findMessage(messages, bound.messageId);
-    if (!message) continue;
-    const sources = inlineImageSourcesForMessage(message).filter((source) => !seen.has(source.id) && isImageAttachment(source));
-    for (const source of sources) {
-      seen.add(source.id);
-      messageIds.set(source.id, message.id);
+  const reach = { above: 0, below: 0 };
+  const walk = (side: "above" | "below"): void => {
+    const ahead = (side === "above") === (direction === "up");
+    const wantPictures = ahead ? lookahead.aheadPictures : lookahead.behindPictures;
+    const wantRows = ahead ? lookahead.aheadRows : 0;
+    let pictures = 0;
+    const step = side === "above" ? -1 : 1;
+    for (
+      let boundIndex = side === "above" ? firstBoundAtOrAfter(bounds, viewStart) - 1 : firstBoundAtOrAfter(bounds, viewEnd);
+      boundIndex >= 0 && boundIndex < bounds.length;
+      boundIndex += step
+    ) {
+      const bound = bounds[boundIndex]!;
+      const distance = side === "above" ? viewStart - bound.end + 1 : bound.start - viewEnd + 1;
+      // A message reaching into the view is visible, not ahead.
+      if (distance <= 0) continue;
+      if (distance > lookahead.maxRows || (pictures >= wantPictures && distance > wantRows)) break;
+      const message = findMessage(messages, bound.messageId);
+      // Most messages carry nothing to draw; skip them without building lists.
+      if (!message || (!message.attachments.length && !message.stickers?.length && !message.forwarded && !message.embeds?.length)) continue;
+      const sources = inlineImageSourcesForMessage(message).filter((source) => !seen.has(source.id) && isImageAttachment(source));
+      if (!sources.length) continue;
+      for (const source of sources) {
+        seen.add(source.id);
+        messageIds.set(source.id, message.id);
+      }
+      pictures += sources.length;
+      reach[side] = distance;
+      candidates.push({ distance, sources });
     }
-    if (sources.length) candidates.push({ distance, sources });
-  }
+  };
+  walk("above");
+  walk("below");
   candidates.sort((left, right) => left.distance - right.distance);
-  return { visible, nearby: candidates.flatMap((candidate) => candidate.sources), messageIds };
+  return { visible, nearby: candidates.flatMap((candidate) => candidate.sources), messageIds, reach };
 }
 
 export function pngDimensions(data: Uint8Array): { width: number; height: number } | null {
