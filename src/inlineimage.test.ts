@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -58,6 +59,28 @@ test.skipIf(!Bun.which("ffmpeg"))("previews static and animated WebP stickers fr
   partial.writeUIntLE(1, 55, 3);
   const preview = await prepareInlineImageBytes(partial);
   expect([preview.pixelWidth, preview.pixelHeight]).toEqual([20, 20]);
+});
+
+test.skipIf(!Bun.which("ffmpeg"))("photo previews use a palette; pictures that may be transparent and the viewer keep full colour", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "record-palette-preview-"));
+  tempDirs.push(directory);
+  const make = (name: string, source: string) => {
+    const path = join(directory, name);
+    execFileSync("ffmpeg", ["-v", "error", "-nostdin", "-f", "lavfi", "-i", source, "-frames:v", "1", path]);
+    return path;
+  };
+  const colourType = (prepared: { pngBase64: string }) => Buffer.from(prepared.pngBase64, "base64")[25];
+  const bounds = { maxPixelWidth: 320, maxPixelHeight: 240 };
+
+  const jpeg = make("photo.jpg", "testsrc2=size=640x480");
+  const preview = await prepareInlineImage(jpeg, bounds);
+  expect(colourType(preview)).toBe(3);
+  expect([preview.pixelWidth, preview.pixelHeight]).toEqual([320, 240]);
+  expect(colourType(await prepareInlineImageBytes(readFileSync(jpeg), bounds))).toBe(3);
+  expect(colourType(await prepareInlineImage(jpeg, { preserveSourceResolution: true }))).not.toBe(3);
+
+  const transparent = make("alpha.png", "color=c=red@0.5:size=640x480,format=rgba");
+  expect(colourType(await prepareInlineImage(transparent, bounds))).toBe(6);
 });
 
 afterEach(() => {

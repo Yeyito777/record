@@ -272,7 +272,7 @@ if (startupWarnings.length > 0) {
 
 const LOADING_INTERVAL_MS = 80;
 /** Image downloads at once per provider: WhatsApp media goes through its worker, CDNs take a few. */
-const INLINE_IMAGE_FETCH_CONCURRENCY = { whatsapp: 2, instagram: 4, discord: 4 } as const;
+const INLINE_IMAGE_FETCH_CONCURRENCY = { whatsapp: 3, instagram: 4, discord: 4 } as const;
 /** Image conversions at once (ffmpeg, CPU-bound). */
 const INLINE_IMAGE_CONVERT_CONCURRENCY = 2;
 const OPEN_NOTICE_MS = 1200;
