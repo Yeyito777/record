@@ -9,7 +9,7 @@ import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { layoutEmbed } from "./embedlayout";
 import { embedGroups, forwardedEmbedOccurrence, isEmbedSourceId, type EmbedGroup } from "./embeds";
-import { displayMessageParts, type DisplayMessagePart } from "./messageparts";
+import { displayMessageParts, isOnlyGifLink, type DisplayMessagePart } from "./messageparts";
 import { sliceByWidth, termWidth, truncate } from "./textwidth";
 import { ansiTrueColor, dmAuthorColor, theme, toneColor } from "./theme";
 
@@ -47,6 +47,8 @@ export interface TimelineState {
    * a shown image is its own row; images not drawn keep their name row.
    */
   showImageDetails: boolean;
+  /** GIFs play in their boxes (the terminal plays st video): their "▶ GIF" row goes. */
+  gifsPlay: boolean;
   /**
    * Pictures near the view load by themselves (`/images show` on a terminal
    * that draws them): one not requested yet already holds its box.
@@ -165,6 +167,7 @@ export function createTimelineState(): TimelineState {
     activeGuildId: null,
     inlineImages: {},
     showImageDetails: false,
+    gifsPlay: false,
     imageAutoShow: false,
     hiddenImageIds: new Set(),
     terminalCellWidthPixels: 8,
@@ -277,6 +280,14 @@ export function invalidateTimelineLayout(timeline: TimelineState): void {
 export function setTimelineImageDetails(timeline: TimelineState, show: boolean): boolean {
   if (timeline.showImageDetails === show) return false;
   timeline.showImageDetails = show;
+  resetTimelineRenderCaches(timeline);
+  return true;
+}
+
+/** Whether GIFs play in place (st video). Returns whether it changed. */
+export function setTimelineGifsPlay(timeline: TimelineState, play: boolean): boolean {
+  if (timeline.gifsPlay === play) return false;
+  timeline.gifsPlay = play;
   resetTimelineRenderCaches(timeline);
   return true;
 }
@@ -1127,6 +1138,7 @@ function renderMessageCached(
     timeline.terminalCellWidthPixels,
     timeline.terminalCellHeightPixels,
     timeline.showImageDetails,
+    timeline.gifsPlay,
   );
   cacheState.messageRenderCache.set(cacheKey, { width, fingerprint, rendered });
   return rendered;
@@ -1321,6 +1333,7 @@ function renderMessage(
   terminalCellWidthPixels = 8,
   terminalCellHeightPixels = 16,
   showImageDetails = true,
+  gifsPlay = false,
 ): RenderedMessage {
   const time = formatLocalMessageTime(message.timestamp);
   const author = message.author.bot
@@ -1353,7 +1366,7 @@ function renderMessage(
   const messageBackground = messagePingsViewer(message, viewerId, memberRoleIdsByGuildId, activeGuildId) ? theme.pingBg : "";
 
   const contentColor = message.localStatus ? theme.muted : theme.text;
-  const summarized = showImageDetails ? message : withoutShownImageNames(message, inlineImages);
+  const summarized = showImageDetails ? message : withoutShownImageNames(message, inlineImages, gifsPlay);
   const contentRestoreStyle = `${messageBackground}${contentColor}`;
   const parts = summarizeMessageParts(
     summarized,
@@ -1383,6 +1396,7 @@ function renderMessage(
   const body = renderMessageBody(message.id, parts, width, contentColor, contentRestoreStyle, firstBodyRow, {
     states: Object.fromEntries(inlineImages.map((state) => [state.attachmentId, state])),
     showDetails: showImageDetails,
+    gifsPlay,
     loadingFrameIndex,
     cellWidthPixels: terminalCellWidthPixels,
     cellHeightPixels: terminalCellHeightPixels,
@@ -1452,6 +1466,7 @@ type MessageContentPart =
 interface EmbedRenderContext {
   states: Readonly<Record<string, InlineChatImageState>>;
   showDetails: boolean;
+  gifsPlay: boolean;
   loadingFrameIndex: number;
   cellWidthPixels: number;
   cellHeightPixels: number;
@@ -1489,6 +1504,7 @@ function renderMessageBody(
       lineOffset: firstRow + body.lines.length,
       states: context.states,
       showDetails: context.showDetails,
+      gifsPlay: context.gifsPlay,
       loadingFrameIndex: context.loadingFrameIndex,
       cellWidthPixels: context.cellWidthPixels,
       cellHeightPixels: context.cellHeightPixels,
@@ -1509,7 +1525,7 @@ function renderMessageBody(
  * the name rows of images drawn inline (attachments and stickers whose
  * preview is ready). The same object when nothing is drawn inline.
  */
-function withoutShownImageNames(message: DiscordMessage, images: readonly InlineChatImageState[]): DiscordMessage {
+function withoutShownImageNames(message: DiscordMessage, images: readonly InlineChatImageState[], gifsPlay = false): DiscordMessage {
   // Drawn, or loading in its final box (whose first row names it): either
   // way the image has rows of its own, which keep their place as it arrives.
   const dimensions = inlineImageDimensions(message);
@@ -1517,7 +1533,13 @@ function withoutShownImageNames(message: DiscordMessage, images: readonly Inline
     .filter((image) => image.phase === "ready" || holdsImageBox(image, dimensions))
     .map((image) => image.attachmentId));
   if (shown.size === 0) return message;
-  const attachments = (list: DiscordMessage["attachments"]) => list.filter((attachment) => !shown.has(attachment.id));
+  // A GIF that plays in its still's box needs no row for its mp4 (Instagram sends both).
+  const playing = new Set(gifsPlay
+    ? [...message.attachments, ...(message.forwarded?.attachments ?? [])]
+      .filter((attachment) => shown.has(attachment.id) && attachment.animation && attachment.animation !== "self")
+      .map((attachment) => (attachment.animation as { url: string }).url)
+    : []);
+  const attachments = (list: DiscordMessage["attachments"]) => list.filter((attachment) => !shown.has(attachment.id) && !playing.has(attachment.url));
   const stickerNames = (names: readonly string[], stickers: DiscordMessage["stickers"]) => {
     const remaining = [...names];
     for (const sticker of stickers ?? []) {
@@ -1683,7 +1705,8 @@ function summarizeMessageParts(
     activeGuildId,
     restore,
   ), restore);
-  const linkedContent = formatText(context.content, contentColor);
+  // A message that is only a GIF's link shows just the GIF, as Discord does.
+  const linkedContent = isOnlyGifLink(context.content, context.embeds ?? []) ? "" : formatText(context.content, contentColor);
   const forwardedLabel = `${theme.muted}[Forwarded]${contentColor}`;
   const content = forwarded
     ? linkedContent.trim() ? `${forwardedLabel}: ${linkedContent}` : forwardedLabel

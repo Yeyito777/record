@@ -483,6 +483,18 @@ export interface DiscordMessageAttachment {
   maxRows?: number;
   durationSecs?: number;
   waveform?: string;
+  /**
+   * A GIF, played looping and silent in its box where the terminal plays
+   * video: "self" when the attachment is the animation (a .gif, a WhatsApp
+   * GIF's mp4), else the animation's own file (a Tenor/Giphy embed's mp4).
+   */
+  animation?: "self" | DiscordAnimationSource;
+}
+
+export interface DiscordAnimationSource {
+  url: string;
+  filename: string;
+  contentType: string | null;
 }
 
 export interface DiscordMessageSticker {
@@ -1180,6 +1192,10 @@ function mapMessageEmbeds(embeds: DiscordEmbedResponse[] | undefined, flags: num
   return embeds?.map(mapDiscordEmbed);
 }
 
+function isGifFile(contentType: string | null | undefined, filename: string): boolean {
+  return contentType?.toLowerCase().split(";")[0]?.trim() === "image/gif" || /\.gif$/i.test(filename);
+}
+
 function mapDiscordAttachment(attachment: DiscordAttachmentResponse): DiscordMessageAttachment {
   return {
     id: attachment.id,
@@ -1188,6 +1204,7 @@ function mapDiscordAttachment(attachment: DiscordAttachmentResponse): DiscordMes
     size: attachment.size,
     url: attachment.url,
     ...(attachment.proxy_url ? { proxyUrl: attachment.proxy_url } : {}),
+    ...(isGifFile(attachment.content_type, attachment.filename) ? { animation: "self" as const } : {}),
     ...(attachment.width && attachment.height ? { width: attachment.width, height: attachment.height } : {}),
     durationSecs: attachment.duration_secs,
     waveform: attachment.waveform,

@@ -12,7 +12,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { DEMO_TOKEN, demoServerFolderLayout } from "./data";
 import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, DEMO_WHATSAPP_CREDS, parseAnchor, realRecordConfigDirs, type Env } from "./env";
 import { DemoDiscordServer } from "./server";
-import { buildDemoWhatsAppData, DEMO_WHATSAPP_PHOTOS_CHAT, DemoWhatsAppBackend, demoWhatsAppCacheSnapshot } from "./whatsapp";
+import { buildDemoWhatsAppData, DEMO_WHATSAPP_GIFS_CHAT, DEMO_WHATSAPP_PHOTOS_CHAT, DemoWhatsAppBackend, demoWhatsAppCacheSnapshot } from "./whatsapp";
 
 export interface DemoInstall {
   server: DemoDiscordServer;
@@ -126,6 +126,10 @@ function writeStartingState(server: DemoDiscordServer, configDir: string, open: 
     const { DEMO_INSTAGRAM_GALLERY_THREAD, DEMO_INSTAGRAM_PHOTOS_THREAD, DEMO_INSTAGRAM_SHARES_THREAD } = require("./instagram") as typeof import("./instagram");
     const thread = open === "ig-photos" ? DEMO_INSTAGRAM_PHOTOS_THREAD : open === "ig-gallery" ? DEMO_INSTAGRAM_GALLERY_THREAD : DEMO_INSTAGRAM_SHARES_THREAD;
     target = { guildId: INSTAGRAM_GUILD_ID, channelId: instagramChannelId(thread) };
+  } else if (open === "wa-gifs") {
+    const require = createRequire(import.meta.url);
+    const { WHATSAPP_GUILD_ID, whatsappChannelId } = require("../chatproviders") as typeof import("../chatproviders");
+    target = { guildId: WHATSAPP_GUILD_ID, channelId: whatsappChannelId(DEMO_WHATSAPP_GIFS_CHAT) };
   } else if (open === "wa-photos" || open === "whatsapp") {
     // Required here, not imported: Record modules must load only after the
     // demo has pointed every config path at its home.

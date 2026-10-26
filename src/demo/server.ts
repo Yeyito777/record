@@ -29,7 +29,9 @@ import {
   type DemoWorld,
   type Rng,
 } from "./data";
+import { demoAnimation, demoAnimationContentType, type DemoAnimationKind } from "./animations";
 import { DEMO_MEDIA_PROXY_HOSTS, demoMediaVariant, demoReleaseEmbed } from "./embeds";
+import type { DemoAnimationSpec } from "./gifs";
 import { hexColor, renderIcon, renderPicture } from "./png";
 
 export const DEMO_API_HOST = "discord.com";
@@ -74,6 +76,8 @@ export class DemoDiscordServer {
   private readonly variantBytes = new Map<number, Buffer>();
   private readonly uploads = new Map<string, StoredUpload>();
   private readonly cdnCache = new Map<string, Buffer>();
+  /** Attachment and sticker ids served as animations (#gifs). */
+  private readonly animations = new Map<string, DemoAnimationSpec>();
   private readonly mediaProxyCache = new Map<string, Promise<{ bytes: Buffer; type: string }>>();
   /** RECORD_DEMO_MEDIA_PROXY_FAIL=1: the media proxy answers 502 (clients fall back to the original). */
   mediaProxyFails = false;
@@ -257,6 +261,7 @@ export class DemoDiscordServer {
       guild: this.guildForChannel(channelId),
       registerImage: (attachmentId, variant) => this.registerImage(attachmentId, variant),
       registerLateEmbeds: (messageId, embeds) => this.lateEmbeds.set(messageId, embeds),
+      registerAnimation: (id, animation) => this.animations.set(id, animation),
     });
     this.histories.set(channelId, built);
     // A few pinned messages per channel.
@@ -659,8 +664,15 @@ export class DemoDiscordServer {
       const user = world.users.get(parts[0] === "avatars" ? parts[1]! : parts[3]!);
       if (user?.avatar) bytes = renderIcon(user.initials, user.color, 128, true);
     } else if (DEMO_MEDIA_PROXY_HOSTS.includes(url.hostname)) {
-      // Embed pictures (and video posters, `format=jpeg`) through the media proxy.
+      // Embed pictures (and video posters, `format=jpeg`) through the media
+      // proxy; a gifv's mp4 (or a .gif) as an animation of the picture's shape.
       const variant = demoMediaVariant(url.pathname);
+      const moving = /\.mp4$/i.test(url.pathname) ? "mp4" : /\.gif$/i.test(url.pathname) && !url.search.includes("format=") ? "gif" : null;
+      if (variant !== null && moving) {
+        const shape = imageVariant(variant);
+        const scale = Math.min(1, 640 / shape.width, 480 / shape.height);
+        return animationResponse(moving, await demoAnimation(moving, shape.width * scale, shape.height * scale, variant));
+      }
       if (variant !== null) return png(this.variantPng(variant));
     } else if (parts[0] === "embed" && parts[1] === "avatars") {
       const index = Number(stem) || 0;
@@ -669,8 +681,12 @@ export class DemoDiscordServer {
       const emoji = world.emojisById.get(stem);
       if (emoji) bytes = renderIcon(emoji.name.slice(0, 2), emoji.color, 64, true);
     } else if (parts[0] === "stickers" && parts.length === 2) {
+      const animation = this.animations.get(stem);
+      if (animation) return animationResponse(animation.kind, await demoAnimation(animation.kind, animation.width, animation.height, animation.seed));
       bytes = renderIcon("HI", hexColor(0xfee75c), 160, true);
     } else if (parts[0] === "attachments" && parts.length === 4) {
+      const animation = this.animations.get(parts[2]!);
+      if (animation) return animationResponse(animation.kind, await demoAnimation(animation.kind, animation.width, animation.height, animation.seed));
       const upload = this.uploads.get(parts[2]!);
       if (upload) return new Response(upload.bytes as unknown as BodyInit, { headers: { "content-type": upload.contentType, "content-length": String(upload.bytes.length) } });
       const variant = this.imageVariantByAttachment.get(parts[2]!);
@@ -1136,6 +1152,12 @@ function demoWebp(picture: Buffer, lossless: boolean): Promise<{ bytes: Buffer; 
     child.once("close", (code) => resolve(code === 0 && chunks.length > 0 ? { bytes: Buffer.concat(chunks), type: "image/webp" } : fallback));
     child.stdin!.end(picture);
   });
+}
+
+function animationResponse(kind: DemoAnimationKind, bytes: Buffer): Response {
+  // Without ffmpeg the animation is a still PNG.
+  const type = bytes.subarray(1, 4).toString("latin1") === "PNG" && kind !== "apng" ? "image/png" : demoAnimationContentType(kind);
+  return new Response(bytes as unknown as BodyInit, { headers: { "content-type": type, "content-length": String(bytes.length) } });
 }
 
 function png(bytes: Buffer): Response {

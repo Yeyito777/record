@@ -15,6 +15,7 @@ import type { InstagramSession } from "../instagram/auth";
 import {
   contentSummary, type IgContent, type IgInboxPage, type IgMediaItem, type IgMessage, type IgShare, type IgThread, type IgUser,
 } from "../instagram/model";
+import { demoAnimation } from "./animations";
 import { demoJpeg } from "./whatsapp";
 import { hexColor, renderIcon, renderPicture, type Rgb } from "./png";
 
@@ -527,7 +528,10 @@ export class DemoInstagramCdn {
     let bytes: Buffer;
     let type = "image/jpeg";
     if (extension === "mp4") {
-      bytes = Buffer.from(`Record demo media ${id}\n`);
+      // A GIF's mp4 (t39.30808-6) moves; other videos are a placeholder body.
+      bytes = url.pathname.includes("/t39.30808-6/")
+        ? await demoAnimation("mp4", Math.min(width, 640), Math.min(height, 640), hash(id) % 360)
+        : Buffer.from(`Record demo media ${id}\n`);
       type = "video/mp4";
     } else if (avatar) {
       bytes = await this.picture(`avatar:${id}`, () => Promise.resolve(renderIcon(id.slice(0, 2).toUpperCase(), COLORS[hash(id) % COLORS.length]![0], 150, false)));

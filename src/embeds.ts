@@ -3,7 +3,7 @@
  * pictures as sources for the inline-image pipeline (inlineimage.ts).
  */
 
-import type { DiscordMessage, DiscordMessageAttachment, DiscordMessageEmbed, DiscordMessageEmbedMedia } from "./discord";
+import type { DiscordAnimationSource, DiscordMessage, DiscordMessageAttachment, DiscordMessageEmbed, DiscordMessageEmbedMedia } from "./discord";
 
 /** How an embed picture is drawn: large below, small at the right, or a video's poster. */
 export type EmbedMediaRole = "image" | "thumbnail" | "poster";
@@ -177,16 +177,40 @@ function mediaSource(
 }
 
 /** The pictures one embed draws, lead first. */
+/** A GIF the picture stands for: a gifv embed's mp4 (Tenor, Giphy), or an image embed of a .gif. */
+function embedAnimation(embed: DiscordMessageEmbed, picture: DiscordMessageEmbedMedia): DiscordAnimationSource | null {
+  if (embed.type === "gifv" && embed.video) {
+    const url = embed.video.proxyUrl ?? embed.video.url;
+    return url ? { url, filename: videoFilename(embed.video.url) ?? "gif.mp4", contentType: "video/mp4" } : null;
+  }
+  if (embed.type === "image" && /\.gif$/i.test(urlPath(picture.url))) {
+    return { url: picture.proxyUrl ?? picture.url, filename: "image.gif", contentType: "image/gif" };
+  }
+  return null;
+}
+
+function urlPath(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return "";
+  }
+}
+
+function withAnimation(source: EmbedMediaSource, animation: DiscordAnimationSource | null): EmbedMediaSource {
+  return animation ? { ...source, attachment: { ...source.attachment, animation } } : source;
+}
+
 function embedMedia(embed: DiscordMessageEmbed, occurrence: string, index: number): EmbedMediaSource[] {
   if (isVideoEmbed(embed)) {
     const still = embed.thumbnail ?? embed.image;
-    if (still) return [mediaSource(occurrence, index, "poster", still)];
+    if (still) return [withAnimation(mediaSource(occurrence, index, "poster", still), embedAnimation(embed, still))];
     const poster = embed.video ? videoPosterMedia(embed.video) : null;
-    return poster ? [mediaSource(occurrence, index, "poster", poster.media, poster.params)] : [];
+    return poster ? [withAnimation(mediaSource(occurrence, index, "poster", poster.media, poster.params), embedAnimation(embed, poster.media))] : [];
   }
   if (embed.type === "image") {
     const picture = embed.image ?? embed.thumbnail;
-    return picture ? [mediaSource(occurrence, index, "image", picture)] : [];
+    return picture ? [withAnimation(mediaSource(occurrence, index, "image", picture), embedAnimation(embed, picture))] : [];
   }
   const sources: EmbedMediaSource[] = [];
   if (embed.image) sources.push(mediaSource(occurrence, index, "image", embed.image));

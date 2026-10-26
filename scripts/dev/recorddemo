@@ -16,7 +16,8 @@
 #   RECORD_DEMO_OPEN=NAME            channel to open first: a channel name such as
 #                                    general (default), images, code-review,
 #                                    "dm" for the 1,500-message DM, "wa-photos"
-#                                    for the WhatsApp photo chat, or "none"
+#                                    for the WhatsApp photo chat, "gifs" or
+#                                    "wa-gifs" for GIFs, or "none"
 #   RECORD_DEMO_INCOMING_SECONDS=N   append an incoming message every N seconds
 #   RECORD_DEMO_OLDER_DELAY_MS=N     delay for older-history pages (default 450)
 #   RECORD_DEMO_LATENCY_MS=N         delay for other API calls (default 20)
@@ -35,7 +36,7 @@ BUN_BIN="$(command -v bun || true)"
 [[ -n "$BUN_BIN" ]] || { echo "recorddemo: bun not found in PATH" >&2; exit 1; }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 

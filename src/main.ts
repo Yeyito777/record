@@ -41,6 +41,9 @@ import { imageExtension, readClipboardImages, type ClipboardImageAttachment } fr
 import { inlineImageHasShape, inlineImageId, inlineImagePreviewPixelBounds, inlineImageShape, inlineImageSourcesForMessage, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewAnchor, inlineImageViewDistance, inlineImageViewMovedRows, inlineImageViewOffset, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareOptions, type InlineImagePrepareReport, type InlineImageViewAnchor } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 import { discordAttachmentProxyRequest, proxiedAttachment } from "./discordmedia";
+import { GifPlayer } from "./gifplayer";
+import { encodeVideoStream, videoEncoders, VideoStreamDiskCache, type VideoStream } from "./videostream";
+import { ansiColorToRgb } from "./terminalcolors";
 import { handleImageModalKey, imageModalPixelBounds, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
@@ -174,7 +177,7 @@ import {
 import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize, terminalImageNotFoundId } from "./terminalimage";
 import { sidebarIconTerminalOwner, sidebarIcons } from "./sidebaricons";
 import { dmAuthorColor, theme } from "./theme";
-import { clearTimeline, clearTimelineInlineImageStates, removeTimelineInlineImageStates, hasActiveTimelineCall, invalidateTimelineLayout, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageAutoShow, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
+import { clearTimeline, clearTimelineInlineImageStates, removeTimelineInlineImageStates, setTimelineGifsPlay, hasActiveTimelineCall, invalidateTimelineLayout, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageAutoShow, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
@@ -301,9 +304,106 @@ const inlineImageConvertQueue = new AsyncWorkQueue(INLINE_IMAGE_CONVERT_CONCURRE
 const inlineImageModalLoadQueue = new AsyncWorkQueue(1);
 const inlineImageCache = new InlineImageCache();
 let inlinePreviewDiskCacheInstance: InlinePreviewDiskCache | null = null;
+/** GIFs playing in place where the terminal plays st video (gifplayer.ts). */
+let gifPlayer: GifPlayer | null = null;
+/** Animated pictures shown so far: what each animates, and in which chat. */
+const animatedSources = new Map<string, { attachment: DiscordMessageAttachment; channelId: string | null }>();
+let gifStreamCacheInstance: VideoStreamDiskCache | null = null;
+/** GIF encodes at once (ffmpeg, CPU-bound; remuxes are quick). */
+const gifEncodeQueue = new AsyncWorkQueue(1);
 /** Created on first use: the config directory is known by then (demo mode included). */
 function inlinePreviewDiskCache(): InlinePreviewDiskCache {
   return inlinePreviewDiskCacheInstance ??= new InlinePreviewDiskCache(join(configDir(), "image-cache", "previews"));
+}
+
+function gifStreamCache(): VideoStreamDiskCache {
+  return gifStreamCacheInstance ??= new VideoStreamDiskCache(join(configDir(), "image-cache", "videos"));
+}
+
+/** The chat's background as #rrggbb (what a transparent GIF is laid on), black when unknown. */
+function chatBackgroundHex(): string {
+  const rgb = ansiColorToRgb(theme.appBg ?? "", 48);
+  return rgb ? `#${rgb.map((channel) => channel.toString(16).padStart(2, "0")).join("")}` : "#000000";
+}
+
+function urlIdentity(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * A GIF's stream at its still's size: from disk, or downloaded and encoded
+ * (an H.264 mp4 is only remuxed).
+ */
+async function loadGifStream(attachment: DiscordMessageAttachment, channelId: string | null, width: number, height: number): Promise<VideoStream | null> {
+  const animation = attachment.animation;
+  if (!animation) return null;
+  const source: DiscordMessageAttachment = animation === "self" ? attachment : {
+    id: `${attachment.id}:animation`,
+    cacheKey: `animation:${urlIdentity(animation.url)}`,
+    filename: animation.filename,
+    contentType: animation.contentType,
+    size: 0,
+    url: animation.url,
+  };
+  const identity = animation === "self" ? `${attachment.cacheKey ?? attachment.id}:${urlIdentity(attachment.url)}` : `animation:${urlIdentity(animation.url)}`;
+  const background = chatBackgroundHex();
+  const key = gifStreamCache().key(identity, width, height, background);
+  const started = performance.now();
+  const cached = await gifStreamCache().get(key);
+  if (cached) {
+    debugLog("video.load", { source: "disk", ms: Math.round(performance.now() - started), packets: cached.packets.length });
+    return cached;
+  }
+  const downloaded = isWhatsAppChannelId(channelId)
+    ? await whatsAppController.downloadAttachment(source)
+    : isInstagramChannelId(channelId)
+      ? await instagramController.downloadAttachment(source)
+      : await downloadAttachment(source);
+  if (!downloaded.ok || !downloaded.path) {
+    debugLog("video.load", { source: "failed", error: downloaded.error ?? "download failed" });
+    return null;
+  }
+  const fetchMs = Math.round(performance.now() - started);
+  const path = downloaded.path;
+  const encoders = await videoEncoders();
+  const encodeStart = performance.now();
+  const stream = await gifEncodeQueue.enqueue(() => encodeVideoStream(path, { maxWidth: width, maxHeight: height, encoders, background }));
+  if (stream) void gifStreamCache().set(key, stream);
+  debugLog("video.load", {
+    source: downloaded.cached ? "disk-original" : "network",
+    fetchMs,
+    encodeMs: Math.round(performance.now() - encodeStart),
+    remuxed: stream?.remuxed ?? null,
+    packets: stream?.packets.length ?? 0,
+    bytes: stream ? stream.packets.reduce((sum, packet) => sum + packet.data.length, 0) : 0,
+    width: stream?.width ?? 0,
+    height: stream?.height ?? 0,
+  });
+  return stream;
+}
+
+/** Offer the GIFs the frame just drawn to the player (after the frame: its commands follow the frame). */
+function updateInlineVideos(): void {
+  if (!gifPlayer?.isSupported()) return;
+  const candidates = [];
+  for (const { attachmentId, rows } of state.inlineVideoView) {
+    const image = state.timeline.inlineImages[attachmentId];
+    const origin = animatedSources.get(attachmentId);
+    if (image?.phase !== "ready" || !origin) continue;
+    candidates.push({
+      key: attachmentId,
+      visibility: rows,
+      width: image.pixelWidth,
+      height: image.pixelHeight,
+      load: () => loadGifStream(origin.attachment, origin.channelId, image.pixelWidth, image.pixelHeight),
+    });
+  }
+  gifPlayer.update(candidates);
 }
 
 function syncTerminalGraphicsCells(): void {
@@ -398,6 +498,7 @@ function renderFrame(): void {
   // A picture in view that was let go came back from memory or disk at once
   // (a jump landed on it): draw it in this frame rather than its empty box.
   if (autoShowVisibleInlineImages()) render(state);
+  updateInlineVideos();
   scheduleSmoothScrollFrame();
 }
 
@@ -544,6 +645,13 @@ function inlineImageLoadOutOfReach(messageId: string): boolean {
   return offset < 0 ? -offset > inlineImageReach.above + margin : offset > inlineImageReach.below + margin;
 }
 
+/** A GIF's still: remember what it animates; the player plays it in place. */
+function animatedReady(attachment: DiscordMessageAttachment, channelId: string | null): { animated?: true } {
+  if (!attachment.animation) return {};
+  animatedSources.set(attachment.id, { attachment, channelId });
+  return { animated: true };
+}
+
 /** Start loading a picture; true when it is ready at once (from memory, or from disk for one in view). */
 function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messageId?: string): boolean {
   const existing = state.timeline.inlineImages[attachment.id];
@@ -583,6 +691,7 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
       requestId,
       imageId: availableInlineImageId(attachment.id, inlineImageId(attachment)),
       ...cached,
+      ...animatedReady(attachment, channelId),
     });
     scheduleRender();
     return true;
@@ -720,6 +829,7 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
           inlineImageId({ id: request.attachmentId, url: request.sourceUrl }),
         ),
         ...prepared,
+        ...animatedReady(attachment, channelId),
       });
       debugLog("image.load", {
         ...timing,
@@ -3105,6 +3215,10 @@ function restoreTerminal(): void {
   // Once the terminal window is closed (SIGHUP) the tty is gone and these
   // throw EIO; that must not abort the rest of shutdown.
   bestEffort("terminal.raw_mode", () => process.stdin.setRawMode(false));
+  bestEffort("terminal.videos", () => {
+    const close = gifPlayer?.dispose() ?? "";
+    if (close) process.stdout.write(close);
+  });
   bestEffort("terminal.images", () => disposeInlineTerminalImages(state));
   bestEffort("terminal.sidebar_icons", () => disposeInlineTerminalImages(sidebarIconTerminalOwner));
   bestEffort("terminal.restore", () => process.stdout.write(
@@ -3242,9 +3356,26 @@ async function main(): Promise<void> {
     // WhatsApp chat pictures need one profile-picture query per shown chat.
     resolvers: { whatsapp: (source) => whatsAppController.profilePictureUrl(source.ref ?? "") },
   });
+  gifPlayer = new GifPlayer({
+    write: (data) => { if (terminalReady) process.stdout.write(data); },
+    onChange: () => scheduleRender(),
+    onSupportChanged: (supported) => {
+      debugLog("video.support", { supported });
+      if (setTimelineGifsPlay(state.timeline, supported)) scheduleRender();
+    },
+    log: (event, fields) => debugLog(event, fields),
+  });
+  state.inlineVideoImageFor = (attachmentId) => gifPlayer?.videoImageId(attachmentId) ?? null;
   terminalGraphicsClient = new TerminalGraphicsClient({
     write: (sequence) => process.stdout.write(sequence),
     onSupportChanged: (supported) => {
+      // GIFs play only where pictures show; then ask whether st video is there
+      // (RECORD_VIDEO=0 keeps every GIF a still).
+      if (supported && process.env.RECORD_VIDEO !== "0") gifPlayer?.detect();
+      else {
+        gifPlayer?.setSupported(false);
+        setTimelineGifsPlay(state.timeline, false);
+      }
       customEmojiImages.setEnabled(supported);
       // Without graphics an emoji is its :name:, which lays out wider.
       if (customEmojiImages.setNamesWithoutGraphics(!supported)) invalidateTimelineLayout(state.timeline);
@@ -3297,6 +3428,8 @@ async function main(): Promise<void> {
         if (setTimelineTerminalCellSize(state.timeline, cellSize.width, cellSize.height)) scheduleRender();
         return;
       }
+      // Video replies (status, capability) and DA1, before the image handlers.
+      if (gifPlayer?.handleControlSequence(sequence)) return;
       // Inline-image eviction replies are a narrow subset of Kitty graphics
       // controls. Route them before the custom-emoji capability client, which
       // intentionally consumes every remaining Kitty graphics response.
