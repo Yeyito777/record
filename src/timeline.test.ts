@@ -17,7 +17,7 @@ import {
   startLoadingNewerMessages,
   startLoadingOlderMessages,
 } from "./timeline";
-import { inlineImageSourcesForMessage } from "./inlineimage";
+import { inlineImageCellLayout, inlineImageSourcesForMessage } from "./inlineimage";
 import { ansiTrueColor, dmAuthorColor, theme } from "./theme";
 import { termWidth } from "./textwidth";
 import { customEmojiImages, decodeCustomEmojiMarkers } from "./customemoji";
@@ -1154,6 +1154,55 @@ describe("timeline rendering", () => {
     } finally {
       customEmojiImages.setNamesWithoutGraphics(false);
     }
+  });
+
+  describe("image boxes while loading", () => {
+    const photo = (id: string, width?: number, height?: number) => ({
+      id, filename: `${id}.jpg`, contentType: "image/jpeg", size: 0, url: `https://cdn.example/${id}.jpg`,
+      ...(width && height ? { width, height } : {}),
+    });
+    const loading = (id: string) => ({ phase: "loading" as const, attachmentId: id, filename: `${id}.jpg`, sourceUrl: `https://cdn.example/${id}.jpg`, requestId: 1 });
+    const ready = (id: string, pixelWidth: number, pixelHeight: number) => ({
+      phase: "ready" as const, attachmentId: id, filename: `${id}.jpg`, sourceUrl: `https://cdn.example/${id}.jpg`, requestId: 1,
+      imageId: 0x40000100, pngBase64: "cG5n", pixelWidth, pixelHeight,
+    });
+    const layoutOf = (timeline: ReturnType<typeof createTimelineState>) => {
+      const rendered = renderTimelineLines(timeline, 80, 60, { text: "", tone: "muted" });
+      return { anchors: rendered.lineAnchors, lines: rendered.allLines.map(stripAnsi) };
+    };
+
+    test("an image with known dimensions takes its final rows while it loads: nothing moves when it arrives", () => {
+      const timeline = createTimelineState();
+      const withPhotos = message("message-1", "look", { authorName: "Paramount" });
+      withPhotos.attachments = [photo("a1", 1600, 1200), photo("a2", 1080, 1920)];
+      setTimelineMessages(timeline, "channel-1", [withPhotos, message("message-2", "after", { timestamp: Date.UTC(2026, 0, 1, 13, 0, 0) })]);
+      setTimelineInlineImageState(timeline, loading("a1"));
+      setTimelineInlineImageState(timeline, loading("a2"));
+      const whileLoading = layoutOf(timeline);
+      expect(whileLoading.lines).toContain("⠋ Loading a1.jpg…");
+      // The second image arrives first, then the first, previews scaled down.
+      setTimelineInlineImageState(timeline, ready("a2", 288, 512));
+      const half = layoutOf(timeline);
+      setTimelineInlineImageState(timeline, ready("a1", 576, 432));
+      const done = layoutOf(timeline);
+      expect(half.anchors).toEqual(whileLoading.anchors);
+      expect(done.anchors).toEqual(whileLoading.anchors);
+      expect(done.anchors.filter((anchor) => anchor.includes(":image:a1:")).length).toBeGreaterThan(1);
+    });
+
+    test("without dimensions, or when the picture turns out another shape, the box follows the picture", () => {
+      const timeline = createTimelineState();
+      const withPhotos = message("message-1", "look", { authorName: "Paramount" });
+      // An unknown size, and metadata of a rotated photo.
+      withPhotos.attachments = [photo("a1"), photo("a2", 1600, 1200)];
+      setTimelineMessages(timeline, "channel-1", [withPhotos]);
+      setTimelineInlineImageState(timeline, loading("a1"));
+      setTimelineInlineImageState(timeline, ready("a2", 432, 576));
+      const lines = layoutOf(timeline);
+      expect(lines.anchors.filter((anchor) => anchor.includes(":image-status:a1:")).length).toBe(1);
+      const rows = lines.anchors.filter((anchor) => anchor.includes(":image:a2:")).length;
+      expect(rows).toBe(inlineImageCellLayout({ pixelWidth: 432, pixelHeight: 576 }, 80).rows);
+    });
   });
 
   describe("image details (Ctrl+O)", () => {
