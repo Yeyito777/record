@@ -55,7 +55,17 @@ const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/gi;
 const DOWNLOAD_BEFORE_OPEN_URL_EXTENSIONS = new Set(["gif"]);
 const TENOR_GIF_PAGE_HOST_RE = /(?:^|\.)tenor\.com$/i;
 const OPEN_STDERR_LOG_LIMIT = 8192;
-export const ATTACHMENT_CACHE_MAX_ENTRIES = 100;
+/** Downloaded attachments kept on disk, least recently used first out. */
+export const ATTACHMENT_CACHE_MAX_BYTES = 512 * 1024 * 1024;
+let attachmentCacheMaxBytes = ATTACHMENT_CACHE_MAX_BYTES;
+/** Bytes in the cache as of the last scan plus what was added since; null until scanned. */
+let attachmentCacheBytes: number | null = null;
+
+/** Tests only: a smaller budget (null restores the default). */
+export function setAttachmentCacheMaxBytesForTest(bytes: number | null): void {
+  attachmentCacheMaxBytes = bytes ?? ATTACHMENT_CACHE_MAX_BYTES;
+  attachmentCacheBytes = null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -215,6 +225,7 @@ function attachmentCachePath(attachment: DiscordMessageAttachment): string {
 interface AttachmentCacheEntry {
   path: string;
   modifiedAtMs: number;
+  bytes: number;
 }
 
 function attachmentCacheEntries(): AttachmentCacheEntry[] {
@@ -227,7 +238,8 @@ function attachmentCacheEntries(): AttachmentCacheEntry[] {
       if (!entry.isFile() || temporary) return [];
       const path = join(directory, entry.name);
       try {
-        return [{ path, modifiedAtMs: statSync(path).mtimeMs }];
+        const stat = statSync(path);
+        return [{ path, modifiedAtMs: stat.mtimeMs, bytes: stat.size }];
       } catch {
         return [];
       }
@@ -237,26 +249,42 @@ function attachmentCacheEntries(): AttachmentCacheEntry[] {
   }
 }
 
-/** Keep the shared Discord/WhatsApp attachment cache at its LRU file limit. */
+/**
+ * Keep the shared Discord/WhatsApp/Instagram attachment cache within its byte
+ * budget, least recently used first. Called after a file was added: the
+ * directory is scanned only when the running total says it may be over.
+ */
 export function pruneAttachmentCache(protectedPath?: string): void {
+  if (attachmentCacheBytes !== null && protectedPath) {
+    try {
+      attachmentCacheBytes += statSync(protectedPath).size;
+    } catch {
+      // Counted on the next scan.
+    }
+    if (attachmentCacheBytes <= attachmentCacheMaxBytes) return;
+  }
   const entries = attachmentCacheEntries();
-  let removeCount = entries.length - ATTACHMENT_CACHE_MAX_ENTRIES;
-  if (removeCount <= 0) return;
+  let total = entries.reduce((sum, entry) => sum + entry.bytes, 0);
+  if (total <= attachmentCacheMaxBytes) {
+    attachmentCacheBytes = total;
+    return;
+  }
 
   entries.sort((left, right) => left.modifiedAtMs - right.modifiedAtMs || left.path.localeCompare(right.path));
   let removed = 0;
   for (const entry of entries) {
-    if (removeCount <= 0) break;
+    if (total <= attachmentCacheMaxBytes) break;
     if (entry.path === protectedPath) continue;
     try {
       rmSync(entry.path, { force: true });
-      removeCount -= 1;
+      total -= entry.bytes;
       removed += 1;
     } catch {
       // Cache maintenance is best effort and must not fail a usable download.
     }
   }
-  if (removed > 0) debugLog("attachment_cache.prune", { removed, kept: entries.length - removed });
+  attachmentCacheBytes = total;
+  if (removed > 0) debugLog("attachment_cache.prune", { removed, kept: entries.length - removed, bytes: total });
 }
 
 /** Refresh an attachment cache hit so LRU pruning keeps recently used media. */
@@ -266,9 +294,8 @@ export function refreshCachedAttachment(path: string): void {
     utimesSync(path, now, now);
   } catch {
     // Returning an already validated cache hit is still preferable if touching
-    // its timestamp fails; pruning below remains independently best effort.
+    // its timestamp fails. A hit adds nothing, so there is nothing to prune.
   }
-  pruneAttachmentCache(path);
 }
 
 function urlPathname(target: string): string | null {
