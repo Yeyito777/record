@@ -1207,6 +1207,55 @@ describe("timeline rendering", () => {
     });
   });
 
+  describe("image grids (Instagram albums) and row caps", () => {
+    const photo = (id: string, width: number, height: number, extra: Record<string, unknown> = {}) => ({
+      id, filename: `${id}.jpg`, contentType: "image/jpeg", size: 0, url: `https://cdn.example/${id}.jpg`, width, height, ...extra,
+    });
+    const loading = (id: string) => ({ phase: "loading" as const, attachmentId: id, filename: `${id}.jpg`, sourceUrl: `https://cdn.example/${id}.jpg`, requestId: 1 });
+    const ready = (id: string, pixelWidth: number, pixelHeight: number, imageId = 0x40000200) => ({
+      phase: "ready" as const, attachmentId: id, filename: `${id}.jpg`, sourceUrl: `https://cdn.example/${id}.jpg`, requestId: 1,
+      imageId, pngBase64: "cG5n", pixelWidth, pixelHeight,
+    });
+    const render = (timeline: ReturnType<typeof createTimelineState>) => renderTimelineLines(timeline, 80, 60, { text: "", tone: "muted" });
+
+    test("an album lays its photos out two per row, each in its box, and nothing moves as they land", () => {
+      const timeline = createTimelineState();
+      const album = message("message-1", "", { authorName: "Paramount" });
+      album.attachments = [photo("a1", 1440, 1920), photo("a2", 1920, 1440), photo("a3", 1080, 1080)];
+      album.imageGrid = true;
+      setTimelineMessages(timeline, "channel-1", [album, message("message-2", "after", { timestamp: Date.UTC(2026, 0, 1, 13, 0, 0) })]);
+      for (const id of ["a1", "a2", "a3"]) setTimelineInlineImageState(timeline, loading(id));
+      const whileLoading = render(timeline).lineAnchors;
+      setTimelineInlineImageState(timeline, ready("a2", 576, 432, 0x40000201));
+      setTimelineInlineImageState(timeline, ready("a1", 432, 576, 0x40000202));
+      setTimelineInlineImageState(timeline, ready("a3", 400, 400, 0x40000203));
+      const done = render(timeline);
+      expect(done.lineAnchors).toEqual(whileLoading);
+      const [first, second, third] = ["a1", "a2", "a3"].map((id) => done.inlineImages.find((image) => image.image.attachmentId === id)!);
+      // Two side by side, the third on the next row; each at most half the width and 8 rows.
+      expect(second!.lineIndex).toBe(first!.lineIndex);
+      expect(second!.columnOffset).toBe(first!.columns + 1);
+      expect(third!.lineIndex).toBeGreaterThan(first!.lineIndex);
+      for (const image of [first!, second!, third!]) {
+        expect(image.columns).toBeLessThanOrEqual(35);
+        expect(image.rows).toBeLessThanOrEqual(8);
+      }
+    });
+
+    test("a picture with a row cap (an Instagram sticker) stays within it, keeping its shape", () => {
+      const timeline = createTimelineState();
+      const sticker = message("message-1", "", { authorName: "Paramount" });
+      sticker.attachments = [photo("s1", 512, 512, { maxRows: 8 })];
+      setTimelineMessages(timeline, "channel-1", [sticker]);
+      setTimelineInlineImageState(timeline, loading("s1"));
+      const whileLoading = render(timeline).lineAnchors;
+      setTimelineInlineImageState(timeline, ready("s1", 512, 512));
+      const done = render(timeline);
+      expect(done.lineAnchors).toEqual(whileLoading);
+      expect(done.inlineImages[0]).toMatchObject({ rows: 8, columns: 16 });
+    });
+  });
+
   describe("a picture arriving changes no row outside its own box", () => {
     type Media = NonNullable<NonNullable<DiscordMessage["embeds"]>[number]["image"]>;
     const media = (name: string, size: Partial<Media> = {}): Media => ({

@@ -38,7 +38,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewDistance, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareReport } from "./inlineimage";
+import { inlineImageId, inlineImagePreviewPixelBounds, inlineImageSourcesForMessage, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewDistance, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareReport } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 import { handleImageModalKey, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
@@ -694,6 +694,24 @@ function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): bool
   return true;
 }
 
+/** The drawn pictures of the message holding `attachmentId`, in order (an album). */
+function viewerAlbum(attachmentId: string): DiscordMessageAttachment[] {
+  const message = state.timeline.messages.find((entry) => inlineImageSourcesForMessage(entry).some((source) => source.id === attachmentId));
+  if (!message) return [];
+  return inlineImageSourcesForMessage(message).filter((source) => isImageAttachment(source)
+    && state.timeline.inlineImages[source.id]?.phase === "ready" && state.timeline.inlineImages[source.id]?.sourceUrl === source.url);
+}
+
+/** h / l in the viewer: the previous or next picture of the same message. */
+function stepInlineImageModal(by: 1 | -1): void {
+  const current = state.imageModal?.attachmentId;
+  if (!current) return;
+  const album = viewerAlbum(current);
+  const index = album.findIndex((source) => source.id === current);
+  const next = index >= 0 ? album[index + by] : undefined;
+  if (next) openInlineImageModal(next);
+}
+
 function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   if (!isImageAttachment(attachment)) return false;
   const existing = state.timeline.inlineImages[attachment.id];
@@ -703,7 +721,12 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   const sourceUrl = attachment.url;
   // Reuse resident preview pixels immediately, at the final viewer size, without
   // waiting behind background thumbnail downloads/conversions.
-  const modal = openImageModalState(attachment, existing);
+  const album = viewerAlbum(attachment.id);
+  const modal = {
+    ...openImageModalState(attachment, existing),
+    attachmentId: attachment.id,
+    ...(album.length > 1 ? { album: { index: album.findIndex((source) => source.id === attachment.id), count: album.length } } : {}),
+  };
   state.imageModal = modal;
   scheduleRender();
   const isCurrent = () => running && state.imageModal === modal
@@ -2665,6 +2688,7 @@ function handleKey(key: KeyEvent): void {
   if (state.imageModal) {
     const result = handleImageModalKey(key);
     if (result.type === "close") state.imageModal = null;
+    else if (result.type === "step") stepInlineImageModal(result.by);
     scheduleRender();
     return;
   }

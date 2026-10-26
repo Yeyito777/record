@@ -4,7 +4,7 @@
 
 import { applyDiscordMessagePatch, isCompactSystemMessageType, isPendingLocalMessageEcho, type DiscordGuildMember, type DiscordMessage, type DiscordMessagePatch, type DiscordRole } from "./discord";
 import { customEmojiMarker, replaceCustomEmojiTokens } from "./customemoji";
-import { inlineImageCellLayout, inlineImageHasShape, inlineImageId, inlineImagePlacementId, inlineImageShape, inlineImageSourcesForMessage, isImageAttachment, isPendingInlineImage, pendingInlineImage, stickerImageAttachment, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
+import { fitPictureCells, INLINE_IMAGE_GRID_COLUMNS, inlineImageCellLayout, inlineImageHasShape, inlineImageId, inlineImagePlacementId, inlineImageShape, inlineImageSourcesForMessage, isImageAttachment, isPendingInlineImage, pendingInlineImage, stickerImageAttachment, type InlineChatImageReady, type InlineChatImageState } from "./inlineimage";
 import { loadingFrame, loadingLabel } from "./loading";
 import { markdownWordWrap } from "./markdown";
 import { layoutEmbed } from "./embedlayout";
@@ -1153,6 +1153,16 @@ function inlineImageDimensions(message: DiscordMessage): Map<string, { width: nu
   return dimensions;
 }
 
+/** Row caps of a message's images (Instagram stickers), by attachment id. */
+function inlineImageRowCaps(message: DiscordMessage): Map<string, number> {
+  const caps = new Map<string, number>();
+  for (const source of inlineImageSourcesForMessage(message)) if (source.maxRows && source.maxRows > 0) caps.set(source.id, source.maxRows);
+  return caps;
+}
+
+const IMAGE_GRID_GAP = 1;
+const IMAGE_GRID_MAX_ROWS = 8;
+
 /** Loading, waiting for a connection, or about to load: a picture with a known shape holds its box. */
 function holdsImageBox(image: InlineChatImageState, dimensions: ReadonlyMap<string, unknown>): boolean {
   return (image.phase === "loading" || image.phase === "waiting") && dimensions.has(image.attachmentId);
@@ -1167,6 +1177,8 @@ function renderInlineImageExtras(
   terminalCellHeightPixels: number,
   lineOffset: number,
   dimensions: ReadonlyMap<string, { width: number; height: number }> = new Map(),
+  rowCaps: ReadonlyMap<string, number> = new Map(),
+  grid = false,
 ): RenderedInlineImageExtras {
   const lines: string[] = [];
   const lineAnchors: string[] = [];
@@ -1180,16 +1192,73 @@ function renderInlineImageExtras(
     }
   };
 
+  // An album: drawn or box-holding pictures two per row, each cell sized by
+  // its known shape (so nothing moves as they land), in the message's order.
+  const gridded = grid
+    ? states.filter((state) => !isEmbedSourceId(state.attachmentId) && dimensions.has(state.attachmentId)
+      && (state.phase === "ready" || holdsImageBox(state, dimensions)))
+    : [];
+  if (gridded.length > 1) {
+    const columnWidth = Math.max(1, Math.floor((Math.min(width, INLINE_IMAGE_GRID_COLUMNS) - IMAGE_GRID_GAP) / 2));
+    for (let start = 0; start < gridded.length; start += 2) {
+      const pair = gridded.slice(start, start + 2);
+      const cells = pair.map((state) => {
+        const known = dimensions.get(state.attachmentId)!;
+        return fitPictureCells(known.width, known.height, columnWidth, IMAGE_GRID_MAX_ROWS, terminalCellWidthPixels, terminalCellHeightPixels, 1);
+      });
+      const height = Math.max(...cells.map((cell) => cell.rows));
+      const lineIndex = lineOffset + lines.length;
+      let offset = 0;
+      const statuses: string[] = [];
+      pair.forEach((state, index) => {
+        const cell = cells[index]!;
+        if (state.phase === "ready") {
+          const known = dimensions.get(state.attachmentId)!;
+          // Its cell, at its own shape inside it if it isn't the known one.
+          const drawn = inlineImageHasShape(known, state) ? cell
+            : fitPictureCells(state.pixelWidth, state.pixelHeight, cell.columns, cell.rows, terminalCellWidthPixels, terminalCellHeightPixels, Infinity);
+          inlineImages.push({
+            image: state,
+            placementId: inlineImagePlacementId(state.imageId, messageId),
+            lineIndex,
+            columnOffset: offset,
+            columns: drawn.columns,
+            rows: drawn.rows,
+          });
+          statuses.push(" ".repeat(cell.columns));
+        } else {
+          const status = state.phase === "loading"
+            ? loadingLabel(`Loading ${state.filename}…`, isPendingInlineImage(state) ? 0 : loadingFrameIndex)
+            : `Waiting for connection to load ${state.filename}…`;
+          const label = truncate(status, cell.columns);
+          statuses.push(`${theme.muted}${label}${theme.reset}${" ".repeat(Math.max(0, cell.columns - termWidth(label)))}`);
+        }
+        offset += cell.columns + IMAGE_GRID_GAP;
+      });
+      // Image rows stay blank (cells under a picture must keep their plain
+      // background); the first carries the statuses of cells still loading.
+      const statusRow = pair.every((state) => state.phase === "ready") ? "" : statuses.join(" ".repeat(IMAGE_GRID_GAP));
+      const encodedId = encodeURIComponent(pair[0]!.attachmentId);
+      for (let row = 0; row < height; row++) {
+        lines.push(row === 0 ? statusRow : "");
+        lineAnchors.push(`msg:${messageId}:image:${encodedId}:${row}`);
+        wrapContinuation.push(false);
+      }
+    }
+  }
+  const inGrid = new Set(gridded.length > 1 ? gridded : []);
+
   // In the message's order: each image keeps its place as it loads.
   for (const state of states) {
     // Embed pictures are drawn inside their embed (embedlayout.ts).
-    if (isEmbedSourceId(state.attachmentId)) continue;
+    if (isEmbedSourceId(state.attachmentId) || inGrid.has(state)) continue;
+    const maxRows = rowCaps.get(state.attachmentId);
     const encodedId = encodeURIComponent(state.attachmentId);
     const known = dimensions.get(state.attachmentId);
     if (state.phase === "ready") {
       // The box it was given while loading, when the picture has that shape.
       const box = known && inlineImageHasShape(known, state) ? { pixelWidth: known.width, pixelHeight: known.height } : state;
-      const layout = inlineImageCellLayout(box, width, terminalCellWidthPixels, terminalCellHeightPixels);
+      const layout = inlineImageCellLayout(box, width, terminalCellWidthPixels, terminalCellHeightPixels, maxRows);
       inlineImages.push({
         image: state,
         placementId: inlineImagePlacementId(state.imageId, messageId),
@@ -1202,7 +1271,7 @@ function renderInlineImageExtras(
     }
     if (known && holdsImageBox(state, dimensions)) {
       // Its final box, so nothing moves when the picture arrives.
-      const layout = inlineImageCellLayout({ pixelWidth: known.width, pixelHeight: known.height }, width, terminalCellWidthPixels, terminalCellHeightPixels);
+      const layout = inlineImageCellLayout({ pixelWidth: known.width, pixelHeight: known.height }, width, terminalCellWidthPixels, terminalCellHeightPixels, maxRows);
       const status = state.phase === "loading"
         ? loadingLabel(`Loading ${state.filename}…`, isPendingInlineImage(state) ? 0 : loadingFrameIndex)
         : `Waiting for connection to load ${state.filename}…`;
@@ -1319,6 +1388,8 @@ function renderMessage(
     terminalCellHeightPixels,
     firstBodyRow + emptyLines.length + body.lines.length,
     inlineImageDimensions(message),
+    inlineImageRowCaps(message),
+    message.imageGrid === true,
   );
   const failureLines = bodyEmpty ? [] : wrapFailureMessage(message, width);
   const lines = [
