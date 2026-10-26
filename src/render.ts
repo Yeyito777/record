@@ -339,7 +339,8 @@ function renderHistoryViewportLine(
 function readyInlineImages(state: AppState): InlineChatImageReady[] {
   const images = Object.values(state.timeline.inlineImages)
     .filter((image): image is InlineChatImageReady => image.phase === "ready");
-  if (state.imageModal) images.push(state.imageModal.image);
+  // A video in the viewer has no image data: st shows its frames.
+  if (state.imageModal && !state.imageModal.video) images.push(state.imageModal.image);
   return images;
 }
 

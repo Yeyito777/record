@@ -667,7 +667,11 @@ export class DemoDiscordServer {
       // Embed pictures (and video posters, `format=jpeg`) through the media
       // proxy; a gifv's mp4 (or a .gif) as an animation of the picture's shape.
       const variant = demoMediaVariant(url.pathname);
-      const moving = /\.mp4$/i.test(url.pathname) ? "mp4" : /\.gif$/i.test(url.pathname) && !url.search.includes("format=") ? "gif" : null;
+      // A poster (format=jpeg) is the still; a Tenor/Giphy mp4 a silent loop; another mp4 a clip with sound.
+      const poster = url.search.includes("format=");
+      const moving = poster ? null
+        : /\.mp4$/i.test(url.pathname) ? (/tenor|giphy/i.test(url.pathname) ? "mp4" : "mp4a")
+          : /\.gif$/i.test(url.pathname) ? "gif" : null;
       if (variant !== null && moving) {
         const shape = imageVariant(variant);
         const scale = Math.min(1, 640 / shape.width, 480 / shape.height);
