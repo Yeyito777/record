@@ -188,6 +188,17 @@ export function removeTimelineInlineImageState(timeline: TimelineState, attachme
   return true;
 }
 
+/** Remove several image states with one re-layout. */
+export function removeTimelineInlineImageStates(timeline: TimelineState, attachmentIds: readonly string[]): number {
+  const present = attachmentIds.filter((attachmentId) => timeline.inlineImages[attachmentId]);
+  if (present.length === 0) return 0;
+  const next = { ...timeline.inlineImages };
+  for (const attachmentId of present) delete next[attachmentId];
+  timeline.inlineImages = next;
+  invalidateTimelineContentCache(timeline);
+  return present.length;
+}
+
 export function clearTimelineInlineImageStates(timeline: TimelineState): boolean {
   if (Object.keys(timeline.inlineImages).length === 0) return false;
   timeline.inlineImages = {};

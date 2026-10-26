@@ -38,7 +38,7 @@ import {
 import { handleHistorySelectionQuoteKey } from "./historyselection";
 import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./channels";
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
-import { inlineImageId, inlineImagePreviewPixelBounds, inlineImageSourcesForMessage, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewAnchor, inlineImageViewDistance, inlineImageViewMovedRows, inlineImageViewOffset, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareReport, type InlineImageViewAnchor } from "./inlineimage";
+import { inlineImageHasShape, inlineImageId, inlineImagePreviewPixelBounds, inlineImageShape, inlineImageSourcesForMessage, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewAnchor, inlineImageViewDistance, inlineImageViewMovedRows, inlineImageViewOffset, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareOptions, type InlineImagePrepareReport, type InlineImageViewAnchor } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 import { handleImageModalKey, imageModalPixelBounds, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
@@ -173,7 +173,7 @@ import {
 import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize, terminalImageNotFoundId } from "./terminalimage";
 import { sidebarIconTerminalOwner, sidebarIcons } from "./sidebaricons";
 import { dmAuthorColor, theme } from "./theme";
-import { clearTimeline, clearTimelineInlineImageStates, hasActiveTimelineCall, invalidateTimelineLayout, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageAutoShow, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
+import { clearTimeline, clearTimelineInlineImageStates, removeTimelineInlineImageStates, hasActiveTimelineCall, invalidateTimelineLayout, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageAutoShow, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
 import { isFixedTopLevelGuildId, isWhatsAppChannelId, whatsappGuild, WHATSAPP_GUILD_ID } from "./chatproviders";
 import { debugLog } from "./debuglog";
@@ -394,7 +394,9 @@ function renderFrame(): void {
   if (ms >= SLOW_RENDER_MS) {
     debugLog("render.slow", { ms: Math.round(ms), lines: state.historyLines.length, images: Object.keys(state.timeline.inlineImages).length });
   }
-  autoShowVisibleInlineImages();
+  // A picture in view that was let go came back from memory or disk at once
+  // (a jump landed on it): draw it in this frame rather than its empty box.
+  if (autoShowVisibleInlineImages()) render(state);
   scheduleSmoothScrollFrame();
 }
 
@@ -541,9 +543,10 @@ function inlineImageLoadOutOfReach(messageId: string): boolean {
   return offset < 0 ? -offset > inlineImageReach.above + margin : offset > inlineImageReach.below + margin;
 }
 
-function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messageId?: string): void {
+/** Start loading a picture; true when it is ready at once (from memory, or from disk for one in view). */
+function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messageId?: string): boolean {
   const existing = state.timeline.inlineImages[attachment.id];
-  if (existing && existing.sourceUrl === attachment.url && existing.phase !== "waiting") return;
+  if (existing && existing.sourceUrl === attachment.url && existing.phase !== "waiting") return false;
   if (existing) removeTimelineInlineImageState(state.timeline, attachment.id);
 
   state.inlineImageHiddenAttachmentIds.delete(attachment.id);
@@ -556,9 +559,21 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
   const cacheKey = inlineImageCacheKey(attachment, previewBounds);
   const provider = isWhatsAppChannelId(channelId) ? "whatsapp" : isInstagramChannelId(channelId) ? "instagram" : "discord";
   const requestedAt = performance.now();
-  const cached = inlineImageCache.get(cacheKey);
+  // Loaded by itself near the view (not asked for by hand): may be let go far from it.
+  if (messageId) inlineImageOrigins.set(attachment.id, { channelId, messageId, attachment, cacheKey, previewBounds });
+  else inlineImageOrigins.delete(attachment.id);
+  let cached = inlineImageCache.get(cacheKey);
+  let source = "memory";
+  // One in view that was let go comes back in this frame, not after a frame of its empty box.
+  if (!cached && messageId && inlineImageLoadPriority(messageId) === 0 && inlinePreviewDiskCache().has(attachment, previewBounds)) {
+    cached = inlinePreviewDiskCache().getSync(attachment, previewBounds) ?? undefined;
+    if (cached) {
+      source = "preview-disk";
+      inlineImageCache.set(cacheKey, cached);
+    }
+  }
   if (cached) {
-    debugLog("image.load", { provider, source: "memory", ms: 0, previewBytes: cached.pngBase64.length, width: cached.pixelWidth, height: cached.pixelHeight });
+    debugLog("image.load", { provider, source, ms: 0, previewBytes: cached.pngBase64.length, width: cached.pixelWidth, height: cached.pixelHeight });
     setTimelineInlineImageState(state.timeline, {
       phase: "ready",
       attachmentId: attachment.id,
@@ -569,7 +584,7 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
       ...cached,
     });
     scheduleRender();
-    return;
+    return true;
   }
   setTimelineInlineImageState(state.timeline, {
     phase: "loading",
@@ -700,6 +715,7 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
       setInlineImageError(request, message);
     }
   })();
+  return false;
 }
 
 function toggleInlineAttachmentImage(attachment: DiscordMessageAttachment): boolean {
@@ -838,12 +854,19 @@ function dropInlineImageLoadsOutOfReach(channelId: string | null): void {
 }
 
 /** Pictures that came into view this chat visit, and since when the unready ones wait there. */
-const inlineImageSight = { channelId: null as string | null, seen: new Set<string>(), waiting: new Map<string, number>() };
+const inlineImageSight = {
+  channelId: null as string | null,
+  seen: new Set<string>(),
+  /** Since when, and whether it had been seen ready before (it was let go, or failed to come back in time). */
+  waiting: new Map<string, { since: number; again: boolean }>(),
+};
 
 /**
  * Debug log: how long each picture sat in view before it was drawn
  * ("image.seen", waitMs 0 when it was ready on arrival), the stutter that
- * loading ahead of the view is for.
+ * loading ahead of the view is for. A picture seen before that shows its
+ * empty box again (it was let go and did not come back in time) is logged
+ * again with `again`.
  */
 function noteInlineImagesInView(visible: readonly DiscordMessageAttachment[]): void {
   if (state.imageDisplayMode !== "show") return;
@@ -859,18 +882,79 @@ function noteInlineImagesInView(visible: readonly DiscordMessageAttachment[]): v
   for (const attachment of visible) {
     if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
     inView.add(attachment.id);
-    if (inlineImageSight.seen.has(attachment.id)) continue;
+    const ready = state.timeline.inlineImages[attachment.id]?.phase === "ready";
+    if (inlineImageSight.seen.has(attachment.id)) {
+      if (!ready && !inlineImageSight.waiting.has(attachment.id)) inlineImageSight.waiting.set(attachment.id, { since: now, again: true });
+      continue;
+    }
     inlineImageSight.seen.add(attachment.id);
-    if (state.timeline.inlineImages[attachment.id]?.phase === "ready") debugLog("image.seen", { provider, waitMs: 0 });
-    else inlineImageSight.waiting.set(attachment.id, now);
+    if (ready) debugLog("image.seen", { provider, waitMs: 0 });
+    else inlineImageSight.waiting.set(attachment.id, { since: now, again: false });
   }
-  for (const [id, since] of inlineImageSight.waiting) {
+  for (const [id, { since, again }] of inlineImageSight.waiting) {
     const phase = state.timeline.inlineImages[id]?.phase;
     if (phase === "ready" || phase === "error" || !inView.has(id)) {
       inlineImageSight.waiting.delete(id);
-      debugLog("image.seen", { provider, waitMs: Math.round(now - since), ...(phase === "ready" ? {} : phase === "error" ? { failed: true } : { left: true }) });
+      debugLog("image.seen", {
+        provider,
+        waitMs: Math.round(now - since),
+        ...(again ? { again: true } : {}),
+        ...(phase === "ready" ? {} : phase === "error" ? { failed: true } : { left: true }),
+      });
     }
   }
+}
+
+/** Where each picture that loaded by itself came from, so one far from the view can be let go. */
+const inlineImageOrigins = new Map<string, {
+  channelId: string | null;
+  messageId: string;
+  attachment: DiscordMessageAttachment;
+  cacheKey: string;
+  previewBounds: InlineImagePrepareOptions;
+}>();
+/** Loaded pictures within this many screens of the view (or of the lookahead's reach) stay in memory. */
+const INLINE_IMAGE_KEEP_SCREENS = 2;
+/** At most one release (one re-layout) per this long, so a fling lets pictures go in batches. */
+const INLINE_IMAGE_RELEASE_INTERVAL_MS = 500;
+let lastInlineImageReleaseAt = 0;
+
+/**
+ * Let go of loaded pictures far from the view: past two screens and past the
+ * lookahead on their side, by another half screen so the edge does not churn.
+ * Only those that come back as they were: a box of the same size (their shape
+ * was known) and a preview in memory or on disk, a millisecond or two away,
+ * which the lookahead asks for again well before they are in view.
+ */
+function releaseFarInlineImages(channelId: string | null): void {
+  const layout = state.chatMouseLayout;
+  const now = performance.now();
+  if (!layout || now - lastInlineImageReleaseAt < INLINE_IMAGE_RELEASE_INTERVAL_MS) return;
+  lastInlineImageReleaseAt = now;
+  const screen = Math.max(1, layout.bodyRows);
+  const keepAbove = Math.max(INLINE_IMAGE_KEEP_SCREENS * screen, inlineImageReach.above) + Math.ceil(screen / 2);
+  const keepBelow = Math.max(INLINE_IMAGE_KEEP_SCREENS * screen, inlineImageReach.below) + Math.ceil(screen / 2);
+  const release: string[] = [];
+  let keptBytes = 0;
+  for (const image of Object.values(state.timeline.inlineImages)) {
+    if (image.phase !== "ready") continue;
+    const origin = inlineImageOrigins.get(image.attachmentId);
+    const offset = origin?.channelId === channelId
+      ? inlineImageViewOffset(state.historyMessageBounds, origin.messageId, layout.firstLine, layout.bodyRows)
+      : 0;
+    const far = Number.isFinite(offset) && (offset < 0 ? -offset > keepAbove : offset > keepBelow);
+    const shape = origin ? inlineImageShape(origin.attachment) : null;
+    if (!origin || !far || !shape || !inlineImageHasShape(shape, image) || image.sourceUrl !== origin.attachment.url
+      || state.localAttachmentImages[image.attachmentId]
+      || !(inlineImageCache.has(origin.cacheKey) || inlinePreviewDiskCache().has(origin.attachment, origin.previewBounds))) {
+      keptBytes += image.pngBase64.length;
+      continue;
+    }
+    release.push(image.attachmentId);
+  }
+  if (release.length === 0) return;
+  removeTimelineInlineImageStates(state.timeline, release);
+  debugLog("image.released", { count: release.length, keptBytes });
 }
 
 /** Which way the chat view last moved through the content (up, toward older, on opening a chat). */
@@ -880,8 +964,9 @@ const inlineImageTravel = {
   direction: "up" as "up" | "down",
 };
 
-function autoShowVisibleInlineImages(): void {
-  if (!running) return;
+/** Load what is in and near view; true when a picture in view became ready at once (draw it again now). */
+function autoShowVisibleInlineImages(): boolean {
+  if (!running) return false;
   // The rows actually drawn (smooth scrolling lays them out ahead of the
   // logical offset; following the bottom has no numeric offset).
   const layout = state.chatMouseLayout;
@@ -892,6 +977,7 @@ function autoShowVisibleInlineImages(): void {
   if (inlineImageTravel.channelId !== channelId) {
     inlineImageTravel.channelId = channelId;
     inlineImageTravel.direction = "up";
+    inlineImageOrigins.clear();
   } else if (inlineImageTravel.anchor) {
     const moved = inlineImageViewMovedRows(bounds, inlineImageTravel.anchor, viewStart);
     if (moved) inlineImageTravel.direction = moved < 0 ? "up" : "down";
@@ -908,8 +994,10 @@ function autoShowVisibleInlineImages(): void {
   });
   inlineImageReach = near.reach;
   dropInlineImageLoadsOutOfReach(channelId);
-  noteInlineImagesInView(near.visible);
+  releaseFarInlineImages(channelId);
   const attachments = [...near.visible, ...near.nearby];
+  const visibleIds = new Set(near.visible.map((attachment) => attachment.id));
+  let readyInView = false;
   let started = 0;
   for (const attachment of attachments) {
     if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
@@ -917,10 +1005,12 @@ function autoShowVisibleInlineImages(): void {
     if (!shouldLoadInlineImage(existing, attachment.url, state.imageDisplayMode === "show",
       !isWhatsAppChannelId(state.timeline.channelId) || whatsAppController.isConnected,
       inlineImagesDrawable(terminalGraphicsClient?.isSupported()))) continue;
-    startInlineAttachmentImage(attachment, near.messageIds.get(attachment.id));
+    if (startInlineAttachmentImage(attachment, near.messageIds.get(attachment.id)) && visibleIds.has(attachment.id)) readyInView = true;
     started += 1;
   }
+  noteInlineImagesInView(near.visible);
   if (started > 0) debugLog("image.prefetch", { started, inView: near.visible.length, ahead: near.nearby.length });
+  return readyInView;
 }
 
 function downloadAndOpenTarget(target: string): void {

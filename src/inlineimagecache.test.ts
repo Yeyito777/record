@@ -97,6 +97,31 @@ describe("prepared previews on disk", () => {
       expect(readdirSync(dir).filter((name) => name.endsWith(".png"))).toHaveLength(3);
       expect(await cache.get({ id: "a0", url: "" }, bounds)).toBeNull();
       expect(await cache.get({ id: "a4", url: "" }, bounds)).not.toBeNull();
+      // Pruned ones are no longer known to come back from disk.
+      expect(cache.has({ id: "a0", url: "" }, bounds)).toBe(false);
+      expect(cache.has({ id: "a4", url: "" }, bounds)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("knows which previews come back from disk, and reads one at once for a picture in view", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-previews-"));
+    try {
+      const attachment = { id: "a1", url: "https://cdn.example/a1.jpg" };
+      const bounds = { maxPixelWidth: 576, maxPixelHeight: 256 };
+      const prepared = { pngBase64: png(64, 48), pixelWidth: 64, pixelHeight: 48 };
+      const cache = new InlinePreviewDiskCache(dir);
+      expect(cache.has(attachment, bounds)).toBe(false);
+      expect(cache.getSync(attachment, bounds)).toBeNull();
+      await cache.set(attachment, bounds, prepared);
+      expect(cache.has(attachment, bounds)).toBe(true);
+      expect(cache.getSync(attachment, bounds)).toEqual(prepared);
+      // A later session learns it on its first read.
+      const later = new InlinePreviewDiskCache(dir);
+      expect(later.has(attachment, bounds)).toBe(false);
+      expect(await later.get(attachment, bounds)).toEqual(prepared);
+      expect(later.has(attachment, bounds)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
