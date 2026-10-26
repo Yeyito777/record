@@ -91,6 +91,11 @@ export interface IgMessage {
   edited?: boolean;
   /** `igd_snippet`: Instagram's own preview line (inbox fallback). */
   snippet?: string;
+  /**
+   * An inbox-list copy whose content the list left out (a photo, a share):
+   * a placeholder until a thread page brings the real message.
+   */
+  listPreview?: true;
 }
 
 export type IgFolder = "inbox" | "pending" | "spam";
@@ -454,10 +459,16 @@ export function parseThread(json: Json, nowMs = Date.now()): IgThread | null {
 
 export interface IgThreadPage { threads: IgThread[]; cursor: string | null; hasNextPage: boolean }
 
+/** A thread list's message copies: what the list left out is marked a placeholder. */
+export function markListPreviews(thread: IgThread): IgThread {
+  return { ...thread, messages: thread.messages.map(message => message.content.kind === "unsupported" ? { ...message, listPreview: true as const } : message) };
+}
+
 export function parseThreadConnection(connection: Json, nowMs = Date.now()): IgThreadPage {
   const threads = arr(connection.edges).map(edge => {
     const node = obj(edge.node);
-    return parseThread(has(node, "as_ig_direct_thread") ? obj(node.as_ig_direct_thread) : node, nowMs);
+    const thread = parseThread(has(node, "as_ig_direct_thread") ? obj(node.as_ig_direct_thread) : node, nowMs);
+    return thread && markListPreviews(thread);
   }).filter((thread): thread is IgThread => !!thread);
   const info = obj(connection.page_info);
   const cursor = str(info.end_cursor) || null;
@@ -619,8 +630,15 @@ export function mergeThreadDetail(old: IgThread | undefined, fresh: IgThread): I
   if (oldest) {
     const freshIds = new Set(fresh.messages.map(m => m.id));
     const older = old.messages.filter(m => m.timestampMs < oldest.timestampMs && !freshIds.has(m.id));
-    merged.messages = [...older, ...fresh.messages];
-    if (older.length) { merged.hasOlder = old.hasOlder; merged.cursor = old.cursor; }
+    if (older.some(m => m.listPreview)) {
+      // List copies the new page doesn't cover: page from it again so they
+      // come back as real messages (known older ones dedupe), rather than
+      // staying "unsupported" placeholders.
+      merged.messages = fresh.messages;
+    } else {
+      merged.messages = [...older, ...fresh.messages];
+      if (older.length) { merged.hasOlder = old.hasOlder; merged.cursor = old.cursor; }
+    }
   } else {
     merged.messages = old.messages;
     merged.hasOlder = old.hasOlder;
@@ -646,10 +664,13 @@ export function mergeThreadPreview(old: IgThread | undefined, fresh: IgThread): 
 
 /** Prepend an older page (newest-first nodes from IGDMessageListOffMsysQuery). */
 export function prependOlder(thread: IgThread, page: IgMessage[], cursor: string | null, hasOlder: boolean): IgThread {
-  const known = new Set(thread.messages.map(m => m.id));
+  // A page's real message replaces its inbox-list placeholder.
+  const real = new Set(page.map(m => m.id));
+  const kept = thread.messages.filter(m => !(m.listPreview && real.has(m.id)));
+  const known = new Set(kept.map(m => m.id));
   return {
     ...thread,
-    messages: [...page.filter(m => !known.has(m.id)), ...thread.messages].sort(byTime),
+    messages: [...page.filter(m => !known.has(m.id)), ...kept].sort(byTime),
     cursor, hasOlder: hasOlder && !!cursor && page.length > 0,
   };
 }
