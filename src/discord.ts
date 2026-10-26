@@ -476,6 +476,8 @@ export interface DiscordMessageAttachment {
    */
   placeholderWidth?: number;
   placeholderHeight?: number;
+  /** The most rows the picture takes in chat (an Instagram sticker: 8). */
+  maxRows?: number;
   durationSecs?: number;
   waveform?: string;
 }
@@ -625,6 +627,8 @@ export interface DiscordMessage {
   reply: DiscordMessageReply | null;
   call: DiscordMessageCall | null;
   attachments: DiscordMessageAttachment[];
+  /** Lay the images out two per row (an Instagram album), not one under another. */
+  imageGrid?: boolean;
   stickerNames: string[];
   /** Full metadata is optional for caches written before inline stickers. */
   stickers?: DiscordMessageSticker[];

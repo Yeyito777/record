@@ -16,6 +16,8 @@ const MAX_TERMINAL_IMAGE_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_CONVERTED_PNG_BYTES = 64 * 1024 * 1024;
 const CONVERTED_IMAGE_MAX_DIMENSION = 2048;
 const INLINE_IMAGE_MAX_COLUMNS = 72;
+/** An image grid (an Instagram album) spans at most the width of one chat image. */
+export const INLINE_IMAGE_GRID_COLUMNS = INLINE_IMAGE_MAX_COLUMNS;
 const INLINE_IMAGE_MAX_ROWS = 16;
 const IMAGE_EXTENSIONS = new Set([
   "avif",
@@ -582,9 +584,11 @@ export function inlineImageCellLayout(
   availableColumns: number,
   cellWidthPixels = 8,
   cellHeightPixels = 16,
+  maxRows = INLINE_IMAGE_MAX_ROWS,
 ): InlineImageCellLayout {
   const maxColumns = Math.max(1, Math.min(INLINE_IMAGE_MAX_COLUMNS, Math.floor(availableColumns)));
-  return fitPictureCells(image.pixelWidth, image.pixelHeight, maxColumns, INLINE_IMAGE_MAX_ROWS, cellWidthPixels, cellHeightPixels, 1);
+  const rows = Math.max(1, Math.min(INLINE_IMAGE_MAX_ROWS, Math.floor(maxRows)));
+  return fitPictureCells(image.pixelWidth, image.pixelHeight, maxColumns, rows, cellWidthPixels, cellHeightPixels, 1);
 }
 
 /**

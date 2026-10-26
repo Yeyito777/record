@@ -32,6 +32,10 @@ export interface ImageModalState {
   frame?: ImageModalFrame;
   loading?: boolean;
   preview?: boolean;
+  /** The chat picture shown (for stepping through its message's pictures). */
+  attachmentId?: string;
+  /** The message's pictures (an album): which one this is, of how many. */
+  album?: { index: number; count: number };
 }
 
 /** Accept provider metadata only if it describes the decoded preview's shape. */
@@ -106,12 +110,14 @@ export interface RenderedImageModal {
   placement: InlineTerminalImagePlacement | null;
 }
 
-export type ImageModalKeyResult = { type: "close" } | { type: "handled" };
+export type ImageModalKeyResult = { type: "close" } | { type: "handled" } | { type: "step"; by: 1 | -1 };
 
 export function handleImageModalKey(key: Readonly<KeyEvent>): ImageModalKeyResult {
-  return key.type === "escape" || key.type === "enter"
-    ? { type: "close" }
-    : { type: "handled" };
+  if (key.type === "escape" || key.type === "enter") return { type: "close" };
+  // The next or previous picture of the same message.
+  if (key.type === "right" || (key.type === "char" && key.char === "l")) return { type: "step", by: 1 };
+  if (key.type === "left" || (key.type === "char" && key.char === "h")) return { type: "step", by: -1 };
+  return { type: "handled" };
 }
 
 function normalizeDimension(value: number): number {
@@ -201,7 +207,7 @@ export function renderImageModal(
   const border = theme.sidebarBg + theme.accent;
   const blank = " ".repeat(innerWidth);
   const size = state.frame && !state.frame.enlarge ? state.frame : state.image;
-  const title = `${state.filename} · ${size.pixelWidth}×${size.pixelHeight}`;
+  const title = `${state.filename} · ${size.pixelWidth}×${size.pixelHeight}${state.album ? ` · ${state.album.index + 1} / ${state.album.count}` : ""}`;
   const out: string[] = [
     moveTo(layout.top, layout.left) + border + `╭${"─".repeat(innerWidth)}╮` + theme.reset,
     moveTo(layout.top + 1, layout.left) + border + "│"
@@ -219,8 +225,9 @@ export function renderImageModal(
   out.push(
     moveTo(layout.top + 2 + layout.placement.rows, layout.left) + border + "│"
     + theme.sidebarBg + theme.muted + centeredText(
-      state.loading ? "Loading full image · Esc to close"
-        : state.preview ? "Preview only · Enter / Esc close" : "Enter or Esc to close",
+      (state.loading ? "Loading full image · Esc to close"
+        : state.preview ? "Preview only · Enter / Esc close" : "Enter or Esc to close")
+        + (state.album ? " · h / l: previous / next" : ""),
       innerWidth,
     )
     + theme.reset + border + "│" + theme.reset,

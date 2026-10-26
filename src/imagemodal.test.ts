@@ -54,6 +54,16 @@ describe("full-resolution image modal", () => {
     expect(rendered.placement).toEqual(layout?.placement ?? null);
   });
 
+  test("in an album, l/→ and h/← step to the next and previous photo; the title says which", () => {
+    expect(handleImageModalKey({ type: "char", char: "l" })).toEqual({ type: "step", by: 1 });
+    expect(handleImageModalKey({ type: "right" })).toEqual({ type: "step", by: 1 });
+    expect(handleImageModalKey({ type: "char", char: "h" })).toEqual({ type: "step", by: -1 });
+    expect(handleImageModalKey({ type: "left" })).toEqual({ type: "step", by: -1 });
+    const viewer = { ...modal(), album: { index: 1, count: 3 } };
+    expect(renderImageModal(viewer, 60, 180, 9, 18).payload).toContain("desktop.png · 1920×1080 · 2 / 3");
+    expect(renderImageModal(viewer, 60, 180, 9, 18).payload).toContain("h / l");
+  });
+
   test("Enter and Escape close while every other key is consumed", () => {
     expect(handleImageModalKey({ type: "enter" })).toEqual({ type: "close" });
     expect(handleImageModalKey({ type: "escape" })).toEqual({ type: "close" });
