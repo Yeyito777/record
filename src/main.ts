@@ -761,6 +761,42 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
   return true;
 }
 
+/** Pictures that came into view this chat visit, and since when the unready ones wait there. */
+const inlineImageSight = { channelId: null as string | null, seen: new Set<string>(), waiting: new Map<string, number>() };
+
+/**
+ * Debug log: how long each picture sat in view before it was drawn
+ * ("image.seen", waitMs 0 when it was ready on arrival), the stutter that
+ * loading ahead of the view is for.
+ */
+function noteInlineImagesInView(visible: readonly DiscordMessageAttachment[]): void {
+  if (state.imageDisplayMode !== "show") return;
+  const channelId = state.timeline.channelId;
+  if (inlineImageSight.channelId !== channelId) {
+    inlineImageSight.channelId = channelId;
+    inlineImageSight.seen.clear();
+    inlineImageSight.waiting.clear();
+  }
+  const provider = isWhatsAppChannelId(channelId) ? "whatsapp" : isInstagramChannelId(channelId) ? "instagram" : "discord";
+  const now = performance.now();
+  const inView = new Set<string>();
+  for (const attachment of visible) {
+    if (state.inlineImageHiddenAttachmentIds.has(attachment.id)) continue;
+    inView.add(attachment.id);
+    if (inlineImageSight.seen.has(attachment.id)) continue;
+    inlineImageSight.seen.add(attachment.id);
+    if (state.timeline.inlineImages[attachment.id]?.phase === "ready") debugLog("image.seen", { provider, waitMs: 0 });
+    else inlineImageSight.waiting.set(attachment.id, now);
+  }
+  for (const [id, since] of inlineImageSight.waiting) {
+    const phase = state.timeline.inlineImages[id]?.phase;
+    if (phase === "ready" || phase === "error" || !inView.has(id)) {
+      inlineImageSight.waiting.delete(id);
+      debugLog("image.seen", { provider, waitMs: Math.round(now - since), ...(phase === "ready" ? {} : phase === "error" ? { failed: true } : { left: true }) });
+    }
+  }
+}
+
 function autoShowVisibleInlineImages(): void {
   if (!running) return;
   // The rows actually drawn (smooth scrolling lays them out ahead of the
@@ -776,6 +812,7 @@ function autoShowVisibleInlineImages(): void {
     viewRows,
     viewRows,
   );
+  noteInlineImagesInView(near.visible);
   const attachments = [...near.visible, ...near.nearby];
   let started = 0;
   for (const attachment of attachments) {
