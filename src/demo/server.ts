@@ -81,6 +81,8 @@ export class DemoDiscordServer {
   private incomingTimer: ReturnType<typeof setInterval> | null = null;
   /** The channel the client most recently opened (latest page fetch or op 37 subscription). */
   openChannelId: string | null = null;
+  /** Other providers' fake CDNs (the demo Instagram's), by host. */
+  private readonly mediaHosts = new Map<string, (url: URL, signal: AbortSignal | null) => Promise<Response>>();
 
   constructor(options: DemoServerOptions = {}) {
     this.world = buildDemoWorld(options.anchorMs);
@@ -98,6 +100,12 @@ export class DemoDiscordServer {
     const url = new URL(request ? request.url : String(input));
     const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
     const signal = init?.signal ?? request?.signal ?? null;
+    const media = url.protocol === "https:" ? this.mediaHosts.get(url.hostname) : undefined;
+    if (media) {
+      this.requests.push(`${method} ${url.hostname}${url.pathname}`);
+      this.log(`${method} ${url.hostname}${url.pathname}`);
+      return media(url, signal);
+    }
     if (url.protocol !== "https:" || (url.hostname !== DEMO_API_HOST && !CDN_HOSTS.has(url.hostname))) {
       this.blocked.push(`${method} ${url.origin}${url.pathname}`);
       this.log(`BLOCKED ${method} ${url.href}`);
@@ -118,6 +126,11 @@ export class DemoDiscordServer {
     }
     return this.api(method, path, url.searchParams, body, headerValue(init?.headers, "authorization"));
   }) as typeof fetch;
+
+  /** Serve `host` (another provider's fake CDN) through this fetch. */
+  registerMediaHost(host: string, handler: (url: URL, signal: AbortSignal | null) => Promise<Response>): void {
+    this.mediaHosts.set(host, handler);
+  }
 
   /** WebSocket class bound to this server. */
   readonly WebSocket = makeWebSocketClass(this);

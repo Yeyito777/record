@@ -214,7 +214,11 @@ function delay(ms: number): Promise<void> {
 
 /** One photo size as JPEG (ffmpeg), or PNG when ffmpeg is unavailable. */
 function photoBytes(size: PhotoSize, seed: number): Promise<Buffer> {
-  const png = renderPicture(size.width, size.height, size.from, size.to, seed);
+  return demoJpeg(renderPicture(size.width, size.height, size.from, size.to, seed));
+}
+
+/** A demo picture as JPEG (ffmpeg), or the PNG itself when ffmpeg is unavailable. */
+export function demoJpeg(png: Buffer): Promise<Buffer> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let child: ReturnType<typeof spawn>;
