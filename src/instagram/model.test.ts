@@ -222,6 +222,15 @@ describe("Instagram pages and threads", () => {
   });
 });
 
+describe("Instagram picture sizes and shapes", () => {
+  test("stickers keep the size the payload carries; portrait cards are marked 9:16", () => {
+    expect(parseContent(node({ __typename: "SlideMessageCutoutStickerXMAContent", preview_url: cdn("s.webp"), preview_width: 512, preview_height: 480, alt_text: "cat" })))
+      .toEqual({ kind: "sticker", url: cdn("s.webp"), alt: "cat", width: 512, height: 480 });
+    expect(share({ __typename: "SlideMessagePortraitXMA", target_url: "https://www.instagram.com/reel/R1/", preview_image: { url: cdn("r.jpg") } }).portrait).toBe(true);
+    expect(share({ __typename: "SlideMessageStandardXMA", target_url: "https://www.instagram.com/p/P1/", preview_image: { url: cdn("p.jpg") } }).portrait).toBeUndefined();
+  });
+});
+
 describe("Instagram reaction notices", () => {
   const system = (id: string, text: string, overrides: Partial<ReturnType<typeof igMessage>> = {}) =>
     igMessage(id, { content: { kind: "system", text }, ...overrides });

@@ -257,7 +257,8 @@ function messageParts(state: InstagramUiState, thread: IgThread, message: IgMess
     }
     case "sticker":
       return { content: content.url ? "" : `[Sticker${content.alt ? `: ${label(content.alt)}` : ""}]`, embeds: [], system: false,
-        attachments: content.url ? [attachment(message, 0, "image", content.url, {}, "sticker.webp")] : [] };
+        attachments: content.url ? [attachment(message, 0, "image", content.url,
+          content.width && content.height ? { width: content.width, height: content.height } : {}, "sticker.webp")] : [] };
     case "disappearing":
       return none(`[View-once ${content.video ? "video" : "photo"} — open Instagram to view]`);
     case "share": return shareParts(state, thread, message, incoming);
