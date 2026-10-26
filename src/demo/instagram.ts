@@ -205,7 +205,7 @@ function content(kind: ItemKind, id: string, random: () => number, other: IgUser
     case "wide": return { kind: "media", items: [mediaItem(id, WIDE)] };
     case "sticker": return { kind: "sticker", url: demoInstagramCdnUrl(id, { width: 320, height: 320 }, "webp", "t39.1997-6"), alt: "Waving hand" };
     case "gif":
-      return { kind: "animated", still: demoInstagramCdnUrl(id, GIF, "webp", "t39.1997-6"), mp4: demoInstagramCdnUrl(id, GIF, "mp4", "t39.1997-6"),
+      return { kind: "animated", still: demoInstagramCdnUrl(id, GIF, "webp", "t39.30808-6"), mp4: demoInstagramCdnUrl(id, GIF, "mp4", "t39.30808-6"),
         width: GIF.width, height: GIF.height, sticker: false };
     case "voice": return { kind: "voice", url: demoInstagramCdnUrl(id, { width: 1, height: 1 }, "mp4", "o1/v/t2"), durationSecs: 3 + Math.floor(random() * 40) };
     case "link":
@@ -317,7 +317,7 @@ function galleryThread(anchorMs: number): IgThread {
     (id) => ({ kind: "share", share: share({ kind: "story", username: theo.username, author: theo.username, preview: demoInstagramCdnUrl(id, STORY), storyContext: "reply", text: "story reply, no size" }) }),
     (id) => ({ kind: "share", share: share({ kind: "story", username: VIEWER.username, author: VIEWER.username, preview: demoInstagramCdnUrl(id, STORY), previewWidth: STORY.width, previewHeight: STORY.height, storyContext: "mention" }) }),
     (id) => ({ kind: "sticker", url: demoInstagramCdnUrl(id, { width: 320, height: 320 }, "webp", "t39.1997-6"), alt: "Waving hand" }),
-    (id) => ({ kind: "animated", still: demoInstagramCdnUrl(id, GIF, "webp", "t39.1997-6"), mp4: demoInstagramCdnUrl(id, GIF, "mp4", "t39.1997-6"), width: GIF.width, height: GIF.height, sticker: false }),
+    (id) => ({ kind: "animated", still: demoInstagramCdnUrl(id, GIF, "webp", "t39.30808-6"), mp4: demoInstagramCdnUrl(id, GIF, "mp4", "t39.30808-6"), width: GIF.width, height: GIF.height, sticker: false }),
     (id) => content("link", id, seeded(7), theo, false),
     (id) => ({ kind: "media", items: [mediaItem(id, { width: 1179, height: 2556 })] }),
     (id) => ({ kind: "media", items: [mediaItem(`${id}a`, { width: 1440, height: 1920 }), mediaItem(`${id}b`, { width: 1920, height: 1440 }), mediaItem(`${id}c`, { width: 1080, height: 1080 })] }),
@@ -522,7 +522,8 @@ export class DemoInstagramCdn {
     const width = Math.min(8000, Number(w));
     const height = Math.min(8000, Number(h));
     const avatar = url.pathname.includes("/t51.2885-19/");
-    const sticker = extension === "webp";
+    // Stickers (t39.1997-6) are round cut-outs; GIF stills are pictures.
+    const sticker = url.pathname.includes("/t39.1997-6/");
     let bytes: Buffer;
     let type = "image/jpeg";
     if (extension === "mp4") {
