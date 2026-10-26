@@ -743,3 +743,84 @@ describe("message pane region scrolls", () => {
   });
 });
 
+
+describe("the history cursor stays on its line while the view follows the bottom", () => {
+  // Owner report (WhatsApp photo chat): after Ctrl+N, history arriving while the
+  // view followed the bottom left the cursor on its old row number, i.e. on
+  // another message far above the view, and the next Ctrl+U jumped there.
+  function followingHistoryState(): ReturnType<typeof createInitialState> {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 80;
+    state.rows = 20;
+    setTimelineMessages(state.timeline, "channel-1", Array.from({ length: 40 }, (_, i) => message(String(100 + i), `line ${100 + i}`)));
+    captureRender(state);
+    focusHistory(state);
+    state.historyCursorPendingVisibleBottom = true;
+    captureRender(state);
+    return state;
+  }
+
+  const cursorLine = (state: ReturnType<typeof createInitialState>) => state.historyLineAnchors[state.historyCursor.row];
+
+  test("an older page arriving (history replaced, following the bottom) keeps the cursor on its line", () => {
+    const state = followingHistoryState();
+    const before = cursorLine(state);
+    expect(before).toBeDefined();
+    // Like a WhatsApp backfill: the whole history again with older messages before it.
+    setTimelineMessages(state.timeline, "channel-1", [
+      ...Array.from({ length: 30 }, (_, i) => message(String(10 + i), `older ${10 + i}`)),
+      ...state.timeline.messages,
+    ]);
+    captureRender(state);
+    expect(cursorLine(state)).toBe(before);
+    // Still at the bottom, with the cursor in view.
+    expect(state.timeline.scrollOffset).toBe(state.timeline.maxScroll);
+    expect(state.historyCursor.row).toBeGreaterThanOrEqual(state.timeline.scrollOffset);
+  });
+
+  test("a new message arriving while following keeps the cursor on its line", () => {
+    const state = followingHistoryState();
+    const before = cursorLine(state);
+    setTimelineMessages(state.timeline, "channel-1", [...state.timeline.messages, message("200", "brand new")]);
+    captureRender(state);
+    expect(cursorLine(state)).toBe(before);
+  });
+});
+
+describe("scroll keys move the view from what is on screen", () => {
+  // Owner report (WhatsApp photo chat): photos loading on screen pushed the
+  // history cursor's line below the view; Ctrl+U then moved the view down to
+  // reach it (the wrong way), and after new messages it jumped far up instead.
+  function scrolledState(): ReturnType<typeof createInitialState> {
+    const state = createInitialState(null, "/tmp/record-config.json");
+    state.cols = 80;
+    state.rows = 20;
+    setTimelineMessages(state.timeline, "channel-1", Array.from({ length: 80 }, (_, i) => message(String(100 + i), `line ${100 + i}`)));
+    captureRender(state);
+    focusHistory(state);
+    state.timeline.scrollOffset = 60;
+    captureRender(state);
+    return state;
+  }
+
+  for (const [label, cursorRow] of [["below the view", 150], ["above the view", 5]] as const) {
+    test(`with the cursor ${label}, Ctrl+U/D, Ctrl+E/Y and page keys scroll from the view`, async () => {
+      const { scrollHistoryWithCursor, scrollHistoryPageWithCursor, scrollHistoryViewportSticky } = await import("./historycursor");
+      const rows = 12;
+      for (const [move, dir, expected] of [
+        [(s: ReturnType<typeof createInitialState>) => scrollHistoryWithCursor(s, 1, 6, rows), 1, 54],
+        [(s: ReturnType<typeof createInitialState>) => scrollHistoryWithCursor(s, -1, 6, rows), -1, 66],
+        [(s: ReturnType<typeof createInitialState>) => scrollHistoryPageWithCursor(s, 1, rows, rows), 1, 48],
+        [(s: ReturnType<typeof createInitialState>) => scrollHistoryViewportSticky(s, 1, rows), 1, 59],
+      ] as const) {
+        const state = scrolledState();
+        state.historyCursor = { row: Math.min(cursorRow, state.historyLines.length - 1), col: 0 };
+        move(state);
+        expect(state.timeline.scrollOffset).toBe(expected);
+        expect(Math.sign(state.timeline.scrollOffset - 60)).toBe(-dir);
+        expect(state.historyCursor.row).toBeGreaterThanOrEqual(state.timeline.scrollOffset);
+        expect(state.historyCursor.row).toBeLessThan(state.timeline.scrollOffset + rows);
+      }
+    });
+  }
+});
