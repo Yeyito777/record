@@ -118,12 +118,13 @@ function writeStartingState(server: DemoDiscordServer, configDir: string, open: 
   if (existsSync(path) || open === "none") return;
   const world = server.world;
   let target = world.defaultChannel;
-  if (open === "ig-shares" || open === "instagram" || open === "ig-photos") {
+  if (open === "ig-shares" || open === "instagram" || open === "ig-photos" || open === "ig-gallery") {
     // Required, not imported, like WhatsApp's below.
     const require = createRequire(import.meta.url);
     const { INSTAGRAM_GUILD_ID, instagramChannelId } = require("../chatproviders") as typeof import("../chatproviders");
-    const { DEMO_INSTAGRAM_PHOTOS_THREAD, DEMO_INSTAGRAM_SHARES_THREAD } = require("./instagram") as typeof import("./instagram");
-    target = { guildId: INSTAGRAM_GUILD_ID, channelId: instagramChannelId(open === "ig-photos" ? DEMO_INSTAGRAM_PHOTOS_THREAD : DEMO_INSTAGRAM_SHARES_THREAD) };
+    const { DEMO_INSTAGRAM_GALLERY_THREAD, DEMO_INSTAGRAM_PHOTOS_THREAD, DEMO_INSTAGRAM_SHARES_THREAD } = require("./instagram") as typeof import("./instagram");
+    const thread = open === "ig-photos" ? DEMO_INSTAGRAM_PHOTOS_THREAD : open === "ig-gallery" ? DEMO_INSTAGRAM_GALLERY_THREAD : DEMO_INSTAGRAM_SHARES_THREAD;
+    target = { guildId: INSTAGRAM_GUILD_ID, channelId: instagramChannelId(thread) };
   } else if (open === "wa-photos" || open === "whatsapp") {
     // Required here, not imported: Record modules must load only after the
     // demo has pointed every config path at its home.

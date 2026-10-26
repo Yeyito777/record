@@ -22,6 +22,8 @@ export const DEMO_INSTAGRAM_CDN_HOST = "scontent-demo-1.cdninstagram.com";
 /** Thread ids: the long 1:1 full of shares (RECORD_DEMO_OPEN=ig-shares) and the photo group (ig-photos). */
 export const DEMO_INSTAGRAM_SHARES_THREAD = "340120000000000001";
 export const DEMO_INSTAGRAM_PHOTOS_THREAD = "340120000000000002";
+/** One of each tricky picture, newest at the bottom (RECORD_DEMO_OPEN=ig-gallery). */
+export const DEMO_INSTAGRAM_GALLERY_THREAD = "340120000000000006";
 
 const VIEWER: IgUser = { id: "17841400000000001", fbid: "17841400000000901", username: "demo.user", name: "Demo User" };
 const PEOPLE = {
@@ -292,7 +294,47 @@ export function buildDemoInstagramData(anchorMs: number): DemoInstagramData {
       hasOlder: false, cursor: null, detailLoaded: false,
     };
   });
+  threads.push(galleryThread(anchorMs));
   return { viewer: VIEWER, threads, people: Object.values(PEOPLE) };
+}
+
+/** Theo's chat: every picture shape Instagram sends, in a fixed order. */
+function galleryThread(anchorMs: number): IgThread {
+  const { theo } = PEOPLE;
+  const post = (id: string, size: PictureSpec, sized: boolean, caption: string): IgContent => ({ kind: "share", share: share({
+    kind: "post", code: code(id), url: `https://www.instagram.com/p/${code(id)}/`, author: "natgeo", caption,
+    preview: demoInstagramCdnUrl(id, size), ...(sized ? { previewWidth: size.width, previewHeight: size.height } : {}),
+  }) });
+  const items: Array<(id: string) => IgContent> = [
+    () => ({ kind: "text", text: "size check: one of each 👇" }),
+    (id) => ({ kind: "media", items: [mediaItem(id, TALL)] }),
+    (id) => ({ kind: "media", items: [mediaItem(id, WIDE)] }),
+    (id) => post(id, { width: 1080, height: 566 }, true, "Wide post, with its size"),
+    (id) => post(id, { width: 1080, height: 566 }, false, "Wide post, no size"),
+    (id) => post(id, { width: 1080, height: 1350 }, false, "Portrait post, no size"),
+    (id) => post(id, { width: 1080, height: 1080 }, false, "Square post, no size"),
+    (id) => ({ kind: "share", share: share({ kind: "reel", code: code(id), url: `https://www.instagram.com/reel/${code(id)}/`, author: "spacex", caption: "Reel, no size", preview: demoInstagramCdnUrl(id, PORTRAIT) }) }),
+    (id) => ({ kind: "share", share: share({ kind: "story", username: theo.username, author: theo.username, preview: demoInstagramCdnUrl(id, STORY), storyContext: "reply", text: "story reply, no size" }) }),
+    (id) => ({ kind: "share", share: share({ kind: "story", username: VIEWER.username, author: VIEWER.username, preview: demoInstagramCdnUrl(id, STORY), previewWidth: STORY.width, previewHeight: STORY.height, storyContext: "mention" }) }),
+    (id) => ({ kind: "sticker", url: demoInstagramCdnUrl(id, { width: 320, height: 320 }, "webp", "t39.1997-6"), alt: "Waving hand" }),
+    (id) => ({ kind: "animated", still: demoInstagramCdnUrl(id, GIF, "webp", "t39.1997-6"), mp4: demoInstagramCdnUrl(id, GIF, "mp4", "t39.1997-6"), width: GIF.width, height: GIF.height, sticker: false }),
+    (id) => content("link", id, seeded(7), theo, false),
+    (id) => ({ kind: "media", items: [mediaItem(id, { width: 1179, height: 2556 })] }),
+    (id) => ({ kind: "media", items: [mediaItem(`${id}a`, { width: 1440, height: 1920 }), mediaItem(`${id}b`, { width: 1920, height: 1440 }), mediaItem(`${id}c`, { width: 1080, height: 1080 })] }),
+    () => ({ kind: "text", text: "that's all of them" }),
+  ];
+  const messages = items.map((make, index): IgMessage => {
+    const id = `mid.$demog${String(index).padStart(5, "0")}`;
+    const timestampMs = anchorMs - (items.length - index) * 60_000;
+    return { id, senderFbid: theo.fbid, senderName: theo.name, timestampMs, reactions: [], content: make(id) };
+  });
+  return {
+    id: DEMO_INSTAGRAM_GALLERY_THREAD, legacyId: legacyId(DEMO_INSTAGRAM_GALLERY_THREAD), rawTitle: "",
+    users: [{ ...theo, picUrl: avatarUrl(theo) }], viewerFbid: VIEWER.fbid, isGroup: false,
+    lastActivityMs: messages.at(-1)!.timestampMs - 3_600_000, messages,
+    receipts: { [VIEWER.fbid]: messages.at(-1)!.timestampMs, [theo.fbid]: messages.at(-1)!.timestampMs },
+    markedUnread: false, muted: false, folder: "inbox", canSend: true, nicknames: {}, hasOlder: false, cursor: null, detailLoaded: false,
+  };
 }
 
 /** How the inbox query carries a message: `__typename` + `text_body` and Instagram's snippet line only. */
