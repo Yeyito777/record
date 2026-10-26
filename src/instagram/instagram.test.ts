@@ -143,6 +143,27 @@ describe("Instagram conversions", () => {
     expect(message.reactions?.[0]).toMatchObject({ count: 2, me: true, emoji: { name: "👍" } });
   });
 
+  test("pictures without a size get the shape Instagram draws them in; real sizes win", () => {
+    const state = setup();
+    const shareOf = (fields: Record<string, unknown>) => ({ kind: "share" as const, share: {
+      kind: "post" as const, title: "", caption: "", author: "a", preview: cdn("x.jpg"), previewWidth: 0, previewHeight: 0, text: "", expired: false, ...fields,
+    } });
+    const box = (content: IgMessage["content"]) => {
+      const image = convert(state, igMessage("30", { content })).attachments.find(a => a.contentType?.startsWith("image/"))!;
+      return [image.width ?? null, image.height ?? null, image.placeholderWidth ?? null, image.placeholderHeight ?? null];
+    };
+    expect(box(shareOf({ kind: "post", code: "P" }))).toEqual([null, null, 1080, 1350]);
+    expect(box(shareOf({ kind: "reel", code: "R" }))).toEqual([null, null, 1080, 1920]);
+    expect(box(shareOf({ kind: "story", username: "maya" }))).toEqual([null, null, 1080, 1920]);
+    expect(box(shareOf({ kind: "post", code: "P", portrait: true }))).toEqual([null, null, 1080, 1920]);
+    expect(box(shareOf({ kind: "link", url: "https://example.com/" }))).toEqual([null, null, 1200, 630]);
+    expect(box(shareOf({ kind: "post", code: "P", previewWidth: 1080, previewHeight: 566 }))).toEqual([1080, 566, null, null]);
+    expect(box({ kind: "media", items: [{ id: "a", video: false, preview: cdn("p.jpg"), url: cdn("f.jpg"), width: 0, height: 0 }] })).toEqual([null, null, 1080, 1440]);
+    expect(box({ kind: "media", items: [{ id: "a", video: true, preview: cdn("p.jpg"), url: cdn("v.mp4"), width: 0, height: 0 }] })).toEqual([null, null, 1080, 1920]);
+    expect(box({ kind: "sticker", url: cdn("s.webp"), alt: "" })).toEqual([null, null, 512, 512]);
+    expect(box({ kind: "music", title: "Song", artist: "", artwork: cdn("a.jpg"), audio: null })).toEqual([null, null, 640, 640]);
+  });
+
   test("photos inline, videos and voice as openable files, never view-once media or unsafe URLs", () => {
     const state = setup();
     const media = convert(state, igMessage("20", { content: { kind: "media", items: [

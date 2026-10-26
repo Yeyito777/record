@@ -3,7 +3,7 @@ import { INSTAGRAM_GUILD_ID, instagramChannelId, instagramThreadIdFromChannelId 
 import { sanitizeTerminalLabel, sanitizeTerminalText } from "../whatsapp/sanitize";
 import {
   callTitle, contentSummary, displayNameForFbid, effectiveCallOutcome, isThreadUnread, threadTitle, unreadMessages,
-  type IgMessage, type IgReplyPreview, type IgThread, type IgUser,
+  type IgMessage, type IgReplyPreview, type IgShare, type IgThread, type IgUser,
 } from "./model";
 import { isInstagramThreadMuted, type InstagramMuteOverrides } from "./mute";
 
@@ -145,6 +145,27 @@ function attachment(message: IgMessage, index: number, kind: "image" | "video" |
   };
 }
 
+/**
+ * The picture's size, or (without one) the shape Instagram draws it in, as
+ * pixels: chat holds that box while it loads. 9:16 for reels, stories and
+ * vertical video, 4:5 posts, 3:4 phone photos, 1.91:1 link cards.
+ */
+const SHAPES = {
+  portrait: [1080, 1920], post: [1080, 1350], photo: [1080, 1440], link: [1200, 630], square: [1080, 1080],
+  sticker: [512, 512], artwork: [640, 640],
+} as const;
+
+function pictureSize(width: number, height: number, shape: keyof typeof SHAPES): Partial<DiscordMessageAttachment> {
+  if (width > 0 && height > 0) return { width, height };
+  const [placeholderWidth, placeholderHeight] = SHAPES[shape];
+  return { placeholderWidth, placeholderHeight };
+}
+
+function shareShape(share: IgShare): keyof typeof SHAPES {
+  if (share.portrait || share.kind === "reel" || share.kind === "story") return "portrait";
+  return share.kind === "post" ? "post" : share.kind === "link" ? "link" : "square";
+}
+
 /** A shared reel: one video fetched on open (`media/<pk>/info/`), never a feed. */
 export const INSTAGRAM_REEL_ATTACHMENT_PREFIX = "ig-reel:";
 
@@ -157,7 +178,11 @@ function shareParts(state: InstagramUiState, thread: IgThread, message: IgMessag
   const embeds: DiscordMessageEmbed[] = [];
   const lines: string[] = [];
   const by = share.author ? ` by @${label(share.author)}` : "";
-  const preview = () => { if (share.preview && !share.expired) attachments.push(attachment(message, 0, "image", share.preview, share.previewWidth && share.previewHeight ? { width: share.previewWidth, height: share.previewHeight } : {}, "instagram-preview.jpg")); };
+  const preview = () => {
+    if (share.preview && !share.expired) {
+      attachments.push(attachment(message, 0, "image", share.preview, pictureSize(share.previewWidth, share.previewHeight, shareShape(share)), "instagram-preview.jpg"));
+    }
+  };
   switch (share.kind) {
     case "post":
       lines.push(`↪ Shared a post${by}`);
@@ -234,10 +259,10 @@ function messageParts(state: InstagramUiState, thread: IgThread, message: IgMess
       content.items.forEach((item, index) => {
         const size = item.width && item.height ? { width: item.width, height: item.height } : {};
         if (item.video) {
-          if (item.preview) attachments.push(attachment(message, index * 2, "image", item.preview, size, `video-${index + 1}-preview.jpg`));
+          if (item.preview) attachments.push(attachment(message, index * 2, "image", item.preview, pictureSize(item.width, item.height, "portrait"), `video-${index + 1}-preview.jpg`));
           if (item.url) attachments.push(attachment(message, index * 2 + 1, "video", item.url, size, `instagram-video-${index + 1}.mp4`));
         } else if (item.url) {
-          attachments.push(attachment(message, index * 2, "image", item.url, size));
+          attachments.push(attachment(message, index * 2, "image", item.url, pictureSize(item.width, item.height, "photo")));
         }
       });
       return { content: "", attachments, embeds: [], system: false };
@@ -257,14 +282,14 @@ function messageParts(state: InstagramUiState, thread: IgThread, message: IgMess
     }
     case "sticker":
       return { content: content.url ? "" : `[Sticker${content.alt ? `: ${label(content.alt)}` : ""}]`, embeds: [], system: false,
-        attachments: content.url ? [attachment(message, 0, "image", content.url, {}, "sticker.webp")] : [] };
+        attachments: content.url ? [attachment(message, 0, "image", content.url, pictureSize(content.width ?? 0, content.height ?? 0, "sticker"), "sticker.webp")] : [] };
     case "disappearing":
       return none(`[View-once ${content.video ? "video" : "photo"} — open Instagram to view]`);
     case "share": return shareParts(state, thread, message, incoming);
     case "music":
       return { content: `🎵 ${label(content.title) || "Song"}${content.artist ? ` — ${label(content.artist)}` : ""}`, embeds: [], system: false,
         attachments: [
-          ...(content.artwork ? [attachment(message, 0, "image", content.artwork, {}, "artwork.jpg")] : []),
+          ...(content.artwork ? [attachment(message, 0, "image", content.artwork, pictureSize(0, 0, "artwork"), "artwork.jpg")] : []),
           ...(content.audio ? [attachment(message, 1, "audio", content.audio, { durationSecs: 30 }, "song-preview.mp4")] : []),
         ] };
     case "unavailable": return none("[Message unavailable]");

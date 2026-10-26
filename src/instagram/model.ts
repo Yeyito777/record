@@ -47,6 +47,8 @@ export interface IgShare {
   text: string;
   storyContext?: IgStoryContext;
   expired: boolean;
+  /** Instagram's 9:16 card (`SlideMessagePortraitXMA`): reels and stories. */
+  portrait?: true;
 }
 
 export type IgCallOutcome = "missed" | "ended" | "started" | "unknown";
@@ -67,7 +69,7 @@ export type IgContent =
   | { kind: "media"; items: IgMediaItem[] }
   | { kind: "voice"; url: string | null; durationSecs: number }
   | { kind: "animated"; mp4: string | null; still: string | null; width: number; height: number; sticker: boolean }
-  | { kind: "sticker"; url: string | null; alt: string }
+  | { kind: "sticker"; url: string | null; alt: string; width?: number; height?: number }
   | { kind: "disappearing"; video: boolean }
   | { kind: "share"; share: IgShare }
   | { kind: "music"; title: string; artist: string; artwork: string | null; audio: string | null }
@@ -261,6 +263,7 @@ function xma(content: Json, message: Json): IgContent {
     preview: igMediaUrl(image.url) ?? igMediaUrl(image.fallback_url),
     previewWidth: num(image.width), previewHeight: num(image.height), text: "", expired: false,
   };
+  if (type === "SlideMessagePortraitXMA") share.portrait = true;
   if (type === "SlideMessagePlaceholderXMA") return { kind: "share", share: { ...share, expired: true, caption: first("caption_body_text") } };
   if (type === "SlideMessageExpiredPlaceholderXMA") {
     return { kind: "share", share: { ...share, kind: "story", expired: true, text: note, storyContext: storyContext(contentType, Boolean(note)) } };
@@ -349,7 +352,11 @@ export function parseContent(message: Json): IgContent {
         artwork: igMediaUrl(content.preview_url), audio: igMediaUrl(content.web_30s_preview_download_url) };
     default:
       if (type.includes("Sticker")) {
-        return { kind: "sticker", url: igMediaUrl(content.preview_url) ?? igMediaUrl(obj(content.preview_image).url), alt: str(content.alt_text) };
+        const image = obj(content.preview_image);
+        const width = num(content.preview_width) || num(image.width);
+        const height = num(content.preview_height) || num(image.height);
+        return { kind: "sticker", url: igMediaUrl(content.preview_url) ?? igMediaUrl(image.url), alt: str(content.alt_text),
+          ...(width > 0 && height > 0 ? { width, height } : {}) };
       }
       return text ? { kind: "text", text } : { kind: "unsupported", text: "This message isn't supported in Record yet" };
   }
