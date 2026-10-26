@@ -865,3 +865,79 @@ describe("other terminals: region scrolls beside the side panels only once synch
     expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
   });
 });
+
+describe("a history that is nearly all images (owner report: Ctrl+U/D jumped instead of gliding)", () => {
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==";
+
+  /** Messages that are only an image each (no caption, no details row), like a WhatsApp photo chat. */
+  function imagesState(options: { sidebar?: boolean; clip?: boolean } = {}): AppState {
+    const state = chatState({ sidebar: options.sidebar ?? true, messages: 40 });
+    const messages = state.timeline.messages.map((entry, i) => ({
+      ...entry,
+      author: entry.author,
+      content: "",
+      attachments: [{ id: `p${i}`, filename: `photo-${i}.jpg`, contentType: "image/jpeg", size: 4000, url: `https://cdn.example/p${i}.jpg` }],
+    }));
+    setTimelineMessages(state.timeline, "channel-1", messages);
+    for (let i = 0; i < messages.length; i++) {
+      setTimelineInlineImageState(state.timeline, {
+        phase: "ready", attachmentId: `p${i}`, filename: `photo-${i}.jpg`, sourceUrl: `https://cdn.example/p${i}.jpg`,
+        requestId: i + 1, imageId: 0x40000100 + i, pngBase64: PNG, pixelWidth: 60, pixelHeight: 120 + (i % 3) * 40,
+      });
+    }
+    smoothScrollerFor(state)!.useImageClip(options.clip ?? false);
+    return state;
+  }
+
+  test("photos finishing loading mid-glide (their rows change height) keep the glide going", () => {
+    const state = imagesState();
+    // The photos around the middle are still loading (a one-row status line).
+    const loading = [14, 15, 16, 17, 18, 19, 20];
+    for (const i of loading) {
+      setTimelineInlineImageState(state.timeline, {
+        phase: "loading", attachmentId: `p${i}`, filename: `photo-${i}.jpg`, sourceUrl: `https://cdn.example/p${i}.jpg`, requestId: 100 + i,
+      });
+    }
+    settle(state);
+    state.timeline.scrollOffset = Math.floor(state.timeline.maxScroll / 2);
+    settle(state);
+    markScrollIntent(state);
+    state.timeline.scrollOffset -= 12;
+    const outs = [frame(state)];
+    expect(regionScrolls(outs[0]!)).toHaveLength(1);
+    expect(glides(outs[0]!)).toEqual([-12000]);
+    // 30 ms in, the photos arrive: every row below them re-lays out.
+    now += 30;
+    for (const i of loading) {
+      setTimelineInlineImageState(state.timeline, {
+        phase: "ready", attachmentId: `p${i}`, filename: `photo-${i}.jpg`, sourceUrl: `https://cdn.example/p${i}.jpg`,
+        requestId: 100 + i, imageId: 0x40000100 + i, pngBase64: PNG, pixelWidth: 60, pixelHeight: 160,
+      });
+    }
+    outs.push(frame(state), ...animate(state));
+    // No restart: st's glide runs to its end.
+    expect(resets(outs.join(""))).toEqual([]);
+    expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+  });
+
+  for (const clip of [false, true]) {
+    for (const step of [-12, 12, -1, 3]) {
+      test(`a scroll of ${step} rows is a region scroll and one eased move${clip ? " (clip regions)" : ""}`, () => {
+        const state = imagesState({ clip });
+        settle(state);
+        state.timeline.scrollOffset = Math.floor(state.timeline.maxScroll / 2);
+        settle(state);
+        markScrollIntent(state);
+        state.timeline.scrollOffset += step;
+        const out = frame(state);
+        const [scroll] = regionScrolls(out);
+        expect(scroll?.rows).toBe(Math.abs(step));
+        expect(scroll?.dir).toBe(step < 0 ? "T" : "S");
+        expect(glides(out)).toEqual([step * 1000]);
+        expect(resets(out)).toEqual([]);
+        animate(state);
+        expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+      });
+    }
+  }
+});

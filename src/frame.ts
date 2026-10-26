@@ -50,6 +50,13 @@ export interface RenderFrame {
    * all of its columns, starting with its own cursor move.
    */
   pinned?: (readonly string[] | undefined)[];
+  /**
+   * Band frames: what each row shows, by identity (a history line's anchor),
+   * undefined where nothing identifiable is drawn. A region scroll's shift is
+   * found from these first: rows that are blank as text (an image's rows)
+   * cannot confirm a shift by their content.
+   */
+  rowIds?: (string | undefined)[];
   cursor: string;
   /**
    * Rows (1-based, inclusive) holding nothing but the scrolling pane, across
@@ -284,6 +291,43 @@ function scrolledRowUpdate(
 }
 
 /**
+ * How far the band's content moved, from what the rows show (rowIds): the
+ * shift most rows agree on. 0 when the content stayed, null when the frames
+ * carry no identities or too few rows agree to tell (the content heuristics
+ * then decide). Unlike the rows' text, identities tell an image's blank rows
+ * apart, so a history that is nearly all images still scrolls (and glides).
+ */
+function detectIdentityScroll(prevFrame: RenderFrame, nextFrame: RenderFrame, region: ScrollRegion): number | null {
+  const prevIds = prevFrame.rowIds;
+  const nextIds = nextFrame.rowIds;
+  if (!prevIds || !nextIds) return null;
+  const first = region.start - 1;
+  const last = region.end - 1;
+  const height = last - first + 1;
+  const where = new Map<string, number>();
+  for (let row = first; row <= last; row++) {
+    const id = prevIds[row];
+    if (id !== undefined) where.set(id, row);
+  }
+  const votes = new Map<number, number>();
+  for (let row = first; row <= last; row++) {
+    const id = nextIds[row];
+    const source = id === undefined ? undefined : where.get(id);
+    if (source !== undefined) votes.set(source - row, (votes.get(source - row) ?? 0) + 1);
+  }
+  let best = 0;
+  let bestVotes = 0;
+  for (const [shift, count] of votes) {
+    if (count > bestVotes || (count === bestVotes && Math.abs(shift) < Math.abs(best))) {
+      best = shift;
+      bestVotes = count;
+    }
+  }
+  if (bestVotes < Math.max(3, Math.floor((height - Math.abs(best)) * 0.6))) return null;
+  return Math.abs(best) > height - 3 ? 0 : best;
+}
+
+/**
  * The viewport's own move, confirmed by the rows (as detectRegionScroll,
  * comparing rows without their pinned segments, within `region`).
  */
@@ -463,9 +507,10 @@ function flushBandFrame(owner: object, nextFrame: RenderFrame, images?: FrameIma
     const key = contentKey(next, nextIndex);
     return key !== undefined && key === contentKey(prevFrame!, prevIndex);
   };
+  const identityShift = prevFrame && region ? detectIdentityScroll(prevFrame, next, region) : null;
   const scrollShift = !prevFrame || !region
     ? 0
-    : detectViewportScroll(prevFrame, next, region, sameContent) || detectContentScroll(prevFrame, next, region, sameContent);
+    : identityShift ?? (detectViewportScroll(prevFrame, next, region, sameContent) || detectContentScroll(prevFrame, next, region, sameContent));
   const scrollRegion = scrollShift !== 0 ? region : null;
   let hasDrawingUpdates = false;
   /** Every row the region scroll supplied matches this frame (near the bottom edge aside). */

@@ -759,11 +759,14 @@ export function render(state: AppState): void {
   const customEmojiFrame = customEmojiImages.beginFrame();
   const selectedHistoryRows = historyVisualSelectionRows(state, historyFocused);
 
+  // Which history line each pane row shows (band frames find scrolls by it).
+  const rowIds: (string | undefined)[] = [];
   for (let i = 0; i < bodyRows; i++) {
     const row = bodyTop + i;
     emitSidebarCol(row);
 
     const lineIndex = viewStart + i;
+    if (useTimeline && lineIndex < state.historyLines.length) rowIds[row - 1] = state.historyLineAnchors[lineIndex];
     const pendingDeleteLine = useTimeline && isHistoryLinePendingDelete(state, lineIndex);
     const rawLine = useTimeline && lineIndex < state.historyLines.length
       ? (state.historyLines[lineIndex] ?? "")
@@ -1055,6 +1058,7 @@ export function render(state: AppState): void {
   flushFrame(state, {
     rows: frameRows,
     pinned: pinnedRows,
+    rowIds,
     cursor: cursorPayload.join(""),
     scrollRegion,
     viewStart,
