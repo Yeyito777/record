@@ -920,6 +920,35 @@ describe("a history that is nearly all images (owner report: Ctrl+U/D jumped ins
     expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
   });
 
+  for (const change of ["shrinks", "grows"] as const) {
+    test(`a photo on screen that ${change} mid-glide never scrolls the pane against the glide (st would drop the lines it glides over)`, () => {
+      const state = imagesState();
+      settle(state);
+      state.timeline.scrollOffset = Math.floor(state.timeline.maxScroll / 2);
+      settle(state);
+      markScrollIntent(state);
+      state.timeline.scrollOffset -= 12;	// back in history: drawn higher, easing down
+      const first = frame(state);
+      expect(regionScrolls(first).map((scroll) => scroll.dir)).toEqual(["T"]);
+      now += 20;
+      // A photo near the top of the view changes height: the rows below it move.
+      const onScreen = state.historyLineAnchors[state.timeline.scrollOffset + 3]!;
+      const index = Number(/msg:(\d+):/.exec(onScreen)?.[1] ?? "1000") - 1000;
+      const photo = state.timeline.messages.findIndex((entry) => entry.id === String(1000 + index));
+      const target = photo >= 0 ? photo : 20;
+      setTimelineInlineImageState(state.timeline, {
+        phase: "ready", attachmentId: `p${target}`, filename: `photo-${target}.jpg`, sourceUrl: `https://cdn.example/p${target}.jpg`,
+        requestId: 500 + target, imageId: 0x40000100 + target, pngBase64: PNG, pixelWidth: 60, pixelHeight: change === "shrinks" ? 40 : 400,
+      });
+      const relaid = frame(state);
+      // Scrolling up (S) would drop the kept lines a glide back is drawn over.
+      expect(regionScrolls(relaid).filter((scroll) => scroll.dir === "S")).toEqual([]);
+      expect(resets(relaid)).toEqual([]);
+      animate(state);
+      expect(screen.snapshot()).toBe(fullRepaint(state).snapshot());
+    });
+  }
+
   for (const clip of [false, true]) {
     for (const step of [-12, 12, -1, 3]) {
       test(`a scroll of ${step} rows is a region scroll and one eased move${clip ? " (clip regions)" : ""}`, () => {

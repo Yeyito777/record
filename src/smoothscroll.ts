@@ -367,6 +367,19 @@ export class SmoothScroller {
     return out + this.takeMotion();
   }
 
+  /**
+   * Whether this frame may region-scroll by `shift` (up positive) and keep
+   * the glide: st keeps the lines a glide is drawn over on one side of the
+   * region, and a scroll the other way drops them (the glide then stops
+   * short where they end). The glide's own step always may; content moving
+   * by itself against it (a photo arriving or changing height) is repainted.
+   */
+  regionScrollKeepsGlide(shift: number): boolean {
+    if (shift === this.expectedShift) return true;
+    const offset = this.offsetAt(this.now());
+    return !(offset < -0.01 && shift > 0) && !(offset > 0.01 && shift < 0);
+  }
+
   private takeMotion(): string {
     let out = "";
     // `o` starts over from the base before this frame's moves.
