@@ -195,6 +195,12 @@ export async function encodeVideoStream(path: string, options: VideoEncodeOption
   }
   const packets = parseMpegTsVideo(ts);
   if (packets.length === 0 || !packets[0]!.keyframe) return null;
+  // st needs the first keyframe to carry its parameter sets. libx264 and
+  // remuxes do; should VideoToolbox not, encode in software instead.
+  if (!hasParameterSets(packets[0]!.data)) {
+    if (!remux && args.includes("h264_videotoolbox")) return encodeVideoStream(path, { ...options, encoders: new Set() });
+    return null;
+  }
   const size = remux ? { width: info.width, height: info.height } : encodeSize(info.width, info.height, options.maxWidth, options.maxHeight);
   return { ...size, durationUs: streamDuration(packets), packets, remuxed: remux };
 }
@@ -206,6 +212,19 @@ export function streamDuration(packets: readonly VideoPacket[]): number {
   const steps = times.slice(1).map((time, index) => time - times[index]!).filter((step) => step > 0).sort((left, right) => left - right);
   const frame = steps.length ? steps[Math.floor(steps.length / 2)]! : 100_000;
   return times.at(-1)! - times[0]! + frame;
+}
+
+/** Whether an Annex B access unit carries an SPS (7) and a PPS (8). */
+function hasParameterSets(data: Buffer): boolean {
+  let sps = false;
+  let pps = false;
+  for (let index = 0; index + 3 < data.length; index++) {
+    if (data[index] !== 0 || data[index + 1] !== 0 || data[index + 2] !== 1) continue;
+    const type = data[index + 3]! & 0x1f;
+    if (type === 7) sps = true;
+    if (type === 8) pps = true;
+  }
+  return sps && pps;
 }
 
 /** Whether an Annex B access unit holds an IDR slice (NAL type 5). */

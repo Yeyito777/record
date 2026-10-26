@@ -48,7 +48,24 @@ export interface GifPlayerOptions {
 const VIDEO_ID_BASE = 0x74000000;
 const VIDEO_ID_SPAN = 0x00ffffff;
 const AHEAD_US = 2_000_000;
-const WINDOW_BYTES = 256 * 1024;
+/**
+ * Bytes written and not yet acknowledged, all GIFs together: 32 KiB plus
+ * 300 ms at the rate acknowledgements come back (st docs/video.md: a round
+ * trip and a little at the delivery rate). st-play keeps 64 KiB at least;
+ * Record keeps less, so on a slow link keys and frames wait behind half a
+ * second of GIF at most, not seconds.
+ */
+const WINDOW_MIN_BYTES = 32 * 1024;
+const WINDOW_RATE_SECONDS = 0.3;
+const RATE_SPAN_MS = 3000;
+/**
+ * A link too slow for the GIFs playing keeps the window full: then one GIF
+ * fewer plays (down to one), and one more again after a quiet while.
+ */
+const SLOW_LINK_SPAN_MS = 3000;
+const SLOW_LINK_SHARE = 0.5;
+const FEWER_AFTER_MS = 5000;
+const MORE_AFTER_MS = 10_000;
 const QUERY_EVERY_BYTES = 32 * 1024;
 const QUERY_EVERY_MS = 250;
 const MAX_OUTSTANDING_QUERIES = 4;
@@ -100,10 +117,19 @@ export class GifPlayer {
   private readonly maxOpen: number;
   private statsBytes = 0;
   private statsSince = 0;
+  /** How many may play now: fewer while the link can't carry them all. */
+  private playLimit: number;
+  private lastLimitChange = -Infinity;
+  /** Pump ticks with GIFs to send: whether the window held them back. */
+  private ticks: { at: number; limited: boolean }[] = [];
+  /** Acknowledged bytes over time (all GIFs), for the delivery rate. */
+  private acked: { at: number; bytes: number }[] = [];
+  private ackedTotal = 0;
 
   constructor(private readonly options: GifPlayerOptions) {
     this.now = options.now ?? (() => performance.now());
     this.maxOpen = options.maxOpen ?? 3;
+    this.playLimit = this.maxOpen;
     this.statsSince = this.now();
   }
 
@@ -147,7 +173,7 @@ export class GifPlayer {
     // Most in view first; on a tie, the one already playing keeps playing.
     inView.sort((left, right) => right.visibility - left.visibility
       || Number(this.isPlaying(right.key)) - Number(this.isPlaying(left.key)));
-    const wanted = inView.slice(0, this.maxOpen);
+    const wanted = inView.slice(0, this.playLimit);
     const wantedKeys = new Set(wanted.map((candidate) => candidate.key));
     for (const session of this.sessions.values()) {
       if (inView.some((candidate) => candidate.key === session.key)) session.lastVisibleAt = now;
@@ -296,7 +322,12 @@ export class GifPlayer {
     if (Number.isFinite(seq)) {
       const index = session.queries.findIndex((query) => query.seq === seq);
       if (index !== -1) {
-        session.bytesAcked = Math.max(session.bytesAcked, session.queries[index]!.bytes);
+        const acknowledged = session.queries[index]!.bytes;
+        if (acknowledged > session.bytesAcked) {
+          this.ackedTotal += acknowledged - session.bytesAcked;
+          session.bytesAcked = acknowledged;
+          this.acked.push({ at: this.now(), bytes: this.ackedTotal });
+        }
         session.queries.splice(0, index + 1);
       }
     }
@@ -326,21 +357,39 @@ export class GifPlayer {
     }
   }
 
-  /** Send what each playing GIF may: within its window and its two seconds ahead. */
+  /** The window: 64 KiB plus 300 ms at the rate acknowledgements came back over the last 3 s. */
+  private windowBytes(now: number): number {
+    while (this.acked.length > 1 && now - this.acked[0]!.at > RATE_SPAN_MS) this.acked.shift();
+    const first = this.acked[0];
+    const last = this.acked.at(-1);
+    const seconds = first && last ? (last.at - first.at) / 1000 : 0;
+    const rate = seconds > 0.5 ? (last!.bytes - first!.bytes) / seconds : 0;
+    return WINDOW_MIN_BYTES + rate * WINDOW_RATE_SECONDS;
+  }
+
+  /** Send what each playing GIF may: within the shared window and its two seconds ahead. */
   pump(): void {
     const now = this.now();
+    const window = this.windowBytes(now);
+    let inFlight = [...this.sessions.values()].reduce((sum, session) => sum + session.bytesWritten - session.bytesAcked, 0);
+    let wanting = false;
     for (const session of this.sessions.values()) {
       if (session.phase !== "open" || !session.stream) continue;
       const { packets, durationUs } = session.stream;
       if (!session.paused) {
         const playing = Math.max(0, session.pos);
-        while (session.bytesWritten - session.bytesAcked < WINDOW_BYTES) {
+        for (;;) {
           const packet = packets[session.index]!;
           const ptsUs = packet.ptsUs + session.loop * durationUs;
           if (ptsUs - playing > AHEAD_US) break;
+          if (inFlight >= window) {
+            wanting = true;
+            break;
+          }
           const apc = videoPacket(session.id, ptsUs, packet.keyframe, packet.data);
           this.write(apc);
           session.bytesWritten += apc.length;
+          inFlight += apc.length;
           if (++session.index >= packets.length) {
             session.index = 0;
             session.loop += 1;
@@ -350,9 +399,10 @@ export class GifPlayer {
       }
       // Status while playing, and until the first frame shows: where playback is, when to swap the still out.
       while (session.queries.length && now - session.queries[0]!.at > QUERY_GIVE_UP_MS) session.queries.shift();
-      const due = session.shown === 0 ? PUMP_MS * 2 : QUERY_EVERY_MS;
+      const due = session.shown === 0 ? (session.queries.length === 0 ? 0 : PUMP_MS * 2) : QUERY_EVERY_MS;
       if ((!session.paused || session.shown === 0) && now - session.lastQueryAt >= due) this.query(session, now);
     }
+    this.adaptToLink(now, wanting);
     if (now - this.statsSince >= STATS_EVERY_MS) {
       const playing = [...this.sessions.values()].filter((session) => session.phase === "open" && !session.paused).length;
       if (this.statsBytes > 0 || playing > 0) {
@@ -360,6 +410,28 @@ export class GifPlayer {
       }
       this.statsBytes = 0;
       this.statsSince = now;
+    }
+  }
+
+  /** One GIF fewer while the window stays full; one more after a while without. */
+  private adaptToLink(now: number, limited: boolean): void {
+    const playing = [...this.sessions.values()].filter((session) => session.phase === "open" && !session.paused).length;
+    if (playing > 0) this.ticks.push({ at: now, limited });
+    while (this.ticks.length && now - this.ticks[0]!.at > MORE_AFTER_MS) this.ticks.shift();
+    const recent = this.ticks.filter((tick) => now - tick.at <= SLOW_LINK_SPAN_MS);
+    const share = recent.length ? recent.filter((tick) => tick.limited).length / recent.length : 0;
+    if (playing > 1 && recent.length >= 10 && share >= SLOW_LINK_SHARE && now - this.lastLimitChange >= FEWER_AFTER_MS) {
+      this.playLimit = playing - 1;
+      this.lastLimitChange = now;
+      this.ticks = [];
+      this.options.log?.("video.slow_link", { playing: this.playLimit });
+      // The least visible gives way at the next update.
+      this.options.onChange();
+    } else if (this.playLimit < this.maxOpen && this.ticks.length >= 20 && !this.ticks.some((tick) => tick.limited)
+      && now - this.lastLimitChange >= MORE_AFTER_MS) {
+      this.playLimit += 1;
+      this.lastLimitChange = now;
+      this.options.log?.("video.slow_link", { playing: this.playLimit });
     }
   }
 

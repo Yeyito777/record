@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { GifPlayer, type GifCandidate } from "./gifplayer";
 import type { VideoStream } from "./videostream";
 
-/** A one-second, 10 fps stream of 4 KB access units. */
-function stream(frames = 10, bytes = 4000): VideoStream {
+/** A one-second, 10 fps stream of 1 KB access units. */
+function stream(frames = 10, bytes = 1000): VideoStream {
   return {
     width: 320, height: 180, durationUs: frames * 100_000, remuxed: false,
     packets: Array.from({ length: frames }, (_, index) => ({ ptsUs: index * 100_000, keyframe: index === 0, data: Buffer.alloc(bytes, index) })),
@@ -101,21 +101,48 @@ describe("GIF player", () => {
     expect(tty.commands.filter((command) => command.k === "d").length).toBe(36);
   });
 
-  test("keeps the bytes past the newest acknowledgement within its window", async () => {
+  test("keeps the bytes past the newest acknowledgement, all GIFs together, within the window", async () => {
     const { tty, player, reply, advance } = setup();
-    // 100 KB frames: the 256 KiB window holds three.
-    player.update([{ key: "a", visibility: 5, width: 320, height: 180, load: async () => stream(10, 100_000) }]);
+    // 20 KB frames (27 KB as base64): the 32 KiB window takes two before any acknowledgement.
+    const big = (key: string) => ({ key, visibility: 5, width: 320, height: 180, load: async () => stream(10, 20_000) });
+    player.update([big("a"), big("b")]);
     await flush();
     player.pump();
-    const id = [...player.openVideoIds()][0]!;
     const packets = () => tty.commands.filter((command) => command.k === "d").length;
     expect(packets()).toBe(2);
     advance(100);
     player.pump();
     expect(packets()).toBe(2);
-    reply(id, "state=playing pos=0 shown=1");
+    // Acknowledged: more goes, and as acknowledgements keep coming the window grows with their rate.
+    const a = player["sessions"].get("a")!.id;
+    reply(a, "state=playing pos=0 shown=1");
     player.pump();
     expect(packets()).toBeGreaterThan(2);
+    for (let step = 0; step < 20; step++) {
+      advance(100);
+      for (const key of ["a", "b"]) {
+        const session = player["sessions"].get(key)!;
+        if (session.queries.length) reply(session.id, `state=playing pos=${step * 100_000} shown=${step + 1}`);
+      }
+      player.pump();
+    }
+    expect(player["windowBytes"](2100)).toBeGreaterThan(32 * 1024);
+  });
+
+  test("a link too slow for three plays one fewer, and three again once it keeps up", async () => {
+    const { player, advance } = setup();
+    // 40 KB frames: never acknowledged, the window stays full.
+    const big = (key: string) => ({ key, visibility: 5, width: 320, height: 180, load: async () => stream(10, 40_000) });
+    player.update([big("a"), big("b"), big("c")]);
+    await flush();
+    for (let step = 0; step < 80; step++) {
+      advance(40);
+      player.pump();
+    }
+    player.update([big("a"), big("b"), big("c")]);
+    const playing = () => [...player["sessions"].values()].filter((session) => session.phase === "open" && !session.paused).length;
+    expect(player["playLimit"]).toBe(2);
+    expect(playing()).toBe(2);
   });
 
   test("pauses a GIF that leaves the view, resumes it on return, closes it when its slot is wanted", async () => {
