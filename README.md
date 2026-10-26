@@ -358,6 +358,10 @@ feed. Disappearing/view-once media show a placeholder instead of downloading.
 Instagram's reaction notices ("Maya liked a message", "Reacted 😂 to your
 message") are not shown as messages: the reaction shows on the message it is
 on, and a notice never counts as unread or moves its chat up the list.
+Pictures hold their box while they load. Instagram often sends a share's
+preview without a size, so it gets the shape Instagram draws it in: 9:16
+for reels, stories and videos, 4:5 for posts, 3:4 for photos, 1.91:1 for
+link cards.
 
 Type to send text; press `r` on a message to reply. `/react <emoji>` reacts to
 the selected message and `/unreact` removes your reaction (Instagram allows
