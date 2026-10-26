@@ -155,6 +155,9 @@ const SHAPES = {
   sticker: [512, 512], artwork: [640, 640],
 } as const;
 
+/** Stickers stay small, as Instagram draws them. */
+const STICKER_MAX_ROWS = 8;
+
 function pictureSize(width: number, height: number, shape: keyof typeof SHAPES): Partial<DiscordMessageAttachment> {
   if (width > 0 && height > 0) return { width, height };
   const [placeholderWidth, placeholderHeight] = SHAPES[shape];
@@ -169,7 +172,7 @@ function shareShape(share: IgShare): keyof typeof SHAPES {
 /** A shared reel: one video fetched on open (`media/<pk>/info/`), never a feed. */
 export const INSTAGRAM_REEL_ATTACHMENT_PREFIX = "ig-reel:";
 
-interface Parts { content: string; attachments: DiscordMessageAttachment[]; embeds: DiscordMessageEmbed[]; system: boolean }
+interface Parts { content: string; attachments: DiscordMessageAttachment[]; embeds: DiscordMessageEmbed[]; system: boolean; grid?: boolean }
 
 function shareParts(state: InstagramUiState, thread: IgThread, message: IgMessage, incoming: boolean): Parts {
   if (message.content.kind !== "share") throw new Error("not a share");
@@ -265,7 +268,9 @@ function messageParts(state: InstagramUiState, thread: IgThread, message: IgMess
           attachments.push(attachment(message, index * 2, "image", item.url, pictureSize(item.width, item.height, "photo")));
         }
       });
-      return { content: "", attachments, embeds: [], system: false };
+      // An album is a grid, as Instagram shows it.
+      const pictures = attachments.filter(item => item.contentType?.startsWith("image/")).length;
+      return { content: "", attachments, embeds: [], system: false, ...(pictures > 1 ? { grid: true } : {}) };
     }
     case "voice": {
       const seconds = Math.round(content.durationSecs);
@@ -276,13 +281,13 @@ function messageParts(state: InstagramUiState, thread: IgThread, message: IgMess
     case "animated": {
       const attachments: DiscordMessageAttachment[] = [];
       const size = content.width && content.height ? { width: content.width, height: content.height } : {};
-      if (content.still) attachments.push(attachment(message, 0, "image", content.still, size, content.sticker ? "sticker.webp" : "gif.webp"));
+      if (content.still) attachments.push(attachment(message, 0, "image", content.still, content.sticker ? { ...size, maxRows: STICKER_MAX_ROWS } : size, content.sticker ? "sticker.webp" : "gif.webp"));
       if (content.mp4 && !content.sticker) attachments.push(attachment(message, 1, "video", content.mp4, size, "gif.mp4"));
       return { content: attachments.length ? "" : "[GIF]", attachments, embeds: [], system: false };
     }
     case "sticker":
       return { content: content.url ? "" : `[Sticker${content.alt ? `: ${label(content.alt)}` : ""}]`, embeds: [], system: false,
-        attachments: content.url ? [attachment(message, 0, "image", content.url, pictureSize(content.width ?? 0, content.height ?? 0, "sticker"), "sticker.webp")] : [] };
+        attachments: content.url ? [attachment(message, 0, "image", content.url, { ...pictureSize(content.width ?? 0, content.height ?? 0, "sticker"), maxRows: STICKER_MAX_ROWS }, "sticker.webp")] : [] };
     case "disappearing":
       return none(`[View-once ${content.video ? "video" : "photo"} — open Instagram to view]`);
     case "share": return shareParts(state, thread, message, incoming);
@@ -326,7 +331,7 @@ export function instagramMessageToTimeline(state: InstagramUiState, thread: IgTh
       authorId: quotedAuthor?.id ?? null, authorDisplayName: quotedAuthor?.displayName ?? null,
       timestamp: quotedTimestamp, summary: label(quoted.summary).slice(0, 160) || "(attachment)",
     } : null,
-    call: null, attachments: parts.attachments, stickerNames: [],
+    call: null, attachments: parts.attachments, ...(parts.grid ? { imageGrid: true } : {}), stickerNames: [],
     embedsCount: parts.embeds.length, embeds: parts.embeds,
     reactions: [...reactions].map(([name, reaction]) => ({ ...reaction, emoji: { id: null, name, animated: false } })),
   };

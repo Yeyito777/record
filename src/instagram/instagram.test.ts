@@ -143,6 +143,15 @@ describe("Instagram conversions", () => {
     expect(message.reactions?.[0]).toMatchObject({ count: 2, me: true, emoji: { name: "👍" } });
   });
 
+  test("albums are a grid; stickers stay small", () => {
+    const state = setup();
+    const item = (id: string) => ({ id, video: false, preview: cdn(`${id}.jpg`), url: cdn(`${id}-full.jpg`), width: 1080, height: 1440 });
+    expect(convert(state, igMessage("31", { content: { kind: "media", items: [item("a"), item("b"), item("c")] } })).imageGrid).toBe(true);
+    expect(convert(state, igMessage("32", { content: { kind: "media", items: [item("a")] } })).imageGrid).toBeUndefined();
+    const sticker = convert(state, igMessage("33", { content: { kind: "sticker", url: cdn("s.webp"), alt: "" } }));
+    expect(sticker.attachments[0]!.maxRows).toBe(8);
+  });
+
   test("pictures without a size get the shape Instagram draws them in; real sizes win", () => {
     const state = setup();
     const shareOf = (fields: Record<string, unknown>) => ({ kind: "share" as const, share: {
