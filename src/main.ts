@@ -40,6 +40,7 @@ import { findTimelineChannel, setActiveChannelEntry, setChannelList } from "./ch
 import { imageExtension, readClipboardImages, type ClipboardImageAttachment } from "./imageclipboard";
 import { inlineImageHasShape, inlineImageId, inlineImagePreviewPixelBounds, inlineImageShape, inlineImageSourcesForMessage, inlineImagesDrawable, isImageAttachment, nextInlineImageId, inlineImageSourcesNearView, inlineImageViewAnchor, inlineImageViewDistance, inlineImageViewMovedRows, inlineImageViewOffset, prepareInlineImage, prepareInlineImageBytes, shouldLoadInlineImage, type InlineChatImageLoading, type InlineChatImageReady, type InlineImagePrepareOptions, type InlineImagePrepareReport, type InlineImageViewAnchor } from "./inlineimage";
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
+import { discordAttachmentProxyRequest, proxiedAttachment } from "./discordmedia";
 import { handleImageModalKey, imageModalPixelBounds, openImageModalState, upgradeImageModal } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
@@ -632,41 +633,62 @@ function startInlineAttachmentImage(attachment: DiscordMessageAttachment, messag
       } else if (local) {
         timing.source = "local";
       } else {
-        if (messageId) queuedInlineImageFetches.set(attachment.id, { channelId, messageId, requestId });
-        const downloaded = await inlineImageFetchQueues[provider].enqueue(async () => {
-          if (queuedInlineImageFetches.get(attachment.id)?.requestId === requestId) queuedInlineImageFetches.delete(attachment.id);
-          if (!wanted()) return null;
-          timing.queueMs = Math.round(performance.now() - requestedAt);
-          const fetchStart = performance.now();
-          const result = isWhatsAppChannelId(channelId)
-            ? await whatsAppController.downloadAttachment(attachment)
-            : isInstagramChannelId(channelId)
-              ? await instagramController.downloadAttachment(attachment)
-              : await downloadAttachment(attachment);
-          timing.fetchMs = Math.round(performance.now() - fetchStart);
-          timing.source = result.cached ? "disk" : "network";
-          return result;
-        }, priority);
-        if (!downloaded) return;
-        if (!downloaded.ok || !downloaded.path) {
-          const request = current();
-          if (!request) return;
-          if (downloaded.retryWhenConnected) {
-            setTimelineInlineImageState(state.timeline, { ...request, phase: "waiting" });
-            scheduleRender();
+        // Discord: a copy scaled to the preview from its media proxy, asked
+        // for as the web client does; the original if that fails in any way.
+        const proxy = provider === "discord"
+          ? discordAttachmentProxyRequest(attachment, previewBounds.maxPixelWidth, previewBounds.maxPixelHeight)
+          : null;
+        const sources = proxy ? [proxiedAttachment(attachment, proxy), attachment] : [attachment];
+        for (const [index, source] of sources.entries()) {
+          const fallback = index < sources.length - 1 ? sources[index + 1] : undefined;
+          if (messageId) queuedInlineImageFetches.set(attachment.id, { channelId, messageId, requestId });
+          const downloaded = await inlineImageFetchQueues[provider].enqueue(async () => {
+            if (queuedInlineImageFetches.get(attachment.id)?.requestId === requestId) queuedInlineImageFetches.delete(attachment.id);
+            if (!wanted()) return null;
+            timing.queueMs ??= Math.round(performance.now() - requestedAt);
+            const fetchStart = performance.now();
+            const result = isWhatsAppChannelId(channelId)
+              ? await whatsAppController.downloadAttachment(source)
+              : isInstagramChannelId(channelId)
+                ? await instagramController.downloadAttachment(source)
+                : await downloadAttachment(source);
+            timing.fetchMs = Math.round(performance.now() - fetchStart) + (typeof timing.fetchMs === "number" ? timing.fetchMs : 0);
+            timing.source = result.cached ? "disk" : "network";
+            return result;
+          }, priority);
+          if (!downloaded) return;
+          if (!downloaded.ok || !downloaded.path) {
+            if (fallback) {
+              timing.proxyFallback = downloaded.error ?? "download failed";
+              continue;
+            }
+            const request = current();
+            if (!request) return;
+            if (downloaded.retryWhenConnected) {
+              setTimelineInlineImageState(state.timeline, { ...request, phase: "waiting" });
+              scheduleRender();
+              return;
+            }
+            setInlineImageError(request, downloaded.error ?? "unknown download error");
             return;
           }
-          setInlineImageError(request, downloaded.error ?? "unknown download error");
-          return;
+          const path = downloaded.path;
+          try {
+            prepared = await inlineImageConvertQueue.enqueue(async () => {
+              if (!current()) return undefined;
+              const convertStart = performance.now();
+              const result = await prepareInlineImage(path, previewBounds, report);
+              timing.convertMs = Math.round(performance.now() - convertStart);
+              return result;
+            }, priority);
+          } catch (error) {
+            if (!fallback) throw error;
+            timing.proxyFallback = error instanceof Error ? error.message : String(error);
+            continue;
+          }
+          if (prepared && source !== attachment) timing.proxied = `${proxy!.width}x${proxy!.height}`;
+          break;
         }
-        const path = downloaded.path;
-        prepared = await inlineImageConvertQueue.enqueue(async () => {
-          if (!current()) return undefined;
-          const convertStart = performance.now();
-          const result = await prepareInlineImage(path, previewBounds, report);
-          timing.convertMs = Math.round(performance.now() - convertStart);
-          return result;
-        }, priority);
         if (prepared) void inlinePreviewDiskCache().set(attachment, previewBounds, prepared);
       }
       if (!prepared && local) {
@@ -786,17 +808,41 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
     const report: InlineImagePrepareReport = {};
     const fetchStart = performance.now();
     let fetchMs = 0;
+    let viewerProxy: string | undefined;
     if (local) {
       prepared = await prepareInlineImageBytes(Buffer.from(local.base64, "base64"), viewerBounds, report);
-    } else {
+    } else if (isWhatsAppChannelId(channelId) || isInstagramChannelId(channelId)) {
       const downloaded = isWhatsAppChannelId(channelId)
         ? await whatsAppController.downloadAttachment(attachment)
-        : isInstagramChannelId(channelId)
-          ? await instagramController.downloadAttachment(attachment)
-          : await downloadAttachment(attachment);
+        : await instagramController.downloadAttachment(attachment);
       if (!downloaded.ok || !downloaded.path) throw new Error(downloaded.error ?? "unknown download error");
       fetchMs = performance.now() - fetchStart;
       prepared = await prepareInlineImage(downloaded.path, viewerBounds, report);
+    } else {
+      // Discord: the media proxy's copy at the viewer's size, as the web
+      // client's viewer asks for it; the original if that fails.
+      const proxy = discordAttachmentProxyRequest(attachment, viewerBounds.maxPixelWidth, viewerBounds.maxPixelHeight);
+      let fromProxy: Awaited<ReturnType<typeof prepareInlineImage>> | null = null;
+      if (proxy) {
+        try {
+          const downloaded = await downloadAttachment(proxiedAttachment(attachment, proxy));
+          if (downloaded.ok && downloaded.path) {
+            fetchMs = performance.now() - fetchStart;
+            fromProxy = await prepareInlineImage(downloaded.path, viewerBounds, report);
+          }
+        } catch {
+          fromProxy = null;
+        }
+      }
+      if (fromProxy) {
+        prepared = fromProxy;
+      } else {
+        const downloaded = await downloadAttachment(attachment);
+        if (!downloaded.ok || !downloaded.path) throw new Error(downloaded.error ?? "unknown download error");
+        fetchMs = performance.now() - fetchStart;
+        prepared = await prepareInlineImage(downloaded.path, viewerBounds, report);
+      }
+      if (proxy) viewerProxy = fromProxy ? `${proxy.width}x${proxy.height}` : "fallback";
     }
     debugLog("image.viewer", {
       fetchMs: Math.round(fetchMs),
@@ -806,6 +852,7 @@ function openInlineImageModal(attachment: DiscordMessageAttachment): boolean {
       previewBytes: prepared.pngBase64.length,
       width: prepared.pixelWidth,
       height: prepared.pixelHeight,
+      ...(viewerProxy ? { proxied: viewerProxy } : {}),
     });
 
     const modalAttachmentId = `modal:${attachment.id}`;

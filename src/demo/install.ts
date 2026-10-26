@@ -59,6 +59,7 @@ export function installDemoMode(env: Env = process.env): DemoInstall {
     latencyMs: numberEnv(env.RECORD_DEMO_LATENCY_MS, 20),
     logPath: join(configDir, "demo.log"),
   });
+  server.mediaProxyFails = env.RECORD_DEMO_MEDIA_PROXY_FAIL === "1";
 
   const configFile = join(configDir, "config.json");
   if (!existsSync(configFile)) {

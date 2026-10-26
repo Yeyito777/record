@@ -17,6 +17,7 @@ import type {
 import { demoEmbedShowcase, QUICKVIDS_BOT } from "./embeds";
 import { DEMO_TOKEN } from "./env";
 import { hexColor, type Rgb } from "./png";
+import { createHash } from "node:crypto";
 
 export { DEMO_TOKEN };
 export const DISCORD_EPOCH = 1420070400000n;
@@ -810,13 +811,29 @@ function placeEmbedShowcase(out: DiscordMessageResponse[], spec: HistorySpec, co
   });
 }
 
+/**
+ * Signed like Discord's attachment URLs (`?ex=…&is=…&hm=…&`, with the
+ * trailing `&` the API sends), so clients see the real shape; the demo CDN
+ * ignores the signature.
+ */
+export function demoAttachmentSignature(path: string): string {
+  const hm = createHash("sha256").update(path).digest("hex");
+  return `?ex=6a1f0c00&is=6a1dba80&hm=${hm}&`;
+}
+
+export function demoAttachmentUrls(channelId: string, attachmentId: string, filename: string): { url: string; proxy_url: string } {
+  const path = `/attachments/${channelId}/${attachmentId}/${filename}`;
+  const signature = demoAttachmentSignature(path);
+  return { url: `https://cdn.discordapp.com${path}${signature}`, proxy_url: `https://media.discordapp.net${path}${signature}` };
+}
+
 export function imageAttachment(channelId: string, attachmentId: string, filename: string, width: number, height: number, size: number): DiscordAttachmentResponse {
   return {
     id: attachmentId,
     filename,
     content_type: "image/png",
     size,
-    url: `https://cdn.discordapp.com/attachments/${channelId}/${attachmentId}/${filename}`,
+    ...demoAttachmentUrls(channelId, attachmentId, filename),
     width,
     height,
   };
