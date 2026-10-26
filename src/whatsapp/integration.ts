@@ -386,8 +386,9 @@ function chatRecipient(state: WhatsAppUiState, chat: WhatsAppChat): DiscordGuild
 export function whatsAppChannels(state: WhatsAppUiState): DiscordChannel[] {
   return Object.values(state.chatsById)
     .filter((chat) => (chat.kind === "direct" || chat.kind === "group") && !chat.archived)
+    // By recent activity only: the sidebar puts pinned chats in their own
+    // section, and a chat unpinned there must take its place by activity.
     .sort((left, right) => {
-      if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1;
       return (right.lastMessageAtMs ?? 0) - (left.lastMessageAtMs ?? 0)
         || whatsAppDisplayName(state, left.id).localeCompare(whatsAppDisplayName(state, right.id));
     })

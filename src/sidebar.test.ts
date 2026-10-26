@@ -25,6 +25,7 @@ import {
   moveSidebarSelectionOut,
   moveSelectedSidebarGuild,
   moveSelectedPrivateConversation,
+  selectedPrivateConversationPinned,
   openSidebarCommandBar,
   openSidebarCreateFolderPrompt,
   openSidebarMoveItemsPrompt,
@@ -306,48 +307,46 @@ describe("sidebar state", () => {
     expect(rows[3]).not.toContain(" 4 ");
   });
 
-  test("reorders and pins DM conversations with Exocortex section semantics", () => {
+  test("pins and reorders pinned DM conversations; unpinned ones follow recent activity", () => {
     const sidebar = createSidebarState();
     setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
     sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
     const channels = [
-      { id: "dm-a", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false },
-      { id: "dm-b", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Friends", topic: null, position: 1, type: 3, nsfw: false },
-      { id: "dm-c", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Charlie", topic: null, position: 2, type: 1, nsfw: false },
+      { id: "300", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Alice", topic: null, position: 0, type: 1, nsfw: false, lastMessageId: "1300" },
+      { id: "200", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Friends", topic: null, position: 1, type: 3, nsfw: false, lastMessageId: "1200" },
+      { id: "100", guildId: DIRECT_MESSAGES_GUILD_ID, parentId: null, name: "Charlie", topic: null, position: 2, type: 1, nsfw: false, lastMessageId: "1100" },
     ];
     setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, channels);
+    const order = () => buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id);
 
-    sidebar.selectedIndex = buildSidebarEntries(sidebar, []).findIndex((entry) => entry.id === "dm-b");
-    sidebar.selectedItem = null;
-    expect(moveSelectedPrivateConversation(sidebar, [], "up")).toBe(DIRECT_MESSAGES_GUILD_ID);
-    expect(buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id))
-      .toEqual(["dm-b", "dm-a", "dm-c"]);
-    expect(buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id).toBe("dm-b");
+    // Unpinned rows have no manual order.
+    sidebar.selectedItem = { type: "channel", id: "200", guildId: DIRECT_MESSAGES_GUILD_ID };
+    expect(selectedPrivateConversationPinned(sidebar, [])).toBe(false);
+    expect(moveSelectedPrivateConversation(sidebar, [], "up")).toBeNull();
+    expect(order()).toEqual(["300", "200", "100"]);
 
     expect(toggleSelectedPrivateConversationPinned(sidebar, [])).toBe(DIRECT_MESSAGES_GUILD_ID);
     let entries = buildSidebarEntries(sidebar, []);
     expect(entries.map((entry) => [entry.kind, entry.id])).toEqual([
       ["guild", DIRECT_MESSAGES_GUILD_ID],
-      ["channel", "dm-b"],
+      ["channel", "200"],
       ["delimiter", `${DIRECT_MESSAGES_GUILD_ID}::pinned-delimiter`],
-      ["channel", "dm-a"],
-      ["channel", "dm-c"],
+      ["channel", "300"],
+      ["channel", "100"],
     ]);
 
-    sidebar.selectedIndex = entries.findIndex((entry) => entry.id === "dm-c");
-    sidebar.selectedItem = { type: "channel", id: "dm-c", guildId: DIRECT_MESSAGES_GUILD_ID };
+    sidebar.selectedItem = { type: "channel", id: "100", guildId: DIRECT_MESSAGES_GUILD_ID };
     expect(toggleSelectedPrivateConversationPinned(sidebar, [])).toBe(DIRECT_MESSAGES_GUILD_ID);
-    expect(buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id))
-      .toEqual(["dm-b", "dm-c", "dm-a"]);
+    expect(order()).toEqual(["200", "100", "300"]);
+    expect(selectedPrivateConversationPinned(sidebar, [])).toBe(true);
     expect(moveSelectedPrivateConversation(sidebar, [], "up")).toBe(DIRECT_MESSAGES_GUILD_ID);
-    expect(buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id))
-      .toEqual(["dm-c", "dm-b", "dm-a"]);
+    expect(order()).toEqual(["100", "200", "300"]);
 
+    // Unpinning returns a chat to its place by recency.
     expect(toggleSelectedPrivateConversationPinned(sidebar, [])).toBe(DIRECT_MESSAGES_GUILD_ID);
     entries = buildSidebarEntries(sidebar, []);
-    expect(entries.filter((entry) => entry.kind === "channel").map((entry) => entry.id))
-      .toEqual(["dm-b", "dm-c", "dm-a"]);
-    expect(entries[sidebar.selectedIndex]?.id).toBe("dm-c");
+    expect(entries.filter((entry) => entry.kind === "channel").map((entry) => entry.id)).toEqual(["200", "300", "100"]);
+    expect(entries[sidebar.selectedIndex]?.id).toBe("100");
   });
 
   test("applies persisted conversation placement to WhatsApp chats", () => {
@@ -422,8 +421,9 @@ describe("sidebar state", () => {
       { id: "wa:b", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "B", topic: null, position: 1, type: 1, nsfw: false },
       { id: "wa:archived", guildId: WHATSAPP_GUILD_ID, parentId: null, name: "Archived", topic: null, position: 2, type: 1, nsfw: false },
     ]);
+    // The returning chat keeps its saved (unpinned) state and takes its place by activity.
     expect(buildSidebarEntries(sidebar, []).filter((entry) => entry.kind === "channel").map((entry) => entry.id))
-      .toEqual(["wa:a", "wa:archived", "wa:b"]);
+      .toEqual(["wa:a", "wa:b", "wa:archived"]);
   });
 
   test("canceling sidebar search restores the selected conversation identity", () => {

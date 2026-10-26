@@ -167,6 +167,8 @@ import {
   moveSelectedSidebarGuild,
   moveSelectedSidebarItem,
   moveSelectedPrivateConversation,
+  noteSidebarConversationMessage,
+  selectedPrivateConversationPinned,
   revealSidebarChannel,
   setSidebarCachedChannels,
   setSidebarChannelMuted,
@@ -652,6 +654,7 @@ function roleIdsForUser(state: AppState, guildId: string, channelId: string, use
 
 function maybeResortDirectMessages(state: AppState, channelId: string, messageId?: string): void {
   const accountId = currentAccountId(state);
+  if (messageId) noteSidebarConversationMessage(state.sidebar, DIRECT_MESSAGES_GUILD_ID, channelId, messageId);
   if (bumpDirectMessageChannel(state.channelList, channelId, messageId)) {
     if (accountId) saveCachedDirectMessages(accountId, state.channelList.channels);
     return;
@@ -661,6 +664,7 @@ function maybeResortDirectMessages(state: AppState, channelId: string, messageId
   const cachedDirectMessages = loadCachedDirectMessages(accountId);
   const channel = cachedDirectMessages?.find((entry) => entry.id === channelId);
   if (!cachedDirectMessages || !channel) return;
+  if (channel.lastMessageId && compareSnowflakesDesc(messageId, channel.lastMessageId) >= 0) return;
   channel.lastMessageId = messageId;
   channel.position = -1;
   saveCachedDirectMessages(accountId, sortDirectMessageChannels(cachedDirectMessages));
@@ -1819,7 +1823,7 @@ export function handleGatewayMessageCreate(state: AppState, effects: SessionEffe
   effects.scheduleRender();
 }
 
-function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, patch: DiscordMessagePatch): void {
+export function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, patch: DiscordMessagePatch): void {
   patch = reconcileOptimisticReactionPatch(state, patch);
   const guildId = patch.guildId ?? state.channelList.channels.find((channel) => channel.id === patch.channelId)?.guildId ?? null;
   if (patch.author?.roleIds) {
@@ -1828,7 +1832,7 @@ function handleGatewayMessageUpdate(state: AppState, effects: SessionEffects, pa
   for (const mention of patch.mentionUsers ?? []) {
     recordMemberRoleIds(state, guildId, mention.id, mention.roleIds);
   }
-  maybeResortDirectMessages(state, patch.channelId, patch.id);
+  // Edits never move a chat in the sidebar (Discord orders by the last message's id).
   if (patchCachedChannelMessage(state.messageCacheByChannelId, patch)) {
     persistChannelMessageCache(state, patch.channelId);
   }
@@ -5857,6 +5861,14 @@ export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects,
     currentUserId: state.auth.user?.id ?? null,
   });
   if (selected.kind === "channel" && isFixedTopLevelGuildId(selected.guildId)) {
+    if (selectedPrivateConversationPinned(state.sidebar, state.channelList.channels, {
+      showHiddenChannels: state.showHiddenChannels,
+      currentUserId: state.auth.user?.id ?? null,
+    }) === false) {
+      setNotice(state, "Unpinned chats follow recent activity; pin one with p to arrange it.", "muted", { statusLine: true, chat: false });
+      effects.scheduleRender();
+      return;
+    }
     const movedGuildId = moveSelectedPrivateConversation(
       state.sidebar,
       state.channelList.channels,
