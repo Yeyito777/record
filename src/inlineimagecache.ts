@@ -67,7 +67,7 @@ export class InlineImageCache {
 }
 
 /** Bump when previews are encoded differently, so old files are not reused. */
-const PREVIEW_FORMAT = 1;
+const PREVIEW_FORMAT = 2; // 2: palette previews of photos
 export const PREVIEW_DISK_CACHE_MAX_BYTES = 256 * 1024 * 1024;
 
 /**

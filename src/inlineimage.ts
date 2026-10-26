@@ -418,7 +418,14 @@ function normalizedPreviewBounds(options: InlineImagePrepareOptions): { width: n
   return { width: normalize(options.maxPixelWidth), height: normalize(options.maxPixelHeight) };
 }
 
-function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: InlineImagePrepareOptions = {}, prefixFilter = ""): Promise<Buffer> {
+/**
+ * A 256-colour palette (error-diffusion dithered) for photo previews: about
+ * half the PNG bytes, and half the time st spends decoding each one on its
+ * main thread; at preview sizes it looks the same.
+ */
+const PALETTE_FILTER = ",split[a][b];[a]palettegen=max_colors=256[p];[b][p]paletteuse=dither=sierra2_4a";
+
+function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: InlineImagePrepareOptions = {}, prefixFilter = "", palette = false): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const bounds = normalizedPreviewBounds(options);
     const scale = `scale='min(iw,${bounds.width})':'min(ih,${bounds.height})':force_original_aspect_ratio=decrease`;
@@ -427,7 +434,7 @@ function convertImageInputToPng(inputArgs: string[], input?: Buffer, options: In
       "-nostdin",
       ...inputArgs,
       "-map", "0:v:0",
-      "-vf", prefixFilter + scale,
+      "-vf", prefixFilter + scale + (palette ? PALETTE_FILTER : ""),
       "-frames:v", "1",
       "-f", "image2pipe",
       "-vcodec", "png",
@@ -487,13 +494,22 @@ export async function convertImageToPng(path: string, options: InlineImagePrepar
 function convertLoadedImageToPng(path: string, data: Buffer, options: InlineImagePrepareOptions): Promise<Buffer> {
   const frame = firstAnimatedWebpFrame(data);
   if (frame) return convertWebpFrameToPng(frame, options);
-  return convertImageInputToPng(["-i", path], undefined, options);
+  return convertImageInputToPng(["-i", path], undefined, options, "", usesPalette(data, options));
 }
 
 export function convertImageBytesToPng(data: Buffer, options: InlineImagePrepareOptions = {}): Promise<Buffer> {
   const frame = firstAnimatedWebpFrame(data);
   if (frame) return convertWebpFrameToPng(frame, options);
-  return convertImageInputToPng(["-i", "pipe:0"], data, options);
+  return convertImageInputToPng(["-i", "pipe:0"], data, options, "", usesPalette(data, options));
+}
+
+/**
+ * Photos (JPEG: opaque, many colours) get palette previews. Anything that may
+ * be transparent (PNG, WebP, GIF stickers) keeps full RGBA, and so does the
+ * viewer's full-resolution picture.
+ */
+function usesPalette(data: Uint8Array, options: InlineImagePrepareOptions): boolean {
+  return !options.preserveSourceResolution && data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
 }
 
 function convertWebpFrameToPng(frame: NonNullable<ReturnType<typeof firstAnimatedWebpFrame>>, options: InlineImagePrepareOptions): Promise<Buffer> {
