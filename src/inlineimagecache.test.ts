@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { InlineImageCache, inlineImageCacheKey } from "./inlineimagecache";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 
 const preview = { pngBase64: "cG5n", pixelWidth: 100, pixelHeight: 50 };
 
@@ -43,5 +47,58 @@ describe("prepared inline image cache", () => {
   test("repeated sticker occurrences can share a preview", () => {
     const source = { id: "first", cacheKey: "sticker:1", url: "https://example.com/1.png" };
     expect(inlineImageCacheKey(source, {})).toBe(inlineImageCacheKey({ ...source, id: "second" }, {}));
+  });
+});
+
+describe("prepared previews on disk", () => {
+  const png = (width: number, height: number) => {
+    // A PNG header is all the disk cache reads besides the bytes.
+    const bytes = Buffer.alloc(33);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes, 0);
+    bytes.writeUInt32BE(13, 8);
+    bytes.write("IHDR", 12, "ascii");
+    bytes.writeUInt32BE(width, 16);
+    bytes.writeUInt32BE(height, 20);
+    return bytes.toString("base64");
+  };
+
+  test("survive the session: a later run gets the same preview without downloading or converting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-previews-"));
+    try {
+      const attachment = { id: "a1", url: "https://cdn.example/a1.jpg?ex=1&hm=2", filename: "a1.jpg" };
+      const bounds = { maxPixelWidth: 576, maxPixelHeight: 256 };
+      const first = new InlinePreviewDiskCache(dir);
+      expect(await first.get(attachment, bounds)).toBeNull();
+      const prepared = { pngBase64: png(120, 90), pixelWidth: 120, pixelHeight: 90, sourcePixelWidth: 120, sourcePixelHeight: 90 };
+      await first.set(attachment, bounds, prepared);
+      const later = new InlinePreviewDiskCache(dir);
+      // Discord re-signs attachment URLs: only the path names the picture.
+      expect(await later.get({ ...attachment, url: "https://cdn.example/a1.jpg?ex=9&hm=8" }, bounds)).toEqual(prepared);
+      // Another cell size wants another preview.
+      expect(await later.get(attachment, { maxPixelWidth: 1152, maxPixelHeight: 512 })).toBeNull();
+      // A scaled-down preview does not claim to be the source size.
+      const scaled = { pngBase64: png(60, 45), pixelWidth: 60, pixelHeight: 45 };
+      await later.set({ ...attachment, id: "a2" }, bounds, scaled);
+      expect(await later.get({ ...attachment, id: "a2" }, bounds)).toEqual(scaled);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps within its byte budget, least recently used first out", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-previews-"));
+    try {
+      const cache = new InlinePreviewDiskCache(dir, 100);
+      const bounds = { maxPixelWidth: 576, maxPixelHeight: 256 };
+      for (let index = 0; index < 5; index++) {
+        await cache.set({ id: `a${index}`, url: "" }, bounds, { pngBase64: png(10, 10), pixelWidth: 10, pixelHeight: 10 });
+      }
+      // 33 bytes each: three fit in 100.
+      expect(readdirSync(dir).filter((name) => name.endsWith(".png"))).toHaveLength(3);
+      expect(await cache.get({ id: "a0", url: "" }, bounds)).toBeNull();
+      expect(await cache.get({ id: "a4", url: "" }, bounds)).not.toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
