@@ -67,6 +67,14 @@ describe("history cursor", () => {
     expect(remapRenderedRow(2, oldAnchors, index)).toBe(5);
   });
 
+  test("a picture's loading line maps onto the picture when it lands", () => {
+    const oldAnchors = ["msg:1:header", "msg:1:image-status:a1:0", "msg:2:header"];
+    const index = buildLineAnchorIndex(["msg:1:header", ...[0, 1, 2, 3].map((row) => `msg:1:image:a1:${row}`), "msg:2:header"]);
+    // Before, the view or cursor on it went on past the picture, to the next message.
+    expect(remapRenderedRow(1, oldAnchors, index)).toBe(1);
+    expect(remapRenderedRow(2, oldAnchors, index)).toBe(5);
+  });
+
   test("resolves and jumps from a rendered reply preview to its original message", () => {
     const state = createInitialState(null, "/tmp/record-config.json");
     state.chatFocus = "history";

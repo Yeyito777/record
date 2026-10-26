@@ -72,10 +72,19 @@ export function logicalLineRange(row: number, wrapContinuation: boolean[]): { fi
   return { first, last };
 }
 
+/**
+ * A picture's rows while it loads (`image-status`) are the same rows once it
+ * is drawn (`image`): a picture never has both, and the rows it held must
+ * map onto the rows it draws when it lands.
+ */
+function anchorKey(anchor: string): string {
+  return anchor.includes(":image-status:") ? anchor.replace(":image-status:", ":image:") : anchor;
+}
+
 export function buildLineAnchorIndex(anchors: string[]): Map<string, number> {
   const index = new Map<string, number>();
   for (let row = 0; row < anchors.length; row++) {
-    index.set(anchors[row], row);
+    index.set(anchorKey(anchors[row]), row);
   }
   return index;
 }
@@ -125,15 +134,15 @@ export function jumpHistoryCursorToReplyTarget(state: AppState, visibleRows: num
 export function remapRenderedRow(oldRow: number, oldAnchors: string[], newAnchorIndex: Map<string, number>): number {
   if (oldAnchors.length === 0) return 0;
   const clamped = Math.max(0, Math.min(oldRow, oldAnchors.length - 1));
-  const exact = newAnchorIndex.get(oldAnchors[clamped]);
+  const exact = newAnchorIndex.get(anchorKey(oldAnchors[clamped]));
   if (exact !== undefined) return exact;
 
   for (let row = clamped + 1; row < oldAnchors.length; row++) {
-    const mapped = newAnchorIndex.get(oldAnchors[row]);
+    const mapped = newAnchorIndex.get(anchorKey(oldAnchors[row]));
     if (mapped !== undefined) return mapped;
   }
   for (let row = clamped - 1; row >= 0; row--) {
-    const mapped = newAnchorIndex.get(oldAnchors[row]);
+    const mapped = newAnchorIndex.get(anchorKey(oldAnchors[row]));
     if (mapped !== undefined) return mapped;
   }
   return 0;
