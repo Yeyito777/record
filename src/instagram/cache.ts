@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { writePrivateFileAtomic } from "./files";
 import { instagramAuthPath } from "./auth";
 import type { InstagramOutgoing } from "./integration";
 import type { IgThread } from "./model";
@@ -62,16 +63,7 @@ export function loadInstagramCache(accountId: string, path = instagramCachePath(
 
 /** Private (0600 in a 0700 directory), atomic, best effort. */
 export async function saveInstagramCache(snapshot: InstagramCacheSnapshot, path = instagramCachePath(snapshot.accountId)): Promise<void> {
-  const data = JSON.stringify(trimInstagramSnapshot(snapshot));
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await chmod(dirname(path), 0o700);
-  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, data, { mode: 0o600, flag: "wx" });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await writePrivateFileAtomic(path, JSON.stringify(trimInstagramSnapshot(snapshot)));
 }
 
 export async function removeInstagramCache(accountId: string): Promise<void> {

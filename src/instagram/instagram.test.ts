@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { INSTAGRAM_GUILD_ID, instagramChannelId, WHATSAPP_GUILD_ID } from "../chatproviders";
@@ -11,6 +11,7 @@ import { loadInstagramSession, parseInstagramCookies, saveInstagramSession, vali
 import { loadInstagramCache, saveInstagramCache, trimInstagramSnapshot, type InstagramCacheSnapshot } from "./cache";
 import { InstagramApiError, type InstagramClient } from "./client";
 import { InstagramController, type InstagramControllerOptions } from "./controller";
+import { sweepInstagramTemps } from "./files";
 import { createInstagramUiState, instagramChannels, instagramMessageToTimeline, instagramTimelineMessages } from "./integration";
 import type { IgInboxPage, IgMessage, IgThread } from "./model";
 import { FRIEND_FBID, igMessage, igPage, igThread, VIEWER_FBID } from "./testkit";
@@ -71,6 +72,50 @@ describe("Instagram session", () => {
       expect((await stat(path)).mode & 0o777).toBe(0o600);
       expect((await stat(join(directory, "instagram"))).mode & 0o777).toBe(0o700);
     } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+});
+
+describe("Instagram files leave no temp files behind", () => {
+  test("a session save leaves only session.json; a startup sweep removes temp files a killed write left", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "record-ig-tmp-"));
+    const path = join(directory, "instagram", "session.json");
+    try {
+      await saveInstagramSession(session, path);
+      expect(await readdir(join(directory, "instagram"))).toEqual(["session.json"]);
+      const accounts = join(directory, "instagram", "accounts", "1");
+      await mkdir(accounts, { recursive: true });
+      const old = Date.now() - 3 * 86_400_000;
+      const names = {
+        legacy: `session.json.${crypto.randomUUID()}.tmp`,
+        deadWriter: `session.json.999999999.${crypto.randomUUID()}.tmp`,
+        liveWriter: `session.json.${process.pid}.${crypto.randomUUID()}.tmp`,
+      };
+      for (const name of Object.values(names)) await writeFile(join(directory, "instagram", name), "{}");
+      await utimes(join(directory, "instagram", names.legacy), old / 1000, old / 1000);
+      await writeFile(join(accounts, `cache.json.${crypto.randomUUID()}.tmp`), "{}");
+      await utimes(join(accounts, (await readdir(accounts))[0]!), old / 1000, old / 1000);
+      await writeFile(join(accounts, "notes.txt"), "kept");
+      expect(sweepInstagramTemps(join(directory, "instagram"))).toBe(3);
+      expect((await readdir(join(directory, "instagram"))).sort()).toEqual(["accounts", names.liveWriter, "session.json"].sort());
+      expect(await readdir(accounts)).toEqual(["notes.txt"]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("shutdown waits for a session save Instagram's cookie rotation started", async () => {
+    let rotate: ((value: typeof session) => void) | undefined;
+    let saved = false;
+    const h = harness({}, {
+      saveSession: async () => { await new Promise(resolve => setTimeout(resolve, 40)); saved = true; },
+    });
+    const factory = (h.controller as unknown as { options: InstagramControllerOptions }).options.clientFactory!;
+    (h.controller as unknown as { options: InstagramControllerOptions }).options.clientFactory = (value, options) => {
+      rotate = options.onSessionRotated;
+      return factory(value, options);
+    };
+    await h.controller.autoConnect();
+    rotate!({ cookies: { ...session.cookies, csrftoken: "rotated" } });
+    await h.controller.shutdown();
+    expect(saved).toBe(true);
   });
 });
 

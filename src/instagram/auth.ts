@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { writePrivateFileAtomic } from "./files";
 
 export interface InstagramSession {
   cookies: Record<string, string>;
@@ -89,16 +90,7 @@ export async function importInstagramSession(tabId?: string): Promise<InstagramS
 }
 
 export async function saveInstagramSession(session: InstagramSession, path = instagramAuthPath()): Promise<void> {
-  const directory = join(path, "..");
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
-  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, JSON.stringify(validateSession(session)), { mode: 0o600, flag: "wx" });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await writePrivateFileAtomic(path, JSON.stringify(validateSession(session)));
 }
 
 export async function loadInstagramSession(path = instagramAuthPath()): Promise<InstagramSession | null> {

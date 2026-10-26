@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { writePrivateFileAtomic } from "./files";
 import { instagramAuthPath } from "./auth";
 
 /** Explicit false overrides also matter: unmuting locally must beat remote mute. */
@@ -33,15 +33,7 @@ export function loadInstagramMutes(accountId: string): InstagramMuteOverrides {
 export async function saveInstagramMutes(accountId: string, overrides: InstagramMuteOverrides): Promise<void> {
   const path = instagramMutePath(accountId);
   const data = JSON.stringify({ version: 1, overrides: validateOverrides(overrides) });
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await chmod(dirname(path), 0o700);
-  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, data, { mode: 0o600, flag: "wx" });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await writePrivateFileAtomic(path, data);
 }
 
 export function isInstagramThreadMuted(overrides: InstagramMuteOverrides, thread: { thread_id: string; muted?: boolean }): boolean {
