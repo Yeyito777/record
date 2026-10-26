@@ -434,6 +434,8 @@ function mediaAttachment(message: WhatsAppMessage): DiscordMessageAttachment[] {
     url: "",
     ...(media.width && media.height ? { width: media.width, height: media.height } : {}),
     ...(media.durationSeconds !== undefined ? { durationSecs: media.durationSeconds } : {}),
+    // A GIF is an mp4 played looping and silent (gifPlayback); its first frame is its still.
+    ...(media.mediaKind === "video" && media.animated ? { animation: "self" as const } : {}),
   };
   mediaMessagesByAttachment.set(attachment, message);
   return [attachment];

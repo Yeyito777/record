@@ -8,6 +8,8 @@
  */
 
 import { spawn } from "node:child_process";
+
+import { demoAnimation } from "./animations";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -31,6 +33,13 @@ import { hexColor, renderPicture, type Rgb } from "./png";
 export const DEMO_WHATSAPP_SELF = "5511900000000@s.whatsapp.net";
 /** The chat that is nearly all photos (RECORD_DEMO_OPEN=wa-photos). */
 export const DEMO_WHATSAPP_PHOTOS_CHAT = "120363000000000001@g.us";
+/** "Weekend trip": a few of its newest messages are GIFs (mp4s played looping and silent). */
+export const DEMO_WHATSAPP_GIFS_CHAT = "120363000000000002@g.us";
+/** Which of its messages, counted from the newest, are GIFs, and their size. */
+const DEMO_WHATSAPP_GIFS: { fromEnd: number; width: number; height: number; seed: number }[] = [
+  { fromEnd: 2, width: 480, height: 270, seed: 11 },
+  { fromEnd: 7, width: 320, height: 320, seed: 12 },
+];
 
 /** Messages per chat a fresh connection (and the seeded cache) starts with. */
 const RECENT_MESSAGES = 40;
@@ -111,6 +120,8 @@ export interface DemoWhatsAppData {
   messagesByChatId: Map<string, WhatsAppMessage[]>;
   /** Which photo size a media message shows. */
   photoSizeByMessageId: Map<string, number>;
+  /** GIF messages (mp4 with gifPlayback): their size and look. */
+  gifByMessageId: Map<string, { width: number; height: number; seed: number }>;
 }
 
 /** The demo's WhatsApp world, the same for every run with the same anchor. */
@@ -124,6 +135,7 @@ export function buildDemoWhatsAppData(anchorMs: number): DemoWhatsAppData {
   ];
   const messagesByChatId = new Map<string, WhatsAppMessage[]>();
   const photoSizeByMessageId = new Map<string, number>();
+  const gifByMessageId = new Map<string, { width: number; height: number; seed: number }>();
   const chats: WhatsAppChat[] = [];
   specs.forEach((spec, chatIndex) => {
     const random = seeded(1000 + chatIndex);
@@ -172,6 +184,18 @@ export function buildDemoWhatsAppData(anchorMs: number): DemoWhatsAppData {
         content,
       });
     }
+    // GIFs replace a few newest messages after the rest is drawn, so no other message changes.
+    if (spec.chat.id === DEMO_WHATSAPP_GIFS_CHAT) {
+      for (const gif of DEMO_WHATSAPP_GIFS) {
+        const message = messages[messages.length - gif.fromEnd];
+        if (!message) continue;
+        message.content = {
+          kind: "media", mediaKind: "video", mimeType: "video/mp4", animated: true, width: gif.width, height: gif.height, durationSeconds: 2,
+          download: { mediaKeyBase64: Buffer.from(`demo-${message.id}`).toString("base64"), directPath: `/demo/${message.id}` },
+        };
+        gifByMessageId.set(message.id, gif);
+      }
+    }
     messagesByChatId.set(spec.chat.id, messages);
     chats.push({ ...spec.chat, lastMessageAtMs: messages.at(-1)!.timestampMs ?? anchorMs });
   });
@@ -181,6 +205,7 @@ export function buildDemoWhatsAppData(anchorMs: number): DemoWhatsAppData {
     contacts: PEOPLE.map((person) => ({ id: person.jid, name: person.name, pushName: person.name.split(" ")[0] })),
     messagesByChatId,
     photoSizeByMessageId,
+    gifByMessageId,
   };
 }
 
@@ -334,7 +359,9 @@ export class DemoWhatsAppBackend implements WhatsAppBackendHandle {
     const min = this.options.mediaDelayMinMs ?? 100;
     const max = this.options.mediaDelayMaxMs ?? 800;
     const started = Date.now();
-    const bytes = this.uploads.get(message.id) ?? await this.photo(this.options.data.photoSizeByMessageId.get(message.id) ?? 0);
+    const gif = this.options.data.gifByMessageId.get(message.id);
+    const bytes = this.uploads.get(message.id)
+      ?? (gif ? await demoAnimation("mp4", gif.width, gif.height, gif.seed) : await this.photo(this.options.data.photoSizeByMessageId.get(message.id) ?? 0));
     // Fetch + decrypt: the same message always takes about as long.
     await delay(Math.max(0, min + (hash(message.id) % Math.max(1, max - min)) - (Date.now() - started)));
     if (this.stopped) throw new Error("WhatsApp is not connected.");

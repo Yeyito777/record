@@ -1032,6 +1032,20 @@ export function render(state: AppState): void {
     // Clipped by st, nothing past the pane needs cropping again.
     smooth?.noteImagesExtended(imageClips.length === 0
       && placements.some((placement) => placement.row + placement.rows - 1 > paneBottom));
+    // GIFs: which are in view and how much (the player starts the most
+    // visible), and the video placed in its still's stead once it shows frames.
+    const videoView: { attachmentId: string; rows: number }[] = [];
+    for (let index = 0; index < placements.length; index++) {
+      const placement = placements[index]!;
+      if (!placement.image.animated) continue;
+      const covered = !!state.imageModal
+        || overlays.some(({ rect }) => intersects(rect, placement.row, placement.col, placement.rows, placement.columns));
+      videoView.push({ attachmentId: placement.image.attachmentId, rows: covered ? 0 : Math.max(0, Math.min(placement.rows, paneBottom - placement.row + 1)) });
+      const videoId = state.inlineVideoImageFor?.(placement.image.attachmentId);
+      // Never sent as image data: the planner only transmits the ready stills it is given.
+      if (videoId) placements[index] = { ...placement, image: { ...placement.image, imageId: videoId } };
+    }
+    state.inlineVideoView = videoView;
     if (viewerPlacement) placements.push(viewerPlacement);
     return placements;
   };

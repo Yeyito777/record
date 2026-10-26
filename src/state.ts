@@ -185,6 +185,10 @@ export interface AppState {
   chatMouseLayout: ChatMouseLayout | null;
   /** The screen cell a left press in history started on, until release (drag-select, click-to-open). */
   mouseHistoryPress: { col: number; row: number; exact: boolean } | null;
+  /** The video playing in place of an animated picture's still (gifplayer.ts), once it shows frames. */
+  inlineVideoImageFor: ((attachmentId: string) => number | null) | null;
+  /** Animated pictures the last frame drew, with how many of their rows were in view (0: covered). */
+  inlineVideoView: { attachmentId: string; rows: number }[];
 }
 
 /** Screen rows/columns (1-based) of the last frame's chat column. */
@@ -287,6 +291,8 @@ export function createInitialState(
     mouseCursor: "pointer",
     chatMouseLayout: null,
     mouseHistoryPress: null,
+    inlineVideoImageFor: null,
+    inlineVideoView: [],
   };
 }
 

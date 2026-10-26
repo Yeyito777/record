@@ -61,6 +61,8 @@ export interface InlineChatImageReady extends InlineChatImageBase {
   pixelHeight: number;
   sourcePixelWidth?: number;
   sourcePixelHeight?: number;
+  /** A GIF: where the terminal plays video, it plays in place of this still. */
+  animated?: boolean;
 }
 
 export type InlineChatImageState = InlineChatImageLoading | InlineChatImageWaiting | InlineChatImageError | InlineChatImageReady;
@@ -114,6 +116,8 @@ export interface InlineImagePrepareOptions {
 }
 
 export function isImageAttachment(attachment: DiscordMessageAttachment): boolean {
+  // A GIF that is an mp4 (WhatsApp's) is a picture too: its first frame is the still.
+  if (attachment.animation) return true;
   if (attachment.contentType?.toLowerCase().startsWith("image/")) return true;
   return IMAGE_EXTENSIONS.has(extname(attachment.filename).slice(1).toLowerCase());
 }
@@ -140,6 +144,8 @@ export function stickerImageAttachment(
   if (!url) return null;
   const gif = sticker.formatType === 4;
   return {
+    // APNG (2) and GIF (4) stickers move: they play where the terminal plays video.
+    ...(sticker.formatType === 2 || gif ? { animation: "self" as const } : {}),
     // Sticker IDs are reusable across messages, unlike attachment IDs. Include
     // the message occurrence so collapsing/selecting one does not affect every
     // other use of the same sticker in the channel.

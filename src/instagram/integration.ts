@@ -281,7 +281,9 @@ function messageParts(state: InstagramUiState, thread: IgThread, message: IgMess
     case "animated": {
       const attachments: DiscordMessageAttachment[] = [];
       const size = content.width && content.height ? { width: content.width, height: content.height } : {};
-      if (content.still) attachments.push(attachment(message, 0, "image", content.still, content.sticker ? { ...size, maxRows: STICKER_MAX_ROWS } : size, content.sticker ? "sticker.webp" : "gif.webp"));
+      // Where the terminal plays video the mp4 plays in the still's box (and its row goes: timeline.ts).
+      const animation = content.mp4 ? { animation: { url: content.mp4, filename: "gif.mp4", contentType: "video/mp4" } } : {};
+      if (content.still) attachments.push(attachment(message, 0, "image", content.still, { ...(content.sticker ? { ...size, maxRows: STICKER_MAX_ROWS } : size), ...animation }, content.sticker ? "sticker.webp" : "gif.webp"));
       if (content.mp4 && !content.sticker) attachments.push(attachment(message, 1, "video", content.mp4, size, "gif.mp4"));
       return { content: attachments.length ? "" : "[GIF]", attachments, embeds: [], system: false };
     }

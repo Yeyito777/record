@@ -166,6 +166,17 @@ export function embedMatchesLine(embed: Pick<DisplayEmbed, "url">, line: string)
   return targets.some((target) => target === embedUrl || embedUrl.startsWith(target) || target.startsWith(embedUrl));
 }
 
+/**
+ * The message is nothing but the link of the GIF it embeds (Tenor, Giphy, a
+ * .gif): it shows just the GIF, without the link line, as Discord does.
+ */
+export function isOnlyGifLink(content: string, embeds: readonly DisplayEmbed[]): boolean {
+  const text = content.trim();
+  if (!/^<?https?:\/\/\S+>?$/.test(text)) return false;
+  return embeds.some((embed) => (embed.type === "gifv" || (embed.type === "image" && /\.gif(?:[?#]|$)/i.test(embed.url ?? "")))
+    && embedMatchesLine(embed, text.replace(/^<|>$/g, "")));
+}
+
 export type DisplayMessagePart<T> =
   | { kind: "text"; text: string }
   /** `placed`: drawn right under the line holding its URL. */

@@ -15,6 +15,7 @@ import type {
   DiscordMessageResponse,
 } from "../discord";
 import { demoEmbedShowcase, QUICKVIDS_BOT } from "./embeds";
+import { demoGifShowcase, type DemoAnimationSpec } from "./gifs";
 import { DEMO_TOKEN } from "./env";
 import { hexColor, type Rgb } from "./png";
 import { createHash } from "node:crypto";
@@ -117,7 +118,7 @@ export interface DemoGuild {
   voiceStates: Array<{ channelId: string; userId: string; selfMute: boolean; selfDeaf: boolean }>;
 }
 
-export type HistoryStyle = "chat" | "images" | "code" | "long" | "emoji" | "announce" | "dm" | "embeds";
+export type HistoryStyle = "chat" | "images" | "code" | "long" | "emoji" | "announce" | "dm" | "embeds" | "gifs";
 
 export interface HistorySpec {
   channelId: string;
@@ -518,6 +519,16 @@ export function buildDemoWorld(anchorMs = DEFAULT_DEMO_ANCHOR_MS): DemoWorld {
   });
   histories.set(embedsId, { channelId: embedsId, guildId: lounge.id, count: 40, style: "embeds", lastMs: embedsLastMs, authorIds: [...lounge.memberIds] });
 
+  // Created after #embeds, so no id above changes.
+  const gifsId = entityId();
+  const gifsLastMs = anchorMs - 12 * 60_000;
+  lounge.channels.push({
+    id: gifsId, guild_id: lounge.id, parent_id: images.parent_id ?? null, name: "gifs", type: 0,
+    position: images.position, topic: "GIFs: Tenor and Giphy links, .gif files, animated stickers", last_message_id: snowflake(gifsLastMs),
+    permission_overwrites: [],
+  });
+  histories.set(gifsId, { channelId: gifsId, guildId: lounge.id, count: 30, style: "gifs", lastMs: gifsLastMs, authorIds: [...lounge.memberIds] });
+
   return {
     anchorMs, self, users, guilds, directMessages, histories, mentionCounts, unreadDirectMessages, emojisById,
     defaultChannel: { guildId: lounge.id, channelId: general.id },
@@ -622,6 +633,8 @@ export interface HistoryContext {
   registerImage: (attachmentId: string, variantIndex: number) => number;
   /** Embeds a message gets a moment after its channel opens (a link unfurling). */
   registerLateEmbeds?: (messageId: string, embeds: DiscordEmbedResponse[]) => void;
+  /** An attachment or sticker id the CDN serves as an animation (#gifs). */
+  registerAnimation?: (id: string, animation: DemoAnimationSpec) => void;
 }
 
 export function buildMessageAuthor(world: DemoWorld, guild: DemoGuild | null, userId: string): Pick<DiscordMessageResponse, "author" | "member"> {
@@ -776,7 +789,41 @@ export function buildHistory(spec: HistorySpec, context: HistoryContext): Discor
     out.push(message);
   }
   if (spec.style === "embeds") placeEmbedShowcase(out, spec, context);
+  if (spec.style === "gifs") placeGifShowcase(out, spec, context);
   return out;
+}
+
+/** The newest messages of #gifs become the GIF showcase (demo/gifs.ts). */
+function placeGifShowcase(out: DiscordMessageResponse[], spec: HistorySpec, context: HistoryContext): void {
+  const showcase = demoGifShowcase();
+  const first = Math.max(0, out.length - showcase.length);
+  showcase.forEach((entry, index) => {
+    const message = out[first + index];
+    if (!message) return;
+    const author = [...context.world.users.values()].find((user) => user.username === entry.author);
+    Object.assign(message, buildMessageAuthor(context.world, context.guild, author?.id ?? context.world.self.id));
+    message.type = 0;
+    message.content = entry.content;
+    message.embeds = entry.embeds ?? [];
+    message.attachments = (entry.gifs ?? []).map((gif, gifIndex) => {
+      const attachmentId = snowflake(snowflakeTime(message.id), 30 + gifIndex);
+      context.registerAnimation?.(attachmentId, { kind: "gif", width: gif.width, height: gif.height, seed: gif.seed });
+      return {
+        id: attachmentId, filename: gif.filename, content_type: "image/gif", size: 0,
+        ...demoAttachmentUrls(spec.channelId, attachmentId, gif.filename), width: gif.width, height: gif.height,
+      };
+    });
+    delete message.sticker_items;
+    if (entry.sticker) {
+      const stickerId = snowflake(snowflakeTime(message.id), 40);
+      context.registerAnimation?.(stickerId, { kind: "apng", width: 320, height: 320, seed: entry.sticker.seed });
+      message.sticker_items = [{ id: stickerId, name: entry.sticker.name, format_type: 2 }];
+    }
+    delete message.reactions;
+    delete message.message_reference;
+    delete message.referenced_message;
+    message.edited_timestamp = null;
+  });
 }
 
 /** The newest messages of #embeds become one embed of each kind (demo/embeds.ts). */

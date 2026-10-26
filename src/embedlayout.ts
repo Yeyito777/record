@@ -41,6 +41,8 @@ export interface EmbedLayoutOptions {
   states: Readonly<Record<string, InlineChatImageState>>;
   /** Ctrl+O: provider rows, timestamps and uncapped descriptions/field values. */
   showDetails: boolean;
+  /** GIFs play in their boxes (st video): a gifv poster has no "▶ GIF" row. */
+  gifsPlay?: boolean;
   loadingFrameIndex: number;
   cellWidthPixels: number;
   cellHeightPixels: number;
@@ -384,7 +386,7 @@ export function layoutEmbed(group: EmbedGroup, options: EmbedLayoutOptions): Emb
       const text = row === 0 && label ? `${label.color}${truncate(label.text, contentWidth)}${theme.reset}${restore}` : "";
       push({ text, anchor: `msg:${options.messageId}:image:${sourceId}:${row}`, cont: false });
     }
-    if (source.role === "poster") {
+    if (source.role === "poster" && !(options.gifsPlay && embed.type === "gifv")) {
       const duration = formatVideoDuration(embed.video?.durationSecs);
       const play = embed.type === "gifv" ? "▶ GIF" : "▶ Play";
       const playLabel = `${theme.accent}${play}${theme.reset}${restore}${duration ? `${theme.muted} · ${duration}${theme.reset}${restore}` : ""}`;
