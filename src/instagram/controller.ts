@@ -9,8 +9,10 @@ import { applySidebarChannelLayoutForGuild, setSidebarCachedChannels, setSidebar
 import { setNotice, type AppState } from "../state";
 import { appendTimelineMessage, clearTimeline, isTimelineNearBottom, setTimelineMessages } from "../timeline";
 import { sanitizeTerminalLabel } from "../whatsapp/sanitize";
-import { importInstagramSession, loadInstagramSession, parseInstagramCookies, removeInstagramSession, saveInstagramSession, type InstagramLogin, type InstagramSession } from "./auth";
+import { dirname } from "node:path";
+import { importInstagramSession, instagramAuthPath, loadInstagramSession, parseInstagramCookies, removeInstagramSession, saveInstagramSession, type InstagramLogin, type InstagramSession } from "./auth";
 import { loadInstagramCache, saveInstagramCache, type InstagramCacheSnapshot } from "./cache";
+import { sweepInstagramTemps } from "./files";
 import { InstagramApiError, InstagramClient } from "./client";
 import {
   createInstagramUiState, INSTAGRAM_DRAFT_PREFIX, INSTAGRAM_REEL_ATTACHMENT_PREFIX, instagramChannels, instagramThreadForChannel,
@@ -46,6 +48,7 @@ export interface InstagramControllerOptions {
 const MAX_INBOX_PAGES = 12;
 
 let defaultControllerOptions: InstagramControllerOptions = {};
+let tempsSwept = false;
 
 /** Demo mode: a fake client and session behind the controller (src/demo/instagram.ts). */
 export function setDefaultInstagramControllerOptions(options: InstagramControllerOptions): void {
@@ -93,6 +96,11 @@ export class InstagramController {
     this.stopTimer();
     this.state.instagram.connection = { status: "connecting" };
     this.updateStatus();
+    if (!tempsSwept) {
+      tempsSwept = true;
+      // Temp files of writes a kill or crash interrupted (session, cache, mutes).
+      try { sweepInstagramTemps(dirname(instagramAuthPath())); } catch { /* best effort */ }
+    }
     try {
       const session = await (this.options.loadSession || loadInstagramSession)();
       if (generation !== this.generation) return;
@@ -148,9 +156,10 @@ export class InstagramController {
       // Instagram rotates cookies on successful responses: keep the saved login current.
       onSessionRotated: rotated => {
         if (generation !== this.generation) return;
-        this.authWrites = this.authWrites.catch(() => {}).then(async () => {
-          if (generation === this.generation) await (this.options.saveSession || saveInstagramSession)(rotated).catch(() => {});
-        });
+        // Written even if Record quits first (shutdown waits for it); a later
+        // login or logout queues behind it, so it never overwrites theirs.
+        this.authWrites = this.authWrites.catch(() => {}).then(() =>
+          (this.options.saveSession || saveInstagramSession)(rotated).catch(() => {}));
       },
     };
     return (this.options.clientFactory || ((s, o) => new InstagramClient(s, o)))(session, options);
@@ -830,7 +839,8 @@ export class InstagramController {
     this.sendQueues.clear();
     this.retryAttempt = 0;
     this.resetInboxPaging();
-    await Promise.all([this.muteWrites, this.cacheWrites]);
+    // A rotated-cookie save still writing would leave its temp file (and lose the rotation).
+    await Promise.all([this.muteWrites, this.cacheWrites, this.authWrites.catch(() => {})]);
   }
 
   private clearProvider(updateStatus = true): void {
