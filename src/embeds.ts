@@ -171,6 +171,7 @@ function mediaSource(
       size: 0,
       url,
       ...(media.width && media.height ? { width: media.width, height: media.height } : {}),
+      ...(media.placeholderWidth && media.placeholderHeight ? { placeholderWidth: media.placeholderWidth, placeholderHeight: media.placeholderHeight } : {}),
     },
   };
 }

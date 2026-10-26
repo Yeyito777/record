@@ -147,6 +147,9 @@ export function stickerImageAttachment(
     // bounded downloader to validate non-empty content without exact matching.
     size: 0,
     url,
+    // Nor their size: Discord stickers are 320x320.
+    placeholderWidth: 320,
+    placeholderHeight: 320,
   };
 }
 
@@ -548,6 +551,37 @@ export function fitPictureCells(
     const difference = error(cells) - error(best);
     return difference < -0.005 || (Math.abs(difference) <= 0.005 && cells.columns * cells.rows > best.columns * best.rows) ? cells : best;
   });
+}
+
+/** A picture's size before it arrives: the provider's, else its assumed shape, else null. */
+export function inlineImageShape(
+  attachment: Pick<DiscordMessageAttachment, "width" | "height" | "placeholderWidth" | "placeholderHeight">,
+): { width: number; height: number } | null {
+  if ((attachment.width ?? 0) > 0 && (attachment.height ?? 0) > 0) return { width: attachment.width!, height: attachment.height! };
+  if ((attachment.placeholderWidth ?? 0) > 0 && (attachment.placeholderHeight ?? 0) > 0) {
+    return { width: attachment.placeholderWidth!, height: attachment.placeholderHeight! };
+  }
+  return null;
+}
+
+/** The decoded picture has that shape (a scaled preview of it), not a rotated or wrong one. */
+export function inlineImageHasShape(shape: { width: number; height: number }, picture: { pixelWidth: number; pixelHeight: number }): boolean {
+  const expectedHeight = (picture.pixelWidth * shape.height) / shape.width;
+  return Math.abs(expectedHeight - picture.pixelHeight) <= Math.max(2, picture.pixelHeight * 0.02);
+}
+
+const PENDING_REQUEST_ID = -1;
+
+/**
+ * A picture that loads once it is near the view and was not requested yet:
+ * shown as loading in its box, its spinner still (nothing to animate).
+ */
+export function pendingInlineImage(attachment: Pick<DiscordMessageAttachment, "id" | "filename" | "url">): InlineChatImageLoading {
+  return { phase: "loading", attachmentId: attachment.id, filename: attachment.filename, sourceUrl: attachment.url, requestId: PENDING_REQUEST_ID };
+}
+
+export function isPendingInlineImage(state: InlineChatImageState): boolean {
+  return state.phase === "loading" && state.requestId === PENDING_REQUEST_ID;
 }
 
 function fnv1a32(value: string): number {
