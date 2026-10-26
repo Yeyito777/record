@@ -722,7 +722,7 @@ describe("session", () => {
     expect(loadCachedSidebarFolders("self")?.folders.map((folder) => folder.name)).toEqual(["Friends"]);
   });
 
-  test("cached channels fetch missing current-user roles before immediate visibility filtering", async () => {
+  test("cached channels never fetch the user's roles over the OAuth member route (READY brings them)", async () => {
     const viewChannel = String(1 << 10);
 
     saveCachedGuildChannels("self", "guild-1", [
@@ -777,10 +777,10 @@ describe("session", () => {
     const load = loadGuildChannels(state, "token-1", "guild-1", { scheduleRender: () => {} });
     await flushTimers();
 
-    expect(memberFetches).toBe(1);
-    expect(state.memberRoleIdsByGuildId["guild-1"]?.self).toEqual([]);
-    expect(state.channelList.channels.find((channel) => channel.id === "hidden")?.hidden).toBe(true);
-    expect(state.channelList.channels.find((channel) => channel.id === "visible")?.hidden).toBe(false);
+    expect(memberFetches).toBe(0);
+    // Until READY says which roles the user has, nothing is hidden on a guess.
+    expect(state.channelList.channels.find((channel) => channel.id === "hidden")?.hidden).toBeFalsy();
+    expect(state.channelList.channels.find((channel) => channel.id === "visible")?.hidden).toBeFalsy();
 
     resolveChannels(new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
     await load;
@@ -1240,62 +1240,58 @@ describe("session", () => {
     expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["latest"]);
   });
 
-  test("loading a channel hydrates missing reply previews with a direct message fetch", async () => {
+  test("missing reply previews are fetched the web client's way, once per target, never via the bot-only route", async () => {
+    const requests: string[] = [];
+    const reply = (id: string, target: string) => ({
+      id, channel_id: "channel-1", guild_id: "guild-1", type: 0, content: `reply ${id}`,
+      timestamp: `2026-01-01T12:${id}:00.000Z`, edited_timestamp: null,
+      author: { id: "user-1", username: "tester", global_name: "Tester" },
+      message_reference: { message_id: target, channel_id: "channel-1" }, referenced_message: null, attachments: [], embeds: [],
+    });
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("/channels/channel-1/messages?")) {
+      requests.push(url.replace("https://discord.com/api/v9", ""));
+      if (/\/channels\/channel-1\/messages\/\d+$/.test(url)) {
+        return new Response(JSON.stringify({ message: "Only bots can use this endpoint", code: 20002 }), { status: 403 });
+      }
+      if (url.includes("around=42")) {
         return new Response(JSON.stringify([{
-          id: "43",
-          channel_id: "channel-1",
-          guild_id: "guild-1",
-          type: 0,
-          content: "reply body",
-          timestamp: "2026-01-01T12:43:00.000Z",
-          edited_timestamp: null,
-          author: { id: "user-1", username: "tester", global_name: "Tester" },
-          message_reference: { message_id: "42", channel_id: "channel-1" },
-          referenced_message: null,
-          attachments: [],
-          embeds: [],
+          id: "42", channel_id: "channel-1", guild_id: "guild-1", type: 0, content: "real original",
+          timestamp: "2026-01-01T12:42:00.000Z", edited_timestamp: null,
+          author: { id: "user-2", username: "alice", global_name: "Alice" }, attachments: [], embeds: [],
         }]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
-      if (url.endsWith("/channels/channel-1/messages/42")) {
-        return new Response(JSON.stringify({
-          id: "42",
-          channel_id: "channel-1",
-          guild_id: "guild-1",
-          type: 0,
-          content: "real original",
-          timestamp: "2026-01-01T12:42:00.000Z",
-          edited_timestamp: null,
-          author: { id: "user-2", username: "alice", global_name: "Alice" },
-          attachments: [],
-          embeds: [],
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      // The deleted original: Discord returns the nearest messages, not it.
+      if (url.includes("around=41")) {
+        return new Response(JSON.stringify([reply("40", "39")]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
-      if (url.includes("/guilds/guild-1/roles")) {
-        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (url.includes("/channels/channel-1/messages?")) {
+        return new Response(JSON.stringify([reply("45", "41"), reply("44", "42"), reply("43", "42")]), { status: 200, headers: { "Content-Type": "application/json" } });
       }
-      if (url.includes("/ack")) {
-        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
-      }
+      if (url.includes("/ack")) return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
       throw new Error(`unexpected fetch ${url}`);
     }) as unknown as typeof fetch;
 
     const state = createInitialState("token-1", "/tmp/record-config.json");
     state.channelList.guildId = "guild-1";
     state.channelList.channels = [{ id: "channel-1", guildId: "guild-1", parentId: null, name: "general", topic: null, position: 0, type: 0, nsfw: false }];
+    state.guildRolesByGuildId["guild-1"] = [{ id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "0" }];
 
     await loadChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
-    await waitForCondition(() => state.timeline.messages[0]?.reply?.summary === "real original");
+    await waitForCondition(() => state.timeline.messages.filter((message) => message.reply?.summary === "real original").length === 2);
+    await flushTimers();
 
-    expect(state.timeline.messages[0]?.reply).toMatchObject({
-      messageId: "42",
-      authorId: "user-2",
-      authorDisplayName: "Alice",
-      summary: "real original",
-    });
-    expect(state.messageCacheByChannelId["channel-1"]?.messages[0]?.reply?.summary).toBe("real original");
+    expect(state.timeline.messages.find((message) => message.id === "43")?.reply).toMatchObject({ messageId: "42", authorDisplayName: "Alice", summary: "real original" });
+    expect(state.messageCacheByChannelId["channel-1"]?.messages.find((message) => message.id === "44")?.reply?.summary).toBe("real original");
+    expect(requests.filter((url) => /\/messages\/\d+$/.test(url))).toEqual([]);
+    expect(requests.filter((url) => url.includes("around=42"))).toEqual(["/channels/channel-1/messages?limit=1&around=42"]);
+    expect(requests.filter((url) => url.includes("around=41"))).toHaveLength(1);
+
+    // Re-rendering or reloading never asks for the missing original again.
+    await loadChannelMessages(state, "token-1", "channel-1", { scheduleRender: () => {} });
+    await flushTimers();
+    expect(requests.filter((url) => url.includes("around=41"))).toHaveLength(1);
+    expect(requests.filter((url) => url.includes("around=42"))).toHaveLength(1);
   });
 
   test("loading a channel with only gateway messages keeps them visible while REST loads", async () => {

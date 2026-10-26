@@ -1803,15 +1803,6 @@ interface DiscordRoleResponse {
   permissions?: string;
 }
 
-interface DiscordCurrentGuildMemberResponse {
-  roles?: unknown;
-}
-
-export async function fetchCurrentUserGuildRoleIds(token: string, guildId: string): Promise<string[]> {
-  const member = await apiGetJson<DiscordCurrentGuildMemberResponse>(token, `/users/@me/guilds/${guildId}/member`);
-  return Array.isArray(member.roles) ? member.roles.filter((roleId): roleId is string => typeof roleId === "string") : [];
-}
-
 export async function fetchGuildRoles(token: string, guildId: string): Promise<DiscordRole[]> {
   return mapDiscordRoles(await apiGetJson<unknown>(token, `/guilds/${guildId}/roles`));
 }
@@ -1999,13 +1990,21 @@ function compareDiscordMessagesChronologically(left: DiscordMessage, right: Disc
   return left.id.localeCompare(right.id);
 }
 
+/**
+ * One message by id, the way discord.com loads a reply it has not seen:
+ * GET /channels/{id}/messages?limit=1&around={id}. The single-message route
+ * GET /channels/{id}/messages/{id} is bot-only (403, code 20002) and a user
+ * client calling it looks like a self-bot. Null when it no longer exists.
+ */
 export async function fetchChannelMessage(
   token: string,
   channelId: string,
   messageId: string,
-): Promise<DiscordMessage> {
-  const message = await apiGetJson<DiscordMessageResponse>(token, `/channels/${channelId}/messages/${messageId}`);
-  return mapDiscordMessage(message);
+): Promise<DiscordMessage | null> {
+  const query = new URLSearchParams({ limit: "1", around: messageId });
+  const messages = await apiGetJson<DiscordMessageResponse[]>(token, `/channels/${channelId}/messages?${query.toString()}`);
+  const message = Array.isArray(messages) ? messages.find((candidate) => candidate.id === messageId) : undefined;
+  return message ? mapDiscordMessage(message) : null;
 }
 
 export async function fetchChannelMessages(

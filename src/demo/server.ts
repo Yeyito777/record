@@ -324,9 +324,10 @@ export class DemoDiscordServer {
     }
     if (method === "GET" && route("channels/:id/messages/pins")) return this.pinsResponse(parts[1]!);
     if (method === "GET" && route("channels/:id/messages")) return this.messagesPage(parts[1]!, query);
+    // Bot-only on real Discord; user clients load one message with ?around=.
     if (method === "GET" && route("channels/:id/messages/:mid")) {
-      const message = this.messageById(parts[1]!, parts[3]!);
-      return message ? json(message) : notFound();
+      this.log(`BOT-ONLY ${method} ${path}`);
+      return json({ message: "Only bots can use this endpoint", code: 20002 }, 403);
     }
     if (method === "POST" && route("channels/:id/messages")) return this.createMessage(parts[1]!, body);
     if (method === "PATCH" && route("channels/:id/messages/:mid")) return this.editMessage(parts[1]!, parts[3]!, body);

@@ -11,6 +11,7 @@ import {
   deleteChannel,
   ackChannelMessage,
   fetchChannelPinnedMessages,
+  fetchChannelMessage,
   fetchChannelMessagesAfter,
   fetchChannelMessages,
   fetchChannelMessagesAround,
@@ -2052,5 +2053,17 @@ describe("Discord REST request shapes", () => {
     } finally {
       resetDebugLogForTest();
     }
+  });
+});
+
+describe("single-message lookups", () => {
+  test("use the web client's ?around= page, never the bot-only single-message route", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify([{ id: "41", channel_id: "c", type: 0, content: "neighbour", timestamp: "2026-01-01T00:00:00.000Z", edited_timestamp: null, author: { id: "u", username: "u" }, attachments: [], embeds: [] }]), { status: 200 });
+    }) as unknown as typeof fetch;
+    expect(await fetchChannelMessage("token", "c", "42")).toBeNull();
+    expect(urls).toEqual(["https://discord.com/api/v9/channels/c/messages?limit=1&around=42"]);
   });
 });

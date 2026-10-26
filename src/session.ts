@@ -34,7 +34,6 @@ import {
   deleteChannelMessage,
   fetchDirectMessages,
   fetchGuildChannels,
-  fetchCurrentUserGuildRoleIds,
   fetchGuildRoles,
   fetchGuilds,
   fetchGuildApplicationCommandIndex,
@@ -236,6 +235,33 @@ interface LoadGuildChannelsOptions {
 const MESSAGE_PAGE_LIMIT = 50;
 const MESSAGE_CACHE_FRESH_MS = 2 * 60 * 1000;
 const replyPreviewRestFetchKeys = new Set<string>();
+/**
+ * Reply targets fetched over REST, by `${channelId}:${messageId}`: the message,
+ * or null when it is gone or not visible. Shared by every message replying to
+ * it, so a missing target is asked for once, not once per message or render.
+ */
+const replyTargetFetches = new Map<string, Promise<DiscordMessage | null>>();
+const REPLY_TARGET_CACHE_LIMIT = 1_000;
+const REPLY_TARGET_RETRY_MS = 60_000;
+
+function fetchReplyTarget(token: string, channelId: string, messageId: string): Promise<DiscordMessage | null> {
+  const key = `${channelId}:${messageId}`;
+  const cached = replyTargetFetches.get(key);
+  if (cached) return cached;
+  const fetched = fetchChannelMessage(token, channelId, messageId).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    // Gone or not visible to this account: remember that. Anything else
+    // (offline, timeout, rate limit) may be retried a minute later.
+    if (/Discord resource not found|Discord denied access/.test(message)) return null;
+    setTimeout(() => {
+      if (replyTargetFetches.get(key) === fetched) replyTargetFetches.delete(key);
+    }, REPLY_TARGET_RETRY_MS).unref?.();
+    throw error;
+  });
+  replyTargetFetches.set(key, fetched);
+  if (replyTargetFetches.size > REPLY_TARGET_CACHE_LIMIT) replyTargetFetches.delete(replyTargetFetches.keys().next().value!);
+  return fetched;
+}
 const MEMBER_LIST_SUBSCRIBE_TIMEOUT_MS = 7_000;
 const MEMBER_LIST_SUBSCRIBE_RETRIES = 2;
 const VOICE_MEMBER_HYDRATION_RETRY_MS = 30_000;
@@ -2280,8 +2306,12 @@ function maybeHydrateMissingReplyPreviewFromRest(state: AppState, effects: Sessi
 
   void (async () => {
     try {
-      const referenced = await fetchChannelMessage(token, referenceChannelId, referenceMessageId);
+      const referenced = await fetchReplyTarget(token, referenceChannelId, referenceMessageId);
       if (state.auth.savedToken !== token) return;
+      if (!referenced) {
+        debugLog("reply.preview.rest_missing", { channelId: message.channelId, messageId: message.id, referenceChannelId, referenceMessageId });
+        return;
+      }
       const patch: DiscordMessagePatch = {
         id: message.id,
         channelId: message.channelId,
@@ -2310,9 +2340,8 @@ function maybeHydrateMissingReplyPreviewFromRest(state: AppState, effects: Sessi
       if (changed) effects.scheduleRender();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      if (!/Discord resource not found|Discord denied access/.test(errorMessage)) {
-        replyPreviewRestFetchKeys.delete(fetchKey);
-      }
+      // Transient: let a later render ask again (fetchReplyTarget waits a minute).
+      setTimeout(() => replyPreviewRestFetchKeys.delete(fetchKey), REPLY_TARGET_RETRY_MS).unref?.();
       debugLog("reply.preview.rest_failed", {
         channelId: message.channelId,
         messageId: message.id,
@@ -3602,6 +3631,8 @@ export function clearReadOnlyClient(state: AppState): void {
   const igActive = state.channelList.guildId === INSTAGRAM_GUILD_ID ? state.channelList.activeChannelId : null;
   const igHasOlder = state.timeline.hasOlder;
   guildRoleFetchState.delete(state);
+  replyTargetFetches.clear();
+  replyPreviewRestFetchKeys.clear();
   deletedGuildChannelIds.delete(state);
   const whatsAppChannelsBeforeClear = whatsAppChannels(state.whatsapp);
   const whatsAppChannelLayoutBeforeClear = sidebarChannelLayoutForGuild(state.sidebar, WHATSAPP_GUILD_ID);
@@ -4012,16 +4043,10 @@ export async function loadGuildChannels(
     setNotice(state, "", "muted");
   }
   if (accountId) {
-    if (!isDirectMessages && !state.roleIdsByGuildId[guildId] && !state.memberRoleIdsByGuildId[guildId]?.[accountId]) {
-      try {
-        const roleIds = await fetchCurrentUserGuildRoleIds(token, guildId);
-        debugLog("current_member_roles.fetched_before_cache", { guildId, count: roleIds.length });
-        state.roleIdsByGuildId[guildId] = roleIds;
-        recordMemberRoleIds(state, guildId, accountId, roleIds);
-      } catch (error) {
-        debugLog("current_member_roles.fetch_failed", { guildId, error: error instanceof Error ? error.message : String(error) });
-      }
-    }
+    // The user's own roles per server arrive with READY (merged_members) and
+    // GUILD_MEMBER_UPDATE; hidden-channel flags refresh when they do. The
+    // REST route /users/@me/guilds/{id}/member is an OAuth2 route the web
+    // client never calls, so it is not used to get them earlier.
 
     const loadedCachedChannels = isDirectMessages
       ? loadCachedDirectMessages(accountId)
