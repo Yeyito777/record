@@ -45,6 +45,13 @@ export interface InstagramControllerOptions {
 
 const MAX_INBOX_PAGES = 12;
 
+let defaultControllerOptions: InstagramControllerOptions = {};
+
+/** Demo mode: a fake client and session behind the controller (src/demo/instagram.ts). */
+export function setDefaultInstagramControllerOptions(options: InstagramControllerOptions): void {
+  defaultControllerOptions = options;
+}
+
 export class InstagramController {
   private client: InstagramClient | null = null;
   private generation = 0;
@@ -71,7 +78,11 @@ export class InstagramController {
   private cacheWrites: Promise<void> = Promise.resolve();
   private loadedCacheFor: string | null = null;
 
-  constructor(private state: AppState, private render: () => void, private options: InstagramControllerOptions = {}) {}
+  private options: InstagramControllerOptions;
+
+  constructor(private state: AppState, private render: () => void, options: InstagramControllerOptions = {}) {
+    this.options = { ...defaultControllerOptions, ...options };
+  }
 
   get isConnected(): boolean { return this.state.instagram.connection.status === "connected"; }
   get readOnly(): boolean { return this.client?.readOnly ?? false; }

@@ -204,7 +204,7 @@ describe("demo launch", () => {
     expect(existsSync(join(home, ".config", DEMO_HOME_MARKER))).toBe(false);
   }, 30_000);
 
-  test("bootstrap swaps fetch/WebSocket for the fake server and WhatsApp for the fake one, inside the demo home", () => {
+  test("bootstrap swaps fetch/WebSocket for the fake server and WhatsApp and Instagram for fake ones, inside the demo home", () => {
     const { home, configFile, original } = fakeRealHome();
     const script = join(temp(), "probe.ts");
     writeFileSync(script, `
@@ -215,7 +215,26 @@ describe("demo launch", () => {
       const { getRecordWhatsAppPaths } = await import(${JSON.stringify(join(REPO, "src/whatsapp/paths.ts"))});
       const { createInitialState } = await import(${JSON.stringify(join(REPO, "src/state.ts"))});
       const { debugLogPath } = await import(${JSON.stringify(join(REPO, "src/debuglog.ts"))});
+      const { InstagramController } = await import(${JSON.stringify(join(REPO, "src/instagram/controller.ts"))});
+      const { instagramAuthPath } = await import(${JSON.stringify(join(REPO, "src/instagram/auth.ts"))});
+      const { instagramCachePath } = await import(${JSON.stringify(join(REPO, "src/instagram/cache.ts"))});
+      const { instagramMutePath } = await import(${JSON.stringify(join(REPO, "src/instagram/mute.ts"))});
+      const { cachedAttachmentPath } = await import(${JSON.stringify(join(REPO, "src/openable.ts"))});
+      const { instagramTimelineMessages } = await import(${JSON.stringify(join(REPO, "src/instagram/integration.ts"))});
+      const { instagramChannelId } = await import(${JSON.stringify(join(REPO, "src/chatproviders.ts"))});
+      const { DEMO_INSTAGRAM_SHARES_THREAD } = await import(${JSON.stringify(join(REPO, "src/demo/instagram.ts"))});
       const controller = new WhatsAppController(createInitialState(null, "/tmp/x.json"), () => {});
+      const igState = createInitialState(null, "/tmp/y.json");
+      const instagram = new InstagramController(igState, () => {}, { pollIntervalMs: 60_000 });
+      await instagram.autoConnect();
+      const igAccount = igState.instagram.account?.id ?? "";
+      const igChannel = instagramChannelId(DEMO_INSTAGRAM_SHARES_THREAD);
+      instagram.openChannel(igChannel);
+      for (let i = 0; i < 100 && !igState.instagram.threadsById[DEMO_INSTAGRAM_SHARES_THREAD]?.detailLoaded; i++) await Bun.sleep(10);
+      const igImage = instagramTimelineMessages(igState.instagram, igChannel).flatMap((message) => message.attachments)
+        .find((attachment) => attachment.contentType?.startsWith("image/"));
+      const igImageResponse = igImage ? await fetch(igImage.url) : null;
+      await instagram.shutdown();
       const demo = currentDemoInstall();
       let blocked = false;
       try { await fetch("https://example.com/"); } catch (error) { blocked = error.name === "DemoNetworkBlockedError"; }
@@ -227,6 +246,12 @@ describe("demo launch", () => {
         fakeWhatsApp: controller.backend instanceof DemoWhatsAppBackend,
         whatsappAuthInDemoHome: getRecordWhatsAppPaths().authDirectory.startsWith(demo.home + "/"),
         debugLogInDemoHome: debugLogPath().startsWith(demo.home + "/"),
+        instagramConnected: igState.instagram.connection.status === "connected",
+        instagramPathsInDemoHome: [instagramAuthPath(), instagramCachePath(igAccount), instagramMutePath(igAccount), igImage ? cachedAttachmentPath(igImage) : ""]
+          .every((path) => path.startsWith(demo.home + "/")),
+        instagramCacheSaved: (await import("node:fs")).existsSync(instagramCachePath(igAccount)),
+        instagramSessionNeverWritten: !(await import("node:fs")).existsSync(instagramAuthPath()),
+        instagramImageServed: igImageResponse?.ok === true,
       }));
       await controller.shutdown();
     `);
@@ -240,10 +265,12 @@ describe("demo launch", () => {
     expect(proc.stderr.toString()).toBe("");
     expect(JSON.parse(proc.stdout.toString().trim().split("\n").at(-1)!)).toEqual({
       fakeFetch: true, fakeSocket: true, blocked: true, xdg: true, fakeWhatsApp: true, whatsappAuthInDemoHome: true,
-      debugLogInDemoHome: true,
+      debugLogInDemoHome: true, instagramConnected: true, instagramPathsInDemoHome: true, instagramCacheSaved: true,
+      instagramSessionNeverWritten: true, instagramImageServed: true,
     });
     expect(readFileSync(configFile, "utf8")).toBe(original);
     expect(existsSync(join(home, ".config", "record", "whatsapp"))).toBe(false);
+    expect(existsSync(join(home, ".config", "record", "instagram"))).toBe(false);
   }, 30_000);
 
   test("a demo run uses its own home and never writes the real config", () => {

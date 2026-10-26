@@ -98,6 +98,7 @@ export function installDemoMode(env: Env = process.env): DemoInstall {
   }
 
   installDemoWhatsApp(server, home, numberEnv(env.RECORD_DEMO_OLDER_DELAY_MS, 450), env);
+  installDemoInstagram(server, home, numberEnv(env.RECORD_DEMO_OLDER_DELAY_MS, 450), env);
   installed = { server, home, configDir, temporary };
   return installed;
 }
@@ -117,7 +118,13 @@ function writeStartingState(server: DemoDiscordServer, configDir: string, open: 
   if (existsSync(path) || open === "none") return;
   const world = server.world;
   let target = world.defaultChannel;
-  if (open === "wa-photos" || open === "whatsapp") {
+  if (open === "ig-shares" || open === "instagram" || open === "ig-photos") {
+    // Required, not imported, like WhatsApp's below.
+    const require = createRequire(import.meta.url);
+    const { INSTAGRAM_GUILD_ID, instagramChannelId } = require("../chatproviders") as typeof import("../chatproviders");
+    const { DEMO_INSTAGRAM_PHOTOS_THREAD, DEMO_INSTAGRAM_SHARES_THREAD } = require("./instagram") as typeof import("./instagram");
+    target = { guildId: INSTAGRAM_GUILD_ID, channelId: instagramChannelId(open === "ig-photos" ? DEMO_INSTAGRAM_PHOTOS_THREAD : DEMO_INSTAGRAM_SHARES_THREAD) };
+  } else if (open === "wa-photos" || open === "whatsapp") {
     // Required here, not imported: Record modules must load only after the
     // demo has pointed every config path at its home.
     const require = createRequire(import.meta.url);
@@ -200,4 +207,37 @@ function installDemoWhatsApp(server: DemoDiscordServer, home: string, olderPageD
   if (!existsSync(cacheFile)) {
     writeFileSync(cacheFile, JSON.stringify(demoWhatsAppCacheSnapshot(data, server.world.anchorMs)), { mode: 0o600 });
   }
+}
+
+/**
+ * The real Instagram talks to instagram.com with the owner's cookies; the demo
+ * replaces its client with a fake (src/demo/instagram.ts) and its CDN with a
+ * fake host on the demo server. The demo session is never written to disk:
+ * saving, importing and removing it do nothing, so no session.json exists.
+ */
+function installDemoInstagram(server: DemoDiscordServer, home: string, olderPageDelayMs: number, env: Env): void {
+  const require = createRequire(import.meta.url);
+  const { setDefaultInstagramControllerOptions } = require("../instagram/controller") as typeof import("../instagram/controller");
+  const { instagramAuthPath } = require("../instagram/auth") as typeof import("../instagram/auth");
+  const {
+    buildDemoInstagramData, DEMO_INSTAGRAM_CDN_HOST, DemoInstagramCdn, DemoInstagramClient, demoInstagramSession,
+  } = require("./instagram") as typeof import("./instagram");
+  // Never anywhere but the demo home: the real directory holds a real login and cache.
+  if (!resolve(instagramAuthPath()).startsWith(`${resolve(home)}/`)) {
+    throw new Error(`Refusing demo Instagram outside the demo home: ${instagramAuthPath()}`);
+  }
+  const data = buildDemoInstagramData(server.world.anchorMs);
+  const cdn = new DemoInstagramCdn({
+    minDelayMs: numberEnv(env.RECORD_DEMO_IG_MEDIA_MIN_MS, 200),
+    maxDelayMs: numberEnv(env.RECORD_DEMO_IG_MEDIA_MAX_MS, 1500),
+    log: (line) => server.log(line),
+  });
+  server.registerMediaHost(DEMO_INSTAGRAM_CDN_HOST, (url, signal) => cdn.fetch(url, signal));
+  setDefaultInstagramControllerOptions({
+    clientFactory: () => new DemoInstagramClient({ data, olderPageDelayMs, latencyMs: numberEnv(env.RECORD_DEMO_LATENCY_MS, 20) + 100, log: (line) => server.log(line) }),
+    loadSession: async () => demoInstagramSession(data),
+    saveSession: async () => {},
+    importSession: async () => demoInstagramSession(data),
+    removeSession: async () => {},
+  });
 }
