@@ -11,7 +11,6 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { DEMO_TOKEN, demoServerFolderLayout } from "./data";
 import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, parseAnchor, realRecordConfigDirs, type Env } from "./env";
-import { WHATSAPP_GUILD_ID, whatsappChannelId } from "../chatproviders";
 import { DemoDiscordServer } from "./server";
 import { buildDemoWhatsAppData, DEMO_WHATSAPP_PHOTOS_CHAT, DemoWhatsAppBackend, demoWhatsAppCacheSnapshot } from "./whatsapp";
 
@@ -119,6 +118,10 @@ function writeStartingState(server: DemoDiscordServer, configDir: string, open: 
   const world = server.world;
   let target = world.defaultChannel;
   if (open === "wa-photos" || open === "whatsapp") {
+    // Required here, not imported: Record modules must load only after the
+    // demo has pointed every config path at its home.
+    const require = createRequire(import.meta.url);
+    const { WHATSAPP_GUILD_ID, whatsappChannelId } = require("../chatproviders") as typeof import("../chatproviders");
     target = { guildId: WHATSAPP_GUILD_ID, channelId: whatsappChannelId(DEMO_WHATSAPP_PHOTOS_CHAT) };
   } else if (open === "dm") {
     target = { guildId: "@me::dms", channelId: world.directMessages[0]!.id };
