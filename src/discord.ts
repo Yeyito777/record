@@ -1550,7 +1550,12 @@ export function sortDirectMessageChannels(channels: DiscordChannel[]): DiscordCh
   return channels
     .slice()
     .sort((a, b) => {
-      const recency = compareSnowflakesDesc(a.lastMessageId, b.lastMessageId);
+      // Like Discord: by last message, or by when the DM was opened if it has none.
+      const key = (channel: DiscordChannel): string | null => {
+        const value = channel.lastMessageId ?? channel.id;
+        return /^\d+$/.test(value) ? value : null;
+      };
+      const recency = compareSnowflakesDesc(key(a), key(b));
       return recency || a.position - b.position || a.name.localeCompare(b.name);
     })
     .map((channel, index) => ({ ...channel, position: index }));

@@ -2,7 +2,7 @@
  * Guild channel data and active chat tracking.
  */
 
-import { DIRECT_MESSAGES_GUILD_ID, isGuildVoiceChannel, isMessageChannel, sortDirectMessageChannels, sortGuildChannels, type DiscordChannel } from "./discord";
+import { DIRECT_MESSAGES_GUILD_ID, compareSnowflakesDesc, isGuildVoiceChannel, isMessageChannel, sortDirectMessageChannels, sortGuildChannels, type DiscordChannel } from "./discord";
 
 export interface ChannelListState {
   guildId: string | null;
@@ -122,6 +122,8 @@ export function bumpDirectMessageChannel(channelList: ChannelListState, channelI
   if (channelList.guildId !== DIRECT_MESSAGES_GUILD_ID) return false;
   const channel = channelList.channels.find((entry) => entry.id === channelId);
   if (!channel) return false;
+  // Only a newer message moves a chat; an edit of an older one never does.
+  if (messageId && channel.lastMessageId && compareSnowflakesDesc(messageId, channel.lastMessageId) >= 0) return true;
   channel.lastMessageId = messageId ?? channel.lastMessageId ?? null;
   channel.position = -1;
   channelList.channels = sortDirectMessageChannels(channelList.channels);

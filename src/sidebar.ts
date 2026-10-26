@@ -585,13 +585,18 @@ export function sidebarChannelsForGuild(sidebar: SidebarState, activeChannels: D
   for (const channel of activeChannels) {
     if (channel.guildId === guildId) {
       const cached = byId.get(channel.id);
+      // Either copy may have seen the newest message first.
+      const lastMessageId = guildId === DIRECT_MESSAGES_GUILD_ID
+        && compareSnowflakesDesc(directMessageRecencyKey({ id: "", lastMessageId: cached?.lastMessageId }), directMessageRecencyKey({ id: "", lastMessageId: channel.lastMessageId })) < 0
+        ? cached?.lastMessageId
+        : channel.lastMessageId;
       // WhatsApp's provider cache is rebuilt from its persisted chat state, while
       // the active channel list can briefly retain the pre-hydration snapshot.
       // Prefer the provider value so stale false/true flags cannot hide or retain a mute.
       const muted = guildId === WHATSAPP_GUILD_ID || guildId === INSTAGRAM_GUILD_ID
         ? cached?.muted ?? channel.muted
         : channel.muted ?? cached?.muted;
-      byId.set(channel.id, { ...channel, muted });
+      byId.set(channel.id, { ...channel, muted, ...(lastMessageId !== channel.lastMessageId ? { lastMessageId } : {}) });
     }
   }
   return Array.from(byId.values());
@@ -994,7 +999,7 @@ function focusPrivateConversationAfterMutation(
   if (nextIndex >= 0) sidebar.selectedIndex = nextIndex;
 }
 
-/** Move a DM/WhatsApp conversation by one row inside its current pin section. */
+/** Move a pinned DM/WhatsApp/Instagram conversation by one row among the pinned ones. */
 export function moveSelectedPrivateConversation(
   sidebar: SidebarState,
   channels: DiscordChannel[],
@@ -1014,6 +1019,8 @@ export function moveSelectedPrivateConversation(
     ordered.indexOf(selectedChannel),
     ordered,
   ).pinned;
+  // Unpinned chats follow recent activity; only pinned ones have a manual order.
+  if (!selectedPinned) return null;
   const siblings = ordered.filter((channel, index) => (
     effectiveChannelPlacement(sidebar, selected.guildId, channel, index, ordered).pinned === selectedPinned
   ));
@@ -1444,8 +1451,57 @@ function sortChannelsForSidebar(sidebar: SidebarState, guildId: string, channels
     const aPlacement = placements.get(a.id)!;
     const bPlacement = placements.get(b.id)!;
     if (aPlacement.pinned !== bPlacement.pinned) return aPlacement.pinned ? -1 : 1;
+    // Pinned chats keep their manual order; unpinned ones follow recent
+    // activity, newest first, as in Discord.
+    if (!aPlacement.pinned) return compareConversationRecency(guildId, a, b) || aIndex - bIndex || a.name.localeCompare(b.name);
     return aPlacement.sortOrder - bPlacement.sortOrder || aIndex - bIndex || a.name.localeCompare(b.name);
   });
+}
+
+/**
+ * Discord orders private channels by their last message, or by when the
+ * channel was opened when it has none (snowflakes sort by time). WhatsApp and
+ * Instagram list chats by recent activity already, so their order is kept.
+ */
+function compareConversationRecency(guildId: string, a: DiscordChannel, b: DiscordChannel): number {
+  if (guildId !== DIRECT_MESSAGES_GUILD_ID) return a.position - b.position;
+  return compareSnowflakesDesc(directMessageRecencyKey(a), directMessageRecencyKey(b));
+}
+
+export function directMessageRecencyKey(channel: Pick<DiscordChannel, "id" | "lastMessageId">): string | null {
+  const key = channel.lastMessageId ?? channel.id;
+  return /^\d+$/.test(key) ? key : null;
+}
+
+/**
+ * A new message in a private conversation moves it to the top of the
+ * unpinned chats. Only ever moves forward: an older id (an edit) never
+ * reorders anything. Returns whether the sidebar's copy changed.
+ */
+export function noteSidebarConversationMessage(sidebar: SidebarState, guildId: string, channelId: string, messageId: string): boolean {
+  const channels = sidebar.cachedChannelsByGuildId[guildId];
+  const index = channels?.findIndex((channel) => channel.id === channelId) ?? -1;
+  if (!channels || index < 0 || !/^\d+$/.test(messageId)) return false;
+  const channel = channels[index]!;
+  if (channel.lastMessageId && compareSnowflakesDesc(messageId, channel.lastMessageId) >= 0) return false;
+  const next = channels.slice();
+  next[index] = { ...channel, lastMessageId: messageId };
+  sidebar.cachedChannelsByGuildId[guildId] = next;
+  return true;
+}
+
+/** Whether the selected row is a pinned DM/WhatsApp/Instagram chat; null when it is not a chat row. */
+export function selectedPrivateConversationPinned(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  options: SidebarVisibilityOptions = {},
+): boolean | null {
+  const selected = selectedPrivateConversationEntry(sidebar, channels, options);
+  if (!selected) return null;
+  const ordered = privateConversationChannels(sidebar, channels, selected.guildId);
+  const index = ordered.findIndex((channel) => channel.id === selected.id);
+  if (index < 0) return null;
+  return effectiveChannelPlacement(sidebar, selected.guildId, ordered[index]!, index, ordered).pinned;
 }
 
 function pushPrivateConversationChannels(

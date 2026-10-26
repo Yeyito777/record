@@ -85,10 +85,13 @@ describe("session", () => {
       { id: "ig:2", guildId: INSTAGRAM_GUILD_ID, parentId: null, name: "Bob", topic: null, position: 1, type: 1, nsfw: false },
     ];
     state.sidebar.selectedItem = { type: "channel", guildId: INSTAGRAM_GUILD_ID, id: "ig:2" };
+    // Unpinned chats follow recent activity: e/E only explains that.
     moveSelectedGuildOrder(state, { scheduleRender: () => {} }, "up");
+    expect(state.notice.text).toContain("follow recent activity");
+    expect(loadCachedSidebarChannelLayout("instagram:ig-self")).toBeNull();
     toggleSelectedPrivateConversationPin(state, { scheduleRender: () => {} });
     expect(loadCachedSidebarChannelLayout("instagram:ig-self")?.[INSTAGRAM_GUILD_ID]).toEqual({
-      "ig:1": { pinned: false, sortOrder: 1 },
+      "ig:1": { pinned: false, sortOrder: 0 },
       "ig:2": { pinned: true, sortOrder: 0 },
     });
     state.notifications.byChannelId["ig:2"] = 3;
@@ -1897,18 +1900,30 @@ describe("session", () => {
     ];
     state.sidebar.selectedIndex = 2;
 
+    // Unpinned DMs follow recent activity: e/E only explains that and saves nothing.
     moveSelectedGuildOrder(state, { scheduleRender: () => {} }, "up");
+    expect(state.notice.text).toBe("Unpinned chats follow recent activity; pin one with p to arrange it.");
+    expect(state.notice.statusLine).toBe(true);
+    expect(loadCachedSidebarChannelLayout("self")).toBeNull();
     toggleSelectedPrivateConversationPin(state, { scheduleRender: () => {} });
 
     expect(state.sidebar.channelPlacementsByGuildId[DIRECT_MESSAGES_GUILD_ID]).toEqual({
-      "dm-a": { pinned: false, sortOrder: 1 },
+      "dm-a": { pinned: false, sortOrder: 0 },
       "dm-b": { pinned: true, sortOrder: 0 },
     });
     expect(loadCachedSidebarChannelLayout("self")?.[DIRECT_MESSAGES_GUILD_ID]).toEqual({
-      "dm-a": { pinned: false, sortOrder: 1 },
+      "dm-a": { pinned: false, sortOrder: 0 },
       "dm-b": { pinned: true, sortOrder: 0 },
     });
+
+    // Pinned chats keep their manual order: e/E moves them without a notice.
+    state.notice.text = "";
+    state.sidebar.selectedItem = { type: "channel", id: "dm-a", guildId: DIRECT_MESSAGES_GUILD_ID };
+    toggleSelectedPrivateConversationPin(state, { scheduleRender: () => {} });
+    moveSelectedGuildOrder(state, { scheduleRender: () => {} }, "up");
     expect(state.notice.text).toBe("");
+    const placements = state.sidebar.channelPlacementsByGuildId[DIRECT_MESSAGES_GUILD_ID]!;
+    expect(placements["dm-a"]!.sortOrder).toBeLessThan(placements["dm-b"]!.sortOrder);
   });
 
   test("muting a server updates sidebar state without notice feedback", () => {
