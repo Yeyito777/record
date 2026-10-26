@@ -19,7 +19,7 @@ import {
   instagramTimelineMessages, instagramUnreadCount, isDraftThreadId, type InstagramOutgoing,
 } from "./integration";
 import {
-  contentSummary, displayNameForFbid, isSystemContent, mergeThreadDetail, mergeThreadPreview, offlineThreadingId, prependOlder,
+  contentSummary, displayNameForFbid, foldReactionNotices, isSystemContent, mergeThreadDetail, mergeThreadPreview, offlineThreadingId, prependOlder,
   type IgInboxPage, type IgThread, type IgUser,
 } from "./model";
 import { isInstagramThreadMuted, loadInstagramMutes, saveInstagramMutes } from "./mute";
@@ -229,7 +229,7 @@ export class InstagramController {
       this.state.instagram.account = snapshot.account ?? { id: accountId, fbid: "", username: "", name: "Me" };
     }
     for (const thread of snapshot.threads) {
-      if (!this.state.instagram.threadsById[thread.id]) this.state.instagram.threadsById[thread.id] = thread;
+      if (!this.state.instagram.threadsById[thread.id]) this.storeThread(thread);
     }
     this.state.instagram.requestIds = snapshot.requestIds.filter(id => this.state.instagram.threadsById[id]);
     const known = new Set(this.state.instagram.outgoing.map(send => send.localId));
@@ -282,7 +282,7 @@ export class InstagramController {
       const requests = await client.requests();
       if (generation !== this.generation) return;
       for (const thread of requests.pending) {
-        this.state.instagram.threadsById[thread.id] = mergeThreadPreview(this.state.instagram.threadsById[thread.id], thread);
+        this.storeThread(mergeThreadPreview(this.state.instagram.threadsById[thread.id], thread));
       }
       this.state.instagram.requestIds = requests.pending.map(thread => thread.id);
       this.state.instagram.hiddenRequestCount = requests.spamCount;
@@ -296,7 +296,7 @@ export class InstagramController {
   private acceptInbox(page: IgInboxPage, head: boolean): void {
     const threads = this.state.instagram.threadsById;
     for (const thread of page.threads) {
-      threads[thread.id] = mergeThreadPreview(threads[thread.id], thread);
+      this.storeThread(mergeThreadPreview(threads[thread.id], thread));
       if (thread.folder === "inbox") this.state.instagram.requestIds = this.state.instagram.requestIds.filter(id => id !== thread.id);
       this.reconcileOutgoing(thread.id);
     }
@@ -450,7 +450,7 @@ export class InstagramController {
       try {
         const thread = await this.client.thread(id, this.sequenceId);
         if (generation !== this.generation) return false;
-        this.state.instagram.threadsById[id] = mergeThreadDetail(undefined, thread);
+        this.storeThread(mergeThreadDetail(undefined, thread));
         this.syncSidebar();
       } catch (error) {
         if (generation === this.generation) this.failure(error);
@@ -486,7 +486,7 @@ export class InstagramController {
         const result = await client.olderMessages(id, stored!.cursor!);
         if (generation !== this.generation) return;
         const current = this.state.instagram.threadsById[id];
-        if (current) this.state.instagram.threadsById[id] = prependOlder(current, result.messages, result.cursor, result.hasOlder);
+        if (current) this.storeThread(prependOlder(current, result.messages, result.cursor, result.hasOlder));
       } else {
         const fresh = await client.thread(id, this.sequenceId);
         if (generation !== this.generation) return;
@@ -494,7 +494,7 @@ export class InstagramController {
         const current = this.state.instagram.threadsById[id];
         const merged = mergeThreadDetail(current, fresh);
         if (this.state.instagram.requestIds.includes(id)) merged.folder = "pending";
-        this.state.instagram.threadsById[id] = merged;
+        this.storeThread(merged);
         this.reconcileOutgoing(id);
       }
       this.syncSidebar();
@@ -511,6 +511,11 @@ export class InstagramController {
         this.render();
       }
     }
+  }
+
+  /** Every thread lands here: Instagram's reaction notices never become messages. */
+  private storeThread(thread: IgThread): void {
+    this.state.instagram.threadsById[thread.id] = foldReactionNotices(thread, this.state.instagram.threadsById[thread.id]);
   }
 
   /** The thread query's viewer carries username/name; the inbox's doesn't. */

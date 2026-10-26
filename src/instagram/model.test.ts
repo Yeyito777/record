@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   callTitle, classifyShareTarget, effectiveCallOutcome, isThreadUnread, mergeThreadDetail, mergeThreadPreview, offlineThreadingId,
   parseCall, parseContent, parseInboxPage, parseMessage, parseRequestsPage, parseSearchUsers, parseThread, prependOlder,
-  seenByOthers, threadTitle, unreadMessages, type IgShare,
+  foldReactionNotices, reactionNotice, seenByOthers, threadTitle, unreadMessages, type IgShare,
 } from "./model";
 import { FRIEND_FBID, igMessage, igThread, VIEWER_FBID } from "./testkit";
 
@@ -193,5 +193,42 @@ describe("Instagram pages and threads", () => {
     expect(offlineThreadingId(1_792_360_800_000, 5)).toBe(String((1_792_360_800_000n << 22n) | 5n));
     expect(offlineThreadingId()).not.toBe(offlineThreadingId());
     expect(parseThread({ thread_fbid: "nope" })).toBeNull();
+  });
+});
+
+describe("Instagram reaction notices", () => {
+  const system = (id: string, text: string, overrides: Partial<ReturnType<typeof igMessage>> = {}) =>
+    igMessage(id, { content: { kind: "system", text }, ...overrides });
+
+  test("are recognised from the flag, Instagram's sentences and reduced inbox snippets; other lines are not", () => {
+    const flagged = parseMessage(node({ __typename: "SlideMessageAdminText", is_reaction_action_log: true, text_fragments: [{ plaintext: "Maya reacted 😂 to your message" }] }, "TEXT"))!;
+    expect(reactionNotice(flagged)).toEqual({ emoji: "😂", targetId: null });
+    expect(reactionNotice(system("a", "Maya liked a message"))).toEqual({ emoji: "❤️", targetId: null });
+    expect(reactionNotice(system("b", "You reacted 🔥 to their message"))?.emoji).toBe("🔥");
+    expect(reactionNotice(system("c", "Reacted 💗 to your message"))?.emoji).toBe("💗");
+    expect(reactionNotice(igMessage("d", { content: { kind: "unsupported", text: "Message" }, snippet: "Reacted ❤️ to your message" }))?.emoji).toBe("❤️");
+    for (const line of ["Maya named the group Weekend crew", "Reacted to your story", "Missed video call"]) {
+      expect(reactionNotice(system("e", line))).toBeNull();
+    }
+    // Something a person typed is never hidden.
+    expect(reactionNotice(igMessage("f", { content: { kind: "text", text: "liked a message" } }))).toBeNull();
+  });
+
+  test("are dropped from threads; their reaction lands on the target when the payload names it", () => {
+    const target = igMessage("m1", { senderFbid: VIEWER_FBID, timestampMs: 1_000 });
+    const named = system("n1", "Friend reacted 😂 to your message", {
+      timestampMs: 2_000, replyTo: { id: "m1", senderFbid: VIEWER_FBID, senderName: "Me", summary: "hello" },
+    });
+    const unnamed = system("n2", "Friend liked a message", { timestampMs: 3_000 });
+    const folded = foldReactionNotices(igThread("100", { messages: [target, named, unnamed], lastActivityMs: 3_000 }), igThread("100", { lastActivityMs: 900 }));
+    expect(folded.messages.map((message) => message.id)).toEqual(["m1"]);
+    expect(folded.messages[0]!.reactions).toEqual([{ emoji: "😂", senderFbid: FRIEND_FBID }]);
+    // A reaction is not activity: the chat keeps its place in the list.
+    expect(folded.lastActivityMs).toBe(1_000);
+    // Never counted as unread.
+    expect(unreadMessages({ ...folded, receipts: { [VIEWER_FBID]: 500 } })).toEqual([]);
+    // Already there (Instagram also lists it on the message): not doubled.
+    const again = foldReactionNotices({ ...folded, messages: [...folded.messages, named] });
+    expect(again.messages[0]!.reactions.length).toBe(1);
   });
 });
