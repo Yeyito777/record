@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 
+import { embedImageSources } from "./embeds";
 import {
   appendTimelineMessage,
   createTimelineState,
@@ -13,6 +14,7 @@ import {
   setTimelineImageAutoShow,
   setTimelineImageDetails,
   removeTimelineInlineImageStates,
+  setTimelineGifsPlay,
   setTimelineInlineImageState,
   setTimelineMessages,
   setTimelineRenderContext,
@@ -1255,6 +1257,36 @@ describe("timeline rendering", () => {
       expect(done.lineAnchors).toEqual(whileLoading);
       expect(done.inlineImages[0]).toMatchObject({ rows: 8, columns: 16 });
     });
+  });
+
+  test("GIFs: a GIF-only link has no link line; its ▶ GIF row goes only where GIFs play; Instagram's mp4 row too", () => {
+    const tenorUrl = "https://tenor.com/view/dance-gif-1";
+    const gif = message("m1", tenorUrl, { authorName: "Ada" });
+    gif.embeds = [{
+      type: "gifv", title: null, url: tenorUrl, description: null, providerName: "Tenor", authorName: null,
+      thumbnail: { url: "https://media.tenor.com/a.png", proxyUrl: null, width: 498, height: 374 },
+      video: { url: "https://media.tenor.com/a.mp4", proxyUrl: null, width: 498, height: 374 },
+    }];
+    gif.embedsCount = 1;
+    const ig = message("m2", "", { authorName: "Brook", timestamp: Date.UTC(2026, 0, 1, 12, 5, 0) });
+    ig.attachments = [
+      { id: "ig:1:0", filename: "gif.webp", contentType: "image/webp", size: 0, url: "https://ig.example/g.webp", width: 400, height: 300,
+        animation: { url: "https://ig.example/g.mp4", filename: "gif.mp4", contentType: "video/mp4" } },
+      { id: "ig:1:1", filename: "gif.mp4", contentType: "video/mp4", size: 0, url: "https://ig.example/g.mp4" },
+    ];
+    const timeline = createTimelineState();
+    setTimelineMessages(timeline, "channel-1", [gif, ig]);
+    setTimelineInlineImageState(timeline, { phase: "ready", attachmentId: "ig:1:0", filename: "gif.webp", sourceUrl: "https://ig.example/g.webp", requestId: 1, imageId: 0x40000001, pngBase64: "cG5n", pixelWidth: 400, pixelHeight: 300, animated: true });
+    const poster = embedImageSources(gif)[0]!;
+    setTimelineInlineImageState(timeline, { phase: "ready", attachmentId: poster.id, filename: poster.filename, sourceUrl: poster.url, requestId: 2, imageId: 0x40000002, pngBase64: "cG5n", pixelWidth: 498, pixelHeight: 374, animated: true });
+    expect(poster.animation).toEqual({ url: "https://media.tenor.com/a.mp4", filename: "a.mp4", contentType: "video/mp4" });
+    const text = () => renderTimelineLines(timeline, 100, 80, { text: "", tone: "muted" }).allLines.map((line) => stripAnsi(line)).join("\n");
+    expect(text()).not.toContain(tenorUrl);
+    expect(text()).toContain("▶ GIF");
+    expect(text()).toContain("gif.mp4");
+    expect(setTimelineGifsPlay(timeline, true)).toBe(true);
+    expect(text()).not.toContain("▶ GIF");
+    expect(text()).not.toContain("gif.mp4");
   });
 
   test("letting loaded pictures go (far from the view) gives back exactly the rows they held before", () => {

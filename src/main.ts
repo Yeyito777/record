@@ -3369,8 +3369,9 @@ async function main(): Promise<void> {
   terminalGraphicsClient = new TerminalGraphicsClient({
     write: (sequence) => process.stdout.write(sequence),
     onSupportChanged: (supported) => {
-      // GIFs play only where pictures show; then ask whether st video is there.
-      if (supported) gifPlayer?.detect();
+      // GIFs play only where pictures show; then ask whether st video is there
+      // (RECORD_VIDEO=0 keeps every GIF a still).
+      if (supported && process.env.RECORD_VIDEO !== "0") gifPlayer?.detect();
       else {
         gifPlayer?.setSupported(false);
         setTimelineGifsPlay(state.timeline, false);
