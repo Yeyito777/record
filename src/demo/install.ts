@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { DEMO_TOKEN, demoServerFolderLayout } from "./data";
-import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, parseAnchor, realRecordConfigDirs, type Env } from "./env";
+import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, DEMO_WHATSAPP_CREDS, parseAnchor, realRecordConfigDirs, type Env } from "./env";
 import { DemoDiscordServer } from "./server";
 import { buildDemoWhatsAppData, DEMO_WHATSAPP_PHOTOS_CHAT, DemoWhatsAppBackend, demoWhatsAppCacheSnapshot } from "./whatsapp";
 
@@ -203,7 +203,7 @@ function installDemoWhatsApp(server: DemoDiscordServer, home: string, olderPageD
   }));
   mkdirSync(authDirectory, { recursive: true, mode: 0o700 });
   const creds = join(authDirectory, "creds.json");
-  if (!existsSync(creds)) writeFileSync(creds, `${JSON.stringify({ demo: "Record offline demo; not a WhatsApp login" })}\n`, { mode: 0o600 });
+  if (!existsSync(creds)) writeFileSync(creds, `${JSON.stringify(DEMO_WHATSAPP_CREDS)}\n`, { mode: 0o600 });
   const cacheFile = join(dirname(authDirectory), "cache.json");
   if (!existsSync(cacheFile)) {
     writeFileSync(cacheFile, JSON.stringify(demoWhatsAppCacheSnapshot(data, server.world.anchorMs)), { mode: 0o600 });

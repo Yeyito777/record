@@ -469,6 +469,13 @@ export interface DiscordMessageAttachment {
   /** Provider-reported image size, used to size the viewer before download. */
   width?: number;
   height?: number;
+  /**
+   * Shape to hold in chat before the picture arrives when the provider sends
+   * no size (an Instagram reel preview is 9:16). Never taken as its size: a
+   * picture of another shape takes its own when it lands.
+   */
+  placeholderWidth?: number;
+  placeholderHeight?: number;
   durationSecs?: number;
   waveform?: string;
 }
@@ -487,6 +494,9 @@ export interface DiscordMessageEmbedMedia {
   proxyUrl: string | null;
   width: number | null;
   height: number | null;
+  /** As on attachments: the shape to hold before it arrives when no size is known. */
+  placeholderWidth?: number;
+  placeholderHeight?: number;
   durationSecs?: number | null;
 }
 

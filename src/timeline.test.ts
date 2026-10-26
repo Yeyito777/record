@@ -10,6 +10,7 @@ import {
   pushTimelineSystemMessage,
   replaceTimelineMessage,
   renderTimelineLines,
+  setTimelineImageAutoShow,
   setTimelineImageDetails,
   setTimelineInlineImageState,
   setTimelineMessages,
@@ -1203,6 +1204,168 @@ describe("timeline rendering", () => {
       expect(lines.anchors.filter((anchor) => anchor.includes(":image-status:a1:")).length).toBe(1);
       const rows = lines.anchors.filter((anchor) => anchor.includes(":image:a2:")).length;
       expect(rows).toBe(inlineImageCellLayout({ pixelWidth: 432, pixelHeight: 576 }, 80).rows);
+    });
+  });
+
+  describe("a picture arriving changes no row outside its own box", () => {
+    type Media = NonNullable<NonNullable<DiscordMessage["embeds"]>[number]["image"]>;
+    const media = (name: string, size: Partial<Media> = {}): Media => ({
+      url: `https://media.example.org/${name}.jpg`, proxyUrl: null, width: null, height: null, ...size,
+    });
+    const article = (extra: Partial<NonNullable<DiscordMessage["embeds"]>[number]>) => ({
+      type: "article", title: "A story worth reading", url: "https://news.example.org/story",
+      description: "A description long enough to wrap beside a thumbnail when there is one drawn next to it.",
+      providerName: "News", authorName: null, ...extra,
+    });
+    // Previews arrive bounded (72x16 cells of 8x16 pixels) and rounded.
+    const preview = (width: number, height: number) => {
+      const scale = Math.min(1, 576 / width, 256 / height);
+      return { pixelWidth: Math.max(1, Math.round(width * scale)), pixelHeight: Math.max(1, Math.round(height * scale)) };
+    };
+    const cases: Array<{ name: string; build: (picture: DiscordMessage) => void; pick: (sources: ReturnType<typeof inlineImageSourcesForMessage>) => (typeof sources)[number]; arrives: { pixelWidth: number; pixelHeight: number }; sharesRowsWith?: number }> = [
+      {
+        name: "a photo whose size the provider sent",
+        build: (picture) => { picture.attachments = [{ id: "a1", filename: "photo.jpg", contentType: "image/jpeg", size: 0, url: "https://cdn.example/photo.jpg", width: 1600, height: 1200 }]; },
+        pick: (sources) => sources[0]!,
+        arrives: preview(1600, 1200),
+      },
+      {
+        name: "a Discord sticker (always 320x320, never sized by Discord)",
+        build: (picture) => { picture.stickers = [{ id: "s1", name: "wave", formatType: 1 }]; picture.stickerNames = ["wave"]; },
+        pick: (sources) => sources[0]!,
+        arrives: preview(320, 320),
+      },
+      {
+        name: "an embed's large image",
+        build: (picture) => { picture.embeds = [article({ image: media("large", { width: 1200, height: 630 }) })]; picture.embedsCount = 1; },
+        pick: (sources) => sources[0]!,
+        arrives: preview(1200, 630),
+      },
+      {
+        name: "an embed's thumbnail beside its text",
+        build: (picture) => { picture.embeds = [article({ thumbnail: media("thumb", { width: 400, height: 400 }) })]; picture.embedsCount = 1; },
+        pick: (sources) => sources[0]!,
+        arrives: preview(400, 400),
+      },
+      {
+        name: "the second picture of an embed gallery",
+        build: (picture) => {
+          picture.embeds = [
+            article({ image: media("g1", { width: 1000, height: 1000 }) }),
+            { type: "image", title: null, url: "https://news.example.org/story", description: null, providerName: null, authorName: null, image: media("g2", { width: 800, height: 1000 }) },
+          ];
+          picture.embedsCount = 2;
+        },
+        pick: (sources) => sources[1]!,
+        arrives: preview(800, 1000),
+        // Side by side with the first: the pair's rows are both pictures' box.
+        sharesRowsWith: 0,
+      },
+      {
+        name: "a video's poster",
+        build: (picture) => { picture.embeds = [{ type: "video", title: "Clip", url: "https://video.example.org/v", description: null, providerName: "Video", authorName: null, thumbnail: media("poster", { width: 1280, height: 720 }), video: media("v", { width: 1280, height: 720 }) }]; picture.embedsCount = 1; },
+        pick: (sources) => sources[0]!,
+        arrives: preview(1280, 720),
+      },
+      {
+        name: "a share preview with only the provider's assumed shape",
+        build: (picture) => { picture.embeds = [article({ image: media("reel", { placeholderWidth: 1080, placeholderHeight: 1920 }) })]; picture.embedsCount = 1; },
+        pick: (sources) => sources[0]!,
+        arrives: preview(1080, 1920),
+      },
+    ];
+
+    for (const { name, build, pick, arrives, sharesRowsWith } of cases) {
+      for (const from of ["not requested yet", "loading"] as const) {
+        test(`${name}, ${from}`, () => {
+          const timeline = createTimelineState();
+          const above = message("m1", "a line above", { authorName: "Ada" });
+          const picture = message("m2", "", { authorName: "Brook", timestamp: Date.UTC(2026, 0, 1, 12, 5, 0) });
+          build(picture);
+          const below = message("m3", "and a line below it", { authorName: "Ada", timestamp: Date.UTC(2026, 0, 1, 12, 10, 0) });
+          setTimelineMessages(timeline, "channel-1", [above, picture, below]);
+          setTimelineImageAutoShow(timeline, true);
+          const source = pick(inlineImageSourcesForMessage(picture));
+          const base = { attachmentId: source.id, filename: source.filename, sourceUrl: source.url, requestId: 3 };
+          if (from === "loading") setTimelineInlineImageState(timeline, { ...base, phase: "loading" });
+          const render = () => renderTimelineLines(timeline, 100, 60, { text: "", tone: "muted" });
+          const before = render();
+          setTimelineInlineImageState(timeline, { ...base, phase: "ready", imageId: 0x40000001, pngBase64: "cG5n", ...arrives });
+          const after = render();
+
+          const boxIds = [source, ...(sharesRowsWith === undefined ? [] : [inlineImageSourcesForMessage(picture)[sharesRowsWith]!])]
+            .map((entry) => encodeURIComponent(entry.id));
+          const inBox = (anchor: string | undefined) => !!anchor && boxIds.some((encoded) => anchor.includes(`:image:${encoded}:`) || anchor.includes(`:image-status:${encoded}:`));
+          expect(after.allLines.length).toBe(before.allLines.length);
+          const changed: number[] = [];
+          for (let row = 0; row < after.allLines.length; row++) {
+            if (inBox(before.lineAnchors[row]) && inBox(after.lineAnchors[row])) continue;
+            if (after.allLines[row] !== before.allLines[row] || after.lineAnchors[row] !== before.lineAnchors[row]) changed.push(row);
+          }
+          expect(changed.map((row) => [before.lineAnchors[row], stripAnsi(before.allLines[row]!), "->", after.lineAnchors[row], stripAnsi(after.allLines[row]!)])).toEqual([]);
+          // Drawn inside the box it held.
+          const placed = after.inlineImages.find((placement) => placement.image.attachmentId === source.id);
+          expect(placed).toBeDefined();
+          const heldRows = before.lineAnchors.flatMap((anchor, row) => (inBox(anchor) ? [row] : []));
+          expect(heldRows.length).toBeGreaterThan(0);
+          expect(placed!.lineIndex + placed!.rows).toBeLessThanOrEqual(heldRows.at(-1)! + 1);
+          // It starts on its box, or (a thumbnail) beside its embed's text above it.
+          const top = before.lineAnchors[placed!.lineIndex]!;
+          expect(inBox(top) || top.startsWith("msg:m2:embed:")).toBe(true);
+        });
+      }
+    }
+
+    describe("what holds a box", () => {
+      const url = "https://cdn.example/photo.jpg";
+      const base = { attachmentId: "a1", filename: "photo.jpg", sourceUrl: url, requestId: 2 };
+      const setup = (attachment: Partial<DiscordMessage["attachments"][number]>, autoShow = true) => {
+        const timeline = createTimelineState();
+        const picture = message("m1", "", { authorName: "Brook" });
+        picture.attachments = [{ id: "a1", filename: "photo.jpg", contentType: "image/jpeg", size: 0, url, ...attachment }];
+        setTimelineMessages(timeline, "channel-1", [picture, message("m2", "below", { timestamp: Date.UTC(2026, 0, 1, 13, 0, 0) })]);
+        setTimelineImageAutoShow(timeline, autoShow);
+        return timeline;
+      };
+      const render = (timeline: ReturnType<typeof createTimelineState>, frame = 0) => renderTimelineLines(timeline, 100, 60, { text: "", tone: "muted" }, frame);
+
+      test("waiting for a connection keeps the box (and says so on its first row)", () => {
+        const timeline = setup({ width: 1600, height: 1200 });
+        setTimelineInlineImageState(timeline, { ...base, phase: "loading" });
+        const loading = render(timeline);
+        setTimelineInlineImageState(timeline, { ...base, phase: "waiting" });
+        const waiting = render(timeline);
+        expect(waiting.lineAnchors).toEqual(loading.lineAnchors);
+        expect(waiting.allLines.map(stripAnsi)).toContain("Waiting for connection to load photo.jpg…");
+      });
+
+      test("a provider's assumed shape holds the box; a picture of that shape keeps it, one of another shape takes its own", () => {
+        const timeline = setup({ placeholderWidth: 1080, placeholderHeight: 1920 });
+        const held = render(timeline);
+        expect(held.lineAnchors.filter((anchor) => anchor.startsWith("msg:m1:image:a1:")).length)
+          .toBe(inlineImageCellLayout({ pixelWidth: 1080, pixelHeight: 1920 }, 100).rows);
+        setTimelineInlineImageState(timeline, { ...base, phase: "ready", imageId: 0x40000001, pngBase64: "cG5n", pixelWidth: 144, pixelHeight: 256 });
+        expect(render(timeline).lineAnchors).toEqual(held.lineAnchors);
+        // A wide one where a 9:16 one was assumed: its own size.
+        setTimelineInlineImageState(timeline, { ...base, phase: "ready", imageId: 0x40000001, pngBase64: "cG5n", pixelWidth: 576, pixelHeight: 144 });
+        expect(render(timeline).inlineImages[0]).toMatchObject(inlineImageCellLayout({ pixelWidth: 576, pixelHeight: 144 }, 100));
+      });
+
+      test("a picture not requested yet keeps a still spinner: messages far away are not laid out again every tick", () => {
+        const timeline = setup({ width: 1600, height: 900 });
+        expect(render(timeline, 3).allLines).toEqual(render(timeline, 0).allLines);
+        // Once requested, it spins.
+        setTimelineInlineImageState(timeline, { ...base, phase: "loading" });
+        expect(render(timeline, 3).allLines).not.toEqual(render(timeline, 0).allLines);
+      });
+
+      test("nothing is held without a size or shape, with pictures hidden (/images hide) or for one the user collapsed", () => {
+        expect(render(setup({})).allLines.map(stripAnsi)).toContain("📎 photo.jpg");
+        expect(render(setup({ width: 1600, height: 1200 }, false)).allLines.map(stripAnsi)).toContain("📎 photo.jpg");
+        const collapsed = setup({ width: 1600, height: 1200 });
+        setTimelineImageAutoShow(collapsed, true, new Set(["a1"]));
+        expect(render(collapsed).allLines.map(stripAnsi)).toContain("📎 photo.jpg");
+      });
     });
   });
 

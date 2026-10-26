@@ -19,7 +19,7 @@ import {
   instagramTimelineMessages, instagramUnreadCount, isDraftThreadId, type InstagramOutgoing,
 } from "./integration";
 import {
-  contentSummary, displayNameForFbid, foldReactionNotices, isSystemContent, mergeThreadDetail, mergeThreadPreview, offlineThreadingId, prependOlder,
+  contentSummary, displayNameForFbid, foldReactionNotices, isSystemContent, markListPreviews, mergeThreadDetail, mergeThreadPreview, offlineThreadingId, prependOlder,
   type IgInboxPage, type IgThread, type IgUser,
 } from "./model";
 import { isInstagramThreadMuted, loadInstagramMutes, saveInstagramMutes } from "./mute";
@@ -229,7 +229,8 @@ export class InstagramController {
       this.state.instagram.account = snapshot.account ?? { id: accountId, fbid: "", username: "", name: "Me" };
     }
     for (const thread of snapshot.threads) {
-      if (!this.state.instagram.threadsById[thread.id]) this.storeThread(thread);
+      // Caches from before list copies were marked: "unsupported" items are those copies.
+      if (!this.state.instagram.threadsById[thread.id]) this.storeThread(markListPreviews(thread));
     }
     this.state.instagram.requestIds = snapshot.requestIds.filter(id => this.state.instagram.threadsById[id]);
     const known = new Set(this.state.instagram.outgoing.map(send => send.localId));

@@ -11,6 +11,21 @@ export const DEMO_TOKEN = "demo.record-offline.not-a-real-token";
 
 export type Env = Record<string, string | undefined>;
 
+/** The demo's WhatsApp "login": a marker, so Record reconnects the fake backend at startup. */
+export const DEMO_WHATSAPP_CREDS = { demo: "Record offline demo; not a WhatsApp login" };
+
+/** Only the demo's marker creds.json (or nothing) is in a WhatsApp auth directory. */
+function isDemoWhatsAppAuth(dir: string): boolean {
+  try {
+    const names = readdirSync(dir);
+    if (names.some((name) => name !== "creds.json")) return false;
+    if (names.length === 0) return true;
+    return JSON.stringify(JSON.parse(readFileSync(join(dir, "creds.json"), "utf8"))) === JSON.stringify(DEMO_WHATSAPP_CREDS);
+  } catch {
+    return false;
+  }
+}
+
 export function isDemoRequested(argv: readonly string[], env: Env): boolean {
   if (argv.slice(2).includes("--demo")) return true;
   const flag = env.RECORD_DEMO?.trim().toLowerCase();
@@ -70,7 +85,9 @@ export function assertSafeDemoConfigDir(demoConfigDir: string, realDirs: readonl
     }
   }
   for (const name of ["saved-logins.json", join("whatsapp", "auth"), join("instagram", "session.json")]) {
-    if (existsSync(join(demoConfigDir, name))) {
+    const path = join(demoConfigDir, name);
+    if (name === join("whatsapp", "auth") && existsSync(path) && isDemoWhatsAppAuth(path)) continue;
+    if (existsSync(path)) {
       throw new Error(`Refusing to run demo mode: ${join(demoConfigDir, name)} looks like real login data.`);
     }
   }
