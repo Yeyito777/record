@@ -214,6 +214,7 @@ describe("demo launch", () => {
       const { DemoWhatsAppBackend } = await import(${JSON.stringify(join(REPO, "src/demo/whatsapp.ts"))});
       const { getRecordWhatsAppPaths } = await import(${JSON.stringify(join(REPO, "src/whatsapp/paths.ts"))});
       const { createInitialState } = await import(${JSON.stringify(join(REPO, "src/state.ts"))});
+      const { debugLogPath } = await import(${JSON.stringify(join(REPO, "src/debuglog.ts"))});
       const controller = new WhatsAppController(createInitialState(null, "/tmp/x.json"), () => {});
       const demo = currentDemoInstall();
       let blocked = false;
@@ -225,6 +226,7 @@ describe("demo launch", () => {
         xdg: process.env.XDG_CONFIG_HOME === demo.home,
         fakeWhatsApp: controller.backend instanceof DemoWhatsAppBackend,
         whatsappAuthInDemoHome: getRecordWhatsAppPaths().authDirectory.startsWith(demo.home + "/"),
+        debugLogInDemoHome: debugLogPath().startsWith(demo.home + "/"),
       }));
       await controller.shutdown();
     `);
@@ -238,6 +240,7 @@ describe("demo launch", () => {
     expect(proc.stderr.toString()).toBe("");
     expect(JSON.parse(proc.stdout.toString().trim().split("\n").at(-1)!)).toEqual({
       fakeFetch: true, fakeSocket: true, blocked: true, xdg: true, fakeWhatsApp: true, whatsappAuthInDemoHome: true,
+      debugLogInDemoHome: true,
     });
     expect(readFileSync(configFile, "utf8")).toBe(original);
     expect(existsSync(join(home, ".config", "record", "whatsapp"))).toBe(false);
