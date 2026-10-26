@@ -181,6 +181,21 @@ export class DemoDiscordServer {
     return count;
   }
 
+  /** Someone writes in the Nth least recently active DM (1 = the bottom one), so it jumps to the top. */
+  emitDirectMessage(fromBottom = 1): string | null {
+    const byAge = this.world.directMessages
+      .filter((channel) => this.history(channel.id))
+      .sort((a, b) => {
+        const key = (channel: typeof a): bigint => BigInt(channel.last_message_id ?? channel.id);
+        const diff = key(a) - key(b);
+        return diff < 0n ? -1 : diff > 0n ? 1 : 0;
+      });
+    const target = byAge[Math.max(0, Math.min(byAge.length - 1, Math.floor(fromBottom) - 1))];
+    if (!target) return null;
+    this.emitIncoming(1, target.id);
+    return target.id;
+  }
+
   /** Show someone typing in the open channel. */
   emitTyping(channelId = this.openChannelId): void {
     if (!channelId) return;
@@ -472,7 +487,8 @@ export class DemoDiscordServer {
 
   /**
    * Messages starting with `!demo` drive the fake server from Record's own prompt:
-   * `!demo more [N]`, `!demo typing`, `!demo every SECONDS` (0 stops).
+   * `!demo more [N]`, `!demo typing`, `!demo every SECONDS` (0 stops),
+   * `!demo dm [N]` (a message in the Nth least recent DM; default the oldest).
    */
   private runChatCommand(channelId: string, content: string): void {
     const match = /^!demo\s+(\w+)(?:\s+(\d+(?:\.\d+)?))?/i.exec(content.trim());
@@ -491,6 +507,8 @@ export class DemoDiscordServer {
       setTimeout(() => this.emitUnfurlingLink(channelId), 400);
     } else if (command === "suppress") {
       this.suppressNewestEmbeds(channelId);
+    } else if (command === "dm") {
+      setTimeout(() => this.emitDirectMessage(value ?? 1), 400);
     }
   }
 
