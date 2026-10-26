@@ -36,7 +36,16 @@ interface DebugLogOptions {
   maxBytes: number;
 }
 
-let options: DebugLogOptions = optionsFromEnv(process.env);
+/**
+ * Read on first use, not at import: demo mode (src/demo/bootstrap.ts) points
+ * RECORD_DEBUG_LOG and XDG_CONFIG_HOME at its own home after some modules
+ * that import this one have loaded, and must never log into a real config.
+ */
+let resolvedOptions: DebugLogOptions | null = null;
+
+function currentOptions(): DebugLogOptions {
+  return resolvedOptions ??= optionsFromEnv(process.env);
+}
 let pending: string[] = [];
 let pendingBytes = 0;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -57,6 +66,7 @@ function optionsFromEnv(env: NodeJS.ProcessEnv): DebugLogOptions {
 }
 
 export function debugLog(event: string, fields: Record<string, unknown> = {}): void {
+  const options = currentOptions();
   if (!options.enabled) return;
   if (!options.verbose && VERBOSE_EVENTS.has(event)) return;
   try {
@@ -95,7 +105,7 @@ export function flushDebugLog(): void {
   pendingBytes = 0;
   try {
     if (fd === null) openLog();
-    if (fileBytes > 0 && fileBytes + chunk.length > options.maxBytes) rotate();
+    if (fileBytes > 0 && fileBytes + chunk.length > currentOptions().maxBytes) rotate();
     const bytes = Buffer.from(chunk);
     writeSync(fd!, bytes);
     fileBytes += bytes.length;
@@ -106,14 +116,16 @@ export function flushDebugLog(): void {
 }
 
 function openLog(): void {
-  mkdirSync(dirname(options.path), { recursive: true, mode: 0o700 });
-  fd = openSync(options.path, "a", 0o600);
+  const { path } = currentOptions();
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  fd = openSync(path, "a", 0o600);
   fileBytes = fstatSync(fd).size;
 }
 
 function rotate(): void {
   closeLog();
-  renameSync(options.path, `${options.path}.1`);
+  const { path } = currentOptions();
+  renameSync(path, `${path}.1`);
   openLog();
 }
 
@@ -143,12 +155,12 @@ function redact(value: unknown): unknown {
 }
 
 export function debugLogPath(): string {
-  return options.path;
+  return currentOptions().path;
 }
 
 /** Tests only: flush, close, and re-read options (from env unless overridden). */
 export function resetDebugLogForTest(overrides: Partial<DebugLogOptions> = {}, env: NodeJS.ProcessEnv = process.env): void {
   flushDebugLog();
   closeLog();
-  options = { ...optionsFromEnv(env), ...overrides };
+  resolvedOptions = { ...optionsFromEnv(env), ...overrides };
 }
