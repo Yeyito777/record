@@ -411,8 +411,9 @@ account:
 - **No network.** Demo mode replaces `fetch` and `WebSocket` before any other
   module loads. Discord API/CDN/gateway requests are answered locally; every
   other request is refused. WhatsApp is a fake backend in the same process
-  (src/demo/whatsapp.ts, never the Node worker or a real login), and the demo
-  config disables link/file openers.
+  (src/demo/whatsapp.ts, never the Node worker or a real login), Instagram a
+  fake client and CDN (src/demo/instagram.ts, never instagram.com or a saved
+  session), and the demo config disables link/file openers.
 - **WhatsApp:** four chats, connected at startup as a saved session would be,
   with the recent messages already cached. `Photo dump 📷` is 260 messages,
   nine in ten photos: JPEGs of real phone/screenshot sizes (up to 4000×3000),
@@ -420,6 +421,17 @@ account:
   `RECORD_DEMO_OLDER_DELAY_MS`; each photo "downloads" in 100–800 ms
   (`RECORD_DEMO_WA_MEDIA_MIN_MS` / `RECORD_DEMO_WA_MEDIA_MAX_MS`), like
   WhatsApp's fetch + decrypt. `RECORD_DEMO_OPEN=wa-photos` opens it.
+- **Instagram:** five chats (one a message request), connected at startup.
+  The inbox shows Instagram's reduced previews until a chat opens; a chat
+  opens with its newest 20 messages and pages 20 older ones after
+  `RECORD_DEMO_OLDER_DELAY_MS`. `Maya Lopes` (160 messages) is what real DMs
+  carry: shared posts, reels and stories (some with preview sizes, many
+  without), photos, videos, stickers, GIFs, voice notes, links, long text,
+  replies, reactions, Instagram's reaction notices, calls, and 1170×6000 and
+  4000×700 pictures; `Weekend crew 🏕️` (110) is mostly photos and albums.
+  Pictures are JPEGs of the size their CDN URL names and "download" in
+  200–1500 ms (`RECORD_DEMO_IG_MEDIA_MIN_MS` / `RECORD_DEMO_IG_MEDIA_MAX_MS`).
+  `RECORD_DEMO_OPEN=ig-shares` or `ig-photos` opens them.
 - **No real config.** Each run uses a fresh temporary `XDG_CONFIG_HOME`
   (deleted on exit) holding a demo token. Demo mode refuses to start if the
   directory overlaps `~/.config/record` or `$XDG_CONFIG_HOME/record`, or if
@@ -459,7 +471,8 @@ dwm stop demo
 
 `--nested` prints the demo home, pid file and these commands. Options are
 environment variables: `RECORD_DEMO_OPEN=images` (channel name to open first;
-`dm` for the long DM, `wa-photos` for the WhatsApp photo chat, `none` for nothing), `RECORD_DEMO_INCOMING_SECONDS=N`,
+`dm` for the long DM, `wa-photos` for the WhatsApp photo chat, `ig-shares` / `ig-photos` for the
+Instagram chats, `none` for nothing), `RECORD_DEMO_INCOMING_SECONDS=N`,
 `RECORD_DEMO_OLDER_DELAY_MS`, `RECORD_DEMO_LATENCY_MS`, `RECORD_DEMO_NOW`
 (end of the synthetic history), `RECORD_DEMO_HOME=DIR` (keep and reuse a demo
 home), `RECORD_DEMO_KEEP=1` and `RECORD_DEMO_FAIL_LEAVE=1` (Leave Server fails with a
