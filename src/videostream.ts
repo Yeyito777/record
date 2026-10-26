@@ -123,10 +123,16 @@ export function encodeSize(sourceWidth: number, sourceHeight: number, maxWidth: 
   return { width: even(sourceWidth), height: even(sourceHeight) };
 }
 
+/**
+ * libx264 wherever ffmpeg has it: for GIF-sized content it is smaller and
+ * faster than VideoToolbox (owner's Mac, a 3 s 480x360 GIF: 21 KB in 58 ms
+ * against 99 KB in 148 ms), and bytes are what a link pays for. VideoToolbox
+ * only when libx264 is missing.
+ */
 function encoderArgs(encoders: ReadonlySet<string> | undefined, width: number, height: number): string[] {
-  if (process.platform === "darwin" && encoders?.has("h264_videotoolbox")) {
-    // About 0.1 bit per pixel per frame at 15 fps: GIFs are small and flat.
-    const bitrate = Math.max(150_000, Math.min(1_500_000, Math.round(width * height * 15 * 0.1)));
+  if (process.platform === "darwin" && encoders?.has("h264_videotoolbox") && !encoders.has("libx264")) {
+    // About 0.05 bit per pixel per frame at 15 fps: near what libx264 makes of a GIF.
+    const bitrate = Math.max(80_000, Math.min(800_000, Math.round(width * height * 15 * 0.05)));
     return ["-c:v", "h264_videotoolbox", "-b:v", String(bitrate), "-profile:v", "high", "-allow_sw", "1", "-g", "250"];
   }
   return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "animation", "-crf", "28", "-g", "250"];
