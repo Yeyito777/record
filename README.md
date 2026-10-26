@@ -407,8 +407,16 @@ account:
 
 - **No network.** Demo mode replaces `fetch` and `WebSocket` before any other
   module loads. Discord API/CDN/gateway requests are answered locally; every
-  other request is refused. WhatsApp login is disabled (it runs in a separate
-  Node process), and the demo config disables link/file openers.
+  other request is refused. WhatsApp is a fake backend in the same process
+  (src/demo/whatsapp.ts, never the Node worker or a real login), and the demo
+  config disables link/file openers.
+- **WhatsApp:** four chats, connected at startup as a saved session would be,
+  with the recent messages already cached. `Photo dump 📷` is 260 messages,
+  nine in ten photos: JPEGs of real phone/screenshot sizes (up to 4000×3000),
+  most with width/height metadata, some captioned. Older pages answer after
+  `RECORD_DEMO_OLDER_DELAY_MS`; each photo "downloads" in 100–800 ms
+  (`RECORD_DEMO_WA_MEDIA_MIN_MS` / `RECORD_DEMO_WA_MEDIA_MAX_MS`), like
+  WhatsApp's fetch + decrypt. `RECORD_DEMO_OPEN=wa-photos` opens it.
 - **No real config.** Each run uses a fresh temporary `XDG_CONFIG_HOME`
   (deleted on exit) holding a demo token. Demo mode refuses to start if the
   directory overlaps `~/.config/record` or `$XDG_CONFIG_HOME/record`, or if
@@ -448,7 +456,7 @@ dwm stop demo
 
 `--nested` prints the demo home, pid file and these commands. Options are
 environment variables: `RECORD_DEMO_OPEN=images` (channel name to open first;
-`dm` for the long DM, `none` for nothing), `RECORD_DEMO_INCOMING_SECONDS=N`,
+`dm` for the long DM, `wa-photos` for the WhatsApp photo chat, `none` for nothing), `RECORD_DEMO_INCOMING_SECONDS=N`,
 `RECORD_DEMO_OLDER_DELAY_MS`, `RECORD_DEMO_LATENCY_MS`, `RECORD_DEMO_NOW`
 (end of the synthetic history), `RECORD_DEMO_HOME=DIR` (keep and reuse a demo
 home), `RECORD_DEMO_KEEP=1` and `RECORD_DEMO_FAIL_LEAVE=1` (Leave Server fails with a

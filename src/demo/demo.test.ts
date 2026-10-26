@@ -204,13 +204,17 @@ describe("demo launch", () => {
     expect(existsSync(join(home, ".config", DEMO_HOME_MARKER))).toBe(false);
   }, 30_000);
 
-  test("bootstrap swaps fetch/WebSocket for the fake server and blocks WhatsApp login", () => {
+  test("bootstrap swaps fetch/WebSocket for the fake server and WhatsApp for the fake one, inside the demo home", () => {
     const { home, configFile, original } = fakeRealHome();
     const script = join(temp(), "probe.ts");
     writeFileSync(script, `
       import ${JSON.stringify(join(REPO, "src/demo/bootstrap.ts"))};
       const { currentDemoInstall } = await import(${JSON.stringify(join(REPO, "src/demo/install.ts"))});
       const { WhatsAppController } = await import(${JSON.stringify(join(REPO, "src/whatsapp/controller.ts"))});
+      const { DemoWhatsAppBackend } = await import(${JSON.stringify(join(REPO, "src/demo/whatsapp.ts"))});
+      const { getRecordWhatsAppPaths } = await import(${JSON.stringify(join(REPO, "src/whatsapp/paths.ts"))});
+      const { createInitialState } = await import(${JSON.stringify(join(REPO, "src/state.ts"))});
+      const controller = new WhatsAppController(createInitialState(null, "/tmp/x.json"), () => {});
       const demo = currentDemoInstall();
       let blocked = false;
       try { await fetch("https://example.com/"); } catch (error) { blocked = error.name === "DemoNetworkBlockedError"; }
@@ -219,8 +223,10 @@ describe("demo launch", () => {
         fakeSocket: globalThis.WebSocket === demo.server.WebSocket,
         blocked,
         xdg: process.env.XDG_CONFIG_HOME === demo.home,
-        whatsappLoginPatched: WhatsAppController.prototype.login.toString().includes("demo mode"),
+        fakeWhatsApp: controller.backend instanceof DemoWhatsAppBackend,
+        whatsappAuthInDemoHome: getRecordWhatsAppPaths().authDirectory.startsWith(demo.home + "/"),
       }));
+      await controller.shutdown();
     `);
     const proc = Bun.spawnSync(["bun", "run", script], {
       cwd: REPO,
@@ -231,9 +237,10 @@ describe("demo launch", () => {
     });
     expect(proc.stderr.toString()).toBe("");
     expect(JSON.parse(proc.stdout.toString().trim().split("\n").at(-1)!)).toEqual({
-      fakeFetch: true, fakeSocket: true, blocked: true, xdg: true, whatsappLoginPatched: true,
+      fakeFetch: true, fakeSocket: true, blocked: true, xdg: true, fakeWhatsApp: true, whatsappAuthInDemoHome: true,
     });
     expect(readFileSync(configFile, "utf8")).toBe(original);
+    expect(existsSync(join(home, ".config", "record", "whatsapp"))).toBe(false);
   }, 30_000);
 
   test("a demo run uses its own home and never writes the real config", () => {
