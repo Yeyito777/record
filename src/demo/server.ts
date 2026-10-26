@@ -7,6 +7,7 @@
  * demo mode never opens a network connection.
  */
 
+import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
 import type { DiscordChannelResponse, DiscordEmbedResponse, DiscordMessageResponse } from "../discord";
@@ -15,6 +16,7 @@ import {
   buildHistory,
   buildIncomingContent,
   buildMessageAuthor,
+  demoAttachmentUrls,
   DEMO_TOKEN,
   hashString,
   imageAttachment,
@@ -72,6 +74,9 @@ export class DemoDiscordServer {
   private readonly variantBytes = new Map<number, Buffer>();
   private readonly uploads = new Map<string, StoredUpload>();
   private readonly cdnCache = new Map<string, Buffer>();
+  private readonly mediaProxyCache = new Map<string, Promise<{ bytes: Buffer; type: string }>>();
+  /** RECORD_DEMO_MEDIA_PROXY_FAIL=1: the media proxy answers 502 (clients fall back to the original). */
+  mediaProxyFails = false;
   /** Message id -> embeds that arrive by MESSAGE_UPDATE once its channel is opened. */
   private readonly lateEmbeds = new Map<string, DiscordEmbedResponse[]>();
   private readonly sockets = new Set<FakeGatewaySocket>();
@@ -428,7 +433,7 @@ export class DemoDiscordServer {
         filename: file.name,
         content_type: file.contentType,
         size: file.bytes.length,
-        url: `https://cdn.discordapp.com/attachments/${channelId}/${attachmentId}/${encodeURIComponent(file.name)}`,
+        ...demoAttachmentUrls(channelId, attachmentId, encodeURIComponent(file.name)),
       };
     });
     const content = typeof payload.content === "string" ? payload.content : "";
@@ -621,7 +626,8 @@ export class DemoDiscordServer {
   // -------------------------------------------------------------------------
   // CDN
 
-  private cdn(url: URL): Response {
+  private async cdn(url: URL): Promise<Response> {
+    if (url.hostname === "media.discordapp.net" && url.pathname.startsWith("/attachments/")) return this.mediaProxy(url);
     const cached = this.cdnCache.get(url.pathname);
     if (cached) return png(cached);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -658,6 +664,38 @@ export class DemoDiscordServer {
     if (!bytes) return new Response("not found", { status: 404 });
     this.cdnCache.set(url.pathname, bytes);
     return png(bytes);
+  }
+
+  /**
+   * Discord's media proxy for attachments: `width`/`height` scale the picture,
+   * `format=webp` (`quality=lossless` for PNGs) re-encodes it, as the real one
+   * does. RECORD_DEMO_MEDIA_PROXY_FAIL=1 makes it fail, so clients can be seen
+   * falling back to the original.
+   */
+  private async mediaProxy(url: URL): Promise<Response> {
+    if (this.mediaProxyFails) return new Response("upstream error", { status: 502 });
+    const parts = url.pathname.split("/").filter(Boolean);
+    const attachmentId = parts[2] ?? "";
+    const upload = this.uploads.get(attachmentId);
+    if (upload) return new Response(upload.bytes as unknown as BodyInit, { headers: { "content-type": upload.contentType, "content-length": String(upload.bytes.length) } });
+    const variant = this.imageVariantByAttachment.get(attachmentId);
+    if (variant === undefined) return new Response("not found", { status: 404 });
+    const key = `${variant}${url.search}`;
+    let bytes = this.mediaProxyCache.get(key);
+    if (!bytes) {
+      const shape = imageVariant(variant);
+      const width = Number(url.searchParams.get("width")) || 0;
+      const height = Number(url.searchParams.get("height")) || 0;
+      const picture = width > 0 && height > 0 && width <= 4096 && height <= 4096
+        ? renderPicture(width, height, shape.from, shape.to, shape.seed)
+        : this.variantPng(variant);
+      bytes = url.searchParams.get("format") === "webp"
+        ? demoWebp(picture, url.searchParams.get("quality") === "lossless")
+        : Promise.resolve({ bytes: picture, type: "image/png" });
+      this.mediaProxyCache.set(key, bytes);
+    }
+    const encoded = await bytes;
+    return new Response(encoded.bytes as unknown as BodyInit, { headers: { "content-type": encoded.type, "content-length": String(encoded.bytes.length) } });
   }
 
   // -------------------------------------------------------------------------
@@ -1057,6 +1095,29 @@ function empty(): Response {
 
 function notFound(): Response {
   return json({ message: "Unknown Resource", code: 10003 }, 404);
+}
+
+/** A picture as WebP through ffmpeg (lossless, or lossy as the proxy sends JPEGs); the PNG itself without ffmpeg. */
+function demoWebp(picture: Buffer, lossless: boolean): Promise<{ bytes: Buffer; type: string }> {
+  return new Promise((resolve) => {
+    const fallback = { bytes: picture, type: "image/png" };
+    const chunks: Buffer[] = [];
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn("ffmpeg", [
+        "-v", "error", "-nostdin", "-i", "pipe:0", "-frames:v", "1", "-c:v", "libwebp",
+        ...(lossless ? ["-lossless", "1"] : ["-quality", "80"]), "-f", "webp", "pipe:1",
+      ], { stdio: ["pipe", "pipe", "ignore"] });
+    } catch {
+      resolve(fallback);
+      return;
+    }
+    child.stdout!.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stdin!.on("error", () => {});
+    child.once("error", () => resolve(fallback));
+    child.once("close", (code) => resolve(code === 0 && chunks.length > 0 ? { bytes: Buffer.concat(chunks), type: "image/webp" } : fallback));
+    child.stdin!.end(picture);
+  });
 }
 
 function png(bytes: Buffer): Response {

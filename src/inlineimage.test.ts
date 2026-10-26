@@ -82,6 +82,14 @@ test.skipIf(!Bun.which("ffmpeg"))("photo previews use a palette; pictures that m
   const transparent = make("alpha.png", "color=c=red@0.5:size=640x480,format=rgba");
   expect(colourType(await prepareInlineImage(transparent, bounds))).toBe(6);
 
+  // Discord's media proxy sends JPEGs as lossy WebP: still a photo.
+  const lossyWebp = join(directory, "photo.webp");
+  execFileSync("ffmpeg", ["-v", "error", "-nostdin", "-f", "lavfi", "-i", "testsrc2=size=640x480", "-frames:v", "1", "-c:v", "libwebp", "-quality", "80", lossyWebp]);
+  expect(colourType(await prepareInlineImage(lossyWebp, bounds))).toBe(3);
+  const losslessWebp = join(directory, "alpha.webp");
+  execFileSync("ffmpeg", ["-v", "error", "-nostdin", "-f", "lavfi", "-i", "color=c=red@0.5:size=640x480,format=rgba", "-frames:v", "1", "-c:v", "libwebp", "-lossless", "1", losslessWebp]);
+  expect(colourType(await prepareInlineImage(losslessWebp, bounds))).toBe(6);
+
   // The viewer: full colour, bounded to its box when one is given, else the source's pixels.
   const viewer = await prepareInlineImage(jpeg, { preserveSourceResolution: true, ...bounds });
   expect([viewer.pixelWidth, viewer.pixelHeight, colourType(viewer)]).toEqual([320, 240, 2]);

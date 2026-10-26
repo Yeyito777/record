@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 
 import { fetchChannelMessages, fetchDirectMessages, fetchGuildChannels, fetchGuilds, validateToken } from "../discord";
 import { buildDemoWorld, DEMO_TOKEN } from "./data";
+import { discordAttachmentProxyRequest } from "../discordmedia";
 import { assertSafeDemoConfigDir, assertUsableDemoHome, DEMO_HOME_MARKER, DEMO_WHATSAPP_CREDS, isDemoRequested, realRecordConfigDirs } from "./env";
 import { DemoDiscordServer, DemoNetworkBlockedError } from "./server";
 
@@ -135,6 +136,29 @@ describe("fake Discord server", () => {
     const attachment = demo.history(images.id!)!.flatMap((message) => message.attachments ?? []).find((item) => item.content_type === "image/png")!;
     const body = await demo.fetch(attachment.url);
     expect((await body.arrayBuffer()).byteLength).toBe(attachment.size);
+  });
+
+  test("attachments are signed like Discord's, and its media proxy scales them as asked", async () => {
+    const demo = server();
+    const images = demo.world.guilds[0]!.channels.find((channel) => channel.name === "images")!;
+    const attachment = demo.history(images.id!)!.flatMap((message) => message.attachments ?? [])
+      .find((item) => item.content_type === "image/png" && (item.width ?? 0) > 576)!;
+    expect(attachment.url).toMatch(/^https:\/\/cdn\.discordapp\.com\/attachments\/\d+\/\d+\/[^?]+\?ex=[0-9a-f]+&is=[0-9a-f]+&hm=[0-9a-f]{64}&$/);
+    expect(attachment.proxy_url).toBe(attachment.url.replace("https://cdn.discordapp.com/", "https://media.discordapp.net/"));
+    const request = discordAttachmentProxyRequest({
+      url: attachment.url, proxyUrl: attachment.proxy_url!, contentType: attachment.content_type!, filename: attachment.filename,
+      width: attachment.width!, height: attachment.height!,
+    }, 576, 256)!;
+    expect(request.url).toBe(`${attachment.proxy_url}=&format=webp&quality=lossless&width=${request.width}&height=${request.height}`);
+    const scaled = await demo.fetch(request.url);
+    const bytes = Buffer.from(await scaled.arrayBuffer());
+    if (Bun.which("ffmpeg")) {
+      expect(scaled.headers.get("content-type")).toBe("image/webp");
+      expect(bytes.toString("latin1", 0, 4) + bytes.toString("latin1", 8, 12)).toBe("RIFFWEBP");
+    }
+    expect(demo.requests.at(-1)).toBe(`GET ${request.url.slice("https://".length)}`);
+    demo.mediaProxyFails = true;
+    expect((await demo.fetch(request.url)).status).toBe(502);
   });
 
   test("the world is deterministic", () => {

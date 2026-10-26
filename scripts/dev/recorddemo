@@ -22,6 +22,7 @@
 #   RECORD_DEMO_LATENCY_MS=N         delay for other API calls (default 20)
 #   RECORD_DEMO_WA_MEDIA_MIN_MS=N    WhatsApp photo download time, from (100)
 #   RECORD_DEMO_WA_MEDIA_MAX_MS=N    ... to (800)
+#   RECORD_DEMO_MEDIA_PROXY_FAIL=1   Discord's media proxy fails (previews fall back to originals)
 #   RECORD_DEMO_NOW=ISO|MS           end of the synthetic history (default fixed)
 #   RECORD_DEMO_HOME=DIR             reuse a demo home (kept after exit)
 #   RECORD_DEMO_KEEP=1               keep the temporary demo home after exit

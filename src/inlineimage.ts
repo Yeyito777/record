@@ -507,12 +507,16 @@ export function convertImageBytesToPng(data: Buffer, options: InlineImagePrepare
 }
 
 /**
- * Photos (JPEG: opaque, many colours) get palette previews. Anything that may
- * be transparent (PNG, WebP, GIF stickers) keeps full RGBA, and so does the
- * viewer's full-resolution picture.
+ * Photos get palette previews: JPEG, and lossy WebP without transparency
+ * (the simple "VP8 " form, what Discord's media proxy sends for a JPEG).
+ * Anything that may be transparent (PNG, other WebP, GIF stickers) keeps full
+ * RGBA, and so does the viewer's full-resolution picture.
  */
 function usesPalette(data: Uint8Array, options: InlineImagePrepareOptions): boolean {
-  return !options.preserveSourceResolution && data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+  if (options.preserveSourceResolution) return false;
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return true;
+  const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  return bytes.length >= 16 && bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 16) === "WEBPVP8 ";
 }
 
 function convertWebpFrameToPng(frame: NonNullable<ReturnType<typeof firstAnimatedWebpFrame>>, options: InlineImagePrepareOptions): Promise<Buffer> {

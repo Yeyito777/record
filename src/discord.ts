@@ -256,6 +256,7 @@ export interface DiscordAttachmentResponse {
   content_type?: string | null;
   size: number;
   url: string;
+  proxy_url?: string | null;
   width?: number | null;
   height?: number | null;
   duration_secs?: number;
@@ -466,6 +467,8 @@ export interface DiscordMessageAttachment {
   contentType: string | null;
   size: number;
   url: string;
+  /** Discord's media-proxy URL for it (scaled copies for previews), when the API sent one. */
+  proxyUrl?: string;
   /** Provider-reported image size, used to size the viewer before download. */
   width?: number;
   height?: number;
@@ -1184,6 +1187,7 @@ function mapDiscordAttachment(attachment: DiscordAttachmentResponse): DiscordMes
     contentType: attachment.content_type ?? null,
     size: attachment.size,
     url: attachment.url,
+    ...(attachment.proxy_url ? { proxyUrl: attachment.proxy_url } : {}),
     ...(attachment.width && attachment.height ? { width: attachment.width, height: attachment.height } : {}),
     durationSecs: attachment.duration_secs,
     waveform: attachment.waveform,
