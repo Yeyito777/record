@@ -23,6 +23,8 @@ export interface DemoGifMessage {
   content: string;
   embeds?: DiscordEmbedResponse[];
   gifs?: DemoGifFile[];
+  /** A video with sound (mp4): it plays in the viewer, not by itself. */
+  video?: DemoGifFile;
   /** An animated sticker (APNG). */
   sticker?: { name: string; seed: number };
 }
@@ -78,6 +80,7 @@ export function demoGifShowcase(): DemoGifMessage[] {
     },
     { author: "kenji", content: "https://giphy.com/gifs/thumbs-up-demo", embeds: [giphy("thumbs-up-demo", 45, { width: 480, height: 360 })] },
     { author: "amara", content: "ok last one, I promise" },
+    { author: "felix", content: "not a gif: a clip with sound (Enter plays it)", video: { filename: "clip-with-sound.mp4", width: 640, height: 360, seed: 9 } },
     { author: "tobias", content: `https://tenor.com/view/${dance}-2`, embeds: [tenor(`${dance}-2`, 35, { width: 498, height: 374 })] },
   ];
 }

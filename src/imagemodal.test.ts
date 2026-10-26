@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   handleImageModalKey,
+  handleVideoModalKey,
   imageModalFrame,
   imageModalLayout,
   imageModalPixelBounds,
@@ -63,6 +64,26 @@ describe("full-resolution image modal", () => {
     expect(columns * 9).toBeLessThanOrEqual(bounds.maxPixelWidth);
     expect(rows * 18).toBeLessThanOrEqual(bounds.maxPixelHeight);
     expect(imageModalPixelBounds(6, 10, 9, 18)).toBeNull();
+  });
+
+  test("a video: Space pauses, h/l seek 5 s, Esc/Enter/q close; its footer says where it is, shorter when narrow", () => {
+    expect(handleVideoModalKey({ type: "char", char: " " })).toEqual({ type: "pause" });
+    expect(handleVideoModalKey({ type: "char", char: "l" })).toEqual({ type: "seek", bySeconds: 5 });
+    expect(handleVideoModalKey({ type: "left" })).toEqual({ type: "seek", bySeconds: -5 });
+    expect(handleVideoModalKey({ type: "escape" })).toEqual({ type: "close" });
+    expect(handleVideoModalKey({ type: "char", char: "q" })).toEqual({ type: "close" });
+    expect(handleVideoModalKey({ type: "char", char: "x" })).toEqual({ type: "handled" });
+    const video = (width: number, height: number): ImageModalState => ({
+      filename: "clip.mp4",
+      image: { phase: "ready", attachmentId: "video:a", filename: "clip.mp4", sourceUrl: "", requestId: 0, imageId: 0x75000001, pngBase64: "", pixelWidth: width, pixelHeight: height },
+      frame: { pixelWidth: width, pixelHeight: height, enlarge: true },
+      video: { status: "▶ 0:12 / 1:03 · Space: pause · h / l: seek · Esc to close", short: "▶ 0:12/1:03 · Space · h/l" },
+    });
+    expect(renderImageModal(video(1280, 720), 60, 180, 9, 18).payload).toContain("▶ 0:12 / 1:03 · Space: pause");
+    // A tall video in a short terminal: a narrow viewer, the short footer.
+    const narrow = renderImageModal(video(270, 480), 30, 180, 9, 18);
+    expect(narrow.payload).toContain("▶ 0:12/1:03 · Space · h/l");
+    expect(narrow.placement?.image.imageId).toBe(0x75000001);
   });
 
   test("in an album, l/→ and h/← step to the next and previous photo; the title says which", () => {

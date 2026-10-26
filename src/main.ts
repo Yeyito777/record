@@ -42,9 +42,11 @@ import { inlineImageHasShape, inlineImageId, inlineImagePreviewPixelBounds, inli
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 import { discordAttachmentProxyRequest, proxiedAttachment } from "./discordmedia";
 import { GifPlayer } from "./gifplayer";
+import { mediaStreamPlan, probeMedia, runMediaStream } from "./mediastream";
+import { formatPlayback, ViewerVideo } from "./videoviewer";
 import { encodeVideoStream, videoEncoders, VideoStreamDiskCache, type VideoStream } from "./videostream";
 import { ansiColorToRgb } from "./terminalcolors";
-import { handleImageModalKey, imageModalPixelBounds, openImageModalState, upgradeImageModal } from "./imagemodal";
+import { handleImageModalKey, handleVideoModalKey, imageModalPixelBounds, openImageModalState, upgradeImageModal, type ImageModalState } from "./imagemodal";
 import { copyToClipboard } from "./editor-clipboard";
 import { attachmentAtHistoryCursor, embedVideoAtHistoryCursor, forwardedOriginAtHistoryCursor, inlineImageBodyAttachmentAtHistoryCursor, openableTargetAtHistoryCursor, threadChannelAtHistoryCursor } from "./historyopenable";
 import type { EmbedVideoTarget } from "./embeds";
@@ -389,6 +391,8 @@ async function loadGifStream(attachment: DiscordMessageAttachment, channelId: st
 
 /** Offer the GIFs the frame just drawn to the player (after the frame: its commands follow the frame). */
 function updateInlineVideos(): void {
+  // The viewer closed some other way (a channel switch, a reset): its video and sound stop too.
+  if (viewerVideo && state.imageModal !== viewerVideo.modal) closeVideoViewer();
   if (!gifPlayer?.isSupported()) return;
   const candidates = [];
   for (const { attachmentId, rows } of state.inlineVideoView) {
@@ -2707,6 +2711,142 @@ function handleSidebarFocused(key: KeyEvent): boolean {
   }
 }
 
+/** The video playing in the viewer (st video), and how to stop its ffmpeg. */
+let viewerVideo: { video: ViewerVideo; modal: ImageModalState; stop: () => void } | null = null;
+/** Larger videos open with the configured opener: the viewer holds a video's packets in memory. */
+const VIEWER_VIDEO_MAX_BYTES = 300 * 1024 * 1024;
+const VIDEO_FILE_RE = /\.(?:mp4|m4v|mov|webm|mkv|avi)$/i;
+
+function isVideoAttachment(attachment: DiscordMessageAttachment): boolean {
+  if (attachment.animation) return false;
+  return attachment.contentType?.toLowerCase().startsWith("video/") || VIDEO_FILE_RE.test(attachment.filename);
+}
+
+/** A video plays in the viewer where the terminal plays st video; anything else opens with the configured opener. */
+function openVideoOrFile(attachment: DiscordMessageAttachment): void {
+  if (gifPlayer?.isSupported() && isVideoAttachment(attachment) && attachment.size <= VIEWER_VIDEO_MAX_BYTES) openVideoViewer(attachment);
+  else downloadAndOpenAttachment(attachment);
+}
+
+/** The footer, short enough for a narrow (portrait) viewer. */
+function videoStatusShort(video: ViewerVideo): string {
+  const time = `${formatPlayback(video.positionUs)}${video.durationUs > 0 ? `/${formatPlayback(video.durationUs)}` : ""}`;
+  switch (video.state) {
+    case "error": return "Could not play · Esc";
+    case "paused": return `❚❚ ${time} · Space`;
+    case "ended": return `${time} · Space again`;
+    case "buffering": return video.showing ? `⋯ ${time}` : "Loading…";
+    default: return `▶ ${time} · Space · h/l`;
+  }
+}
+
+function videoStatusText(video: ViewerVideo): string {
+  const time = `${formatPlayback(video.positionUs)}${video.durationUs > 0 ? ` / ${formatPlayback(video.durationUs)}` : ""}`;
+  switch (video.state) {
+    case "error": return `Could not play the video: ${video.error} · Esc to close`;
+    case "paused": return `❚❚ ${time} · Space: play · h / l: seek · Esc to close`;
+    case "ended": return `${time} · Space: play again · Esc to close`;
+    case "buffering": return video.showing ? `⋯ ${time} · Space: pause · h / l: seek · Esc to close` : "Loading video… · Esc to close";
+    default: return `▶ ${time} · Space: pause · h / l: seek · Esc to close`;
+  }
+}
+
+function closeVideoViewer(): void {
+  const current = viewerVideo;
+  if (!current) return;
+  viewerVideo = null;
+  current.stop();
+  const close = current.video.close();
+  if (close && terminalReady) process.stdout.write(close);
+  if (state.imageModal === current.modal) state.imageModal = null;
+}
+
+/**
+ * Play a video attachment in the viewer with its sound: download it, then
+ * ffmpeg streams it to st as it reads it (copied when st decodes it as it
+ * is). Anything that goes wrong before it plays opens it with the
+ * configured opener instead.
+ */
+function openVideoViewer(attachment: DiscordMessageAttachment): void {
+  closeVideoViewer();
+  const width = attachment.width ?? 1280;
+  const height = attachment.height ?? 720;
+  const modal: ImageModalState = {
+    filename: attachment.filename,
+    image: {
+      phase: "ready", attachmentId: `video:${attachment.id}`, filename: attachment.filename, sourceUrl: attachment.url,
+      requestId: 0, imageId: 0, pngBase64: "", pixelWidth: width, pixelHeight: height,
+    },
+    frame: { pixelWidth: width, pixelHeight: height, enlarge: true },
+    video: { status: "Downloading video… · Esc to close" },
+  };
+  state.imageModal = modal;
+  scheduleRender();
+  const channelId = state.timeline.channelId;
+  const current = () => running && state.imageModal === modal;
+  const fallBack = (path: string | null, reason: string) => {
+    debugLog("video.viewer_fallback", { reason });
+    if (state.imageModal === modal) state.imageModal = null;
+    if (path) {
+      if (openTargetDetached(path)) showTransientNotice(`Opening ${attachment.filename}…`);
+      else setNotice(state, `Could not open ${attachment.filename}: No opener configured for ${path}.`, "warning");
+    } else {
+      setNotice(state, `Could not open ${attachment.filename}: ${reason}`, "warning");
+    }
+    scheduleRender();
+  };
+  void (async () => {
+    const progress: AttachmentDownloadOptions = {
+      onProgress: (progress) => {
+        if (!current() || !progress.totalBytes) return;
+        modal.video = { status: `Downloading video… ${Math.floor((progress.receivedBytes / progress.totalBytes) * 100)}% · Esc to close` };
+        scheduleRender();
+      },
+    };
+    const downloaded = isWhatsAppChannelId(channelId)
+      ? await whatsAppController.downloadAttachment(attachment)
+      : isInstagramChannelId(channelId)
+        ? await instagramController.downloadAttachment(attachment, progress)
+        : await downloadAttachment(attachment, progress);
+    if (!current()) return;
+    if (!downloaded.ok || !downloaded.path) {
+      fallBack(null, downloaded.error ?? "download failed");
+      return;
+    }
+    const path = downloaded.path;
+    const info = await probeMedia(path);
+    if (!current()) return;
+    const bounds = imageModalPixelBounds(state.rows, state.cols, state.timeline.terminalCellWidthPixels, state.timeline.terminalCellHeightPixels);
+    const plan = info && bounds ? mediaStreamPlan(path, info, bounds.maxPixelWidth, bounds.maxPixelHeight) : null;
+    if (!info || !plan) {
+      fallBack(path, "no video stream");
+      return;
+    }
+    const video = new ViewerVideo({
+      write: (data) => { if (terminalReady) process.stdout.write(data); },
+      onChange: () => {
+        if (viewerVideo?.video !== video) return;
+        modal.video = { status: videoStatusText(video), short: videoStatusShort(video) };
+        scheduleRender();
+      },
+    }, info.durationUs);
+    modal.image = { ...modal.image, imageId: video.id, pixelWidth: plan.width, pixelHeight: plan.height };
+    modal.frame = { pixelWidth: plan.width, pixelHeight: plan.height, enlarge: true };
+    modal.video = { status: videoStatusText(video), short: videoStatusShort(video) };
+    const run = runMediaStream(plan, (packets) => video.addPackets(packets), (error) => {
+      video.finish(error);
+      if (error) debugLog("video.viewer_stream", { error });
+    });
+    viewerVideo = { video, modal, stop: run.stop };
+    video.open(plan.width, plan.height, plan.audio);
+    debugLog("video.viewer", {
+      width: plan.width, height: plan.height, copiedVideo: plan.copiedVideo, copiedAudio: plan.copiedAudio,
+      audio: plan.audio ? `${plan.audio.rate}x${plan.audio.channels}` : null, durationMs: Math.round(info.durationUs / 1000),
+    });
+    scheduleRender();
+  })();
+}
+
 function downloadAndOpenAttachment(attachment: DiscordMessageAttachment): void {
   setNotice(state, `Downloading ${attachment.filename}…`, "muted", { loading: true, chat: false });
   scheduleRender();
@@ -2767,7 +2907,7 @@ function openHistoryLink(target: string, joinInvites: boolean): void {
 
 /** A video embed plays like a video attachment (a media file) or opens its page (YouTube, Tenor). */
 function openEmbedVideo(target: EmbedVideoTarget): void {
-  if (target.kind === "file") downloadAndOpenAttachment(target.attachment);
+  if (target.kind === "file") openVideoOrFile(target.attachment);
   else openHistoryLink(target.url, false);
 }
 
@@ -2785,7 +2925,7 @@ function openHistoryTargetAtCursor(): boolean {
   }
   const attachment = attachmentAtHistoryCursor(state);
   if (attachment) {
-    if (!toggleInlineAttachmentImage(attachment)) downloadAndOpenAttachment(attachment);
+    if (!toggleInlineAttachmentImage(attachment)) openVideoOrFile(attachment);
     return true;
   }
   const target = openableTargetAtHistoryCursor(state);
@@ -2891,7 +3031,7 @@ function handleHistoryFocused(key: KeyEvent): boolean {
       if (jumpToForwardedOriginAtHistoryCursor()) return true;
 
       if (attachment) {
-        downloadAndOpenAttachment(attachment);
+        openVideoOrFile(attachment);
         return true;
       }
 
@@ -3041,6 +3181,18 @@ function handleKey(key: KeyEvent): void {
   // their own intent, which still glides.
   markRelayout(state);
   if (handleQuickReactionKey(state, key, effects)) return;
+
+  if (state.imageModal?.video) {
+    const result = handleVideoModalKey(key);
+    const video = viewerVideo?.modal === state.imageModal ? viewerVideo.video : null;
+    if (result.type === "close") {
+      if (video) closeVideoViewer();
+      else state.imageModal = null;
+    } else if (result.type === "pause") video?.togglePause();
+    else if (result.type === "seek") video?.seekBy(result.bySeconds * 1_000_000);
+    scheduleRender();
+    return;
+  }
 
   if (state.imageModal) {
     const result = handleImageModalKey(key);
@@ -3216,7 +3368,8 @@ function restoreTerminal(): void {
   // throw EIO; that must not abort the rest of shutdown.
   bestEffort("terminal.raw_mode", () => process.stdin.setRawMode(false));
   bestEffort("terminal.videos", () => {
-    const close = gifPlayer?.dispose() ?? "";
+    viewerVideo?.stop();
+    const close = (viewerVideo?.video.close() ?? "") + (gifPlayer?.dispose() ?? "");
     if (close) process.stdout.write(close);
   });
   bestEffort("terminal.images", () => disposeInlineTerminalImages(state));
@@ -3429,6 +3582,7 @@ async function main(): Promise<void> {
         return;
       }
       // Video replies (status, capability) and DA1, before the image handlers.
+      if (viewerVideo?.video.handleControlSequence(sequence)) return;
       if (gifPlayer?.handleControlSequence(sequence)) return;
       // Inline-image eviction replies are a narrow subset of Kitty graphics
       // controls. Route them before the custom-emoji capability client, which

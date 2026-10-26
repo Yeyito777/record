@@ -813,6 +813,14 @@ function placeGifShowcase(out: DiscordMessageResponse[], spec: HistorySpec, cont
         ...demoAttachmentUrls(spec.channelId, attachmentId, gif.filename), width: gif.width, height: gif.height,
       };
     });
+    if (entry.video) {
+      const attachmentId = snowflake(snowflakeTime(message.id), 50);
+      context.registerAnimation?.(attachmentId, { kind: "mp4a", width: entry.video.width, height: entry.video.height, seed: entry.video.seed });
+      message.attachments.push({
+        id: attachmentId, filename: entry.video.filename, content_type: "video/mp4", size: 0,
+        ...demoAttachmentUrls(spec.channelId, attachmentId, entry.video.filename), width: entry.video.width, height: entry.video.height,
+      });
+    }
     delete message.sticker_items;
     if (entry.sticker) {
       const stickerId = snowflake(snowflakeTime(message.id), 40);

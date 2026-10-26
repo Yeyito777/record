@@ -41,15 +41,22 @@ export interface VideoOpenOptions {
   paused?: boolean;
   /** 0..1; 0 opens it muted. */
   volume?: number;
+  /** AAC-LC sound (omitted: a silent video). */
+  audio?: { rate: number; channels: number };
 }
 
-/** Open (or replace) a silent H.264 video; errors only are answered (q=1). */
+/** Open (or replace) an H.264 video, silent unless it has audio; errors only are answered (q=1). */
 export function videoOpen(id: number, options: VideoOpenOptions): string {
   const fields: Record<string, string | number> = {
     video: "h264",
     width: Math.max(1, Math.min(4096, Math.round(options.width))),
     height: Math.max(1, Math.min(4096, Math.round(options.height))),
   };
+  if (options.audio) {
+    fields.audio = "aac";
+    fields.rate = Math.round(options.audio.rate);
+    fields.channels = Math.round(options.audio.channels);
+  }
   if (options.prebufferMs !== undefined) fields.prebuffer = Math.max(0, Math.min(10000, Math.round(options.prebufferMs)));
   if (options.paused) fields.pause = 1;
   if (options.volume !== undefined) fields.volume = Math.max(0, Math.min(1, options.volume));
@@ -58,8 +65,17 @@ export function videoOpen(id: number, options: VideoOpenOptions): string {
 
 /** One H.264 access unit (Annex B), stamped in microseconds. Never answered. */
 export function videoPacket(id: number, ptsUs: number, keyframe: boolean, data: Uint8Array): string {
+  return mediaPacket(id, 0, ptsUs, keyframe, data);
+}
+
+/** One raw AAC frame (no ADTS header), stamped in microseconds. Never answered. */
+export function audioPacket(id: number, ptsUs: number, data: Uint8Array): string {
+  return mediaPacket(id, 1, ptsUs, false, data);
+}
+
+function mediaPacket(id: number, stream: 0 | 1, ptsUs: number, keyframe: boolean, data: Uint8Array): string {
   const payload = Buffer.allocUnsafe(10 + data.length);
-  payload[0] = 0;
+  payload[0] = stream;
   payload[1] = keyframe ? 1 : 0;
   payload.writeBigInt64BE(BigInt(Math.round(ptsUs)), 2);
   payload.set(data, 10);
@@ -76,6 +92,16 @@ export function videoSet(id: number, settings: { paused?: boolean; volume?: numb
 /** A status query: its reply comes only after every byte before it was handled (an acknowledgement). */
 export function videoQuery(id: number, seq: number): string {
   return apc(`a=v,i=${id},k=q`, textPayload({ seq }));
+}
+
+/** Drop everything queued and start a new segment (a seek); frames before `startUs` are not shown. */
+export function videoFlush(id: number, startUs?: number): string {
+  return apc(`a=v,i=${id},k=f,q=1`, startUs === undefined ? "" : textPayload({ start: Math.max(0, Math.round(startUs)) }));
+}
+
+/** No more packets until the next flush: st plays what it has and keeps the last frame. */
+export function videoEnd(id: number): string {
+  return apc(`a=v,i=${id},k=e,q=1`);
 }
 
 /** Close the video: playback stops and the decoder is freed. */

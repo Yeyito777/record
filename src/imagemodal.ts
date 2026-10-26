@@ -36,6 +36,19 @@ export interface ImageModalState {
   attachmentId?: string;
   /** The message's pictures (an album): which one this is, of how many. */
   album?: { index: number; count: number };
+  /** A video playing here through st video (its image is the video's id, no data): what its footer says, and a shorter form for a narrow viewer. */
+  video?: { status: string; short?: string };
+}
+
+export type VideoModalKeyResult = { type: "close" } | { type: "pause" } | { type: "seek"; bySeconds: number } | { type: "handled" };
+
+/** Keys while a video plays in the viewer: Space pauses, h/l (or ←/→) seek 5 s, Esc/Enter/q close. */
+export function handleVideoModalKey(key: Readonly<KeyEvent>): VideoModalKeyResult {
+  if (key.type === "escape" || key.type === "enter" || (key.type === "char" && key.char === "q")) return { type: "close" };
+  if (key.type === "char" && (key.char === " " || key.char === "p")) return { type: "pause" };
+  if (key.type === "right" || (key.type === "char" && key.char === "l")) return { type: "seek", bySeconds: 5 };
+  if (key.type === "left" || (key.type === "char" && key.char === "h")) return { type: "seek", bySeconds: -5 };
+  return { type: "handled" };
 }
 
 /** Accept provider metadata only if it describes the decoded preview's shape. */
@@ -245,7 +258,7 @@ export function renderImageModal(
   out.push(
     moveTo(layout.top + 2 + layout.placement.rows, layout.left) + border + "│"
     + theme.sidebarBg + theme.muted + centeredText(
-      (state.loading ? "Loading full image · Esc to close"
+      state.video ? (termWidth(state.video.status) > innerWidth && state.video.short ? state.video.short : state.video.status) : (state.loading ? "Loading full image · Esc to close"
         : state.preview ? "Preview only · Enter / Esc close" : "Enter or Esc to close")
         + (state.album ? " · h / l: previous / next" : ""),
       innerWidth,

@@ -8,11 +8,12 @@ import { spawn } from "node:child_process";
 
 import { renderPicture } from "./png";
 
-export type DemoAnimationKind = "mp4" | "gif" | "apng";
+/** mp4a: a six-second clip with a tone (a video with sound, for the viewer). */
+export type DemoAnimationKind = "mp4" | "gif" | "apng" | "mp4a";
 
 const made = new Map<string, Promise<Buffer>>();
 
-const CONTENT_TYPES: Record<DemoAnimationKind, string> = { mp4: "video/mp4", gif: "image/gif", apng: "image/png" };
+const CONTENT_TYPES: Record<DemoAnimationKind, string> = { mp4: "video/mp4", gif: "image/gif", apng: "image/png", mp4a: "video/mp4" };
 
 export function demoAnimationContentType(kind: DemoAnimationKind): string {
   return CONTENT_TYPES[kind];
@@ -32,9 +33,16 @@ export function demoAnimation(kind: DemoAnimationKind, width: number, height: nu
 
 function encode(kind: DemoAnimationKind, width: number, height: number, seed: number): Promise<Buffer> {
   // The source ends by itself: a palette (GIF) waits for its input's end.
-  const source = `testsrc2=size=${width}x${height}:rate=12:duration=2,hue=h=${(seed * 47) % 360}`;
+  const source = kind === "mp4a"
+    ? `testsrc2=size=${width}x${height}:rate=25:duration=6`
+    : `testsrc2=size=${width}x${height}:rate=12:duration=2,hue=h=${(seed * 47) % 360}`;
   const output: Record<DemoAnimationKind, string[]> = {
     mp4: ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "30", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4"],
+    mp4a: [
+      "-f", "lavfi", "-i", `sine=frequency=${220 + (seed % 5) * 110}:sample_rate=48000:duration=6`,
+      "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "28", "-g", "50",
+      "-c:a", "aac", "-b:a", "96k", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4",
+    ],
     gif: ["-vf", "split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse", "-f", "gif"],
     apng: ["-plays", "0", "-f", "apng"],
   };
