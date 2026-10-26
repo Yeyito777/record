@@ -62,7 +62,7 @@ export interface IgCall {
 export type IgContent =
   | { kind: "text"; text: string }
   | { kind: "heart" }
-  | { kind: "system"; text: string }
+  | { kind: "system"; text: string; reactionLog?: true }
   | { kind: "call"; call: IgCall }
   | { kind: "media"; items: IgMediaItem[] }
   | { kind: "voice"; url: string | null; durationSecs: number }
@@ -309,7 +309,7 @@ export function parseContent(message: Json): IgContent {
     }
     case "SlideMessageAdminText": {
       const line = arr(content.text_fragments).map(fragment => str(fragment.plaintext)).join("");
-      return { kind: "system", text: line || text || "Conversation updated" };
+      return { kind: "system", text: line || text || "Conversation updated", ...(content.is_reaction_action_log === true ? { reactionLog: true as const } : {}) };
     }
     case "SlideMessageImageContent": {
       const items = arr(content.attachments).map(item => mediaItem(item, false)).filter((item): item is IgMediaItem => !!item);
@@ -494,6 +494,74 @@ export function parseRequestsPage(data: Json, nowMs = Date.now()): { pending: Ig
 export function parseSearchUsers(data: Json): IgUser[] {
   return arr(obj(data.xdt_api__v1__fbsearch__topsearch_connection).users)
     .map(entry => user(obj(entry.user))).filter((u): u is IgUser => !!u);
+}
+
+// MARK: Reaction notices
+
+/**
+ * Instagram's own lines for a reaction ("Maya liked a message", "Reacted 😂
+ * to your message"), in the languages its call lines are read in. Not
+ * reactions to stories: those are shares with the story.
+ */
+const REACTION_NOTICE_PATTERNS: Array<{ pattern: RegExp; heart?: boolean }> = [
+  { pattern: /^(?:.{1,80}? )?liked (?:a|your|their|his|her|my) message\.?$/iu, heart: true },
+  { pattern: /^(?:.{1,80}? )?reacted(?: with)?(?: (?<emoji>\S{1,16}))? to (?:a|your|their|his|her|my) message\.?$/iu },
+  { pattern: /^(?:.{1,80}? )?(?:le gustó|le gusta|ha messo "?mi piace"?|curtiu)(?: a)? (?:un|uma|a) (?:mensaje|messaggio|mensagem)\.?$/iu, heart: true },
+  { pattern: /^(?:.{1,80}? )?(?:reaccionó|ha reagito|reagiu)(?: (?:con|com))?(?: (?<emoji>\S{1,16}))? (?:a|al|à|ao) (?:tu|tuo|sua|seu|un|uma|un) ?(?:mensaje|messaggio|mensagem)\.?$/iu },
+];
+
+function noticeEmoji(line: string): string | null | undefined {
+  const text = line.trim();
+  for (const { pattern, heart } of REACTION_NOTICE_PATTERNS) {
+    const match = pattern.exec(text);
+    if (match) return heart ? "❤️" : match.groups?.emoji && !/^\p{L}/u.test(match.groups.emoji) ? match.groups.emoji : null;
+  }
+  return undefined;
+}
+
+/**
+ * A reaction notice: never shown as a message. Its emoji and target (when
+ * the payload names them) let the reaction show on the message instead.
+ */
+export function reactionNotice(message: IgMessage): { emoji: string | null; targetId: string | null } | null {
+  const content = message.content;
+  let line: string | undefined;
+  if (content.kind === "system") line = content.text;
+  // Inbox lists carry only Instagram's snippet line.
+  else if (content.kind === "unsupported" && message.snippet) line = message.snippet;
+  else return null;
+  const emoji = noticeEmoji(line);
+  if (emoji === undefined && !(content.kind === "system" && content.reactionLog)) return null;
+  return { emoji: emoji ?? null, targetId: message.replyTo?.id || null };
+}
+
+/**
+ * Drop a thread's reaction notices. A notice naming its target and emoji
+ * adds that reaction to the target if Instagram didn't list it there already.
+ * A notice is not activity: when one is the newest item, the chat keeps the
+ * activity time of its newest message (or what `previous` had).
+ */
+export function foldReactionNotices(thread: IgThread, previous?: IgThread): IgThread {
+  const notices = thread.messages.map(message => [message, reactionNotice(message)] as const).filter(([, notice]) => notice);
+  if (!notices.length) return thread;
+  const dropped = new Set(notices.map(([message]) => message));
+  const messages = thread.messages.filter(message => !dropped.has(message));
+  const byId = new Map(messages.map((message, index) => [message.id, index]));
+  for (const [message, notice] of notices) {
+    const index = notice!.targetId ? byId.get(notice!.targetId) : undefined;
+    if (index === undefined || !notice!.emoji) continue;
+    const target = messages[index]!;
+    if (target.reactions.some(reaction => reaction.senderFbid === message.senderFbid)) continue;
+    messages[index] = { ...target, reactions: [...target.reactions, { emoji: notice!.emoji, senderFbid: message.senderFbid }] };
+  }
+  const newestNotice = Math.max(...notices.map(([message]) => message.timestampMs));
+  const newestKept = messages.at(-1)?.timestampMs ?? 0;
+  let lastActivityMs = thread.lastActivityMs;
+  if (newestNotice > newestKept && lastActivityMs <= newestNotice) {
+    const kept = Math.max(newestKept, previous?.lastActivityMs ?? 0);
+    if (kept > 0) lastActivityMs = Math.min(lastActivityMs, kept) || kept;
+  }
+  return { ...thread, messages, lastActivityMs };
 }
 
 // MARK: Thread logic

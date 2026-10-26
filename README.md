@@ -354,6 +354,9 @@ with their context ("Replied to your story"), links with previews, likes,
 reactions, reply quotes, and calls as compact rows (`✕ ☎ Missed call`,
 `☎ Video call ended`). Opening a shared reel plays just that one video, never a
 feed. Disappearing/view-once media show a placeholder instead of downloading.
+Instagram's reaction notices ("Maya liked a message", "Reacted 😂 to your
+message") are not shown as messages: the reaction shows on the message it is
+on, and a notice never counts as unread or moves its chat up the list.
 
 Type to send text; press `r` on a message to reply. `/react <emoji>` reacts to
 the selected message and `/unreact` removes your reaction (Instagram allows

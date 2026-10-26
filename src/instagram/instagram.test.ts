@@ -291,6 +291,28 @@ function harness(overrides: Partial<FakeClient> = {}, options: InstagramControll
   return { state, controller, fake, sent, reads, sends: () => sent.length };
 }
 
+describe("Instagram controller: reaction notices", () => {
+  test("a notice in the inbox shows no line, counts as no unread and leaves the chat's place in the list", async () => {
+    const read = { [VIEWER_FBID]: 1_000, [FRIEND_FBID]: 1_000 };
+    const reacted = igThread("100", {
+      lastActivityMs: 3_000, receipts: read,
+      messages: [
+        igMessage("m1", { senderFbid: VIEWER_FBID, timestampMs: 1_000 }),
+        igMessage("n1", { timestampMs: 3_000, content: { kind: "unsupported", text: "Message" }, snippet: "Reacted 😂 to your message" }),
+      ],
+    });
+    const other = igThread("200", { lastActivityMs: 2_000, users: [{ id: "3", fbid: "700", username: "other", name: "Other" }],
+      messages: [igMessage("o1", { senderFbid: "700", timestampMs: 2_000 })], receipts: { [VIEWER_FBID]: 2_000, "700": 2_000 } });
+    const h = harness({ inbox: async () => inbox([reacted, other]) });
+    try {
+      await h.controller.autoConnect();
+      expect(instagramChannels(h.state.instagram).map((channel) => channel.id)).toEqual([instagramChannelId("200"), instagramChannelId("100")]);
+      expect(h.state.notifications.byChannelId[instagramChannelId("100")] ?? 0).toBe(0);
+      expect(instagramTimelineMessages(h.state.instagram, instagramChannelId("100")).map((message) => message.content).join("\n")).not.toContain("Reacted");
+    } finally { await h.controller.shutdown(); }
+  });
+});
+
 describe("Instagram controller: connection and paging", () => {
   test("pasted credentials connect and persist without touching vimbrowser", async () => {
     let imported = false;

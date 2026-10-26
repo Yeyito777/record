@@ -263,11 +263,14 @@ export function buildDemoInstagramData(anchorMs: number): DemoInstagramData {
         // Instagram's own line for a reaction, next to the reaction on the target itself.
         const target = messages[messages.length - 1 - Math.floor(random() * Math.min(8, messages.length))]!;
         const emoji = random() < 0.5 ? "❤️" : pick(random, ["😂", "💗", "😮", "🔥"]);
-        target.reactions.push({ emoji, senderFbid: sender.fbid });
         const own = target.senderFbid === VIEWER.fbid ? "your" : "a";
         const name = mine ? "You" : sender.name.split(" ")[0];
-        message.content = { kind: "system", text: emoji === "❤️" ? `${name} liked a message` : `${name} reacted ${emoji} to ${own} message` };
-        message.replyTo = { id: target.id, senderFbid: target.senderFbid, senderName: target.senderName, summary: contentSummary(target.content) };
+        // Instagram lists the reaction on the target too, mostly; some notices
+        // name their target, some carry the reaction-log flag, some neither.
+        if (random() < 0.7) target.reactions.push({ emoji, senderFbid: sender.fbid });
+        message.content = { kind: "system", text: emoji === "❤️" ? `${name} liked a message` : `${name} reacted ${emoji} to ${own} message`,
+          ...(random() < 0.5 ? { reactionLog: true as const } : {}) };
+        if (random() < 0.6) message.replyTo = { id: target.id, senderFbid: target.senderFbid, senderName: target.senderName, summary: contentSummary(target.content) };
       } else if (kind === "reply") {
         const target = messages[messages.length - 1 - Math.floor(random() * Math.min(12, messages.length))]!;
         message.replyTo = { id: target.id, senderFbid: target.senderFbid, senderName: target.senderName, summary: contentSummary(target.content) };
@@ -295,6 +298,11 @@ export function buildDemoInstagramData(anchorMs: number): DemoInstagramData {
 /** How the inbox query carries a message: `__typename` + `text_body` and Instagram's snippet line only. */
 function reduced(message: IgMessage, viewerFbid: string): IgMessage {
   const kind = message.content.kind;
+  if (message.content.kind === "system" && /reacted|liked/.test(message.content.text)) {
+    // The inbox's copy of a reaction notice: only Instagram's snippet line.
+    const text = message.content.text.replace(/^\S+ /, "");
+    return { ...message, reactions: [], content: { kind: "unsupported", text: "Message" }, snippet: `${text[0]!.toUpperCase()}${text.slice(1)}` };
+  }
   if (kind === "text" || kind === "heart" || kind === "call" || kind === "system") return { ...message, reactions: [] };
   const summary = contentSummary(message.content);
   const snippet = message.senderFbid === viewerFbid ? `You: ${summary}` : summary;
