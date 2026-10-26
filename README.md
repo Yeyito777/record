@@ -133,7 +133,10 @@ message while following the bottom), Record tells the terminal to scroll just
 the pane's rows (`DECSTBM` + `SU`/`SD`) and then draws only the rows that
 scrolled into view, inside one synchronized update (mode 2026). Every terminal
 gets fewer bytes. Inline images and custom emoji are re-placed at their new
-rows in the same update.
+rows in the same update. With the band frames below (synchronized updates
+confirmed, or smooth scrolling) Record finds how far the content moved from
+which history line each row shows, so a history that is nearly all images
+(blank rows as text) scrolls, and glides, like text.
 
 A terminal region scroll moves whole rows (st, like most terminals, has no
 left/right margins), so beside the sidebar or member list the panels' segments

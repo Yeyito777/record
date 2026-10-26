@@ -43,6 +43,9 @@ describe("startup request budget", () => {
     expect(count(/\/guilds\/\d+\/members/, api)).toBe(0);
     expect(count(/\/guilds\/\d+\/emojis|\/application-command-index/, api)).toBe(0);
     expect(api.length).toBeLessThanOrEqual(12);
+    // Nothing a user client may not call (single-message GET, OAuth member route).
+    expect(lines.filter((line) => line.startsWith("BOT-ONLY "))).toEqual([]);
+    expect(count(/\/users\/@me\/guilds\/\d+\/member/, api)).toBe(0);
     // One Discord session (one IDENTIFY), and member lookups only for what is on screen.
     expect(count(/^GATEWAY op 2\b/, gateway)).toBe(1);
     expect(count(/^GATEWAY op 8\b/, gateway)).toBeLessThanOrEqual(2);
