@@ -174,9 +174,18 @@ export function captureTuiStartingState(
   };
 }
 
+/** Parts the user changed after launch; a deferred restore leaves those alone. */
+export interface StartingStateOverrides {
+  sidebarOpen: boolean;
+  sidebarCursor: boolean;
+  channel: boolean;
+}
+
+const NO_OVERRIDES: StartingStateOverrides = { sidebarOpen: false, sidebarCursor: false, channel: false };
+
 /** Seed local UI state before authoritative server and channel lists arrive. */
-export function applyTuiStartingState(state: AppState, startingState: TuiStartingState): void {
-  const focusedChannel = startingState.focusedChannel;
+export function applyTuiStartingState(state: AppState, startingState: TuiStartingState, overrides: StartingStateOverrides = NO_OVERRIDES): void {
+  const focusedChannel = overrides.channel ? null : startingState.focusedChannel;
   if (focusedChannel) {
     state.channelList.guildId = focusedChannel.guildId;
     state.channelList.activeChannelId = focusedChannel.channelId;
@@ -186,6 +195,8 @@ export function applyTuiStartingState(state: AppState, startingState: TuiStartin
     state.timeline.channelId = focusedChannel.channelId;
   }
 
+  // A sidebar the user opened, closed or moved in keeps exactly that.
+  if (overrides.sidebarOpen || overrides.sidebarCursor) return;
   state.sidebar.open = startingState.sidebar.open;
   if (!startingState.sidebar.open) return;
 
