@@ -63,8 +63,11 @@ export function startPerfTrace(): void {
   timer.unref?.();
   process.once("exit", () => {
     const seconds = (performance.now() - started) / 1000;
+    const cpu = process.cpuUsage();
     line({
       summary: true,
+      seconds: Math.round(seconds * 10) / 10,
+      cpuPercent: Math.round(((cpu.user + cpu.system) / 1000 / (seconds * 1000)) * 1000) / 10,
       frames: frameMs.length,
       frameP50: percentile(frameMs, 0.5),
       frameP90: percentile(frameMs, 0.9),
