@@ -11,14 +11,18 @@
  */
 
 import { debugLog } from "./debuglog";
+import { tracePerfBytes } from "./perftrace";
 
 type Write = (chunk: unknown, ...rest: unknown[]) => boolean;
 
 let worker: Worker | null = null;
-/** [0] bytes done (written or dropped), [1] interactive bytes done. */
+/** [0] bytes done (written or dropped), [1] interactive bytes done, [2] bulk bytes done. */
 let written: BigInt64Array | null = null;
 let queued = 0n;
 let queuedInteractive = 0n;
+let queuedBulk = 0n;
+/** Callbacks for bulk writes, by the bulk byte count at which each is done (FIFO). */
+const bulkDone: Array<{ target: bigint; callback: () => void }> = [];
 let directWrite: Write | null = null;
 const waiters = new Set<{ bytes: number; listener: () => void }>();
 
@@ -39,14 +43,27 @@ export function terminalInteractiveBacklog(): number {
  * the terminal gets it in order, after any interactive output queued at the
  * same time. Without the writer thread, it is a normal write.
  */
-export function writeTerminalBulk(data: string): void {
+export function writeTerminalBulk(data: string, onWritten?: () => void): void {
   if (!worker) {
     process.stdout.write(data);
+    onWritten?.();
     return;
   }
-  if (data.length === 0) return;
-  queued += BigInt(Buffer.byteLength(data));
+  if (data.length === 0) {
+    onWritten?.();
+    return;
+  }
+  const size = BigInt(Buffer.byteLength(data));
+  tracePerfBytes(Number(size));
+  queued += size;
+  queuedBulk += size;
+  if (onWritten) bulkDone.push({ target: queuedBulk, callback: onWritten });
   worker.postMessage({ bulk: data });
+}
+
+/** Whether bulk output can complete asynchronously (the writer thread runs). */
+export function terminalOutputIsAsync(): boolean {
+  return worker !== null;
 }
 
 /**
@@ -89,10 +106,14 @@ export function installTerminalOutput(): boolean {
     debugLog("terminal.output_worker_failed", { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
-  const shared = new SharedArrayBuffer(16);
+  const shared = new SharedArrayBuffer(24);
   written = new BigInt64Array(shared);
   worker.postMessage({ init: shared });
   worker.onmessage = () => {
+    if (bulkDone.length > 0 && written) {
+      const done = Atomics.load(written, 2);
+      while (bulkDone.length > 0 && bulkDone[0]!.target <= done) bulkDone.shift()!.callback();
+    }
     if (writtenWaiters.size > 0 && written) {
       const done = Atomics.load(written, 1);
       for (const waiter of [...writtenWaiters]) {

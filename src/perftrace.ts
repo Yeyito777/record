@@ -92,6 +92,14 @@ export function startPerfTrace(): void {
   });
 }
 
+/** Bytes written to the terminal without process.stdout.write (the writer's bulk lane). */
+export function tracePerfBytes(bytes: number): void {
+  if (fd === null) return;
+  bytesSinceFrame += bytes;
+  totalBytes += bytes;
+  writes += 1;
+}
+
 /** Input arrived (keys, mouse): the next frame's latency is measured from here. */
 export function tracePerfInput(): void {
   if (fd !== null && inputAt === null) inputAt = performance.now();
