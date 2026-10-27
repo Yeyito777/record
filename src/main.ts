@@ -546,6 +546,8 @@ function scheduleSmoothScrollFrame(): void {
   if (!smooth) return;
   const due = smooth.frameDueIn();
   if (due === null) return;
+  // A glide is going: its frames come before GIF bytes.
+  gifPlayer?.noteInteraction();
   if (due <= 0) {
     renderImmediately();
     return;
@@ -3591,6 +3593,8 @@ function processInput(input: string): void {
 
   const events = parseInput(input);
   if (events.length) keyLatencyProbe?.keyPressed();
+  // Keys, clicks and the wheel come first: GIF bytes wait until the user is still.
+  if (events.some((event) => event.type !== "mouse" || event.action !== "motion" || event.button !== 3)) gifPlayer?.noteInteraction();
   // Until the saved starting state is fully restored, whatever this input
   // changes (sidebar toggled or moved, another chat opened) is kept by it.
   startingStateRestorer.userInput(() => {

@@ -102,7 +102,7 @@ export function isDsrAnswer(sequence: string): boolean {
  */
 export class KeyLatencyProbe {
   private keyAt: number | null = null;
-  private waiting: number[] = [];
+  private waiting: { keyAt: number; writtenAt: number }[] = [];
 
   constructor(
     private readonly write: (data: string) => void,
@@ -117,7 +117,7 @@ export class KeyLatencyProbe {
     if (this.keyAt === null) return;
     // At most a few in flight: a terminal that stopped answering is not flooded.
     if (this.waiting.length < 8) {
-      this.waiting.push(this.keyAt);
+      this.waiting.push({ keyAt: this.keyAt, writtenAt: performance.now() });
       this.write(DSR_REQUEST);
     }
     this.keyAt = null;
@@ -126,8 +126,10 @@ export class KeyLatencyProbe {
   /** The terminal answered a status request: true if it was the probe's. */
   answered(sequence: string): boolean {
     if (!isDsrAnswer(sequence)) return false;
-    const keyAt = this.waiting.shift();
-    if (keyAt !== undefined) this.log("perf.key", { ms: Math.round(performance.now() - keyAt) });
+    const sent = this.waiting.shift();
+    const now = performance.now();
+    // ms: key to answer; frameMs: key to the frame written; terminalMs: frame written to answer.
+    if (sent) this.log("perf.key", { ms: Math.round(now - sent.keyAt), frameMs: Math.round(sent.writtenAt - sent.keyAt), terminalMs: Math.round(now - sent.writtenAt) });
     return true;
   }
 }
