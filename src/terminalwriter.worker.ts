@@ -13,13 +13,20 @@ import { writeSync } from "fs";
 
 declare const self: Worker;
 
-type Message = { init: SharedArrayBuffer } | { bulk: string | Uint8Array } | { dropBulk: true } | string | Uint8Array;
+type Message = { init: SharedArrayBuffer } | { bulk: string | Uint8Array; continues?: boolean } | { dropBulk: true } | string | Uint8Array;
 
 /** [0] bytes done (written or dropped), [1] interactive bytes done, [2] bulk bytes done. */
 let counters: BigInt64Array | null = null;
 const interactive: Buffer[] = [];
-const bulk: Buffer[] = [];
+const bulk: Array<{ bytes: Buffer; continues: boolean }> = [];
 let pumping = false;
+/**
+ * A picture transfer (Kitty chunks m=1 ... m=0) is half written: another
+ * graphics command now would abort it in the terminal, so only interactive
+ * output without one (text, cursor, typing) may go before the rest.
+ */
+let midTransfer = false;
+const GRAPHICS_COMMAND = Buffer.from("\x1b_G");
 
 function toBuffer(data: string | Uint8Array): Buffer {
   return typeof data === "string" ? Buffer.from(data) : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
@@ -53,8 +60,21 @@ function writeWhole(bytes: Buffer, isInteractive: boolean): void {
 
 function pump(): void {
   pumping = false;
-  const isInteractive = interactive.length > 0;
-  const next = isInteractive ? interactive.shift() : bulk.shift();
+  const interactiveFits = interactive.length > 0
+    // The rest of a started transfer may not have arrived yet: wait for it.
+    && (!midTransfer || !interactive[0]!.includes(GRAPHICS_COMMAND));
+  let next: Buffer | undefined;
+  let isInteractive = false;
+  if (interactiveFits) {
+    next = interactive.shift();
+    isInteractive = true;
+  } else {
+    const item = bulk.shift();
+    if (item) {
+      next = item.bytes;
+      midTransfer = item.continues;
+    }
+  }
   if (!next) return;
   writeWhole(next, isInteractive);
   self.postMessage(0);
@@ -72,11 +92,12 @@ self.onmessage = (event: MessageEvent<Message>) => {
     return;
   }
   if (typeof data === "object" && data && "dropBulk" in data) {
-    const dropped = bulk.splice(0).reduce((sum, item) => sum + item.length, 0);
+    const dropped = bulk.splice(0).reduce((sum, item) => sum + item.bytes.length, 0);
+    midTransfer = false;
     done(dropped, false);
     return;
   }
-  if (typeof data === "object" && data && "bulk" in data) bulk.push(toBuffer(data.bulk));
+  if (typeof data === "object" && data && "bulk" in data) bulk.push({ bytes: toBuffer(data.bulk), continues: data.continues === true });
   else interactive.push(toBuffer(data as string | Uint8Array));
   if (!pumping) {
     pumping = true;

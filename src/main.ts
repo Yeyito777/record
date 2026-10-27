@@ -9,7 +9,7 @@ import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./ac
 import { AsyncWorkQueue } from "./asyncwork";
 import { visiblePanels } from "./panels";
 import { startPerfTrace, tracePerfFrame, tracePerfInput } from "./perftrace";
-import { installTerminalOutput, terminalInteractiveBacklog, whenInteractiveOutputWritten, whenTerminalOutputBelow, writeTerminalBulk } from "./terminaloutput";
+import { installTerminalOutput, terminalInteractiveBacklog, whenInteractiveOutputWritten, whenTerminalOutputBelow, writeTerminalBulk, writeTerminalBulkTransfer } from "./terminaloutput";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
@@ -3477,7 +3477,7 @@ async function main(): Promise<void> {
   // The trace counts what Record hands the (non-blocking) writer.
   if (installTerminalOutput()) {
     // Picture data goes behind frames; each is placed once the terminal has it.
-    setInlineImageUploads({ send: (data, written) => writeTerminalBulk(data, written), arrived: () => scheduleRender() });
+    setInlineImageUploads({ send: (data, written) => writeTerminalBulkTransfer(data, written), arrived: () => scheduleRender() });
   }
   startPerfTrace();
   setupTerminal();

@@ -100,4 +100,37 @@ describe("non-blocking terminal output", () => {
     expect(yStart).toBeGreaterThan(frame);
     expect(out.indexOf("Y]")).toBe(yStart + 2 + 128 * 1024);
   }, 40_000);
+
+  test.skipIf(!hasPython || process.platform === "win32")("typing goes between the pieces of a picture upload; graphics commands wait for its end", () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-termout-transfer-"));
+    const relay = join(dir, "relay.py");
+    writeFileSync(relay, SLOW_PTY);
+    const probe = join(dir, "probe.ts");
+    writeFileSync(probe, `
+      import { installTerminalOutput, writeTerminalBulkTransfer, terminalOutputBacklog, terminalInteractiveBacklog } from ${JSON.stringify(join(REPO, "src/terminaloutput.ts"))};
+      installTerminalOutput();
+      const chunk = (index, last) => "\\x1b_G" + (index === 0 ? "a=t,i=7," : "") + "m=" + (last ? 0 : 1) + ";" + "A".repeat(4096) + "\\x1b\\\\";
+      let data = "";
+      for (let i = 0; i < 64; i++) data += chunk(i, i === 63);
+      const total = data.length;
+      writeTerminalBulkTransfer(data);
+      const poll = setInterval(() => {
+        if (terminalOutputBacklog() >= total) return;
+        clearInterval(poll);
+        process.stdout.write("<TYPED>");
+        process.stdout.write("\\x1b_Ga=p,i=7,q=1\\x1b\\\\<PLACED>");
+        setTimeout(() => process.exit(terminalInteractiveBacklog() === 0 ? 0 : 3), 4000);
+      }, 2);
+    `);
+    const run = spawnSync("python3", [relay, process.execPath, probe], { timeout: 30_000 });
+    expect(run.status).toBe(0);
+    const out = readFileSync(`${relay}.out`).toString("latin1");
+    const typed = out.indexOf("<TYPED>"), placed = out.indexOf("<PLACED>"), final = out.indexOf("m=0;");
+    expect(typed).toBeGreaterThan(0);
+    // Typing arrived in the middle of the picture...
+    expect(typed).toBeLessThan(final);
+    // ...but the placement only after its last chunk, and no chunk was split.
+    expect(placed).toBeGreaterThan(final);
+    expect(out.slice(0, typed).endsWith("\x1b\\")).toBe(true);
+  }, 40_000);
 });

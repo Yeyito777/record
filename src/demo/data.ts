@@ -203,6 +203,21 @@ const GUILD_SPECS: Array<{ name: string; icon: boolean; color: number; size: "bi
   { name: "Speedrun Lab", icon: true, color: 0xf1c40f, size: "small" },
 ];
 
+/**
+ * RECORD_DEMO_SERVERS=N (performance runs): N servers in the sidebar, the
+ * first 15 as usual plus small generated ones with icons.
+ */
+function guildSpecs(): typeof GUILD_SPECS {
+  const wanted = Math.min(200, Math.max(0, Number(process.env.RECORD_DEMO_SERVERS) || 0));
+  const extra = Array.from({ length: Math.max(0, wanted - GUILD_SPECS.length) }, (_, index) => ({
+    name: `Server ${String(index + 1).padStart(2, "0")}`,
+    icon: true,
+    color: [0x5865f2, 0x2ecc71, 0xe67e22, 0x9b59b6, 0xed4245, 0x00a8fc, 0xeb459e][index % 7]!,
+    size: "small" as const,
+  }));
+  return [...GUILD_SPECS, ...extra];
+}
+
 const EMOJI_NAMES = ["blobwave", "pepehands", "kekw", "catjam", "partyparrot", "thonk", "pog", "sadge", "yes", "no", "100", "ship_it", "rust", "bun", "vim", "ferris"];
 
 // ---------------------------------------------------------------------------
@@ -300,7 +315,7 @@ export function buildDemoWorld(anchorMs = DEFAULT_DEMO_ANCHOR_MS): DemoWorld {
   const emojisById = new Map<string, DemoEmoji>();
   const unreadDirectMessages = new Set<string>();
 
-  const guilds: DemoGuild[] = GUILD_SPECS.map((spec, guildIndex) => {
+  const guilds: DemoGuild[] = guildSpecs().map((spec, guildIndex) => {
     const rng = seededRng(hashString(`guild:${spec.name}`));
     const id = entityId();
     const memberCount = spec.size === "big" ? people.length : spec.size === "medium" ? 24 : int(rng, 6, 16);
