@@ -3,7 +3,58 @@
  * emoji and inline image attachments are all drawn locally, never downloaded.
  */
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { deflateSync } from "node:zlib";
+
+/**
+ * RECORD_DEMO_IMAGE_CACHE=dir keeps painted demo pictures between runs.
+ * Painting a picture takes 20-40 ms of JavaScript on the thread Record runs
+ * on; performance measurements set this so that cost does not show up as
+ * Record's. Pictures are deterministic, so a cached one is identical.
+ */
+const IMAGE_CACHE_DIR = process.env.RECORD_DEMO_IMAGE_CACHE?.trim() || null;
+const IMAGE_CACHE_VERSION = 1;
+
+function imageCachePath(key: string): string | null {
+  return IMAGE_CACHE_DIR ? join(IMAGE_CACHE_DIR, `v${IMAGE_CACHE_VERSION}-${key.replace(/[^A-Za-z0-9_.-]/g, "_")}`) : null;
+}
+
+export function cachedDemoImage(key: string, paint: () => Buffer): Buffer {
+  const path = imageCachePath(key);
+  if (!path) return paint();
+  try {
+    return readFileSync(path);
+  } catch {
+    const bytes = paint();
+    try {
+      mkdirSync(IMAGE_CACHE_DIR!, { recursive: true });
+      writeFileSync(`${path}.tmp`, bytes);
+      renameSync(`${path}.tmp`, path);
+    } catch {
+      // The cache is only a speed-up.
+    }
+    return bytes;
+  }
+}
+
+export async function cachedDemoImageAsync(key: string, paint: () => Promise<Buffer>): Promise<Buffer> {
+  const path = imageCachePath(key);
+  if (!path) return paint();
+  try {
+    return readFileSync(path);
+  } catch {
+    const bytes = await paint();
+    try {
+      mkdirSync(IMAGE_CACHE_DIR!, { recursive: true });
+      writeFileSync(`${path}.tmp`, bytes);
+      renameSync(`${path}.tmp`, path);
+    } catch {
+      // The cache is only a speed-up.
+    }
+    return bytes;
+  }
+}
 
 export type Rgb = readonly [number, number, number];
 
