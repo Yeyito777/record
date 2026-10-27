@@ -69,4 +69,35 @@ describe("non-blocking terminal output", () => {
     expect(b).toBe(a + 256 * 1024);
     expect(end).toBe(b + 256 * 1024);
   }, 40_000);
+
+  test.skipIf(!hasPython || process.platform === "win32")("interactive output overtakes queued media, but never splits a message", () => {
+    const dir = mkdtempSync(join(tmpdir(), "record-termout-lanes-"));
+    const relay = join(dir, "relay.py");
+    writeFileSync(relay, SLOW_PTY);
+    const probe = join(dir, "probe.ts");
+    writeFileSync(probe, `
+      import { installTerminalOutput, writeTerminalBulk, terminalInteractiveBacklog, terminalOutputBacklog } from ${JSON.stringify(join(REPO, "src/terminaloutput.ts"))};
+      installTerminalOutput();
+      const packet = 2 * 128 * 1024 + 8;
+      writeTerminalBulk("[X" + "x".repeat(128 * 1024) + "X]");
+      writeTerminalBulk("[Y" + "y".repeat(128 * 1024) + "Y]");
+      // Once the first packet is going out (however long the writer thread
+      // took to start), a frame arrives while the second still waits.
+      const poll = setInterval(() => {
+        if (terminalOutputBacklog() >= packet) return;
+        clearInterval(poll);
+        process.stdout.write("<FRAME>");
+        setTimeout(() => process.exit(terminalInteractiveBacklog() === 0 ? 0 : 3), 3000);
+      }, 2);
+    `);
+    const run = spawnSync("python3", [relay, process.execPath, probe], { timeout: 30_000 });
+    expect(run.status).toBe(0);
+    const out = readFileSync(`${relay}.out`).toString("latin1");
+    const xEnd = out.indexOf("X]"), frame = out.indexOf("<FRAME>"), yStart = out.indexOf("[Y");
+    expect(xEnd).toBeGreaterThan(0);
+    expect(frame).toBeGreaterThan(xEnd);
+    // The frame went before the second packet, which still arrived whole.
+    expect(yStart).toBeGreaterThan(frame);
+    expect(out.indexOf("Y]")).toBe(yStart + 2 + 128 * 1024);
+  }, 40_000);
 });

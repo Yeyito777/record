@@ -58,8 +58,11 @@ export function installTtyStats(log: (event: string, fields: Record<string, unkn
     const ended = performance.now();
     const ms = ended - started;
     const counter = counters[kind];
-    counter.bytes += bytes;
-    counter.writes += 1;
+    // Media is counted by writeMedia (it may not come through here).
+    if (kind === "other") {
+      counter.bytes += bytes;
+      counter.writes += 1;
+    }
     counter.blockedMs += ms;
     if (ms > maxBlock.ms) maxBlock = { ms, kind, bytes };
     maxBacklog = Math.max(maxBacklog, backlog());
@@ -84,11 +87,13 @@ export function installTtyStats(log: (event: string, fields: Record<string, unkn
   };
 }
 
-/** Write media (GIF and video packets): counted apart from frames. */
-export function writeMedia(data: string): void {
+/** Write media (GIF and video packets) with `write` (the writer's bulk lane): counted apart from frames. */
+export function writeMedia(data: string, write: (data: string) => void = (chunk) => { process.stdout.write(chunk); }): void {
+  counters.media.bytes += data.length;
+  counters.media.writes += 1;
   mediaWriting = true;
   try {
-    process.stdout.write(data);
+    write(data);
   } finally {
     mediaWriting = false;
   }
