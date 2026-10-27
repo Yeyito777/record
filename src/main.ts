@@ -42,6 +42,7 @@ import { inlineImageHasShape, inlineImageId, inlineImagePreviewPixelBounds, inli
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 import { discordAttachmentProxyRequest, proxiedAttachment } from "./discordmedia";
 import { GifPlayer } from "./gifplayer";
+import { installTtyStats, KeyLatencyProbe, writeMedia } from "./ttystats";
 import { mediaStreamPlan, probeMedia, runMediaStream } from "./mediastream";
 import { formatPlayback, ViewerVideo } from "./videoviewer";
 import { encodeVideoStream, videoEncoders, VideoStreamDiskCache, type VideoStream } from "./videostream";
@@ -292,6 +293,10 @@ let terminalGraphicsCells = false;
 let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
 let terminalGraphicsClient: TerminalGraphicsClient | null = null;
+/** RECORD_PERF_PROBE=1: key-to-terminal latency in the debug log (ttystats.ts). */
+const keyLatencyProbe = process.env.RECORD_PERF_PROBE === "1"
+  ? new KeyLatencyProbe((data) => { if (terminalReady) process.stdout.write(data); }, (event, fields) => debugLog(event, fields))
+  : null;
 let nextInlineImageRequestId = 0;
 // Both serve the image nearest the view first, judged when a slot frees.
 const inlineImageFetchQueues = {
@@ -495,6 +500,7 @@ function renderFrame(): void {
     state.imageDisplayMode === "show" && inlineImagesDrawable(terminalGraphicsClient?.isSupported()),
     state.inlineImageHiddenAttachmentIds);
   render(state);
+  keyLatencyProbe?.frameWritten();
   const ms = performance.now() - started;
   if (ms >= SLOW_RENDER_MS) {
     debugLog("render.slow", { ms: Math.round(ms), lines: state.historyLines.length, images: Object.keys(state.timeline.inlineImages).length });
@@ -2752,7 +2758,7 @@ function openVideoViewer(attachment: DiscordMessageAttachment): void {
       return;
     }
     const video = new ViewerVideo({
-      write: (data) => { if (terminalReady) process.stdout.write(data); },
+      write: (data) => { if (terminalReady) writeMedia(data); },
       onChange: () => {
         if (viewerVideo?.video !== video) return;
         modal.video = { status: videoStatusText(video), short: videoStatusShort(video) };
@@ -3446,8 +3452,10 @@ async function main(): Promise<void> {
     // WhatsApp chat pictures need one profile-picture query per shown chat.
     resolvers: { whatsapp: (source) => whatsAppController.profilePictureUrl(source.ref ?? "") },
   });
+  // Bytes written to the terminal and how long writes block (debug log, tty.stats).
+  installTtyStats((event, fields) => debugLog(event, fields));
   gifPlayer = new GifPlayer({
-    write: (data) => { if (terminalReady) process.stdout.write(data); },
+    write: (data) => { if (terminalReady) writeMedia(data); },
     onChange: () => scheduleRender(),
     onSupportChanged: (supported) => {
       debugLog("video.support", { supported });
@@ -3518,6 +3526,7 @@ async function main(): Promise<void> {
         if (setTimelineTerminalCellSize(state.timeline, cellSize.width, cellSize.height)) scheduleRender();
         return;
       }
+      if (keyLatencyProbe?.answered(sequence)) return;
       // Video replies (status, capability) and DA1, before the image handlers.
       if (viewerVideo?.video.handleControlSequence(sequence)) return;
       if (gifPlayer?.handleControlSequence(sequence)) return;
@@ -3581,6 +3590,7 @@ function processInput(input: string): void {
   if (!running) return;
 
   const events = parseInput(input);
+  if (events.length) keyLatencyProbe?.keyPressed();
   // Until the saved starting state is fully restored, whatever this input
   // changes (sidebar toggled or moved, another chat opened) is kept by it.
   startingStateRestorer.userInput(() => {

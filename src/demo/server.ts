@@ -670,11 +670,12 @@ export class DemoDiscordServer {
       // A poster (format=jpeg) is the still; a Tenor/Giphy mp4 a silent loop; another mp4 a clip with sound.
       const poster = url.search.includes("format=");
       const moving = poster ? null
-        : /\.mp4$/i.test(url.pathname) ? (/tenor|giphy/i.test(url.pathname) ? "mp4" : "mp4a")
+        : /\.mp4$/i.test(url.pathname) ? (/tenor|giphy/i.test(url.pathname) ? "tenor" : "mp4a")
           : /\.gif$/i.test(url.pathname) ? "gif" : null;
       if (variant !== null && moving) {
         const shape = imageVariant(variant);
-        const scale = Math.min(1, 640 / shape.width, 480 / shape.height);
+        // Tenor's mp4s are about 500 pixels wide.
+        const scale = Math.min(1, 498 / shape.width, 498 / shape.height);
         return animationResponse(moving, await demoAnimation(moving, shape.width * scale, shape.height * scale, variant));
       }
       if (variant !== null) return png(this.variantPng(variant));

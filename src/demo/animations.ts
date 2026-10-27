@@ -8,12 +8,16 @@ import { spawn } from "node:child_process";
 
 import { renderPicture } from "./png";
 
-/** mp4a: a six-second clip with a tone (a video with sound, for the viewer). */
-export type DemoAnimationKind = "mp4" | "gif" | "apng" | "mp4a";
+/**
+ * mp4a: a six-second clip with a tone (a video with sound, for the viewer).
+ * tenor: a GIF as heavy as Tenor's and Giphy's mp4s really are: a 5.8 s
+ * loop at 25 fps, ~640 kbit/s (about 460 KB a loop, 80 KB/s).
+ */
+export type DemoAnimationKind = "mp4" | "gif" | "apng" | "mp4a" | "tenor";
 
 const made = new Map<string, Promise<Buffer>>();
 
-const CONTENT_TYPES: Record<DemoAnimationKind, string> = { mp4: "video/mp4", gif: "image/gif", apng: "image/png", mp4a: "video/mp4" };
+const CONTENT_TYPES: Record<DemoAnimationKind, string> = { mp4: "video/mp4", gif: "image/gif", apng: "image/png", mp4a: "video/mp4", tenor: "video/mp4" };
 
 export function demoAnimationContentType(kind: DemoAnimationKind): string {
   return CONTENT_TYPES[kind];
@@ -35,9 +39,14 @@ function encode(kind: DemoAnimationKind, width: number, height: number, seed: nu
   // The source ends by itself: a palette (GIF) waits for its input's end.
   const source = kind === "mp4a"
     ? `testsrc2=size=${width}x${height}:rate=25:duration=6`
-    : `testsrc2=size=${width}x${height}:rate=12:duration=2,hue=h=${(seed * 47) % 360}`;
+    : kind === "tenor"
+      // Temporal noise keeps the encoder spending its bits, as camera footage does.
+      ? `testsrc2=size=${width}x${height}:rate=25:duration=5.8,hue=h=${(seed * 47) % 360},noise=alls=8:allf=t+u`
+      : `testsrc2=size=${width}x${height}:rate=12:duration=2,hue=h=${(seed * 47) % 360}`;
   const output: Record<DemoAnimationKind, string[]> = {
     mp4: ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "30", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4"],
+    tenor: ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-b:v", "640k", "-maxrate", "800k", "-bufsize", "1200k", "-g", "50",
+      "-movflags", "frag_keyframe+empty_moov", "-f", "mp4"],
     mp4a: [
       "-f", "lavfi", "-i", `sine=frequency=${220 + (seed % 5) * 110}:sample_rate=48000:duration=6`,
       "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "28", "-g", "50",
