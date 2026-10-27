@@ -28,7 +28,7 @@ import type {
   WhatsAppReactionEvent,
 } from "../whatsapp/types";
 import type { WhatsAppDownloadMediaResult, WhatsAppImageUpload, WhatsAppSetChatMutedResult } from "../whatsapp/worker-protocol";
-import { hexColor, renderPicture, type Rgb } from "./png";
+import { cachedDemoImageAsync, hexColor, renderPicture, type Rgb } from "./png";
 
 export const DEMO_WHATSAPP_SELF = "5511900000000@s.whatsapp.net";
 /** The chat that is nearly all photos (RECORD_DEMO_OPEN=wa-photos). */
@@ -239,7 +239,7 @@ function delay(ms: number): Promise<void> {
 
 /** One photo size as JPEG (ffmpeg), or PNG when ffmpeg is unavailable. */
 function photoBytes(size: PhotoSize, seed: number): Promise<Buffer> {
-  return demoJpeg(renderPicture(size.width, size.height, size.from, size.to, seed));
+  return cachedDemoImageAsync(`wa-${size.width}x${size.height}-${seed}`, () => demoJpeg(renderPicture(size.width, size.height, size.from, size.to, seed)));
 }
 
 /** A demo picture as JPEG (ffmpeg), or the PNG itself when ffmpeg is unavailable. */
