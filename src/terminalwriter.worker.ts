@@ -34,17 +34,21 @@ function done(bytes: number, isInteractive: boolean): void {
 
 let terminalGone = false;
 
-function writeWhole(bytes: Buffer): void {
+/** Write all of `bytes`, counting progress as the terminal takes it. */
+function writeWhole(bytes: Buffer, isInteractive: boolean): void {
   let offset = 0;
   while (offset < bytes.length && !terminalGone) {
     try {
-      offset += writeSync(1, bytes, offset, bytes.length - offset);
+      const count = writeSync(1, bytes, offset, Math.min(bytes.length - offset, 16 * 1024));
+      offset += count;
+      done(count, isInteractive);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EAGAIN") continue;
       // The terminal went away (EIO): nothing more can be written.
       terminalGone = true;
     }
   }
+  if (offset < bytes.length) done(bytes.length - offset, isInteractive);
 }
 
 function pump(): void {
@@ -52,8 +56,7 @@ function pump(): void {
   const isInteractive = interactive.length > 0;
   const next = isInteractive ? interactive.shift() : bulk.shift();
   if (!next) return;
-  writeWhole(next);
-  done(next.length, isInteractive);
+  writeWhole(next, isInteractive);
   self.postMessage(0);
   if (interactive.length > 0 || bulk.length > 0) {
     pumping = true;

@@ -76,14 +76,19 @@ describe("non-blocking terminal output", () => {
     writeFileSync(relay, SLOW_PTY);
     const probe = join(dir, "probe.ts");
     writeFileSync(probe, `
-      import { installTerminalOutput, writeTerminalBulk, terminalInteractiveBacklog } from ${JSON.stringify(join(REPO, "src/terminaloutput.ts"))};
+      import { installTerminalOutput, writeTerminalBulk, terminalInteractiveBacklog, terminalOutputBacklog } from ${JSON.stringify(join(REPO, "src/terminaloutput.ts"))};
       installTerminalOutput();
+      const packet = 2 * 128 * 1024 + 8;
       writeTerminalBulk("[X" + "x".repeat(128 * 1024) + "X]");
       writeTerminalBulk("[Y" + "y".repeat(128 * 1024) + "Y]");
-      setTimeout(() => {
+      // Once the first packet is going out (however long the writer thread
+      // took to start), a frame arrives while the second still waits.
+      const poll = setInterval(() => {
+        if (terminalOutputBacklog() >= packet) return;
+        clearInterval(poll);
         process.stdout.write("<FRAME>");
         setTimeout(() => process.exit(terminalInteractiveBacklog() === 0 ? 0 : 3), 3000);
-      }, 20);
+      }, 2);
     `);
     const run = spawnSync("python3", [relay, process.execPath, probe], { timeout: 30_000 });
     expect(run.status).toBe(0);
