@@ -17,6 +17,9 @@ let writes = 0;
 let totalBytes = 0;
 const frameMs: number[] = [];
 const stallMs: number[] = [];
+const inputToFrameMs: number[] = [];
+const inputToTerminalMs: number[] = [];
+let inputAt: number | null = null;
 const started = performance.now();
 
 export const perfTraceEnabled = path !== null;
@@ -73,6 +76,11 @@ export function startPerfTrace(): void {
       frameP90: percentile(frameMs, 0.9),
       frameP99: percentile(frameMs, 0.99),
       frameMax: percentile(frameMs, 1),
+      keyToFrameP50: percentile(inputToFrameMs, 0.5),
+      keyToFrameP90: percentile(inputToFrameMs, 0.9),
+      keyToTerminalP50: percentile(inputToTerminalMs, 0.5),
+      keyToTerminalP90: percentile(inputToTerminalMs, 0.9),
+      keyToTerminalMax: percentile(inputToTerminalMs, 1),
       stalls: stallMs.length,
       stallMax: percentile(stallMs, 1),
       writes,
@@ -84,10 +92,24 @@ export function startPerfTrace(): void {
   });
 }
 
-/** One rendered frame: how long it took and what it wrote. */
-export function tracePerfFrame(ms: number, fields: Record<string, unknown> = {}): void {
+/** Input arrived (keys, mouse): the next frame's latency is measured from here. */
+export function tracePerfInput(): void {
+  if (fd !== null && inputAt === null) inputAt = performance.now();
+}
+
+/**
+ * One rendered frame: how long it took and what it wrote. `written(cb)` runs
+ * cb once this frame's bytes have been handed to the terminal.
+ */
+export function tracePerfFrame(ms: number, fields: Record<string, unknown> = {}, written?: (done: () => void) => void): void {
   if (fd === null) return;
   frameMs.push(ms);
+  if (inputAt !== null) {
+    const since = inputAt;
+    inputAt = null;
+    inputToFrameMs.push(performance.now() - since);
+    written?.(() => inputToTerminalMs.push(performance.now() - since));
+  }
   line({ frame: Math.round(ms * 100) / 100, bytes: bytesSinceFrame, ...fields });
   bytesSinceFrame = 0;
 }

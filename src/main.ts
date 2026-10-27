@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { AsyncWorkQueue } from "./asyncwork";
 import { visiblePanels } from "./panels";
-import { startPerfTrace, tracePerfFrame } from "./perftrace";
+import { startPerfTrace, tracePerfFrame, tracePerfInput } from "./perftrace";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
@@ -501,7 +501,8 @@ function renderFrame(): void {
   updateInlineVideos();
   scheduleSmoothScrollFrame();
   const ms = performance.now() - started;
-  tracePerfFrame(ms, { lines: state.historyLines.length, rerendered });
+  // Writes block here, so the frame is in the terminal once render returns.
+  tracePerfFrame(ms, { lines: state.historyLines.length, rerendered }, (done) => done());
 }
 
 /** Frames slower than this go to the debug log (a frame budget is 16 ms). */
@@ -3578,6 +3579,7 @@ async function main(): Promise<void> {
 
 function processInput(input: string): void {
   if (!running) return;
+  tracePerfInput();
 
   const events = parseInput(input);
   // Until the saved starting state is fully restored, whatever this input
