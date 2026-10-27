@@ -463,6 +463,8 @@ export class GifPlayer {
     }
     const window = this.windowBytes(now);
     let inFlight = [...this.sessions.values()].reduce((sum, session) => sum + session.bytesWritten - session.bytesAcked, 0);
+    // One write a tick: fewer wake-ups of the terminal.
+    this.batch = [];
     // The one furthest behind first, so a budget too small for all is shared.
     const sessions = [...this.sessions.values()].filter((session) => session.phase === "open" && session.stream)
       .sort((left, right) => (left.index + left.loop * 1e6) / left.stream!.packets.length - (right.index + right.loop * 1e6) / right.stream!.packets.length);
@@ -494,6 +496,9 @@ export class GifPlayer {
       const due = session.shown === 0 ? (session.queries.length === 0 ? 0 : PUMP_MS * 2) : QUERY_EVERY_MS;
       if ((!session.paused || session.shown === 0) && now - session.lastQueryAt >= due) this.query(session, now);
     }
+    const batch = this.batch;
+    this.batch = null;
+    if (batch?.length) this.write(batch.join(""));
     this.logStats(now);
   }
 
@@ -521,7 +526,14 @@ export class GifPlayer {
     session.bytesAtLastQuery = session.bytesWritten;
   }
 
+  /** While pumping: what the tick writes, together. */
+  private batch: string[] | null = null;
+
   private write(data: string): void {
+    if (this.batch) {
+      this.batch.push(data);
+      return;
+    }
     this.statsBytes += data.length;
     this.options.write(data);
   }
