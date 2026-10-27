@@ -1,12 +1,13 @@
 /**
- * Debug log: what Record writes to the terminal, and how long the writes
- * block. A write to a TTY returns only once the terminal has taken the bytes
- * (Bun writes TTYs synchronously), so a terminal that drains slowly holds
- * Record's event loop for as long as it takes: keys, timers and frames wait.
+ * Debug log: what Record writes to the terminal. Writes go through a writer
+ * thread (terminaloutput.ts), so they no longer block; what the terminal has
+ * not read yet is the backlog, and every byte in it is a byte a key's frame
+ * waits behind.
  *
  * `tty.stats` every few seconds: bytes and writes per second for media (GIF
  * and video packets) and for everything else (frames, pictures, controls),
- * the milliseconds per second each spent blocked, the longest single write.
+ * the largest backlog seen, and the milliseconds per second writes blocked
+ * (only with RECORD_SYNC_OUTPUT=1).
  *
  * RECORD_PERF_PROBE=1 also measures how long a key takes to reach the
  * terminal's screen state: after the frame a key produced, a status request
@@ -30,17 +31,19 @@ const counters: Record<Kind, Counters> = {
   other: { bytes: 0, writes: 0, blockedMs: 0 },
 };
 let maxBlock = { ms: 0, kind: "other" as Kind, bytes: 0 };
+let maxBacklog = 0;
 let since = 0;
 let installed = false;
 
 function reset(now: number): void {
   for (const kind of ["media", "other"] as const) counters[kind] = { bytes: 0, writes: 0, blockedMs: 0 };
   maxBlock = { ms: 0, kind: "other", bytes: 0 };
+  maxBacklog = 0;
   since = now;
 }
 
 /** Count every write to stdout; log a summary every few seconds while there are writes. */
-export function installTtyStats(log: (event: string, fields: Record<string, unknown>) => void): void {
+export function installTtyStats(log: (event: string, fields: Record<string, unknown>) => void, backlog: () => number = () => 0): void {
   if (installed) return;
   installed = true;
   since = performance.now();
@@ -59,6 +62,7 @@ export function installTtyStats(log: (event: string, fields: Record<string, unkn
     counter.writes += 1;
     counter.blockedMs += ms;
     if (ms > maxBlock.ms) maxBlock = { ms, kind, bytes };
+    maxBacklog = Math.max(maxBacklog, backlog());
     if (ended - since >= STATS_EVERY_MS) {
       const seconds = (ended - since) / 1000;
       const per = (value: number) => Math.round(value / seconds);
@@ -72,6 +76,7 @@ export function installTtyStats(log: (event: string, fields: Record<string, unkn
         maxBlockMs: Math.round(maxBlock.ms),
         maxBlockKind: maxBlock.kind,
         maxBlockBytes: maxBlock.bytes,
+        maxBacklogBytes: maxBacklog,
       });
       reset(ended);
     }

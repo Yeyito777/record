@@ -155,6 +155,20 @@ describe("GIF player", () => {
     expect(playing).toEqual(["a"]);
   });
 
+  test("no GIF bytes while the terminal is still reading what came before", async () => {
+    let backlog = 40_000;
+    const tty = terminal();
+    const player = new GifPlayer({ write: tty.write, onChange: () => {}, now: () => 0, autoPump: false, backlog: () => backlog });
+    player.setSupported(true);
+    player.update([{ key: "a", visibility: 5, width: 320, height: 180, load: async () => stream() }]);
+    await flush();
+    player.pump();
+    expect(tty.commands.filter((command) => command.k === "d")).toHaveLength(0);
+    backlog = 0;
+    player.pump();
+    expect(tty.commands.filter((command) => command.k === "d").length).toBeGreaterThan(0);
+  });
+
   test("while the user scrolls or types, no GIF bytes, opens or closes; they resume a moment after", async () => {
     let now = 0;
     const tty = terminal();

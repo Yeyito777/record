@@ -28,7 +28,12 @@ export interface ViewerVideoOptions {
   onChange: () => void;
   now?: () => number;
   autoPump?: boolean;
+  /** Bytes written that the terminal has not read yet (terminaloutput.ts). */
+  backlog?: () => number;
 }
+
+/** The viewer adds no packets while the terminal has more than this left to read: frames go first. */
+const VIEWER_BACKLOG_LIMIT_BYTES = 64 * 1024;
 
 export type ViewerVideoState = "buffering" | "playing" | "paused" | "ended" | "error";
 
@@ -216,7 +221,7 @@ export class ViewerVideo {
   pump(): void {
     if (this.closed || !this.opened || this.failure) return;
     const now = this.now();
-    if (!this.paused) {
+    if (!this.paused && (this.options.backlog?.() ?? 0) <= VIEWER_BACKLOG_LIMIT_BYTES) {
       const window = this.windowBytes(now);
       while (this.index < this.packets.length && this.bytesWritten - this.bytesAcked < window) {
         const packet = this.packets[this.index]!;

@@ -50,6 +50,8 @@ export interface GifPlayerOptions {
   log?: (event: string, fields: Record<string, unknown>) => void;
   /** Tests drive pump() themselves. */
   autoPump?: boolean;
+  /** Bytes written that the terminal has not read yet (terminaloutput.ts). */
+  backlog?: () => number;
 }
 
 /** First video image id; videos take ids apart from pictures (0x40000000..) and icons. */
@@ -76,6 +78,12 @@ const GIF_BURST_BYTES = 32 * 1024;
 export const GIF_QUIET_AFTER_INTERACTION_MS = 300;
 /** And opening a GIF (or closing one to make room) waits until the user has been still this long. */
 export const GIF_OPEN_AFTER_STILL_MS = 600;
+/**
+ * No GIF bytes are added while the terminal has more than this left to read
+ * (an image going through, frames): they would only queue ahead of the next
+ * frame.
+ */
+export const GIF_BACKLOG_LIMIT_BYTES = 16 * 1024;
 const QUERY_EVERY_BYTES = 32 * 1024;
 const QUERY_EVERY_MS = 250;
 const MAX_OUTSTANDING_QUERIES = 4;
@@ -456,7 +464,7 @@ export class GifPlayer {
     this.tokensAt = now;
     const elapsed = this.lastPumpAt === null ? 0 : now - this.lastPumpAt;
     this.lastPumpAt = now;
-    if (this.quiet(now)) {
+    if (this.quiet(now) || (this.options.backlog?.() ?? 0) > GIF_BACKLOG_LIMIT_BYTES) {
       this.statsHeldMs += elapsed;
       this.logStats(now);
       return;
