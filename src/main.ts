@@ -9,7 +9,7 @@ import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./ac
 import { AsyncWorkQueue } from "./asyncwork";
 import { visiblePanels } from "./panels";
 import { startPerfTrace, tracePerfFrame, tracePerfInput } from "./perftrace";
-import { installTerminalOutput, terminalInteractiveBacklog, whenInteractiveOutputWritten, whenTerminalOutputBelow, writeTerminalBulk, writeTerminalBulkTransfer } from "./terminaloutput";
+import { installTerminalOutput, terminalInteractiveBacklog, terminalOutputBacklog, whenInteractiveOutputWritten, whenTerminalOutputBelow, writeTerminalBulk, writeTerminalBulkTransfer } from "./terminaloutput";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
@@ -44,6 +44,7 @@ import { inlineImageHasShape, inlineImageId, inlineImagePreviewPixelBounds, inli
 import { InlineImageCache, inlineImageCacheKey, InlinePreviewDiskCache } from "./inlineimagecache";
 import { discordAttachmentProxyRequest, proxiedAttachment } from "./discordmedia";
 import { GifPlayer } from "./gifplayer";
+import { installTtyStats, KeyLatencyProbe, writeMedia } from "./ttystats";
 import { mediaStreamPlan, probeMedia, runMediaStream } from "./mediastream";
 import { formatPlayback, ViewerVideo } from "./videoviewer";
 import { encodeVideoStream, videoEncoders, VideoStreamDiskCache, type VideoStream } from "./videostream";
@@ -294,6 +295,10 @@ let terminalGraphicsCells = false;
 let terminalClipboardClient: TerminalClipboardClient | null = null;
 let terminalControlBuffer: TerminalControlBuffer | null = null;
 let terminalGraphicsClient: TerminalGraphicsClient | null = null;
+/** RECORD_PERF_PROBE=1: key-to-terminal latency in the debug log (ttystats.ts). */
+const keyLatencyProbe = process.env.RECORD_PERF_PROBE === "1"
+  ? new KeyLatencyProbe((data) => { if (terminalReady) process.stdout.write(data); }, (event, fields) => debugLog(event, fields))
+  : null;
 let nextInlineImageRequestId = 0;
 // Both serve the image nearest the view first, judged when a slot frees.
 const inlineImageFetchQueues = {
@@ -545,6 +550,7 @@ function renderFrame(): void {
     state.imageDisplayMode === "show" && inlineImagesDrawable(terminalGraphicsClient?.isSupported()),
     state.inlineImageHiddenAttachmentIds);
   render(state);
+  keyLatencyProbe?.frameWritten();
   // A picture in view that was let go came back from memory or disk at once
   // (a jump landed on it): draw it in this frame rather than its empty box.
   const rerendered = autoShowVisibleInlineImages();
@@ -592,6 +598,8 @@ function scheduleSmoothScrollFrame(): void {
   if (!smooth) return;
   const due = smooth.frameDueIn();
   if (due === null) return;
+  // A glide is going: its frames come before GIF bytes.
+  gifPlayer?.noteInteraction();
   if (due <= 0) {
     renderImmediately();
     return;
@@ -2804,7 +2812,9 @@ function openVideoViewer(attachment: DiscordMessageAttachment): void {
       return;
     }
     const video = new ViewerVideo({
-      write: (data) => { if (terminalReady) process.stdout.write(data); },
+      // The viewer's packets and commands go in order on the bulk lane too: frames (its footer, keys) first.
+      write: (data) => { if (terminalReady) writeMedia(data, writeTerminalBulk); },
+      backlog: terminalOutputBacklog,
       onChange: () => {
         if (viewerVideo?.video !== video) return;
         modal.video = { status: videoStatusText(video), short: videoStatusShort(video) };
@@ -3504,11 +3514,14 @@ async function main(): Promise<void> {
     // WhatsApp chat pictures need one profile-picture query per shown chat.
     resolvers: { whatsapp: (source) => whatsAppController.profilePictureUrl(source.ref ?? "") },
   });
+  // Bytes written to the terminal and how long writes block (debug log, tty.stats).
+  installTtyStats((event, fields) => debugLog(event, fields), terminalOutputBacklog);
   gifPlayer = new GifPlayer({
     // GIF bytes yield to frames: keys and scrolling go ahead of queued packets.
     // Safe to reorder: a GIF is placed only after st has shown its frames, and
     // its placement is removed in a frame before it is closed.
-    write: (data) => { if (terminalReady) writeTerminalBulk(data); },
+    write: (data) => { if (terminalReady) writeMedia(data, writeTerminalBulk); },
+    backlog: terminalOutputBacklog,
     onChange: () => scheduleRender(),
     onSupportChanged: (supported) => {
       debugLog("video.support", { supported });
@@ -3579,6 +3592,7 @@ async function main(): Promise<void> {
         if (setTimelineTerminalCellSize(state.timeline, cellSize.width, cellSize.height)) scheduleRender();
         return;
       }
+      if (keyLatencyProbe?.answered(sequence)) return;
       // Video replies (status, capability) and DA1, before the image handlers.
       if (viewerVideo?.video.handleControlSequence(sequence)) return;
       if (gifPlayer?.handleControlSequence(sequence)) return;
@@ -3646,6 +3660,10 @@ function processInput(input: string): void {
   // (kitty reports them) or a mouse move draws nothing, and timing from one
   // would run until some later frame.
   if (events.some((event) => event.type === "mouse" ? event.action === "press" : event.event !== "release")) tracePerfInput();
+  // Presses, clicks and wheel steps (a key's release draws nothing).
+  if (events.some((event) => event.type === "mouse" ? event.action !== "motion" || event.button !== 3 : event.event !== "release")) keyLatencyProbe?.keyPressed();
+  // Keys, clicks and the wheel come first: GIF bytes wait until the user is still.
+  if (events.some((event) => event.type !== "mouse" || event.action !== "motion" || event.button !== 3)) gifPlayer?.noteInteraction();
   // Until the saved starting state is fully restored, whatever this input
   // changes (sidebar toggled or moved, another chat opened) is kept by it.
   startingStateRestorer.userInput(() => {

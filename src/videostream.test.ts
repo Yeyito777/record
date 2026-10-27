@@ -41,15 +41,19 @@ function checkPlayable(stream: VideoStream, frames: number, durationUs: number):
 }
 
 describe.skipIf(!ffmpeg)("GIFs as H.264 streams", () => {
-  test("an H.264 mp4 is remuxed as it is, B-frames and all", async () => {
-    const mp4 = make("tenor.mp4", ["-f", "lavfi", "-i", "testsrc2=size=480x270:rate=15", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-bf", "2"]);
-    const stream = (await encodeVideoStream(mp4, { maxWidth: 864, maxHeight: 486 }))!;
-    expect(stream.remuxed).toBe(true);
-    expect([stream.width, stream.height]).toEqual([480, 270]);
-    checkPlayable(stream, 30, 2_000_000);
-    // Decode order is not presentation order.
-    const decodeOrder = stream.packets.map((packet) => packet.ptsUs);
-    expect(decodeOrder).not.toEqual([...decodeOrder].sort((left, right) => left - right));
+  test("a Tenor-weight mp4 is encoded light: 15 fps, at most 480 px, ~10 KB/s on the terminal, one keyframe a loop", async () => {
+    // As heavy as Tenor's: 25 fps, ~640 kbit/s (~460 KB for 5.8 s).
+    const mp4 = make("tenor.mp4", ["-f", "lavfi", "-i", "testsrc2=size=640x490:rate=25:duration=5.8,noise=alls=8:allf=t+u",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "640k", "-maxrate", "800k", "-bufsize", "1200k", "-bf", "2"]);
+    const stream = (await encodeVideoStream(mp4, { maxWidth: 1296, maxHeight: 576 }))!;
+    expect(stream.remuxed).toBe(false);
+    expect([stream.width, stream.height]).toEqual([480, 366]);
+    checkPlayable(stream, 87, 5_800_000);
+    expect(stream.packets.filter((packet) => packet.keyframe)).toHaveLength(1);
+    const bytes = stream.packets.reduce((sum, packet) => sum + packet.data.length, 0);
+    // 60 kbit/s is 7.5 KB/s; base64 and framing make it ~10 KB/s on the terminal.
+    expect(bytes / 5.8).toBeLessThan(8.5 * 1024);
+    expect(Math.max(...stream.packets.map((packet) => packet.data.length))).toBeLessThan(9 * 1024);
   });
 
   test("a GIF is encoded at its box's size, keeping its frame times", async () => {

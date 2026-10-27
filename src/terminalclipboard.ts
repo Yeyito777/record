@@ -500,7 +500,8 @@ export class TerminalControlBuffer {
         const sequence = this.buffer.slice(0, final + 1);
         this.buffer = this.buffer.slice(final + 1);
         // Mode reports, the cell size, and DA1 (which ends the video capability query).
-        if (/^\x1b\[\?(?:5522|2032|2033|2026);[0-4]\$y$/.test(sequence) || /^\x1b\[6;\d+;\d+t$/.test(sequence) || /^\x1b\[\?[\d;]*c$/.test(sequence)) {
+        // and the answer to a status request (RECORD_PERF_PROBE).
+        if (/^\x1b\[\?(?:5522|2032|2033|2026);[0-4]\$y$/.test(sequence) || /^\x1b\[6;\d+;\d+t$/.test(sequence) || /^\x1b\[\?[\d;]*c$/.test(sequence) || sequence === "\x1b[0n") {
           this.onControlSequence(sequence);
         } else {
           this.emitInput(sequence);

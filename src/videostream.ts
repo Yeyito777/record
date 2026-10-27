@@ -1,9 +1,12 @@
 /**
- * GIFs as H.264 streams for st's video (videoprotocol.ts). An H.264 source
- * (a Tenor/Giphy mp4, a WhatsApp GIF) is remuxed to Annex B without
- * re-encoding; anything else (GIF, APNG) is encoded at its box's size. ffmpeg
- * writes MPEG-TS, which carries each access unit's timestamps; it is split
- * here into packets, kept on disk, and looped by the player.
+ * GIFs as H.264 streams for st's video (videoprotocol.ts). Every source (a
+ * Tenor/Giphy or WhatsApp mp4, a GIF, an APNG) is encoded light: at most its
+ * box and 480 pixels a side, 15 frames a second and 60 kbit/s, one keyframe
+ * a loop. A GIF loops forever, so its bytes go to the terminal again and
+ * again: a real Tenor mp4 as it comes is ~640 kbit/s (~100 KB/s on the
+ * terminal); encoded so, it is ~10 KB/s. ffmpeg writes MPEG-TS, which
+ * carries each access unit's timestamps; it is split here into packets, kept
+ * on disk, and looped by the player.
  */
 
 import { spawn } from "node:child_process";
@@ -47,8 +50,12 @@ export interface VideoEncodeOptions {
 }
 
 const TS_PACKET = 188;
-/** Remux an H.264 source only when it is at most this many times the box's pixels; bigger ones are encoded smaller. */
-const REMUX_MAX_AREA_FACTOR = 4;
+/** A GIF is encoded no larger than this on its long side, whatever its box. */
+export const GIF_MAX_SIDE = 480;
+/** Nor at more frames a second than this. */
+export const GIF_MAX_FPS = 15;
+/** Nor above this rate (the VBV buffer, as big, bounds a keyframe to ~7.5 KB). */
+export const GIF_MAX_KBITS = 60;
 const MAX_SOURCE_SECONDS = 30;
 const FFMPEG_TIMEOUT_MS = 60_000;
 
@@ -88,11 +95,18 @@ interface SourceInfo {
   profile: string;
   width: number;
   height: number;
+  /** Frames a second on average (0 when unknown). */
+  fps: number;
+}
+
+function frameRate(value: unknown): number {
+  const [numerator, denominator] = String(value ?? "").split("/").map(Number);
+  return numerator && denominator ? numerator / denominator : 0;
 }
 
 async function probe(path: string, format: readonly string[] = []): Promise<SourceInfo | null> {
   try {
-    const output = await run("ffprobe", ["-v", "error", ...format, "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt,profile,width,height", "-of", "json", path], 15_000);
+    const output = await run("ffprobe", ["-v", "error", ...format, "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt,profile,width,height,avg_frame_rate,r_frame_rate", "-of", "json", path], 15_000);
     const stream = (JSON.parse(output.toString()) as { streams?: Record<string, unknown>[] }).streams?.[0];
     if (!stream) return null;
     return {
@@ -101,19 +115,11 @@ async function probe(path: string, format: readonly string[] = []): Promise<Sour
       profile: String(stream.profile ?? ""),
       width: Number(stream.width) || 0,
       height: Number(stream.height) || 0,
+      fps: frameRate(stream.avg_frame_rate) || frameRate(stream.r_frame_rate),
     };
   } catch {
     return null;
   }
-}
-
-/** 8-bit 4:2:0 H.264 that every decoder (VideoToolbox included) takes as it is. */
-function remuxable(info: SourceInfo, maxWidth: number, maxHeight: number): boolean {
-  return info.codec === "h264"
-    && (info.pixelFormat === "yuv420p" || info.pixelFormat === "yuvj420p")
-    && !/10|4:2:2|4:4:4|422|444/i.test(info.profile)
-    && info.width > 0 && info.height > 0 && info.width <= 4096 && info.height <= 4096
-    && info.width * info.height <= REMUX_MAX_AREA_FACTOR * maxWidth * maxHeight;
 }
 
 /** The size to encode at: the source fitted in the box, even (4:2:0), at least 2x2. */
@@ -129,13 +135,13 @@ export function encodeSize(sourceWidth: number, sourceHeight: number, maxWidth: 
  * against 99 KB in 148 ms), and bytes are what a link pays for. VideoToolbox
  * only when libx264 is missing.
  */
-function encoderArgs(encoders: ReadonlySet<string> | undefined, width: number, height: number): string[] {
+function encoderArgs(encoders: ReadonlySet<string> | undefined): string[] {
+  // One keyframe a loop (the loop starts with it), bounded by the VBV buffer.
+  const rate = [`-maxrate`, `${GIF_MAX_KBITS}k`, "-bufsize", `${GIF_MAX_KBITS}k`, "-g", "600", "-keyint_min", "600", "-sc_threshold", "0"];
   if (process.platform === "darwin" && encoders?.has("h264_videotoolbox") && !encoders.has("libx264")) {
-    // About 0.05 bit per pixel per frame at 15 fps: near what libx264 makes of a GIF.
-    const bitrate = Math.max(80_000, Math.min(800_000, Math.round(width * height * 15 * 0.05)));
-    return ["-c:v", "h264_videotoolbox", "-b:v", String(bitrate), "-profile:v", "high", "-allow_sw", "1", "-g", "250"];
+    return ["-c:v", "h264_videotoolbox", "-b:v", `${GIF_MAX_KBITS}k`, "-profile:v", "high", "-allow_sw", "1", ...rate];
   }
-  return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "animation", "-crf", "28", "-g", "250"];
+  return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "animation", "-crf", "30", ...rate];
 }
 
 /**
@@ -169,46 +175,40 @@ export async function encodeVideoStream(path: string, options: VideoEncodeOption
   const info = await probe(path, format);
   if (!info || info.width <= 0 || info.height <= 0) return null;
   const seconds = String(Math.min(options.maxSeconds ?? MAX_SOURCE_SECONDS, MAX_SOURCE_SECONDS));
-  const input = ["-hide_banner", "-v", "error", "-nostdin", "-t", seconds, ...format, "-i", path, "-map", "0:v:0", "-an", "-sn", "-dn"];
-  let args: string[];
-  const remux = remuxable(info, options.maxWidth, options.maxHeight);
-  if (remux) {
-    args = [...input, "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", "pipe:1"];
-  } else {
-    const size = encodeSize(info.width, info.height, options.maxWidth, options.maxHeight);
-    const background = /^#[0-9a-f]{6}$/i.test(options.background ?? "") ? `0x${options.background!.slice(1)}` : "black";
-    // Transparent pixels (GIF, APNG) lie on the chat's background: H.264 has
-    // no alpha. The backdrop is a filled copy of each frame, so the output
-    // keeps the source's own frame times.
-    const filter = `[0:v]scale=${size.width}:${size.height}:flags=lanczos,format=rgba,split[a][b];`
-      + `[a]drawbox=x=0:y=0:w=iw:h=ih:color=${background}@1:t=fill[bg];`
-      + "[bg][b]overlay=format=auto,format=yuv420p[v]";
-    args = [
-      ...input.slice(0, input.indexOf("-map")),
-      "-filter_complex", filter, "-map", "[v]", "-an", "-sn", "-dn",
-      "-fps_mode", "passthrough",
-      ...encoderArgs(options.encoders, size.width, size.height),
-      "-f", "mpegts", "pipe:1",
-    ];
-  }
+  const size = encodeSize(info.width, info.height, Math.min(options.maxWidth, GIF_MAX_SIDE), Math.min(options.maxHeight, GIF_MAX_SIDE));
+  const background = /^#[0-9a-f]{6}$/i.test(options.background ?? "") ? `0x${options.background!.slice(1)}` : "black";
+  // Faster sources drop to 15 fps; slower ones (most GIFs) keep their own frame times.
+  const fps = info.fps > GIF_MAX_FPS + 0.5 ? `fps=${GIF_MAX_FPS},` : "";
+  // Transparent pixels (GIF, APNG) lie on the chat's background: H.264 has
+  // no alpha. The backdrop is a filled copy of each frame, so the output
+  // keeps the frame times.
+  const filter = `[0:v]${fps}scale=${size.width}:${size.height}:flags=lanczos,format=rgba,split[a][b];`
+    + `[a]drawbox=x=0:y=0:w=iw:h=ih:color=${background}@1:t=fill[bg];`
+    + "[bg][b]overlay=format=auto,format=yuv420p[v]";
+  const args = [
+    "-hide_banner", "-v", "error", "-nostdin", "-t", seconds, ...format, "-i", path,
+    "-filter_complex", filter, "-map", "[v]", "-an", "-sn", "-dn",
+    "-fps_mode", "passthrough",
+    ...encoderArgs(options.encoders),
+    "-f", "mpegts", "pipe:1",
+  ];
   let ts: Buffer;
   try {
     ts = await run("ffmpeg", args);
   } catch (error) {
     // VideoToolbox can be missing at run time (a VM, a sandbox): encode in software.
-    if (remux || !args.includes("h264_videotoolbox")) throw error;
+    if (!args.includes("h264_videotoolbox")) throw error;
     return encodeVideoStream(path, { ...options, encoders: new Set() });
   }
   const packets = parseMpegTsVideo(ts);
   if (packets.length === 0 || !packets[0]!.keyframe) return null;
-  // st needs the first keyframe to carry its parameter sets. libx264 and
-  // remuxes do; should VideoToolbox not, encode in software instead.
+  // st needs the first keyframe to carry its parameter sets. libx264 does;
+  // should VideoToolbox not, encode in software instead.
   if (!hasParameterSets(packets[0]!.data)) {
-    if (!remux && args.includes("h264_videotoolbox")) return encodeVideoStream(path, { ...options, encoders: new Set() });
+    if (args.includes("h264_videotoolbox")) return encodeVideoStream(path, { ...options, encoders: new Set() });
     return null;
   }
-  const size = remux ? { width: info.width, height: info.height } : encodeSize(info.width, info.height, options.maxWidth, options.maxHeight);
-  return { ...size, durationUs: streamDuration(packets), packets, remuxed: remux };
+  return { ...size, durationUs: streamDuration(packets), packets, remuxed: false };
 }
 
 /** One loop: from the first frame to the last plus one typical frame. */
@@ -325,7 +325,7 @@ export function deserializeVideoStream(bytes: Buffer): VideoStream | null {
 }
 
 /** Bump when streams are encoded differently. */
-const STREAM_FORMAT = 1;
+const STREAM_FORMAT = 3; // 3: every GIF encoded light (480 px, 15 fps, 60 kbit/s, crf 30, 60k VBV)
 export const VIDEO_STREAM_DISK_CACHE_MAX_BYTES = 256 * 1024 * 1024;
 
 /** Encoded GIF streams on disk (`image-cache/videos`), least recently used out past the budget. */
