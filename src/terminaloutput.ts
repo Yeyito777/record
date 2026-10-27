@@ -15,29 +15,70 @@ import { debugLog } from "./debuglog";
 type Write = (chunk: unknown, ...rest: unknown[]) => boolean;
 
 let worker: Worker | null = null;
+/** [0] bytes done (written or dropped), [1] interactive bytes done. */
 let written: BigInt64Array | null = null;
 let queued = 0n;
+let queuedInteractive = 0n;
 let directWrite: Write | null = null;
-let drainedListeners: Array<() => void> = [];
+const waiters = new Set<{ bytes: number; listener: () => void }>();
 
-/** Bytes handed to the terminal writer that the terminal has not read yet. */
+/** Bytes handed to the terminal writer that the terminal has not read yet (both lanes). */
 export function terminalOutputBacklog(): number {
   if (!written) return 0;
   return Number(queued - Atomics.load(written, 0));
 }
 
-/** Run `listener` the next time the backlog drops to at most `bytes` (at once if it already has). */
-export function whenTerminalOutputBelow(bytes: number, listener: () => void): void {
-  if (terminalOutputBacklog() <= bytes) {
+/** Unread interactive output (frames, cursor, queries): what the next frame would wait behind. */
+export function terminalInteractiveBacklog(): number {
+  if (!written) return 0;
+  return Number(queuedInteractive - Atomics.load(written, 1));
+}
+
+/**
+ * Write media (GIF packets and the commands that open, query or close them):
+ * the terminal gets it in order, after any interactive output queued at the
+ * same time. Without the writer thread, it is a normal write.
+ */
+export function writeTerminalBulk(data: string): void {
+  if (!worker) {
+    process.stdout.write(data);
+    return;
+  }
+  if (data.length === 0) return;
+  queued += BigInt(Buffer.byteLength(data));
+  worker.postMessage({ bulk: data });
+}
+
+/**
+ * Run `listener` once the backlog drops to at most `bytes` (at once if it
+ * already has). Returns a function that cancels the wait.
+ */
+export function whenTerminalOutputBelow(bytes: number, listener: () => void): () => void {
+  if (terminalInteractiveBacklog() <= bytes) {
+    listener();
+    return () => {};
+  }
+  const waiter = { bytes, listener };
+  waiters.add(waiter);
+  return () => { waiters.delete(waiter); };
+}
+
+/** Run `listener` once every interactive byte queued so far has been written to the terminal. */
+export function whenInteractiveOutputWritten(listener: () => void): void {
+  if (!written) {
     listener();
     return;
   }
-  const check = (): void => {
-    if (terminalOutputBacklog() <= bytes) listener();
-    else drainedListeners.push(check);
-  };
-  drainedListeners.push(check);
+  const target = queuedInteractive;
+  if (Atomics.load(written, 1) >= target) {
+    listener();
+    return;
+  }
+  const waiter = { bytes: -1, listener, target };
+  writtenWaiters.add(waiter);
 }
+
+const writtenWaiters = new Set<{ bytes: number; listener: () => void; target: bigint }>();
 
 /** Route process.stdout writes through the writer thread (a TTY only). */
 export function installTerminalOutput(): boolean {
@@ -48,13 +89,25 @@ export function installTerminalOutput(): boolean {
     debugLog("terminal.output_worker_failed", { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
-  const shared = new SharedArrayBuffer(8);
+  const shared = new SharedArrayBuffer(16);
   written = new BigInt64Array(shared);
   worker.postMessage({ init: shared });
   worker.onmessage = () => {
-    const listeners = drainedListeners;
-    drainedListeners = [];
-    for (const listener of listeners) listener();
+    if (writtenWaiters.size > 0 && written) {
+      const done = Atomics.load(written, 1);
+      for (const waiter of [...writtenWaiters]) {
+        if (done < waiter.target) continue;
+        writtenWaiters.delete(waiter);
+        waiter.listener();
+      }
+    }
+    if (waiters.size === 0) return;
+    const backlog = terminalInteractiveBacklog();
+    for (const waiter of [...waiters]) {
+      if (backlog > waiter.bytes) continue;
+      waiters.delete(waiter);
+      waiter.listener();
+    }
   };
   (worker as unknown as { unref?: () => void }).unref?.();
   const stdout = process.stdout as unknown as { write: Write };
@@ -64,11 +117,14 @@ export function installTerminalOutput(): boolean {
     const callback = rest.find((value) => typeof value === "function") as (() => void) | undefined;
     if (typeof chunk === "string") {
       if (chunk.length === 0) return true;
-      queued += BigInt(Buffer.byteLength(chunk));
+      const size = BigInt(Buffer.byteLength(chunk));
+      queued += size;
+      queuedInteractive += size;
       worker.postMessage(chunk);
     } else if (chunk instanceof Uint8Array) {
       if (chunk.byteLength === 0) return true;
       queued += BigInt(chunk.byteLength);
+      queuedInteractive += BigInt(chunk.byteLength);
       worker.postMessage(chunk);
     } else {
       return directWrite!(chunk, ...rest);
@@ -87,6 +143,8 @@ export function installTerminalOutput(): boolean {
  */
 export function flushTerminalOutputSync(timeoutMs = 2_000): void {
   if (!worker || !written) return;
+  // Media still queued is no use once Record is leaving.
+  worker.postMessage({ dropBulk: true });
   const deadline = performance.now() + timeoutMs;
   while (terminalOutputBacklog() > 0) {
     const left = deadline - performance.now();

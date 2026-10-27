@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { AsyncWorkQueue } from "./asyncwork";
 import { visiblePanels } from "./panels";
-import { startPerfTrace, tracePerfFrame } from "./perftrace";
-import { installTerminalOutput, terminalOutputBacklog, whenTerminalOutputBelow } from "./terminaloutput";
+import { startPerfTrace, tracePerfFrame, tracePerfInput } from "./perftrace";
+import { installTerminalOutput, terminalInteractiveBacklog, whenInteractiveOutputWritten, whenTerminalOutputBelow, writeTerminalBulk } from "./terminaloutput";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
@@ -480,14 +480,25 @@ function syncLoadingAnimation(): void {
   }, LOADING_INTERVAL_MS);
 }
 
+/**
+ * Frames are at least this far apart (120 Hz, the Mac's ProMotion rate).
+ * A change after a quiet spell draws at once instead of after a fixed 16 ms
+ * delay, which every key used to wait for; bursts still coalesce.
+ */
+const MIN_FRAME_INTERVAL_MS = 8;
+let lastFrameAt = -Infinity;
+
 function scheduleRender(): void {
   syncTerminalGraphicsCells();
   syncLoadingAnimation();
   if (renderTimer) return;
+  // Always a timer, even with no wait: changes made in the same turn (several
+  // input events, a batch of gateway messages) land in one frame.
+  const wait = Math.max(0, lastFrameAt + MIN_FRAME_INTERVAL_MS - performance.now());
   renderTimer = setTimeout(() => {
     renderTimer = null;
     renderFrame();
-  }, 16);
+  }, wait);
 }
 
 /**
@@ -498,17 +509,37 @@ function scheduleRender(): void {
 const FRAME_BACKLOG_LIMIT_BYTES = 64 * 1024;
 let frameWaitingForTerminal = false;
 
+/**
+ * A frame is held at most this long: GIF packets keep the terminal busy
+ * continuously, and the screen must still follow keys while they play.
+ */
+const FRAME_BACKLOG_MAX_WAIT_MS = 100;
+let frameHeldSince: number | null = null;
+
 function renderFrame(): void {
-  if (terminalOutputBacklog() > FRAME_BACKLOG_LIMIT_BYTES) {
+  const now = performance.now();
+  if (terminalInteractiveBacklog() > FRAME_BACKLOG_LIMIT_BYTES
+    && (frameHeldSince === null || now - frameHeldSince < FRAME_BACKLOG_MAX_WAIT_MS)) {
+    frameHeldSince ??= now;
     if (frameWaitingForTerminal) return;
     frameWaitingForTerminal = true;
-    whenTerminalOutputBelow(FRAME_BACKLOG_LIMIT_BYTES, () => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancel = (): void => {};
+    const release = (): void => {
+      if (!frameWaitingForTerminal) return;
       frameWaitingForTerminal = false;
+      if (timer) clearTimeout(timer);
+      cancel();
       if (running) renderFrame();
-    });
+    };
+    timer = setTimeout(release, FRAME_BACKLOG_MAX_WAIT_MS - (now - frameHeldSince) + 1);
+    // The writer thread runs concurrently: this may release at once.
+    cancel = whenTerminalOutputBelow(FRAME_BACKLOG_LIMIT_BYTES, release);
     return;
   }
+  frameHeldSince = null;
   const started = performance.now();
+  lastFrameAt = started;
   // Pictures that load by themselves near the view hold their box from their first frame.
   setTimelineImageAutoShow(state.timeline,
     state.imageDisplayMode === "show" && inlineImagesDrawable(terminalGraphicsClient?.isSupported()),
@@ -524,7 +555,7 @@ function renderFrame(): void {
   if (ms >= SLOW_RENDER_MS) {
     debugLog("render.slow", { ms: Math.round(ms), lines: state.historyLines.length, images: Object.keys(state.timeline.inlineImages).length, rerendered });
   }
-  tracePerfFrame(ms, { lines: state.historyLines.length, rerendered });
+  tracePerfFrame(ms, { lines: state.historyLines.length, rerendered }, whenInteractiveOutputWritten);
 }
 
 /** Frames slower than this go to the debug log (a frame budget is 16 ms). */
@@ -3471,7 +3502,10 @@ async function main(): Promise<void> {
     resolvers: { whatsapp: (source) => whatsAppController.profilePictureUrl(source.ref ?? "") },
   });
   gifPlayer = new GifPlayer({
-    write: (data) => { if (terminalReady) process.stdout.write(data); },
+    // GIF bytes yield to frames: keys and scrolling go ahead of queued packets.
+    // Safe to reorder: a GIF is placed only after st has shown its frames, and
+    // its placement is removed in a frame before it is closed.
+    write: (data) => { if (terminalReady) writeTerminalBulk(data); },
     onChange: () => scheduleRender(),
     onSupportChanged: (supported) => {
       debugLog("video.support", { supported });
@@ -3603,6 +3637,7 @@ async function main(): Promise<void> {
 
 function processInput(input: string): void {
   if (!running) return;
+  tracePerfInput();
 
   const events = parseInput(input);
   // Until the saved starting state is fully restored, whatever this input
