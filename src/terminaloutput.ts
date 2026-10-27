@@ -43,7 +43,7 @@ export function terminalInteractiveBacklog(): number {
  * the terminal gets it in order, after any interactive output queued at the
  * same time. Without the writer thread, it is a normal write.
  */
-export function writeTerminalBulk(data: string, onWritten?: () => void): void {
+export function writeTerminalBulk(data: string, onWritten?: () => void, continues = false): void {
   if (!worker) {
     process.stdout.write(data);
     onWritten?.();
@@ -58,7 +58,35 @@ export function writeTerminalBulk(data: string, onWritten?: () => void): void {
   queued += size;
   queuedBulk += size;
   if (onWritten) bulkDone.push({ target: queuedBulk, callback: onWritten });
-  worker.postMessage({ bulk: data });
+  worker.postMessage({ bulk: data, continues });
+}
+
+/** Group a chunked Kitty transfer into pieces of about this size. */
+const TRANSFER_PIECE_CHARS = 32 * 1024;
+
+/**
+ * Write one chunked picture transfer (a=t,m=1 ... m=0) as background output
+ * in ~32 KiB pieces: frames without graphics commands (typing, the prompt)
+ * can reach the terminal between pieces instead of after the whole picture.
+ */
+export function writeTerminalBulkTransfer(data: string, onWritten?: () => void): void {
+  const pieces: string[] = [];
+  let start = 0;
+  while (start < data.length) {
+    let end = start + TRANSFER_PIECE_CHARS;
+    if (end >= data.length) end = data.length;
+    else {
+      // Cut only after a whole command (ESC \ ends each chunk).
+      const boundary = data.indexOf("\x1b\\", end);
+      end = boundary < 0 ? data.length : boundary + 2;
+    }
+    pieces.push(data.slice(start, end));
+    start = end;
+  }
+  pieces.forEach((piece, index) => {
+    const last = index === pieces.length - 1;
+    writeTerminalBulk(piece, last ? onWritten : undefined, !last);
+  });
 }
 
 /** Whether bulk output can complete asynchronously (the writer thread runs). */
