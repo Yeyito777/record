@@ -131,6 +131,8 @@ export function gifBytesPerSecond(stream: Pick<VideoStream, "packets" | "duratio
 
 /** Before its stream is known, a GIF is taken to cost what a transcoded one does. */
 const ASSUMED_GIF_BYTES_PER_SEC = 10 * 1024;
+/** Costs remembered for this many GIFs (beyond their sessions). */
+const REMEMBERED_COSTS = 512;
 
 export class GifPlayer {
   private supported: boolean | null = null;
@@ -155,6 +157,12 @@ export class GifPlayer {
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   /** The GIFs the last frame drew, offered again when a quiet spell ends. */
   private lastCandidates: readonly GifCandidate[] = [];
+  /**
+   * What each GIF really costs, once its stream was loaded, kept after it
+   * closes: forgotten, a closed GIF would look cheap again, be opened in place
+   * of one that does fit, and the two would swap every frame.
+   */
+  private readonly costs = new Map<string, number>();
   /** The byte budget's bucket. */
   private tokens = GIF_BURST_BYTES;
   private tokensAt: number;
@@ -247,7 +255,7 @@ export class GifPlayer {
     let cost = 0;
     for (const candidate of inView) {
       if (wanted.length >= this.maxOpen) break;
-      const rate = this.sessions.get(candidate.key)?.bytesPerSec ?? ASSUMED_GIF_BYTES_PER_SEC;
+      const rate = this.costs.get(candidate.key) ?? ASSUMED_GIF_BYTES_PER_SEC;
       if (wanted.length > 0 && cost + rate > GIF_BUDGET_BYTES_PER_SEC) continue;
       wanted.push(candidate);
       cost += rate;
@@ -348,6 +356,9 @@ export class GifPlayer {
       session.phase = "open";
       session.openedAt = this.now();
       session.bytesPerSec = gifBytesPerSecond(stream);
+      this.costs.delete(session.key);
+      this.costs.set(session.key, session.bytesPerSec);
+      if (this.costs.size > REMEMBERED_COSTS) this.costs.delete(this.costs.keys().next().value!);
       this.statsOpens += 1;
       this.write(videoOpen(id, { width: session.width, height: session.height, prebufferMs: 100, volume: 0, paused: session.paused }));
       this.options.log?.("video.open", {

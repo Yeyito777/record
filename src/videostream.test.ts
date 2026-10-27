@@ -53,7 +53,7 @@ describe.skipIf(!ffmpeg)("GIFs as H.264 streams", () => {
     const bytes = stream.packets.reduce((sum, packet) => sum + packet.data.length, 0);
     // 60 kbit/s is 7.5 KB/s; base64 and framing make it ~10 KB/s on the terminal.
     expect(bytes / 5.8).toBeLessThan(8.5 * 1024);
-    expect(Math.max(...stream.packets.map((packet) => packet.data.length))).toBeLessThan(16 * 1024);
+    expect(Math.max(...stream.packets.map((packet) => packet.data.length))).toBeLessThan(9 * 1024);
   });
 
   test("a GIF is encoded at its box's size, keeping its frame times", async () => {

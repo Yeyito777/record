@@ -155,6 +155,28 @@ describe("GIF player", () => {
     expect(playing).toEqual(["a"]);
   });
 
+  test("two GIFs as visible as each other, whose real cost does not fit, are not swapped in and out (costs are remembered)", async () => {
+    const { tty, player, reply, advance } = setup();
+    // Two posters at ~10 KB/s and two small GIFs at ~14 KB/s side by side (equal visibility):
+    // 10 + 10 + 14 is over the 32 KiB/s budget, but a GIF not opened yet is taken to cost 10.
+    const gif = (key: string, visibility: number, bytes: number) => ({ key, visibility, width: 200, height: 150, load: async () => stream(10, bytes) });
+    const view = [gif("p1", 10, 700), gif("p2", 10, 700), gif("t1", 8, 1000), gif("t2", 8, 1000)];
+    const opens = () => tty.commands.filter((command) => command.k === "o").length;
+    for (let frame = 0; frame < 40; frame++) {
+      player.update(view);
+      await flush();
+      advance(50);
+      player.pump();
+      for (const session of player["sessions"].values()) {
+        if (session.queries.length) reply(session.id, `state=playing pos=${frame * 50_000} shown=${frame + 1}`);
+      }
+    }
+    // Each opened once at most; then the two posters play.
+    expect(opens()).toBeLessThanOrEqual(4);
+    const playing = [...player["sessions"].values()].filter((session) => session.phase === "open" && !session.paused).map((session) => session.key);
+    expect(playing).toEqual(["p1", "p2"]);
+  });
+
   test("no GIF bytes while the terminal is still reading what came before", async () => {
     let backlog = 40_000;
     const tty = terminal();

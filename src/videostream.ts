@@ -54,7 +54,7 @@ const TS_PACKET = 188;
 export const GIF_MAX_SIDE = 480;
 /** Nor at more frames a second than this. */
 export const GIF_MAX_FPS = 15;
-/** Nor above this rate (the VBV buffer, twice that, bounds a keyframe to ~15 KB). */
+/** Nor above this rate (the VBV buffer, as big, bounds a keyframe to ~7.5 KB). */
 export const GIF_MAX_KBITS = 60;
 const MAX_SOURCE_SECONDS = 30;
 const FFMPEG_TIMEOUT_MS = 60_000;
@@ -137,11 +137,11 @@ export function encodeSize(sourceWidth: number, sourceHeight: number, maxWidth: 
  */
 function encoderArgs(encoders: ReadonlySet<string> | undefined): string[] {
   // One keyframe a loop (the loop starts with it), bounded by the VBV buffer.
-  const rate = [`-maxrate`, `${GIF_MAX_KBITS}k`, "-bufsize", `${GIF_MAX_KBITS * 2}k`, "-g", "600", "-keyint_min", "600", "-sc_threshold", "0"];
+  const rate = [`-maxrate`, `${GIF_MAX_KBITS}k`, "-bufsize", `${GIF_MAX_KBITS}k`, "-g", "600", "-keyint_min", "600", "-sc_threshold", "0"];
   if (process.platform === "darwin" && encoders?.has("h264_videotoolbox") && !encoders.has("libx264")) {
     return ["-c:v", "h264_videotoolbox", "-b:v", `${GIF_MAX_KBITS}k`, "-profile:v", "high", "-allow_sw", "1", ...rate];
   }
-  return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "animation", "-crf", "28", ...rate];
+  return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "animation", "-crf", "30", ...rate];
 }
 
 /**
@@ -325,7 +325,7 @@ export function deserializeVideoStream(bytes: Buffer): VideoStream | null {
 }
 
 /** Bump when streams are encoded differently. */
-const STREAM_FORMAT = 2; // 2: every GIF encoded light (480 px, 15 fps, 60 kbit/s)
+const STREAM_FORMAT = 3; // 3: every GIF encoded light (480 px, 15 fps, 60 kbit/s, crf 30, 60k VBV)
 export const VIDEO_STREAM_DISK_CACHE_MAX_BYTES = 256 * 1024 * 1024;
 
 /** Encoded GIF streams on disk (`image-cache/videos`), least recently used out past the budget. */
