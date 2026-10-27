@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./actions";
 import { AsyncWorkQueue } from "./asyncwork";
 import { visiblePanels } from "./panels";
+import { startPerfTrace, tracePerfFrame } from "./perftrace";
+import { installTerminalOutput, terminalOutputBacklog, whenTerminalOutputBelow } from "./terminaloutput";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
@@ -493,7 +495,24 @@ function scheduleRender(): void {
   }, 16);
 }
 
+/**
+ * Frames wait while the terminal is this far behind (an image or video still
+ * going through): the next frame then draws the latest state once, instead of
+ * a queue of stale frames the terminal would have to parse first.
+ */
+const FRAME_BACKLOG_LIMIT_BYTES = 64 * 1024;
+let frameWaitingForTerminal = false;
+
 function renderFrame(): void {
+  if (terminalOutputBacklog() > FRAME_BACKLOG_LIMIT_BYTES) {
+    if (frameWaitingForTerminal) return;
+    frameWaitingForTerminal = true;
+    whenTerminalOutputBelow(FRAME_BACKLOG_LIMIT_BYTES, () => {
+      frameWaitingForTerminal = false;
+      if (running) renderFrame();
+    });
+    return;
+  }
   const started = performance.now();
   // Pictures that load by themselves near the view hold their box from their first frame.
   setTimelineImageAutoShow(state.timeline,
@@ -501,15 +520,17 @@ function renderFrame(): void {
     state.inlineImageHiddenAttachmentIds);
   render(state);
   keyLatencyProbe?.frameWritten();
-  const ms = performance.now() - started;
-  if (ms >= SLOW_RENDER_MS) {
-    debugLog("render.slow", { ms: Math.round(ms), lines: state.historyLines.length, images: Object.keys(state.timeline.inlineImages).length });
-  }
   // A picture in view that was let go came back from memory or disk at once
   // (a jump landed on it): draw it in this frame rather than its empty box.
-  if (autoShowVisibleInlineImages()) render(state);
+  const rerendered = autoShowVisibleInlineImages();
+  if (rerendered) render(state);
   updateInlineVideos();
   scheduleSmoothScrollFrame();
+  const ms = performance.now() - started;
+  if (ms >= SLOW_RENDER_MS) {
+    debugLog("render.slow", { ms: Math.round(ms), lines: state.historyLines.length, images: Object.keys(state.timeline.inlineImages).length, rerendered });
+  }
+  tracePerfFrame(ms, { lines: state.historyLines.length, rerendered });
 }
 
 /** Frames slower than this go to the debug log (a frame budget is 16 ms). */
@@ -2761,6 +2782,7 @@ function openVideoViewer(attachment: DiscordMessageAttachment): void {
     }
     const video = new ViewerVideo({
       write: (data) => { if (terminalReady) writeMedia(data); },
+      backlog: terminalOutputBacklog,
       onChange: () => {
         if (viewerVideo?.video !== video) return;
         modal.video = { status: videoStatusText(video), short: videoStatusShort(video) };
@@ -3430,6 +3452,9 @@ if (savedStartingState?.focusedChannel?.guildId === WHATSAPP_GUILD_ID) {
 }
 
 async function main(): Promise<void> {
+  // The trace counts what Record hands the (non-blocking) writer.
+  installTerminalOutput();
+  startPerfTrace();
   setupTerminal();
 
   const pasteBuffer = new PasteBuffer(processInput);
@@ -3455,9 +3480,10 @@ async function main(): Promise<void> {
     resolvers: { whatsapp: (source) => whatsAppController.profilePictureUrl(source.ref ?? "") },
   });
   // Bytes written to the terminal and how long writes block (debug log, tty.stats).
-  installTtyStats((event, fields) => debugLog(event, fields));
+  installTtyStats((event, fields) => debugLog(event, fields), terminalOutputBacklog);
   gifPlayer = new GifPlayer({
     write: (data) => { if (terminalReady) writeMedia(data); },
+    backlog: terminalOutputBacklog,
     onChange: () => scheduleRender(),
     onSupportChanged: (supported) => {
       debugLog("video.support", { supported });

@@ -17,7 +17,7 @@ import {
 } from "../instagram/model";
 import { demoAnimation } from "./animations";
 import { demoJpeg } from "./whatsapp";
-import { hexColor, renderIcon, renderPicture, type Rgb } from "./png";
+import { cachedDemoImageAsync, hexColor, renderIcon, renderPicture, type Rgb } from "./png";
 
 export const DEMO_INSTAGRAM_CDN_HOST = "scontent-demo-1.cdninstagram.com";
 /** Thread ids: the long 1:1 full of shares (RECORD_DEMO_OPEN=ig-shares) and the photo group (ig-photos). */
@@ -541,7 +541,7 @@ export class DemoInstagramCdn {
       type = "image/png";
     } else {
       const colors = COLORS[(width * 7 + height) % COLORS.length]!;
-      bytes = await this.picture(`${width}x${height}`, () => demoJpeg(renderPicture(width, height, colors[0], colors[1], width + height)));
+      bytes = await this.picture(`${width}x${height}`, () => cachedDemoImageAsync(`ig-${width}x${height}`, () => demoJpeg(renderPicture(width, height, colors[0], colors[1], width + height))));
     }
     const wait = min + (hash(url.pathname) % Math.max(1, max - min)) - (Date.now() - started);
     await abortableDelay(Math.max(0, wait), signal);

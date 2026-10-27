@@ -32,7 +32,7 @@ import {
 import { demoAnimation, demoAnimationContentType, type DemoAnimationKind } from "./animations";
 import { DEMO_MEDIA_PROXY_HOSTS, demoMediaVariant, demoReleaseEmbed } from "./embeds";
 import type { DemoAnimationSpec } from "./gifs";
-import { hexColor, renderIcon, renderPicture } from "./png";
+import { cachedDemoImage, hexColor, renderIcon, renderPicture } from "./png";
 
 export const DEMO_API_HOST = "discord.com";
 export const DEMO_GATEWAY_URL = "wss://gateway.discord.gg";
@@ -282,7 +282,7 @@ export class DemoDiscordServer {
     let bytes = this.variantBytes.get(variant);
     if (!bytes) {
       const shape = imageVariant(variant);
-      bytes = renderPicture(shape.width, shape.height, shape.from, shape.to, shape.seed);
+      bytes = cachedDemoImage(`variant-${variant}`, () => renderPicture(shape.width, shape.height, shape.from, shape.to, shape.seed));
       this.variantBytes.set(variant, bytes);
     }
     return bytes;
@@ -726,7 +726,7 @@ export class DemoDiscordServer {
       const width = Number(url.searchParams.get("width")) || 0;
       const height = Number(url.searchParams.get("height")) || 0;
       const picture = width > 0 && height > 0 && width <= 4096 && height <= 4096
-        ? renderPicture(width, height, shape.from, shape.to, shape.seed)
+        ? cachedDemoImage(`variant-${variant}-${width}x${height}`, () => renderPicture(width, height, shape.from, shape.to, shape.seed))
         : this.variantPng(variant);
       bytes = url.searchParams.get("format") === "webp"
         ? demoWebp(picture, url.searchParams.get("quality") === "lossless")
