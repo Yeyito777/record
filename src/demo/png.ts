@@ -109,7 +109,7 @@ export class Canvas {
   }
 
   /** Deterministic per-pixel noise, like a photo's sensor grain. */
-  grain(seed: number, amount = 28): void {
+  grain(seed: number, amount = 3): void {
     let state = (seed * 2654435761) >>> 0 || 1;
     const pixels = this.pixels;
     for (let i = 0; i < pixels.length; i += 4) {
