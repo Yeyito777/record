@@ -3640,9 +3640,12 @@ async function main(): Promise<void> {
 
 function processInput(input: string): void {
   if (!running) return;
-  tracePerfInput();
 
   const events = parseInput(input);
+  // Latency is timed from presses, clicks and wheel steps only: a key release
+  // (kitty reports them) or a mouse move draws nothing, and timing from one
+  // would run until some later frame.
+  if (events.some((event) => event.type === "mouse" ? event.action === "press" : event.event !== "release")) tracePerfInput();
   // Until the saved starting state is fully restored, whatever this input
   // changes (sidebar toggled or moved, another chat opened) is kept by it.
   startingStateRestorer.userInput(() => {
