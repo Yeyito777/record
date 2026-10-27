@@ -3654,7 +3654,8 @@ function processInput(input: string): void {
   tracePerfInput();
 
   const events = parseInput(input);
-  if (events.length) keyLatencyProbe?.keyPressed();
+  // Presses, clicks and wheel steps (a key's release draws nothing).
+  if (events.some((event) => event.type === "mouse" ? event.action !== "motion" || event.button !== 3 : event.event !== "release")) keyLatencyProbe?.keyPressed();
   // Keys, clicks and the wheel come first: GIF bytes wait until the user is still.
   if (events.some((event) => event.type !== "mouse" || event.action !== "motion" || event.button !== 3)) gifPlayer?.noteInteraction();
   // Until the saved starting state is fully restored, whatever this input
