@@ -3654,9 +3654,12 @@ async function main(): Promise<void> {
 
 function processInput(input: string): void {
   if (!running) return;
-  tracePerfInput();
 
   const events = parseInput(input);
+  // Latency is timed from presses, clicks and wheel steps only: a key release
+  // (kitty reports them) or a mouse move draws nothing, and timing from one
+  // would run until some later frame.
+  if (events.some((event) => event.type === "mouse" ? event.action === "press" : event.event !== "release")) tracePerfInput();
   // Presses, clicks and wheel steps (a key's release draws nothing).
   if (events.some((event) => event.type === "mouse" ? event.action !== "motion" || event.button !== 3 : event.event !== "release")) keyLatencyProbe?.keyPressed();
   // Keys, clicks and the wheel come first: GIF bytes wait until the user is still.
