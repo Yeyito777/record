@@ -14,7 +14,7 @@ import { deflateSync } from "node:zlib";
  * Record's. Pictures are deterministic, so a cached one is identical.
  */
 const IMAGE_CACHE_DIR = process.env.RECORD_DEMO_IMAGE_CACHE?.trim() || null;
-const IMAGE_CACHE_VERSION = 1;
+const IMAGE_CACHE_VERSION = process.env.RECORD_DEMO_REAL_PHOTOS === "1" ? "1-grain" : 1;
 
 function imageCachePath(key: string): string | null {
   return IMAGE_CACHE_DIR ? join(IMAGE_CACHE_DIR, `v${IMAGE_CACHE_VERSION}-${key.replace(/[^A-Za-z0-9_.-]/g, "_")}`) : null;
@@ -106,6 +106,19 @@ export class Canvas {
     this.pixels[i + 1] = Math.round(g * a + this.pixels[i + 1]! * (1 - a));
     this.pixels[i + 2] = Math.round(b * a + this.pixels[i + 2]! * (1 - a));
     this.pixels[i + 3] = Math.max(this.pixels[i + 3]!, alpha);
+  }
+
+  /** Deterministic per-pixel noise, like a photo's sensor grain. */
+  grain(seed: number, amount = 28): void {
+    let state = (seed * 2654435761) >>> 0 || 1;
+    const pixels = this.pixels;
+    for (let i = 0; i < pixels.length; i += 4) {
+      state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
+      const delta = ((state >>> 0) % (amount * 2 + 1)) - amount;
+      pixels[i] = Math.max(0, Math.min(255, pixels[i]! + delta));
+      pixels[i + 1] = Math.max(0, Math.min(255, pixels[i + 1]! + delta));
+      pixels[i + 2] = Math.max(0, Math.min(255, pixels[i + 2]! + delta));
+    }
   }
 
   /** Diagonal two-colour gradient across the whole canvas. */
@@ -265,8 +278,16 @@ export function renderPicture(width: number, height: number, from: Rgb, to: Rgb,
   canvas.fillRect(0, 0, Math.max(1, short / 100), height, [255, 255, 255], 200);
   canvas.fillRect(width - Math.max(1, short / 100), 0, Math.max(1, short / 100), height, [255, 255, 255], 200);
   canvas.centeredText(`${width}x${height}`, [255, 255, 255], 0.8, 0.3);
+  if (REALISTIC_PHOTOS) canvas.grain(seed);
   return canvas.encode();
 }
+
+/**
+ * RECORD_DEMO_REAL_PHOTOS=1 gives pictures a camera-like grain. Smooth
+ * synthetic gradients compress to a fraction of a real photo, which hides
+ * how many bytes real pictures push through the terminal (performance runs).
+ */
+const REALISTIC_PHOTOS = process.env.RECORD_DEMO_REAL_PHOTOS === "1";
 
 /* 5x7 bitmap font: digits, letters and a little punctuation. */
 const FONT: Record<string, string[]> = {
