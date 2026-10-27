@@ -36,7 +36,7 @@ export interface InlineTerminalImagePlacement {
 
 interface TerminalImageSyncState {
   /** In LRU order; bytes are what the terminal holds: PNG data plus RGBA pixels. */
-  images: Map<number, { fingerprint: string; bytes: number }>;
+  images: Map<number, { fingerprint: string; bytes: number; pending?: boolean }>;
   placements: Map<string, string>;
 }
 
@@ -66,6 +66,22 @@ export interface InlineTerminalImageSyncOptions {
   maxIdleImages?: number;
   /** Bound on their charged bytes, PNG data plus RGBA pixels (default 160 MiB). */
   maxIdleBytes?: number;
+  /**
+   * Upload new image data in the background instead of inside the frame: the
+   * image is placed only once its data has reached the terminal (its box
+   * stays empty until then, as while it loads), so frames never wait behind
+   * megabytes of pictures. Images for which `foreground` is true (the viewer)
+   * are still sent with their frame.
+   */
+  background?: BackgroundImageUploads | null;
+  foreground?: (imageId: number) => boolean;
+}
+
+export interface BackgroundImageUploads {
+  /** Queue `data` behind the frames; call `written` once the terminal has it. */
+  send(data: string, written: () => void): void;
+  /** Some background data arrived: draw a frame to place it. */
+  arrived(): void;
 }
 
 const syncStates = new WeakMap<object, TerminalImageSyncState>();
@@ -181,6 +197,8 @@ export function planInlineTerminalImages(
   const desiredImageIds = new Set(placements.map((placement) => placement.image.imageId));
 
   const retransmitted = new Set<number>();
+  /** Background uploads still on their way: not placed yet. */
+  const pending = new Set<number>();
   let transmittedImages = 0;
   let transmittedBytes = 0;
   for (const image of images) {
@@ -190,9 +208,31 @@ export function planInlineTerminalImages(
     if (resident?.fingerprint === fingerprint) {
       state.images.delete(image.imageId);
       state.images.set(image.imageId, resident);
+      if (resident.pending) pending.add(image.imageId);
       continue;
     }
     const placed = [...state.placements.keys()].some((key) => key.startsWith(`${image.imageId}:`));
+    if (!placed && options.background && !options.foreground?.(image.imageId)) {
+      const background = options.background;
+      const entry = {
+        fingerprint,
+        bytes: Math.ceil((image.pngBase64.length * 3) / 4) + image.pixelWidth * image.pixelHeight * 4,
+        pending: true,
+      };
+      state.images.delete(image.imageId);
+      state.images.set(image.imageId, entry);
+      const syncState = state;
+      background.send(transmitInlinePng(image), () => {
+        // Superseded (new data, an eviction reply) uploads change nothing.
+        if (syncState.images.get(image.imageId) !== entry) return;
+        entry.pending = false;
+        background.arrived();
+      });
+      transmittedImages += 1;
+      transmittedBytes += image.pngBase64.length;
+      pending.add(image.imageId);
+      continue;
+    }
     // Replacing a placed image's data is visible, so it stays in the frame.
     (placed ? out : transmit).push(transmitInlinePng(image));
     transmittedImages += 1;
@@ -217,6 +257,7 @@ export function planInlineTerminalImages(
 
   const moved = options.movedRows;
   for (const placement of placements) {
+    if (pending.has(placement.image.imageId)) continue;
     const key = placementKey(placement);
     const fingerprint = placementFingerprint(placement);
     const placedRow = Number(state.placements.get(key)?.split(":", 1)[0]);
@@ -236,7 +277,9 @@ export function planInlineTerminalImages(
   // current placement. Large modal images are reclaimed as soon as they close.
   const maxIdleImages = options.maxIdleImages ?? MAX_IDLE_IMAGES;
   const maxIdleBytes = options.maxIdleBytes ?? MAX_IDLE_IMAGE_BYTES;
-  const idle = [...state.images].filter(([imageId]) => !desiredImageIds.has(imageId));
+  // An upload still on its way is never deleted: the delete would reach the
+  // terminal first and the data would then stay there, unaccounted for.
+  const idle = [...state.images].filter(([imageId, image]) => !desiredImageIds.has(imageId) && !image.pending);
   let idleBytes = idle.reduce((sum, [, image]) => sum + image.bytes, 0);
   let idleCount = idle.length;
   const evict = (imageId: number, bytes: number) => {

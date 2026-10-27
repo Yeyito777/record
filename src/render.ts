@@ -76,6 +76,7 @@ import { theme } from "./theme";
 import { renderTimelineLines, setTimelineRenderContext, type RenderedTimeline } from "./timeline";
 import {
   planInlineTerminalImages,
+  type BackgroundImageUploads,
   type InlineTerminalImagePlacement,
   type InlineTerminalImageUpdate,
 } from "./terminalimage";
@@ -515,6 +516,13 @@ function intersects(rect: CellRect, row: number, col: number, rows: number, colu
 const smoothMaxScroll = new WeakMap<object, number>();
 /** Each state's pane bottom and band end in its previous frame. */
 const lastPaneEdge = new WeakMap<object, string>();
+
+let inlineImageUploads: BackgroundImageUploads | null = null;
+
+/** Send chat image data in the background (non-blocking terminal output only). */
+export function setInlineImageUploads(uploads: BackgroundImageUploads | null): void {
+  inlineImageUploads = uploads;
+}
 
 export function render(state: AppState): void {
   const cols = Math.max(1, state.cols);
@@ -1051,6 +1059,9 @@ export function render(state: AppState): void {
     return placements;
   };
   const inlineImageOptions = {
+    background: inlineImageUploads,
+    // The picture the user opened is sent with its frame, not behind others.
+    foreground: (imageId: number) => viewerPlacement?.image.imageId === imageId,
     covered: (placement: InlineTerminalImagePlacement) => placement !== viewerPlacement
       && overlays.some(({ rect }) => intersects(rect, placement.row, placement.col, placement.rows, placement.columns)),
     // A repaint from scratch (a resize) may have moved or dropped placements.

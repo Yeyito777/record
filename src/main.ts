@@ -9,7 +9,7 @@ import { submitCurrentBuffer, validateAndMaybeSave, type AppEffects } from "./ac
 import { AsyncWorkQueue } from "./asyncwork";
 import { visiblePanels } from "./panels";
 import { startPerfTrace, tracePerfFrame, tracePerfInput } from "./perftrace";
-import { installTerminalOutput, terminalInteractiveBacklog, terminalOutputBacklog, whenInteractiveOutputWritten, whenTerminalOutputBelow, writeTerminalBulk } from "./terminaloutput";
+import { installTerminalOutput, terminalInteractiveBacklog, terminalOutputBacklog, whenInteractiveOutputWritten, whenTerminalOutputBelow, writeTerminalBulk, writeTerminalBulkTransfer } from "./terminaloutput";
 import { killTrackedChildProcesses, trackedChildProcessCount } from "./childprocesses";
 import { flushDataCacheSync } from "./datacache";
 import { customEmojiImages, replaceCustomEmojiTokens } from "./customemoji";
@@ -74,7 +74,7 @@ import { clearPrompt, restoreReactionDraft } from "./promptstate";
 import { beginReactionComposer } from "./reactionprompt";
 import { configuredQuickReaction, DEFAULT_QUICK_REACTION, handleQuickReactionKey, resetQuickReaction } from "./quickreactions";
 import { SYNCHRONIZED_UPDATES_QUERY, invalidateFrame, parseSynchronizedUpdatesReport } from "./frame";
-import { render } from "./render";
+import { render, setInlineImageUploads } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
   adjustSelectedVoiceMemberVolume,
@@ -3485,7 +3485,10 @@ if (savedStartingState?.focusedChannel?.guildId === WHATSAPP_GUILD_ID) {
 
 async function main(): Promise<void> {
   // The trace counts what Record hands the (non-blocking) writer.
-  installTerminalOutput();
+  if (installTerminalOutput()) {
+    // Picture data goes behind frames; each is placed once the terminal has it.
+    setInlineImageUploads({ send: (data, written) => writeTerminalBulkTransfer(data, written), arrived: () => scheduleRender() });
+  }
   startPerfTrace();
   setupTerminal();
 
