@@ -73,7 +73,7 @@ import { clearPrompt, restoreReactionDraft } from "./promptstate";
 import { beginReactionComposer } from "./reactionprompt";
 import { configuredQuickReaction, DEFAULT_QUICK_REACTION, handleQuickReactionKey, resetQuickReaction } from "./quickreactions";
 import { SYNCHRONIZED_UPDATES_QUERY, invalidateFrame, parseSynchronizedUpdatesReport } from "./frame";
-import { render } from "./render";
+import { render, setInlineImageUploads } from "./render";
 import {
   ackCurrentChannelIfAtBottom,
   adjustSelectedVoiceMemberVolume,
@@ -3475,7 +3475,10 @@ if (savedStartingState?.focusedChannel?.guildId === WHATSAPP_GUILD_ID) {
 
 async function main(): Promise<void> {
   // The trace counts what Record hands the (non-blocking) writer.
-  installTerminalOutput();
+  if (installTerminalOutput()) {
+    // Picture data goes behind frames; each is placed once the terminal has it.
+    setInlineImageUploads({ send: (data, written) => writeTerminalBulk(data, written), arrived: () => scheduleRender() });
+  }
   startPerfTrace();
   setupTerminal();
 

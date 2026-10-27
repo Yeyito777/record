@@ -15,7 +15,7 @@ declare const self: Worker;
 
 type Message = { init: SharedArrayBuffer } | { bulk: string | Uint8Array } | { dropBulk: true } | string | Uint8Array;
 
-/** [0] bytes done (written or dropped), [1] interactive bytes done. */
+/** [0] bytes done (written or dropped), [1] interactive bytes done, [2] bulk bytes done. */
 let counters: BigInt64Array | null = null;
 const interactive: Buffer[] = [];
 const bulk: Buffer[] = [];
@@ -28,7 +28,7 @@ function toBuffer(data: string | Uint8Array): Buffer {
 function done(bytes: number, isInteractive: boolean): void {
   if (!counters) return;
   Atomics.add(counters, 0, BigInt(bytes));
-  if (isInteractive) Atomics.add(counters, 1, BigInt(bytes));
+  Atomics.add(counters, isInteractive ? 1 : 2, BigInt(bytes));
   Atomics.notify(counters, 0);
 }
 

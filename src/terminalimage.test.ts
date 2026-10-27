@@ -282,3 +282,60 @@ describe("inline terminal graphics", () => {
     expect(parseTerminalCellSize("\x1b[4;900;1600t")).toBeNull();
   });
 });
+
+describe("background image uploads", () => {
+  function uploads() {
+    const sent: Array<{ data: string; written: () => void }> = [];
+    let arrivals = 0;
+    return {
+      sent,
+      arrivals: () => arrivals,
+      background: { send: (data: string, written: () => void) => { sent.push({ data, written }); }, arrived: () => { arrivals += 1; } },
+    };
+  }
+
+  test("an image is placed only after its data reached the terminal, and its data never rides in the frame", () => {
+    const owner = {};
+    const ready = image();
+    const placement = { image: ready, placementId: 1, row: 2, col: 3, columns: 10, rows: 5 };
+    const u = uploads();
+    const first = planInlineTerminalImages(owner, [ready], [placement], { background: u.background });
+    expect(first.transmit).toBe("");
+    expect(first.update).not.toContain("a=p");
+    expect(u.sent).toHaveLength(1);
+    expect(u.sent[0]!.data).toContain("a=t");
+    // Frames while it travels: nothing placed, nothing sent twice.
+    const again = planInlineTerminalImages(owner, [ready], [placement], { background: u.background });
+    expect(again.update).not.toContain("a=p");
+    expect(u.sent).toHaveLength(1);
+    u.sent[0]!.written();
+    expect(u.arrivals()).toBe(1);
+    const placed = planInlineTerminalImages(owner, [ready], [placement], { background: u.background });
+    expect(placed.update).toContain("a=p");
+    expect(placed.update).not.toContain("a=t");
+  });
+
+  test("the viewer's picture goes with its frame", () => {
+    const owner = {};
+    const ready = image();
+    const placement = { image: ready, placementId: 1, row: 2, col: 3, columns: 10, rows: 5 };
+    const u = uploads();
+    const plan = planInlineTerminalImages(owner, [ready], [placement], { background: u.background, foreground: (id) => id === ready.imageId });
+    expect(u.sent).toHaveLength(0);
+    expect(plan.transmit + plan.update).toContain("a=t");
+    expect(plan.update).toContain("a=p");
+  });
+
+  test("an upload in flight is never deleted, even when it scrolls away and idle images are pruned", () => {
+    const owner = {};
+    const ready = image();
+    const placement = { image: ready, placementId: 1, row: 2, col: 3, columns: 10, rows: 5 };
+    const u = uploads();
+    planInlineTerminalImages(owner, [ready], [placement], { background: u.background });
+    const away = planInlineTerminalImages(owner, [], [], { background: u.background, maxIdleImages: 0, maxIdleBytes: 0 });
+    expect(away.update).not.toContain(`i=${ready.imageId}`);
+    u.sent[0]!.written();
+    const pruned = planInlineTerminalImages(owner, [], [], { background: u.background, maxIdleImages: 0, maxIdleBytes: 0 });
+    expect(pruned.update).toContain(`a=d,d=I,i=${ready.imageId}`);
+  });
+});
