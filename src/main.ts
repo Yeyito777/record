@@ -28,6 +28,7 @@ import {
 } from "./editor";
 import {
   ensureHistoryCursorVisible,
+  enterHistoryShiftJkUp,
   handleHistoryVimKey,
   jumpHistoryCursorToMessage,
   jumpHistoryCursorToReplyTarget,
@@ -57,7 +58,7 @@ import { parseInput, PasteBuffer, type KeyEvent, type MouseEvent } from "./input
 import { handleMouseEvent } from "./mouse";
 import { TerminalClipboardClient, TerminalControlBuffer } from "./terminalclipboard";
 import { TerminalGraphicsClient } from "./terminalgraphics";
-import { resolveAction, resolveNavigationAction } from "./keybinds";
+import { resolveAction, shiftJkRoute, resolveNavigationAction } from "./keybinds";
 import {
   jumpMemberListSelectionToEdge,
   jumpMemberListSelectionToVisibleEdge,
@@ -2038,6 +2039,18 @@ function startReplyToSelectedHistoryMessage(mention = true): void {
   scheduleRender();
 }
 
+function enterHistoryFromPromptShiftK(): void {
+  // A prompt visual selection ends; the history starts in normal mode.
+  state.editor.mode = "normal";
+  focusHistory(state);
+  enterHistoryShiftJkUp(state, timelinePageSize());
+  state.historyCursorPendingVisibleBottom = false;
+  state.historyVisualAnchor = { ...state.historyCursor };
+  maybeLoadOlderHistory();
+  syncPromptAutocomplete();
+  scheduleRender();
+}
+
 function toggleHistoryFocus(): void {
   if (state.panelFocus === "chat" && state.chatFocus === "history") {
     focusPrompt(state);
@@ -2140,7 +2153,18 @@ function handleGlobalAction(key: KeyEvent): boolean {
       return true;
     case "sidebar_next":
     case "sidebar_prev": {
-      if (isPromptTyping()) return false;
+      const route = shiftJkRoute(action, {
+        panelFocus: state.panelFocus,
+        chatFocus: state.chatFocus,
+        insertMode: state.editor.mode === "insert",
+        promptPending: editorHasPendingInput(),
+      });
+      if (route === "pass") return false;
+      if (route === "ignore") return true;
+      if (route === "enter_history") {
+        enterHistoryFromPromptShiftK();
+        return true;
+      }
       if (!state.sidebar.open) state.sidebar.open = true;
       focusSidebar(state);
       moveSidebarSelection(state.sidebar, state.channelList.channels, action === "sidebar_next" ? 1 : -1, sidebarVisibilityOptions());
@@ -2637,6 +2661,9 @@ function handleSidebarFocused(key: KeyEvent): boolean {
       return true;
     case "nav_move_guild_down":
       moveSelectedGuildOrder(state, { scheduleRender }, "down");
+      return true;
+    case "nav_move_to_top":
+      moveSelectedGuildOrder(state, { scheduleRender }, "top");
       return true;
     case "nav_toggle_conversation_pin":
       toggleSelectedPrivateConversationPin(state, { scheduleRender });

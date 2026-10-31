@@ -253,13 +253,31 @@ export function scrollHistoryViewportSticky(state: AppState, dir: number, visibl
   setHistoryViewStart(state, next.viewStart);
 }
 
-function charLeft(cursor: HistoryCursor, lines: string[]): HistoryCursor {
+/**
+ * h: one character left. At the start of a screen row that continues a
+ * wrapped line (wrapContinuation), it goes on to the end of the row above, like
+ * Vim moving through one long line; at a real line start it stays.
+ */
+function charLeft(cursor: HistoryCursor, lines: string[], wrapContinuation?: boolean[]): HistoryCursor {
   const { start } = contentBounds(stripAnsi(lines[cursor.row] ?? ""));
+  if (cursor.col <= start && wrapContinuation?.[cursor.row] && cursor.row > 0) {
+    const { end } = contentBounds(stripAnsi(lines[cursor.row - 1] ?? ""));
+    return { row: cursor.row - 1, col: end };
+  }
   return { row: cursor.row, col: Math.max(start, cursor.col - 1) };
 }
 
-function charRight(cursor: HistoryCursor, lines: string[]): HistoryCursor {
+/**
+ * l: one character right. At the end of a screen row whose line wraps onto the
+ * next row (wrapContinuation), it goes on to the start of that row; at a real
+ * line end it stays.
+ */
+function charRight(cursor: HistoryCursor, lines: string[], wrapContinuation?: boolean[]): HistoryCursor {
   const { end } = contentBounds(stripAnsi(lines[cursor.row] ?? ""));
+  if (cursor.col >= end && wrapContinuation?.[cursor.row + 1] && cursor.row + 1 < lines.length) {
+    const { start } = contentBounds(stripAnsi(lines[cursor.row + 1] ?? ""));
+    return { row: cursor.row + 1, col: start };
+  }
   return { row: cursor.row, col: Math.min(end, cursor.col + 1) };
 }
 
@@ -518,6 +536,36 @@ function moveHistoryLine(state: AppState, direction: -1 | 1): void {
     ? lineUp(state.historyCursor, state.historyLines, desiredCol)
     : lineDown(state.historyCursor, state.historyLines, desiredCol);
   state.historyCurswant = desiredCol;
+}
+
+/** Shift+J/K's rows: a quarter of Ctrl+U/Ctrl+D's floor(height / 2) (an eighth of a page), at least 1. */
+export function shiftJkRows(visibleRows: number): number {
+  return Math.max(1, Math.floor(Math.floor(visibleRows / 2) / 4));
+}
+
+/**
+ * Shift+K / Shift+J: the cursor moves shiftJkRows, keeping its column like
+ * j/k. Like that many j/k presses, the view stays put while the cursor is
+ * inside it and scrolls just enough to follow it past the top or bottom edge.
+ * `dir`: positive = up, negative = down.
+ */
+function moveHistoryShiftJk(state: AppState, dir: number, visibleRows: number): void {
+  const desiredCol = state.historyCurswant ?? state.historyCursor.col;
+  const last = Math.max(0, state.historyLines.length - 1);
+  const row = Math.max(0, Math.min(last, state.historyCursor.row - dir * shiftJkRows(visibleRows)));
+  state.historyCursor = { row, col: clampHistoryCol(desiredCol, state.historyLines, row) };
+  state.historyCurswant = desiredCol;
+}
+
+/**
+ * Shift+K from the prompt: into the history with the cursor already one
+ * Shift+K up from the visible bottom row.
+ */
+export function enterHistoryShiftJkUp(state: AppState, visibleRows: number): void {
+  placeHistoryCursorAtVisibleBottom(state, visibleRows);
+  if (state.historyLines.length === 0) return;
+  moveHistoryShiftJk(state, 1, visibleRows);
+  ensureHistoryCursorVisible(state, visibleRows);
 }
 
 function resetHistoryPending(state: AppState): void {
@@ -826,7 +874,7 @@ function yankHistoryTextObject(state: AppState, modifier: "i" | "a", key: string
   return true;
 }
 
-function applyMotion(name: string, state: AppState): boolean {
+function applyMotion(name: string, state: AppState, visibleRows: number): boolean {
   const lines = state.historyLines;
   const wrapContinuation = state.historyWrapContinuation;
   const bounds = state.historyMessageBounds;
@@ -834,11 +882,11 @@ function applyMotion(name: string, state: AppState): boolean {
 
   switch (name) {
     case "char_left":
-      state.historyCursor = charLeft(cursor, lines);
+      state.historyCursor = charLeft(cursor, lines, wrapContinuation);
       resetHistoryCurswant(state);
       return true;
     case "char_right":
-      state.historyCursor = charRight(cursor, lines);
+      state.historyCursor = charRight(cursor, lines, wrapContinuation);
       resetHistoryCurswant(state);
       return true;
     case "line_up":
@@ -846,6 +894,12 @@ function applyMotion(name: string, state: AppState): boolean {
       return true;
     case "line_down":
       moveHistoryLine(state, 1);
+      return true;
+    case "shift_jk_up":
+      moveHistoryShiftJk(state, 1, visibleRows);
+      return true;
+    case "shift_jk_down":
+      moveHistoryShiftJk(state, -1, visibleRows);
       return true;
     case "word_forward":
       state.historyCursor = wordForward(cursor, lines);
@@ -905,6 +959,8 @@ const HISTORY_KEYMAP: Record<string, string> = {
   l: "char_right",
   j: "line_down",
   k: "line_up",
+  J: "shift_jk_down",
+  K: "shift_jk_up",
   w: "word_forward",
   b: "word_backward",
   e: "word_end",
@@ -964,13 +1020,13 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
   }
 
   if (key.type === "left") {
-    state.historyCursor = charLeft(state.historyCursor, lines);
+    state.historyCursor = charLeft(state.historyCursor, lines, state.historyWrapContinuation);
     resetHistoryCurswant(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }
   if (key.type === "right") {
-    state.historyCursor = charRight(state.historyCursor, lines);
+    state.historyCursor = charRight(state.historyCursor, lines, state.historyWrapContinuation);
     resetHistoryCurswant(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
@@ -1082,7 +1138,7 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
 
   const pending = state.editor.pendingKeys + key.char;
   if (HISTORY_KEYMAP[pending]) {
-    applyMotion(HISTORY_KEYMAP[pending], state);
+    applyMotion(HISTORY_KEYMAP[pending], state, visibleRows);
     resetHistoryPending(state);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
@@ -1097,7 +1153,7 @@ export function handleHistoryVimKey(state: AppState, key: KeyEvent, visibleRows:
   resetHistoryPending(state);
   const single = key.char;
   if (HISTORY_KEYMAP[single]) {
-    applyMotion(HISTORY_KEYMAP[single], state);
+    applyMotion(HISTORY_KEYMAP[single], state, visibleRows);
     ensureHistoryCursorVisible(state, visibleRows);
     return true;
   }

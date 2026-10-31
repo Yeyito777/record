@@ -5855,7 +5855,7 @@ export function toggleSelectedGuildMute(state: AppState, effects: SessionEffects
   });
 }
 
-export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects, direction: "up" | "down"): void {
+export function moveSelectedGuildOrder(state: AppState, effects: SessionEffects, direction: "up" | "down" | "top"): void {
   const selected = getSelectedSidebarEntry(state.sidebar, state.channelList.channels, {
     showHiddenChannels: state.showHiddenChannels,
     currentUserId: state.auth.user?.id ?? null,
