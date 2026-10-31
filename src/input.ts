@@ -27,6 +27,7 @@ export interface KeyEvent {
     | "ctrl-c"
     | "ctrl-d"
     | "ctrl-e"
+    | "ctrl-shift-e"
     | "ctrl-f"
     | "ctrl-j"
     | "ctrl-k"
@@ -113,6 +114,7 @@ const CSI_U_MAP: Record<string, KeyEvent["type"]> = {
   "99;5": "ctrl-c",
   "100;5": "ctrl-d",
   "101;5": "ctrl-e",
+  "101;6": "ctrl-shift-e", // only distinguishable via CSI u (st sends it)
   "102;5": "ctrl-f",
   "106;5": "ctrl-j",
   "107;5": "ctrl-k",
@@ -159,6 +161,7 @@ function csiUKeyType(keyCode: number, modifiers: number): KeyEvent["type"] | nul
   if (keyCode === 9 && modifiers === 2) return "backtab";
   if ((keyCode === 127 || keyCode === 8) && (modifiers === 1 || modifiers === 2)) return "backspace";
   if (keyCode === 27 && modifiers === 1) return "escape";
+  if (keyCode === 101 && modifiers === 6) return "ctrl-shift-e";
   if (modifiers === 5) {
     switch (keyCode) {
       case 98: return "ctrl-b";

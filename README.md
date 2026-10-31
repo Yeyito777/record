@@ -39,7 +39,10 @@ Controls:
 - `/react <emoji>`: add a reaction to the message selected in history (WhatsApp replaces your previous reaction); accepts Unicode, `:shortcodes:`, and Discord custom emoji via autocomplete. The prompt shows the captured target; `Ctrl+Q` cancels
 - `/unreact <emoji>`: remove your reaction; on WhatsApp, `/unreact` alone removes your current reaction
 - Reactions appear immediately, roll back on failure, and keep the last message's reaction row visible if you were already at the bottom
-- `Shift+J` / `Shift+K`: jump the sidebar selection up/down from non-typing contexts
+- `Shift+J` / `Shift+K` in history (normal and visual modes): move the cursor down/up an eighth of the view (a quarter of `Ctrl+D`/`Ctrl+U`'s half page, at least one row), keeping its column; like that many `j`/`k`, the view stays put until the cursor reaches its edge and then scrolls just enough to follow
+- `Shift+K` in the prompt (normal mode): focus history with the cursor already one `Shift+K` up from the bottom row; `Shift+J` does nothing there
+- `Shift+J` / `Shift+K` in the sidebar or member list: move the sidebar selection down/up
+- `h` / `l` in history continue across a wrapped line: at the edge of a screen row they go on to the row it wraps onto, while real line starts and ends still stop
 - `j` / `k` or arrow keys: move in the focused pane
 - `Enter` in the sidebar: expand/collapse servers, categories and server folders, or open text channels (see [Server folders](#server-folders))
 - `/arrows hide|show`: hide (default) or show the sidebar's `▸`/`▾` arrows; the choice persists
@@ -63,7 +66,7 @@ Controls:
 - `m` on a server, category, channel, or voice member: toggle mute directly
 - Direct Messages, WhatsApp and Instagram list unpinned chats by recent activity, newest first, like Discord: a new message (received, sent here or from another device) or a newly opened DM moves its chat to the top live; edits, reactions and typing don't, and muted chats move too. The sidebar cursor stays on the same chat and the list doesn't scroll unless that chat would leave the screen
 - `p` on a Direct Message, WhatsApp or Instagram chat: pin/unpin it. Pinned chats sit above the rest in your own order (saved per account in `private-channel-layout.json`)
-- `e` / `Shift+E` on a pinned chat: move it up/down among the pinned ones. On an unpinned chat they only show that unpinned chats follow recent activity
+- `e` / `Shift+E` on a pinned chat: move it up/down among the pinned ones; `Ctrl+Shift+E` moves it to the top of them. On an unpinned chat they only show that unpinned chats follow recent activity
 - `h` / `l` on a voice member's Volume action: lower/raise that user's playback volume by 10%; the per-user setting persists across sessions
 - `-` / `+` / `=` on a selected voice member: lower/raise that user's playback volume by 10% directly
 - `i`, `a`, `I`, `A`: enter insert mode for the prompt
@@ -298,8 +301,11 @@ is saved with the layout.
   folder there (with a `v` visual block, the block moves into it), `F` moves
   the selection to a folder (`..` is that folder's parent, `/` the top level),
   `<` moves it out to the parent, `e` / `Shift+E` reorder it among its
-  siblings. `r` renames and `x` unwraps the selected folder. A visual block
-  that covers a folder and rows inside it moves the folder only.
+  siblings and `Ctrl+Shift+E` moves it to the top of them (`CSI 101;6u`, which
+  st sends). When rows leave the view (moved into a closed folder), the cursor
+  takes the row that was below them in the same folder, or the row above when
+  they were the last. `r` renames and `x` unwraps the selected folder. A visual
+  block that covers a folder and rows inside it moves the folder only.
 - `/folders navigate` switches to the older view where opening a folder shows
   only its contents (with a `..` row); `/folders tree` switches back. The
   choice is saved in `config.json` (`"sidebar": {"folders": ...}`).

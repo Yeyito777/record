@@ -36,6 +36,7 @@ export type Action =
   | "nav_voice_volume_down"
   | "nav_move_guild_up"
   | "nav_move_guild_down"
+  | "nav_move_to_top"
   | "nav_toggle_conversation_pin"
   | "nav_top"
   | "nav_bottom"
@@ -77,6 +78,7 @@ const GLOBAL_CHAR_BINDS: Record<string, Action> = {
 };
 
 const NAV_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
+  "ctrl-shift-e": "nav_move_to_top",
   "enter": "nav_select",
   "shift-enter": "nav_open_text",
   "up": "nav_up",
@@ -158,4 +160,28 @@ export function resolveNavigationAction(key: KeyEvent, pendingKeys = ""): Naviga
 
   const action = resolveAction(key, "navigation");
   return { action, pendingKeys: "", handled: action !== null };
+}
+
+export interface ShiftJkFocus {
+  panelFocus: "chat" | "sidebar" | "memberlist";
+  chatFocus: "prompt" | "history";
+  insertMode: boolean;
+  /** The prompt has a find, operator, count or prefix waiting (fK). */
+  promptPending: boolean;
+}
+
+/**
+ * What Shift+J/K (sidebar_next/sidebar_prev) do from where focus is: typed
+ * characters in insert mode or after a pending prompt find ("pass" to the
+ * focused pane); the history's own cursor motion ("pass" as well); from the
+ * prompt Shift+K enters the history and Shift+J does nothing; elsewhere they
+ * move the sidebar selection.
+ */
+export function shiftJkRoute(action: "sidebar_next" | "sidebar_prev", focus: ShiftJkFocus): "pass" | "enter_history" | "ignore" | "sidebar" {
+  if (focus.panelFocus === "chat") {
+    if (focus.chatFocus === "history") return "pass";
+    if (focus.insertMode || focus.promptPending) return "pass";
+    return action === "sidebar_prev" ? "enter_history" : "ignore";
+  }
+  return "sidebar";
 }

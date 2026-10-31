@@ -765,6 +765,23 @@ export function selectedSidebarItems(sidebar: SidebarState, channels: DiscordCha
   return outermostSelectedItems(sidebar, entries.slice(start, end + 1).map((entry) => entry.item as SidebarItemRef));
 }
 
+/** Whether a row leaves the view with a removed folder (listed inside it in the tree view or search). */
+function leavesWithRemovedFolder(sidebar: SidebarState, item: SidebarSelectableItem, folderIds: Set<string>): boolean {
+  if (folderIds.size === 0) return false;
+  if (item.type === "folder") return folderIds.has(item.id);
+  if (item.type !== "guild") return false;
+  const folderId = isFixedTopLevelGuildId(item.id) ? null : guildPlacement(sidebar, item.id).folderId;
+  return Boolean(folderId && folderIds.has(folderId));
+}
+
+/**
+ * Where the cursor goes when the selected rows leave the view. Like vim's
+ * `dd`, it stays in the removed row's slot: the row that was directly below
+ * the removed block. Pinned and unpinned rows are separate sections, as is each
+ * folder level in the tree view: when the block was the last of its section,
+ * the row above it instead. Only when the block emptied its section does the
+ * cursor cross into another, then too preferring the row above.
+ */
 function nextItemAfterRemovingItems(
   sidebar: SidebarState,
   channels: DiscordChannel[],
@@ -772,18 +789,38 @@ function nextItemAfterRemovingItems(
   options: SidebarVisibilityOptions = {},
 ): SidebarSelectableItem | null {
   const removedKeys = new Set(items.map((item) => sidebarItemKey(item)));
+  const treeView = isTreeFolderView(sidebar);
   const rowsBefore = buildSidebarEntries(sidebar, channels, 0, new Set(), "⋯", new Map(), new Map(), options)
     .filter((entry): entry is SidebarEntry & { item: Exclude<SidebarSelectableItem, { type: "channel" }> } => (
       Boolean(entry.item) && entry.item?.type !== "channel"
-    ));
-  const removedIndices = rowsBefore
-    .map((entry, index) => removedKeys.has(sidebarItemKey(entry.item)) ? index : -1)
-    .filter((index) => index !== -1);
-  const rowsAfter = rowsBefore.filter((entry) => !removedKeys.has(sidebarItemKey(entry.item)));
-  if (rowsAfter.length === 0) return null;
-  const removedIndex = removedIndices.length === 0 ? 0 : Math.min(...removedIndices);
-  const nextIndex = Math.min(removedIndex, rowsAfter.length - 1);
-  return rowsAfter[nextIndex]?.item ?? null;
+    ))
+    .map((entry) => ({
+      item: entry.item,
+      pinned: entry.item.type === "up" ? null : itemPinned(sidebar, entry.item) ?? null,
+      container: treeView ? sidebarItemContainer(sidebar, entry.item) : null,
+    }));
+  const firstRemovedIndex = rowsBefore.findIndex((row) => removedKeys.has(sidebarItemKey(row.item)));
+  if (firstRemovedIndex === -1) return rowsBefore.find((row) => !removedKeys.has(sidebarItemKey(row.item)))?.item ?? null;
+
+  const removed = rowsBefore[firstRemovedIndex]!;
+  // A removed folder takes the rows listed inside it along.
+  const goneFolders = new Set<string>();
+  for (const item of items) {
+    if (item.type === "folder") for (const id of descendantFolderIds(sidebar, item.id)) goneFolders.add(id);
+  }
+  const stays = (row: (typeof rowsBefore)[number]): boolean => (
+    !removedKeys.has(sidebarItemKey(row.item)) && !leavesWithRemovedFolder(sidebar, row.item, goneFolders)
+  );
+  const rowsAbove = rowsBefore.slice(0, firstRemovedIndex);
+  const rowsBelow = rowsBefore.slice(firstRemovedIndex + 1).filter(stays);
+  const sameSection = (row: (typeof rowsBefore)[number]): boolean => (
+    row.pinned === removed.pinned && row.container === removed.container
+  );
+  return rowsBelow.find(sameSection)?.item
+    ?? rowsAbove.findLast(sameSection)?.item
+    ?? rowsAbove[rowsAbove.length - 1]?.item
+    ?? rowsBelow[0]?.item
+    ?? null;
 }
 
 function requestFocusAfterMovingItemsOutOfView(
@@ -868,10 +905,11 @@ function moveSidebarItems(
   return true;
 }
 
+/** e / Shift+E move the selection one row among its siblings; Ctrl+Shift+E to the top of them. */
 export function moveSelectedSidebarItem(
   sidebar: SidebarState,
   channels: DiscordChannel[],
-  direction: "up" | "down",
+  direction: "up" | "down" | "top",
   options: SidebarVisibilityOptions = {},
 ): boolean {
   const items = selectedSidebarItems(sidebar, channels, options);
@@ -887,7 +925,11 @@ export function moveSelectedSidebarItem(
   if (indices.length !== items.length) return false;
   const first = Math.min(...indices);
   const last = Math.max(...indices);
-  if (direction === "up") {
+  if (direction === "top") {
+    if (first <= 0) return false;
+    const block = siblings.splice(first, items.length);
+    siblings.unshift(...block);
+  } else if (direction === "up") {
     if (first <= 0) return false;
     const block = siblings.splice(first, items.length);
     siblings.splice(first - 1, 0, ...block);
@@ -999,11 +1041,11 @@ function focusPrivateConversationAfterMutation(
   if (nextIndex >= 0) sidebar.selectedIndex = nextIndex;
 }
 
-/** Move a pinned DM/WhatsApp/Instagram conversation by one row among the pinned ones. */
+/** Move a pinned DM/WhatsApp/Instagram conversation by one row among the pinned ones, or to the top of them. */
 export function moveSelectedPrivateConversation(
   sidebar: SidebarState,
   channels: DiscordChannel[],
-  direction: "up" | "down",
+  direction: "up" | "down" | "top",
   options: SidebarVisibilityOptions = {},
 ): string | null {
   const selected = selectedPrivateConversationEntry(sidebar, channels, options);
@@ -1025,17 +1067,17 @@ export function moveSelectedPrivateConversation(
     effectiveChannelPlacement(sidebar, selected.guildId, channel, index, ordered).pinned === selectedPinned
   ));
   const fromIndex = siblings.findIndex((channel) => channel.id === selected.id);
-  const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
-  if (fromIndex < 0 || toIndex < 0 || toIndex >= siblings.length) return null;
+  const toIndex = direction === "top" ? 0 : direction === "up" ? fromIndex - 1 : fromIndex + 1;
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= siblings.length || toIndex === fromIndex) return null;
 
   materializePrivateConversationPlacements(sidebar, channels, selected.guildId);
   const placements = sidebar.channelPlacementsByGuildId[selected.guildId] ?? {};
-  const selectedPlacement = placements[selected.id];
-  const target = siblings[toIndex]!;
-  if (!selectedPlacement || !placements[target.id]) return null;
-  const selectedOrder = selectedPlacement.sortOrder;
-  selectedPlacement.sortOrder = placements[target.id]!.sortOrder;
-  placements[target.id]!.sortOrder = selectedOrder;
+  if (siblings.some((channel) => !placements[channel.id])) return null;
+  // The pinned chats keep their sort orders; the moved one takes its new slot.
+  const orders = siblings.map((channel) => placements[channel.id]!.sortOrder);
+  const reordered = siblings.slice();
+  reordered.splice(toIndex, 0, ...reordered.splice(fromIndex, 1));
+  reordered.forEach((channel, index) => { placements[channel.id]!.sortOrder = orders[index]!; });
   focusPrivateConversationAfterMutation(sidebar, channels, selected.guildId, selected.id, options);
   return selected.guildId;
 }
