@@ -333,8 +333,18 @@ export function createLiveBackend(options: { authDirectory: string }): WaBackend
         : await backend.recoverMediaMessage(message, anchor);
       return downloadWhatsAppMediaToFile(backend.getSocket(), source, path);
     },
-    async profilePicture(jid, path) {
-      const url = await fetchWhatsAppProfilePictureUrl(socket(), jid);
+    async profilePicture(jid, path, full = false) {
+      // The full picture as WhatsApp Web asks for it on a contact's page.
+      const url = full
+        ? await socket().profilePictureUrl(jid, "image", 10_000).then(
+          (value) => (typeof value === "string" && value.startsWith("https://") ? value : null),
+          (error) => {
+            const code = (error as { data?: unknown }).data;
+            if (code === 404 || code === 401) return null;
+            throw error;
+          },
+        )
+        : await fetchWhatsAppProfilePictureUrl(socket(), jid);
       if (!url) return false;
       await downloadUrl(url, path, { maxBytes: PICTURE_MAX_BYTES, timeoutMs: 20_000 });
       return true;

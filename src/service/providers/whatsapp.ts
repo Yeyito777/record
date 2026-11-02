@@ -975,7 +975,7 @@ export class WhatsAppProvider implements Provider {
 
   async fetchMedia(ref: string, _max: number | null) {
     const parsed = parseRef(ref);
-    if (parsed.kind === "avatar") return this.fetchPicture(this.canonical(parsed.jid));
+    if (parsed.kind === "avatar") return this.fetchPicture(this.canonical(parsed.jid), (_max ?? 0) > 200);
     const jid = this.canonical(parsed.jid);
     const status = jid === STATUS_JID;
     if (!status && !this.store.chats.has(jid)) throw new BridgeError("not_found", "no such media");
@@ -1003,16 +1003,17 @@ export class WhatsAppProvider implements Provider {
     });
   }
 
-  private fetchPicture(jid: string) {
+  /** A profile picture: the preview, or (`full`: a contact's page) the whole one. */
+  private fetchPicture(jid: string, full = false) {
     if (this.pictureKnownAbsent(jid)) return Promise.reject(new BridgeError("not_found", "no picture"));
     const week = Math.floor(Date.now() / PICTURE_MAX_AGE_MS);
-    return this.host.media.fetch(`wa:a:${jid}:${week}`, "image/jpeg", (path) => this.queuePicture(async () => {
+    return this.host.media.fetch(`wa:a:${jid}:${week}${full ? ":full" : ""}`, "image/jpeg", (path) => this.queuePicture(async () => {
       if (!this.connected) throw new BridgeError("unavailable", "WhatsApp is not connected");
       const wait = this.picturePausedUntil - Date.now();
       if (wait > 0) throw new BridgeError("rate_limited", "profile pictures are paused", { retry_after_ms: wait });
       let found: boolean;
       try {
-        found = await this.backend.profilePicture(jid, path);
+        found = await this.backend.profilePicture(jid, path, full);
       } catch (error) {
         const code = (error as { data?: unknown })?.data;
         if (code === 429) {
@@ -1154,6 +1155,23 @@ export class WhatsAppProvider implements Provider {
           for (const id of ids) if (this.store.statuses.has(id)) this.store.statusSeen.add(id);
           this.store.changedStatuses();
           return {};
+        },
+      },
+      /** A chat's photos and videos, newest first (the contact page's grid). */
+      "whatsapp.chat_media": {
+        run: async (args) => {
+          const jid = this.chatFor(String(args.chat ?? ""));
+          const limit = Math.max(1, Math.min(200, Number(args.limit) || 60));
+          const all = this.store.messages(jid).filter((message) =>
+            message.content.kind === "media" && !message.x?.deleted && !message.content.viewOnce
+            && (message.content.mediaKind === "image" || message.content.mediaKind === "video"));
+          let end = all.length;
+          if (typeof args.before === "string") {
+            const at = all.findIndex((message) => message.id === args.before);
+            if (at >= 0) end = at;
+          }
+          const page = all.slice(Math.max(0, end - limit), end).reverse();
+          return { messages: page.map((message) => this.wireMessage(jid, message)), more: end - limit > 0 };
         },
       },
       /** What the chat header and the contact page show. */

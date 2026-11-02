@@ -528,7 +528,7 @@ export function createFixturesBackend(options: { anchor?: number; signedOut?: bo
       writeFileSync(path, bytes, { mode: 0o600 });
       return { path, sizeBytes: bytes.length };
     },
-    async profilePicture(jid: string, path: string) {
+    async profilePicture(jid: string, path: string, _full?: boolean) {
       const person = fixture.people.find((candidate) => candidate.jid === jid);
       const chat = byJid.get(jid);
       if ((person && !person.picture) || (!person && !chat?.group)) return false;

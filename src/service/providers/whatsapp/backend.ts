@@ -50,8 +50,8 @@ export interface WaBackend {
   /** On-demand history before `key` (the request id the history event carries). */
   fetchHistory(count: number, key: WhatsAppMessageKey, timestampMs: number): Promise<string>;
   downloadMedia(message: WhatsAppMessage, path: string, anchor?: WhatsAppMediaRecoveryAnchor): Promise<unknown>;
-  /** Writes jid's profile picture (preview size) to `path`; false when it has none. */
-  profilePicture(jid: string, path: string): Promise<boolean>;
+  /** Writes jid's profile picture to `path` (the preview, or the full one); false when it has none. */
+  profilePicture(jid: string, path: string, full?: boolean): Promise<boolean>;
   groupInfo(jid: string): Promise<GroupInfo | null>;
   /** Writes (writes on only; the bridge guards them). */
   newMessageId(): string;
