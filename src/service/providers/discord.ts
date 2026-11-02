@@ -83,12 +83,17 @@ class DiscordProvider implements Provider {
   private userStatus: PresenceStatus = "invisible";
   private readonly cache = new Map<string, Cached>();
   private readonly guildDirty = new Set<string>();
+  /** The server entries the apps were last sent (only changes go out). */
+  private readonly sentGuilds = new Map<string, string>();
   private guildTimer: ReturnType<typeof setTimeout> | null = null;
   private everReady = false;
   private stopped = false;
   /** Discord nonce → the app's client_id, for a sent message's echo. */
   private readonly clientIds = new Map<string, string>();
   private fixtures: import("./discord/fixtures").Fixtures | null = null;
+  /** DISCORD_BRIDGE_STATS: events by type, logged each minute (counts only). */
+  private readonly stats = process.env.DISCORD_BRIDGE_STATS ? new Map<string, number>() : null;
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
   /** The last member list Discord sent per channel subscribed (op 37). */
   private readonly memberLists = new Map<string, unknown>();
 
@@ -214,10 +219,15 @@ class DiscordProvider implements Provider {
     for (const cached of this.cache.values()) cached.live = false;
     const chats = this.account.chats().map((chat) => this.withPrevious(chat));
     this.host.chats.replaceAll(chats);
-    this.host.emit({ event: "discord.guilds", guilds: this.account.wireGuilds() });
+    const guilds = this.account.wireGuilds();
+    this.sentGuilds.clear();
+    for (const guild of guilds) this.sentGuilds.set(guild.id, JSON.stringify(guild));
+    this.host.emit({ event: "discord.guilds", guilds });
     this.host.log.info("ready", {
       guilds: this.account.guilds.size,
       chats: chats.length,
+      folders: proto.folders.length,
+      settings: typeof data.user_settings_proto === "string",
       fresh: !this.everReady,
     });
     this.everReady = true;
@@ -246,8 +256,16 @@ class DiscordProvider implements Provider {
     return channel ? this.account.chat(channel, previous) : chat;
   }
 
+  /** Hands the store a chat only when it changed (each upsert schedules a cache write). */
+  private upsertChat(chat: WireChat): void {
+    const previous = this.host.chats.raw(chat.id);
+    if (previous && JSON.stringify(previous) === JSON.stringify(chat)) return;
+    if (this.stats) this.stats.set("~upsert", (this.stats.get("~upsert") ?? 0) + 1);
+    this.host.chats.upsert(chat);
+  }
+
   private syncChannel(channel: Channel): void {
-    if (this.account.isChat(channel)) this.host.chats.upsert(this.withPrevious(this.account.chat(channel)));
+    if (this.account.isChat(channel)) this.upsertChat(this.withPrevious(this.account.chat(channel)));
     else if (this.host.chats.raw(channel.id)) this.host.chats.remove(channel.id);
     if (channel.guildId) this.guildChanged(channel.guildId);
   }
@@ -267,11 +285,21 @@ class DiscordProvider implements Provider {
     if (this.guildTimer) return;
     this.guildTimer = setTimeout(() => {
       this.guildTimer = null;
-      const all = this.account.wireGuilds();
+      const order = this.account.guildOrder();
       for (const id of this.guildDirty) {
-        const guild = all.find((candidate) => candidate.id === id);
-        if (guild) this.host.emit({ event: "discord.guild", guild });
-        else this.host.emit({ event: "discord.guild_removed", id });
+        const position = order.findIndex((entry) => entry.id === id);
+        const guild = this.account.guilds.get(id);
+        if (guild && position >= 0) {
+          const wire = this.account.wireGuild(guild, position, order[position]!.folder);
+          const key = JSON.stringify(wire);
+          if (this.sentGuilds.get(id) === key) continue;
+          this.sentGuilds.set(id, key);
+          if (this.stats) this.stats.set("~guild", (this.stats.get("~guild") ?? 0) + 1);
+          this.host.emit({ event: "discord.guild", guild: wire });
+        } else {
+          this.sentGuilds.delete(id);
+          this.host.emit({ event: "discord.guild_removed", id });
+        }
       }
       this.guildDirty.clear();
     }, GUILD_EVENT_DELAY_MS);
@@ -282,6 +310,20 @@ class DiscordProvider implements Provider {
   }
 
   private dispatch(type: string, data: any): void {
+    if (this.stats) {
+      this.stats.set(type, (this.stats.get(type) ?? 0) + 1);
+      this.statsTimer ??= setInterval(() => {
+        const top = [...this.stats!.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+        const memory = process.memoryUsage();
+        this.host.log.info("gateway.events", {
+          ...Object.fromEntries(top),
+          rss_mb: Math.round(memory.rss / 1048576),
+          heap_mb: Math.round(memory.heapUsed / 1048576),
+          cpu_ms: Math.round((process.cpuUsage().user + process.cpuUsage().system) / 1000),
+        });
+        this.stats!.clear();
+      }, 60_000);
+    }
     switch (type) {
       case "MESSAGE_CREATE":
         this.messageCreate(data);
@@ -472,41 +514,47 @@ class DiscordProvider implements Provider {
     if (!raw || typeof raw.id !== "string" || typeof raw.channel_id !== "string") return;
     const channel = this.account.channels.get(raw.channel_id);
     if (!channel) return;
-    if (channel.guildId && raw.member && raw.author?.id) this.account.putMember(channel.guildId, raw.author.id, raw.member);
-    const message = mapDiscordMessage(raw);
-    const viewing = this.viewed(channel.id) && this.host.viewing().front;
+    const viewed = this.viewed(channel.id);
+    if (channel.guildId && raw.member && raw.author?.id && viewed) this.account.putMember(channel.guildId, raw.author.id, raw.member);
+    const viewing = viewed && this.host.viewing().front;
     const arrival = this.account.arrive(raw, viewing);
     if (!arrival) return;
     const cached = this.cache.get(channel.id);
-    if (cached?.live) {
-      if (!cached.messages.some((known) => known.id === message.id)) {
+    const dm = !channel.guildId;
+    // Most messages are in channels nobody looks at: only their unread state moves.
+    const needed = viewed || arrival.notify || dm || cached?.live === true;
+    let wire: WireMessage | null = null;
+    if (needed) {
+      const message = mapDiscordMessage(raw);
+      if (cached?.live && !cached.messages.some((known) => known.id === message.id)) {
         cached.messages.push(message);
         if (cached.messages.length > CACHED_MESSAGES) {
           cached.messages.splice(0, cached.messages.length - CACHED_MESSAGES);
           cached.complete = false;
         }
       }
-    }
-    const wire = this.wire(message, raw);
-    if (raw.nonce !== undefined && raw.nonce !== null) {
-      const clientId = this.clientIds.get(String(raw.nonce));
-      if (clientId) {
-        wire.client_id = clientId;
-        this.clientIds.delete(String(raw.nonce));
+      wire = this.wire(message, raw);
+      if (raw.nonce !== undefined && raw.nonce !== null) {
+        const clientId = this.clientIds.get(String(raw.nonce));
+        if (clientId) {
+          wire.client_id = clientId;
+          this.clientIds.delete(String(raw.nonce));
+        }
       }
     }
     const previous = this.host.chats.raw(channel.id);
     let chat = this.account.chat(channel, previous);
-    if (!channel.guildId) {
+    if (dm && wire) {
       chat = {
         ...chat,
         last: { id: wire.id, ts: wire.ts, author: wire.author.name, text: lastLine(wire), mine: wire.mine },
         ts: Math.max(chat.ts, wire.ts),
       };
     }
-    this.host.chats.upsert(chat);
+    this.upsertChat(chat);
     if (channel.guildId) this.guildChanged(channel.guildId);
-    if (this.viewed(channel.id)) this.host.emit({ event: "message", message: wire, live: true });
+    if (!wire) return;
+    if (viewed) this.host.emit({ event: "message", message: wire, live: true });
     if (arrival.notify) {
       void this.host.notifier.incoming(wire, this.notificationChat(channel, chat, arrival.mentioned)).then((outcome) => {
         if (outcome === "shown") this.host.chats.markReadLocally(channel.id);

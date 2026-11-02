@@ -11,7 +11,6 @@
  * chats, servers and notifications.
  */
 
-import { compareSnowflakesDesc } from "../../../discord";
 import type { WireChat, WireMedia } from "../../protocol";
 import type { GuildFolder } from "./userproto";
 import { avatarMedia, defaultAvatarMedia, groupIconMedia, guildIconMedia } from "./refs";
@@ -42,8 +41,11 @@ export function snowflakeAt(ms: number): string {
   return ((BigInt(Math.max(0, Math.floor(ms))) - DISCORD_EPOCH) << 22n).toString();
 }
 
-function newer(a: string | null | undefined, b: string | null | undefined): boolean {
-  return compareSnowflakesDesc(a ?? null, b ?? null) < 0;
+/** Is snowflake `a` newer than `b`? Decimal strings compare by length, then digit by digit (no BigInt per call). */
+export function newer(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a) return false;
+  if (!b) return true;
+  return a.length !== b.length ? a.length > b.length : a > b;
 }
 
 function bits(value: unknown): bigint {
@@ -107,6 +109,8 @@ export interface Channel {
   threadMuted: boolean;
   ownerId: string | null;
   messageCount: number;
+  /** canView's answer, kept until the guild's roles or channels change. */
+  visible?: boolean;
 }
 
 export interface Member {
@@ -269,7 +273,7 @@ export class Account {
     };
     if (Array.isArray(raw.roles)) {
       guild.roles = new Map();
-      for (const role of raw.roles) this.putRole(guild, role);
+      for (const role of raw.roles) this.putRole(guild, role, false);
     }
     this.guilds.set(id, guild);
     if (Array.isArray(raw.channels)) {
@@ -280,9 +284,10 @@ export class Account {
           guild.channelIds.delete(channelId);
         }
       }
-      for (const channel of raw.channels) this.putChannel(channel, id);
+      for (const channel of raw.channels) this.putChannel(channel, id, false);
     }
-    if (Array.isArray(raw.threads)) for (const thread of raw.threads) this.putChannel(thread, id);
+    if (Array.isArray(raw.threads)) for (const thread of raw.threads) this.putChannel(thread, id, false);
+    this.invalidate(id);
     return guild;
   }
 
@@ -295,8 +300,9 @@ export class Account {
     return removed;
   }
 
-  putRole(guild: Guild, raw: any): void {
+  putRole(guild: Guild, raw: any, invalidate = true): void {
     if (!raw || typeof raw.id !== "string") return;
+    if (invalidate) this.invalidate(guild.id);
     guild.roles.set(raw.id, {
       id: raw.id,
       name: typeof raw.name === "string" ? raw.name : "",
@@ -337,7 +343,7 @@ export class Account {
   }
 
   /** A guild channel or thread (READY, GUILD_CREATE, CHANNEL_*, THREAD_*). */
-  putChannel(raw: any, fallbackGuildId: string | null): Channel | null {
+  putChannel(raw: any, fallbackGuildId: string | null, invalidate = true): Channel | null {
     if (!raw || typeof raw.id !== "string" || typeof raw.type !== "number") return null;
     if (DM_TYPES.has(raw.type)) return this.loadDirectMessage(raw);
     const guildId = typeof raw.guild_id === "string" ? raw.guild_id : fallbackGuildId;
@@ -373,6 +379,8 @@ export class Account {
     if (previous && newer(previous.lastMessageId, channel.lastMessageId)) channel.lastMessageId = previous.lastMessageId;
     this.channels.set(channel.id, channel);
     guild.channelIds.add(channel.id);
+    // Overwrites may have changed (and a thread follows its parent's).
+    if (invalidate && (!previous || !THREAD_TYPES.has(channel.type))) this.invalidate(guild.id);
     return channel;
   }
 
@@ -463,6 +471,22 @@ export class Account {
   // Permissions, mutes, notification levels
 
   canView(channel: Channel): boolean {
+    if (!channel.guildId) return true;
+    if (channel.visible === undefined) channel.visible = this.computeView(channel);
+    return channel.visible;
+  }
+
+  /** Roles, overwrites or the user's roles changed in `guildId`: visibility is worked out again. */
+  invalidate(guildId: string): void {
+    const guild = this.guilds.get(guildId);
+    if (!guild) return;
+    for (const id of guild.channelIds) {
+      const channel = this.channels.get(id);
+      if (channel) channel.visible = undefined;
+    }
+  }
+
+  private computeView(channel: Channel): boolean {
     if (!channel.guildId) return true;
     const guild = this.guilds.get(channel.guildId);
     const selfId = this.self?.id;
@@ -646,6 +670,11 @@ export class Account {
 
   /** The servers for the rail, in the user's order. */
   wireGuilds(): WireGuild[] {
+    return this.guildOrder().map(({ id, folder }, position) => this.wireGuild(this.guilds.get(id)!, position, folder));
+  }
+
+  /** The rail's order (and each server's folder), without working out unread state. */
+  guildOrder(): Array<{ id: string; folder: GuildFolder | null }> {
     const order: Array<{ id: string; folder: GuildFolder | null }> = [];
     const placed = new Set<string>();
     for (const folder of this.folders) {
@@ -658,8 +687,7 @@ export class Account {
     }
     // Servers joined since the settings were read go on top, as Discord puts them.
     const rest = [...this.readyOrder, ...this.guilds.keys()].filter((id, index, all) => !placed.has(id) && this.guilds.has(id) && all.indexOf(id) === index);
-    const ordered = this.folders.length > 0 ? [...rest.map((id) => ({ id, folder: null })), ...order] : rest.map((id) => ({ id, folder: null }));
-    return ordered.map(({ id, folder }, position) => this.wireGuild(this.guilds.get(id)!, position, folder));
+    return this.folders.length > 0 ? [...rest.map((id) => ({ id, folder: null })), ...order] : rest.map((id) => ({ id, folder: null }));
   }
 
   wireGuild(guild: Guild, position: number, folder: GuildFolder | null): WireGuild {
@@ -678,7 +706,7 @@ export class Account {
       mentions += this.read(channel.id).mentions;
       if (!unread && !guildMuted && !this.channelMuted(channel) && !VOICE_TYPES.has(channel.type) && this.isUnread(channel)) unread = true;
     }
-    categories.sort((a, b) => a.position - b.position || compareSnowflakesDesc(b.id, a.id));
+    categories.sort((a, b) => a.position - b.position || (newer(a.id, b.id) ? 1 : -1));
     return {
       id: guild.id,
       name: guild.name,
@@ -755,7 +783,10 @@ export class Account {
     guild.members.set(userId, member);
     // Bounded: the oldest met go first.
     while (guild.members.size > 2000) guild.members.delete(guild.members.keys().next().value!);
-    if (userId === this.self?.id) guild.myRoles = member.roles;
+    if (userId === this.self?.id && member.roles.join() !== guild.myRoles.join()) {
+      guild.myRoles = member.roles;
+      this.invalidate(guildId);
+    }
     return member;
   }
 
