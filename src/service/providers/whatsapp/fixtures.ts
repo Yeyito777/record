@@ -20,7 +20,7 @@
 
 import { writeFileSync } from "node:fs";
 
-import { cachedDemoImage, hexColor, renderIcon, renderPicture, type Rgb } from "../../../demo/png";
+import { Canvas, cachedDemoImage, hexColor, renderIcon, renderPicture, type Rgb } from "../../../demo/png";
 import type {
   WhatsAppBackendEventListener,
   WhatsAppBackendEventMap,
@@ -280,6 +280,33 @@ function fixtureSummary(message: StoredMessage): string {
   return "";
 }
 
+/** A made-up profile photo: a person against a coloured wall, or for a group a landscape. */
+function portrait(seed: number, group: boolean): Buffer {
+  const size = 192;
+  const random = rng(seed + 101);
+  const wall = COLORS[seed % COLORS.length]!;
+  const canvas = new Canvas(size, size);
+  const shade = (c: Rgb, k: number): Rgb => c.map((v) => Math.max(0, Math.min(255, Math.round(v * k)))) as unknown as Rgb;
+  if (group) {
+    canvas.gradient(shade(wall, 1.15), shade(wall, 0.55));
+    canvas.fillCircle(size * (0.2 + random() * 0.6), size * 0.3, size * 0.12, [255, 236, 179], 230);
+    canvas.fillCircle(size * 0.25, size * 1.1, size * 0.55, shade(wall, 0.4), 255);
+    canvas.fillCircle(size * 0.85, size * 1.15, size * 0.6, shade(wall, 0.3), 255);
+    return canvas.encode();
+  }
+  canvas.gradient(shade(wall, 1.2), shade(wall, 0.7));
+  const skins: Rgb[] = [[241, 194, 166], [224, 172, 135], [198, 134, 98], [141, 85, 62], [255, 219, 190]];
+  const hair: Rgb[] = [[40, 30, 25], [92, 58, 33], [180, 130, 70], [20, 20, 20], [140, 70, 40]];
+  const skin = skins[Math.floor(random() * skins.length)]!;
+  const top: Rgb = [Math.floor(random() * 200), Math.floor(random() * 200), Math.floor(random() * 200)];
+  canvas.fillCircle(size * 0.5, size * 1.08, size * 0.42, top, 255);
+  canvas.fillRect(size * 0.43, size * 0.55, size * 0.14, size * 0.16, shade(skin, 0.92), 255);
+  canvas.fillCircle(size * 0.5, size * 0.4, size * 0.2, hair[Math.floor(random() * hair.length)]!, 255);
+  canvas.fillCircle(size * 0.5, size * 0.45, size * 0.18, skin, 255);
+  canvas.grain(seed, 4);
+  return canvas.encode();
+}
+
 /** The made-up QR payload (never a real pairing). */
 function fakeQr(serial: number): string {
   return `2@FIXTURE${serial.toString(36).toUpperCase()}${"x".repeat(90)},${"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=".repeat(2)},fixture-${serial}`;
@@ -467,9 +494,8 @@ export function createFixturesBackend(options: { anchor?: number; signedOut?: bo
       const person = fixture.people.find((candidate) => candidate.jid === jid);
       const chat = byJid.get(jid);
       if ((person && !person.picture) || (!person && !chat?.group)) return false;
-      const label = (person?.name ?? chat?.name ?? "?").replace(/[^\p{L}\p{N} ]/gu, "").split(" ").filter(Boolean).map((word) => word[0]).join("").slice(0, 2);
-      const index = (person ? fixture.people.indexOf(person) : chat!.index) % COLORS.length;
-      writeFileSync(path, cachedDemoImage(`wa-avatar-${jid.split("@")[0]}`, () => renderIcon(label.toUpperCase(), COLORS[index]!, 192, true)), { mode: 0o600 });
+      const index = person ? fixture.people.indexOf(person) : chat!.index;
+      writeFileSync(path, cachedDemoImage(`wa-portrait-${jid.split("@")[0]}`, () => portrait(index, !person)), { mode: 0o600 });
       return true;
     },
     async groupInfo(jid: string) {

@@ -190,6 +190,12 @@ function quotedMessage(message: WhatsAppMessage): WAMessage {
 const RECORD_EVENTS: WhatsAppBackendEventName[] = ["state", "qr", "history", "messages", "reactions", "chats", "contacts", "lid-mapping", "error"];
 
 export function createLiveBackend(options: { authDirectory: string }): WaBackend {
+  // As record's worker: Signal code writes sessions and keys through the
+  // global console, not Baileys' (silent) logger. The bridge's own log
+  // writes to stderr directly.
+  for (const method of ["log", "info", "debug", "warn", "error", "dir", "trace"] as const) {
+    console[method] = (() => {}) as typeof console[typeof method];
+  }
   const listeners = new Map<WhatsAppBackendEventName, Set<Listener>>();
   const rawListeners = new Set<(event: RawEvent) => void>();
   let inner: RecordWhatsAppBackend | null = null;
