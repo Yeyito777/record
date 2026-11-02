@@ -222,6 +222,24 @@ describe("whatsapp fixtures", () => {
     await on.client.until((event) => event.event === "message" && event.message.id === sent.result.message.id && event.message.status === "delivered", 3000);
   });
 
+  test("status updates: by who posted, unseen first; seen here only; their photos come as files", async () => {
+    const { client } = await startFixtures();
+    const list = await client.request("whatsapp.status.list");
+    const updates = list.result.updates;
+    expect(updates.length).toBe(9);
+    expect(updates.every((u: any) => !u.seen && u.items.length > 0)).toBe(true);
+    const first = updates[0];
+    const ids = first.items.map((item: any) => item.id);
+    await client.request("whatsapp.status.seen", { ids });
+    const again = (await client.request("whatsapp.status.list")).result.updates;
+    expect(again.at(-1).user.id).toBe(first.user.id);
+    expect(again.at(-1).seen).toBe(true);
+    const photo = updates.flatMap((u: any) => u.items).find((item: any) => item.media[0]?.kind === "image");
+    expect((await client.request("media.fetch", { ref: photo.media[0].ref })).ok).toBe(true);
+    const text = updates.flatMap((u: any) => u.items).find((item: any) => item.media.length === 0);
+    expect(text.ext.background).toMatch(/^#[0-9a-f]{6}$/);
+  });
+
   test("signed out: a QR as rows of modules, then linking, then the chats", async () => {
     const { client } = await startFixtures({ signedOut: true });
     expect((await client.request("status")).result.state).toBe("signed_out");

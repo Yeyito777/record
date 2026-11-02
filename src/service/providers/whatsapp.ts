@@ -52,6 +52,9 @@ const PICTURE_MAX_AGE_MS = 7 * 86_400_000;
 const NO_PICTURE_MAX_AGE_MS = 3 * 86_400_000;
 const PICTURE_BACKOFF_MS = 60_000;
 const MAX_PENDING_EXTRAS = 20_000;
+/** Status updates: WhatsApp's own chat for them, and how long one lasts. */
+const STATUS_JID = "status@broadcast";
+const STATUS_TTL_MS = 24 * 3600_000;
 
 function normalizedDirectJid(jid: string): string {
   const at = jid.lastIndexOf("@");
@@ -515,6 +518,10 @@ export class WhatsAppProvider implements Provider {
   ): void {
     const byChat = new Map<string, StoredMessage[]>();
     for (const incoming of messages) {
+      if (incoming.chatId === STATUS_JID) {
+        this.upsertStatus(incoming, options.live === "notify");
+        continue;
+      }
       if (!isVisibleMessage(incoming)) continue;
       const pair = directIdentityPair([incoming.chatId, incoming.key.chatId, incoming.key.alternateChatId]);
       if (pair) this.registerLid(pair.lid, pair.phoneId);
@@ -560,6 +567,64 @@ export class WhatsAppProvider implements Provider {
     }
   }
 
+  /** A status update (someone's, or the account's own). */
+  private upsertStatus(incoming: StoredMessage, live: boolean): void {
+    const message = this.takeExtras(incoming);
+    if (message.content.kind === "unsupported") return;
+    if (!this.host.fixtures && Date.now() - (message.timestampMs ?? 0) > STATUS_TTL_MS) return;
+    const merged = mergeMessage(this.store.statuses.get(message.id), message, true);
+    this.store.statuses.set(merged.id, merged);
+    this.store.changedStatuses();
+    if (live) {
+      const poster = merged.fromMe ? "me" : wireUserId(this.canonical(merged.senderId ?? ""));
+      this.host.emit({ event: "whatsapp.status", user: poster });
+    }
+  }
+
+  /** The status updates of the last 24 h, by who posted them, those not seen here first. */
+  statusList(): unknown {
+    const now = Date.now();
+    const byPoster = new Map<string, StoredMessage[]>();
+    for (const [id, message] of this.store.statuses) {
+      if (!this.host.fixtures && now - (message.timestampMs ?? 0) > STATUS_TTL_MS) {
+        this.store.statuses.delete(id);
+        this.store.statusSeen.delete(id);
+        this.store.changedStatuses();
+        continue;
+      }
+      if (message.x?.deleted) continue;
+      const poster = message.fromMe ? "me" : this.canonical(message.senderId ?? "");
+      if (!poster) continue;
+      let list = byPoster.get(poster);
+      if (!list) byPoster.set(poster, list = []);
+      list.push(message);
+    }
+    const updates = [...byPoster].map(([poster, items]) => {
+      items.sort(compareMessages);
+      const newest = items.at(-1)!;
+      const seen = items.every((item) => this.store.statusSeen.has(item.id));
+      const me = poster === "me";
+      return {
+        user: {
+          id: me ? "me" : wireUserId(poster),
+          name: me ? "My status" : this.name(poster, newest.senderName),
+          avatar: me || this.pictureKnownAbsent(poster) ? null : { ref: avatarRef(poster), kind: "image", w: 96, h: 96, mime: "image/jpeg" },
+        },
+        ts: newest.timestampMs ?? 0,
+        seen,
+        items: items.map((item) => ({
+          ...this.wireMessage(STATUS_JID, item),
+          ext: {
+            ...(item.x?.color ? { background: `#${(item.x.color & 0xffffff).toString(16).padStart(6, "0")}` } : {}),
+            seen: this.store.statusSeen.has(item.id),
+          },
+        })),
+      };
+    });
+    updates.sort((a, b) => Number(a.user.id !== "me") - Number(b.user.id !== "me") || Number(a.seen) - Number(b.seen) || b.ts - a.ts);
+    return { updates };
+  }
+
   private emitMessage(jid: string, message: StoredMessage, live: boolean): void {
     // The chat's list entry first: the notification reads its title and count.
     if (live) this.flushTouched();
@@ -597,6 +662,14 @@ export class WhatsAppProvider implements Provider {
       }
       case "revoke":
       case "status": {
+        if (event.kind === "revoke" && event.chatId === STATUS_JID) {
+          const status = this.store.statuses.get(event.id);
+          if (status) {
+            status.x = { ...status.x, deleted: true };
+            this.store.changedStatuses();
+          }
+          return;
+        }
         const jid = this.canonical(event.chatId);
         if (!this.store.chats.has(jid)) return;
         const list = this.store.messages(jid);
@@ -904,9 +977,10 @@ export class WhatsAppProvider implements Provider {
     const parsed = parseRef(ref);
     if (parsed.kind === "avatar") return this.fetchPicture(this.canonical(parsed.jid));
     const jid = this.canonical(parsed.jid);
-    if (!this.store.chats.has(jid)) throw new BridgeError("not_found", "no such media");
-    const list = this.store.messages(jid);
-    const message = list.find((candidate) => candidate.id === parsed.id);
+    const status = jid === STATUS_JID;
+    if (!status && !this.store.chats.has(jid)) throw new BridgeError("not_found", "no such media");
+    const list = status ? [] : this.store.messages(jid);
+    const message = status ? this.store.statuses.get(parsed.id) : list.find((candidate) => candidate.id === parsed.id);
     if (!message || message.content.kind !== "media") throw new BridgeError("not_found", "no such media");
     if (parsed.kind === "thumb") {
       const thumb = message.x?.thumb;
@@ -1071,6 +1145,17 @@ export class WhatsAppProvider implements Provider {
 
   get commands(): Provider["commands"] {
     const commands: NonNullable<Provider["commands"]> = {
+      /** Status updates (WhatsApp's Updates): who posted what in the last day. */
+      "whatsapp.status.list": { run: async () => this.statusList() },
+      /** A status was seen in the app: here only (no receipt is ever sent). */
+      "whatsapp.status.seen": {
+        run: async (args) => {
+          const ids = Array.isArray(args.ids) ? args.ids.filter((id: unknown) => typeof id === "string") : [];
+          for (const id of ids) if (this.store.statuses.has(id)) this.store.statusSeen.add(id);
+          this.store.changedStatuses();
+          return {};
+        },
+      },
       /** What the chat header and the contact page show. */
       "whatsapp.chat_info": {
         run: async (args) => {

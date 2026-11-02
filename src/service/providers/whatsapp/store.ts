@@ -49,6 +49,8 @@ export interface Extras {
   system?: SystemNotice;
   /** A message this bridge sent (writes on): the app's id for it. */
   clientId?: string;
+  /** A text status's background (`0xAARRGGBB`). */
+  color?: number;
 }
 
 export interface StoredMessage extends WhatsAppMessage {
@@ -82,6 +84,12 @@ interface SavedMeta {
   unreadDelta: string[];
   /** jid → when it was found to have no picture. */
   noPicture: Record<string, number>;
+}
+
+interface SavedStatuses {
+  version: number;
+  statuses: StoredMessage[];
+  seen: string[];
 }
 
 interface SavedMessages {
@@ -180,6 +188,10 @@ export class WaStore {
   /** Chats whose unread count was built from chats.update deltas only. */
   readonly unreadDelta = new Set<string>();
   readonly noPicture = new Map<string, number>();
+  /** Status updates (24 h), by message id, and those seen here. */
+  readonly statuses = new Map<string, StoredMessage>();
+  readonly statusSeen = new Set<string>();
+  private statusDirty = false;
   private readonly loaded = new Map<string, StoredMessage[]>();
   private readonly dirty = new Set<string>();
   private metaDirty = false;
@@ -197,6 +209,16 @@ export class WaStore {
     for (const contact of saved.contacts ?? []) if (contact?.id) this.contacts.set(contact.id, contact);
     for (const id of saved.unreadDelta ?? []) this.unreadDelta.add(id);
     for (const [jid, at] of Object.entries(saved.noPicture ?? {})) if (typeof at === "number") this.noPicture.set(jid, at);
+    const statuses = readJson<SavedStatuses>(join(this.dir, "status.json"));
+    if (statuses?.version === STORE_VERSION) {
+      for (const status of statuses.statuses ?? []) if (status?.id) this.statuses.set(status.id, status);
+      for (const id of statuses.seen ?? []) this.statusSeen.add(id);
+    }
+  }
+
+  changedStatuses(): void {
+    this.statusDirty = true;
+    this.scheduleSave();
   }
 
   /** The chat's messages, oldest first (loaded from disk the first time). */
@@ -292,6 +314,12 @@ export class WaStore {
     }
     this.dirty.clear();
     this.evict();
+    if (this.statusDirty) {
+      this.statusDirty = false;
+      const seen = [...this.statusSeen].filter((id) => this.statuses.has(id));
+      const saved: SavedStatuses = { version: STORE_VERSION, statuses: [...this.statuses.values()], seen };
+      writePrivateAtomic(join(this.dir, "status.json"), JSON.stringify(saved));
+    }
     if (!this.metaDirty) return;
     this.metaDirty = false;
     const saved: SavedMeta = {
@@ -314,11 +342,15 @@ export class WaStore {
     this.contacts.clear();
     this.unreadDelta.clear();
     this.noPicture.clear();
+    this.statuses.clear();
+    this.statusSeen.clear();
+    this.statusDirty = false;
     this.loaded.clear();
     this.dirty.clear();
     this.metaDirty = false;
     if (!this.dir) return;
     rmSync(join(this.dir, "meta.json"), { force: true });
+    rmSync(join(this.dir, "status.json"), { force: true });
     for (const name of readdirSync(join(this.dir, "messages"))) rmSync(join(this.dir, "messages", name), { force: true });
   }
 }

@@ -110,6 +110,8 @@ export function messageExtras(message: WAMessage): Extras | null {
       extras.quote = { text, ...(context.participant ? { participant: context.participant } : {}) };
     }
     if (context?.isForwarded) extras.forwarded = true;
+    const argb = content.extendedTextMessage?.backgroundArgb;
+    if (typeof argb === "number" && argb !== 0) extras.color = argb >>> 0;
   }
   if (message.key?.fromMe) {
     const status = messageStatus(message.status);

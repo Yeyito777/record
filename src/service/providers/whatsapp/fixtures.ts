@@ -117,6 +117,8 @@ interface FixtureChat {
 interface Fixture {
   people: Person[];
   chats: FixtureChat[];
+  /** Status updates of the last day, oldest first. */
+  statuses: StoredMessage[];
 }
 
 function phone(index: number): string {
@@ -180,7 +182,42 @@ export function buildFixture(anchor: number): Fixture {
     chat.messages = list.slice(list.length - local);
     chats.push(chat);
   });
-  return { people, chats };
+  return { people, chats, statuses: buildStatuses(people, anchor) };
+}
+
+const STATUS_TEXTS = [
+  "Monday mood ☕", "Back home after 3 weeks ✈️", "New place, who's coming over?", "🏔️🏔️🏔️", "Can't believe it's November",
+  "Finally finished the marathon 🏃", "Sunday reset", "Thank you all for the birthday wishes ❤️",
+];
+const STATUS_COLORS = [0xff1f7aec, 0xff7e57c2, 0xff26a69a, 0xffef5350, 0xff5c6bc0, 0xffffa726, 0xff8d6e63, 0xff66bb6a];
+
+function buildStatuses(people: Person[], anchor: number): StoredMessage[] {
+  const out: StoredMessage[] = [];
+  [0, 2, 5, 7, 11, 14, 19, 23, 30].forEach((index, n) => {
+    const person = people[index]!;
+    const random = rng(500 + index);
+    const count = 1 + Math.floor(random() * 4);
+    let ts = anchor - (2 + n * 2.1) * HOUR;
+    for (let k = 0; k < count; k++) {
+      ts += Math.round((5 + random() * 40) * MINUTE);
+      const id = `ST${index.toString(36).toUpperCase()}${k}B7`;
+      const message: StoredMessage = {
+        key: { id, chatId: "status@broadcast", fromMe: false, participantId: person.jid }, id, chatId: "status@broadcast",
+        fromMe: false, senderId: person.jid, timestampMs: ts, content: { kind: "text", text: "" },
+      };
+      if (random() < 0.55) {
+        const size = Math.floor(random() * PHOTO_SIZES.length);
+        const [w, h] = PHOTO_SIZES[size]!;
+        message.content = media("image", { mimeType: "image/jpeg", width: w, height: h, sizeBytes: Math.round(w * h * 0.12), caption: random() < 0.5 ? STATUS_TEXTS[(n + k) % STATUS_TEXTS.length] : "" });
+        message.x = { thumb: thumb(size) };
+      } else {
+        message.content = { kind: "text", text: STATUS_TEXTS[(n * 3 + k) % STATUS_TEXTS.length]! };
+        message.x = { color: STATUS_COLORS[(n + k) % STATUS_COLORS.length]! };
+      }
+      out.push(message);
+    }
+  });
+  return out;
 }
 
 function buildHistory(chat: FixtureChat, count: number, newest: number, random: () => number, photos: boolean, unread: number): StoredMessage[] {
@@ -386,6 +423,7 @@ export function createFixturesBackend(options: { anchor?: number; signedOut?: bo
         emit("history", { chats: [], contacts: [], messages: deliver(chunk, false), skippedMessages: 0, syncKind: "recent", isLatest: i + 40 >= all.length });
       }
       for (const chat of all) if (chat.group) raw({ kind: "group", chatId: chat.jid, size: chat.members.length + 1 });
+      emit("history", { chats: [], contacts: [], messages: deliver(fixture.statuses, false), skippedMessages: 0, syncKind: "initial-status" });
     });
   };
 
