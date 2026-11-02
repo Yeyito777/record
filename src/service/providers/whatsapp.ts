@@ -736,7 +736,8 @@ export class WhatsAppProvider implements Provider {
   }
 
   private wireMedia(jid: string, message: StoredMessage): WireMedia[] {
-    if (message.content.kind !== "media" || message.x?.deleted) return [];
+    // View once: as on WhatsApp Web, only the primary phone opens it.
+    if (message.content.kind !== "media" || message.x?.deleted || message.content.viewOnce) return [];
     const media = message.content;
     const thumb = message.x?.thumb ? mediaRef("thumb", jid, message.id) : null;
     const base = {
@@ -790,7 +791,10 @@ export class WhatsAppProvider implements Provider {
       ts: message.timestampMs ?? message.receivedAtMs ?? 0,
       author: message.fromMe ? { id: "me", name: "You" } : { id: wireUserId(authorJid), name: this.name(authorJid, message.senderName) },
       mine: message.fromMe,
-      text: deleted ? "" : system ? noticeSentence(system, (j) => this.name(j)) : messageText(message),
+      text: deleted ? ""
+        : system ? noticeSentence(system, (j) => this.name(j))
+        : message.content.kind === "media" && message.content.viewOnce ? "View once message. Open WhatsApp on your phone to see it."
+        : messageText(message),
       format: "whatsapp",
       media: this.wireMedia(jid, message),
       reply_to: deleted ? null : reply,
