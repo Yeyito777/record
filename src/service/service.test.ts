@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
-import { createConnection, type Socket } from "node:net";
+import { createConnection, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ChatStore } from "./chatstore";
 import { createLogger } from "./log";
 import { sniffImage } from "./media";
-import type { MoonLink, MoonView } from "./moon";
+import { moonRequest, type MoonLink, type MoonView } from "./moon";
 import { Notifier, summarize, tagFor } from "./notifier";
 import type { WireChat, WireMessage } from "./protocol";
 import { createProvider as createSample } from "./providers/sample";
@@ -266,5 +266,22 @@ describe("pieces", () => {
     expect(parseArgs(["--provider", "discord"]).moon).toBe(true);
     expect(() => parseArgs(["--provider", "myspace"])).toThrow();
     expect(() => parseArgs(["--provider", "discord", "--state", "relative"])).toThrow();
+  });
+});
+
+describe("Moon's control socket", () => {
+  test("a command's answer is read: Moon answers the line and closes, without waiting for the client's end", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "moon-")), "control.sock");
+    const server = createServer((socket) => {
+      socket.setEncoding("utf8");
+      socket.once("data", (line: string) => socket.end(JSON.stringify({ ok: true, result: { view: "lock", screen_awake: false, echo: line.trim() } })));
+    });
+    await new Promise<void>((resolve) => server.listen(path, resolve));
+    try {
+      const reply = await moonRequest(path, "state", 1000);
+      expect(reply).toEqual({ ok: true, result: { view: "lock", screen_awake: false, echo: "state" } });
+    } finally {
+      server.close();
+    }
   });
 });

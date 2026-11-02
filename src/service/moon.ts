@@ -47,7 +47,9 @@ export function moonRequest(socketPath: string, command: string, timeoutMs = 600
     const socket = createConnection(socketPath);
     const timer = setTimeout(() => done(null), timeoutMs);
     socket.setEncoding("utf8");
-    socket.on("connect", () => socket.end(`${command}\n`));
+    // Moon answers the line and closes the connection. Not half-closed
+    // (`end`): a Bun socket that ended its side reads no answer.
+    socket.on("connect", () => socket.write(`${command}\n`));
     socket.on("data", (chunk) => {
       reply += chunk;
       if (reply.length > 4 * 1024 * 1024) done(null);
