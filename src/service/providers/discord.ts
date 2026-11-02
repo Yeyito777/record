@@ -31,7 +31,7 @@ import { errorText } from "../log";
 import { downloadUrl, type FetchedMedia } from "../media";
 import { BridgeError, type WireChat, type WireMessage, type WireUser } from "../protocol";
 import type { HistoryPage, Provider, ProviderHost } from "../provider";
-import { Account, DM_TYPES, THREAD_TYPES, type Channel, userAvatar, userInfo } from "./discord/account";
+import { Account, DM_TYPES, snowflakeTime, THREAD_TYPES, type Channel, userAvatar, userInfo } from "./discord/account";
 import { DiscordGateway, type Presence, type PresenceStatus } from "./discord/gateway";
 import { mediaRequest } from "./discord/refs";
 import { decodeUserProto } from "./discord/userproto";
@@ -299,7 +299,22 @@ class DiscordProvider implements Provider {
     if (!previous) return chat;
     if (chat.kind === "dm" || chat.kind === "group") return { ...chat, last: previous.last ?? null };
     const channel = this.account.channels.get(chat.id);
-    return channel ? this.account.chat(channel, previous) : chat;
+    return channel ? this.serverChat(channel, previous) : chat;
+  }
+
+  /**
+   * A server channel's chat. Its `ts` stays put while it stays unread, but
+   * a channel the user read here (writes off: read locally, so the store
+   * shows it read) moves on with a newer message, or it would stay read.
+   */
+  private serverChat(channel: Channel, previous: WireChat | null): WireChat {
+    const chat = this.account.chat(channel, previous);
+    const shown = this.host.chats.get(channel.id);
+    if (shown && shown.unread === 0 && chat.unread > 0) {
+      const newest = snowflakeTime(channel.lastMessageId);
+      if (newest > chat.ts) return { ...chat, ts: newest };
+    }
+    return chat;
   }
 
   /** Hands the store a chat only when it changed (each upsert schedules a cache write). */
@@ -589,7 +604,7 @@ class DiscordProvider implements Provider {
       }
     }
     const previous = this.host.chats.raw(channel.id);
-    let chat = this.account.chat(channel, previous);
+    let chat = dm ? this.account.chat(channel, previous) : this.serverChat(channel, previous);
     if (dm && wire) {
       chat = {
         ...chat,

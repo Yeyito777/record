@@ -167,6 +167,18 @@ describe("discord provider on the fixtures", () => {
     client.close();
   });
 
+  test("a channel read here turns unread again when someone writes", async () => {
+    const { client } = await start({ readOnly: true });
+    const chats = (await client.request("chats.list", { limit: 500 })).result.chats as any[];
+    const unread = chats.find((chat) => chat.kind === "channel" && chat.unread > 0 && !chat.muted && chat.mentions === 0);
+    await client.request("view", { chat: unread.id, front: true });
+    await client.request("view", { chat: null, front: true });
+    expect((await client.request("chat.get", { chat: unread.id })).result.unread).toBe(0);
+    await client.request("discord.fixtures.emit", { chat: unread.id, text: "something new" });
+    await until(async () => (await client.request("chat.get", { chat: unread.id })).result.unread === 1);
+    client.close();
+  });
+
   test("while writes are off the session is invisible and away and never sends a presence update", async () => {
     const { client, payloads } = await start({ readOnly: true });
     const identify = payloads.find((payload) => payload.op === 2);
