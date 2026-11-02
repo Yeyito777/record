@@ -47,6 +47,23 @@ export function installFixtures(): Fixtures {
     olderPageDelayMs: 120,
     logPath: null,
   });
+  // DISCORD_FIXTURES_DMS=N (benchmarks): N more DMs, older than the world's own.
+  const extra = Math.min(2000, Math.max(0, Number(process.env.DISCORD_FIXTURES_DMS) || 0));
+  if (extra > 0) {
+    const world = server.world;
+    const people = [...world.users.values()].filter((user) => user.id !== world.self.id && !user.bot);
+    const oldest = Math.min(...world.directMessages.map((dm) => Number((BigInt(dm.last_message_id ?? dm.id) >> 22n) + 1_420_070_400_000n)));
+    for (let n = 0; n < extra; n += 1) {
+      const partner = people[n % people.length]!;
+      const lastMs = oldest - (n + 1) * 47 * 60_000;
+      const id = snowflake(lastMs - 86_400_000, 3000 + n);
+      world.directMessages.push({
+        id, type: 1, parent_id: null, last_message_id: snowflake(lastMs),
+        recipients: [{ id: partner.id, username: partner.username, global_name: partner.globalName, avatar: partner.avatar }],
+      });
+      world.histories.set(id, { channelId: id, guildId: null, count: 30, style: "dm", lastMs, authorIds: [world.self.id, partner.id] });
+    }
+  }
   // A world worth drawing: about a third of the servers' channels unread,
   // DMs with unread counts, the first server set to notify for every message.
   const demo = server as unknown as { readyPayload: () => any };

@@ -43,6 +43,9 @@ const CACHED_MESSAGES = 150;
 const GUILD_EVENT_DELAY_MS = 250;
 const MEDIA_MAX_BYTES = 48 * 1024 * 1024;
 const TYPING_MS = 10_000;
+/** DMs whose last line is fetched after a new session (one request each, spaced). */
+const DM_LINES = 20;
+const DM_LINE_SPACING_MS = 1_500;
 
 interface Cached {
   /** Oldest first. */
@@ -94,6 +97,7 @@ class DiscordProvider implements Provider {
   /** DISCORD_BRIDGE_STATS: events by type, logged each minute (counts only). */
   private readonly stats = process.env.DISCORD_BRIDGE_STATS ? new Map<string, number>() : null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private dmLineTimer: ReturnType<typeof setTimeout> | null = null;
   /** The last member list Discord sent per channel subscribed (op 37). */
   private readonly memberLists = new Map<string, unknown>();
 
@@ -202,6 +206,7 @@ class DiscordProvider implements Provider {
     this.gateway?.stop();
     if (this.guildTimer) clearTimeout(this.guildTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
+    if (this.dmLineTimer) clearTimeout(this.dmLineTimer);
     if (this.fixtures) {
       const { uninstallFixtures } = await import("./discord/fixtures");
       uninstallFixtures();
@@ -234,6 +239,7 @@ class DiscordProvider implements Provider {
       chats: chats.length,
       folders: proto.folders.length,
       settings: typeof data.user_settings_proto === "string",
+      ready_kb: Math.round((this.gateway?.readyChars ?? 0) / 1024),
       fresh: !this.everReady,
     });
     this.everReady = true;
@@ -241,6 +247,40 @@ class DiscordProvider implements Provider {
     // READY is the largest thing the bridge ever parses; give its memory back.
     setTimeout(() => Bun.gc(true), 0).unref?.();
     this.resubscribe();
+    this.fetchDmLines();
+  }
+
+  /**
+   * The DM list shows each DM's last line: for the most recent DMs whose
+   * newest message the bridge has not seen, that message is fetched (as
+   * opening the DM would), one at a time, a moment apart.
+   */
+  private fetchDmLines(): void {
+    if (this.dmLineTimer) clearTimeout(this.dmLineTimer);
+    const queue = [...this.account.channels.values()]
+      .filter((channel) => !channel.guildId && channel.lastMessageId)
+      .sort((a, b) => (a.lastMessageId!.length - b.lastMessageId!.length) || (a.lastMessageId! < b.lastMessageId! ? -1 : 1))
+      .reverse()
+      .slice(0, DM_LINES)
+      .filter((channel) => this.host.chats.raw(channel.id)?.last?.id !== channel.lastMessageId)
+      .map((channel) => channel.id);
+    const step = () => {
+      this.dmLineTimer = null;
+      const id = queue.shift();
+      const token = this.token;
+      if (!id || !token || this.stopped) return;
+      void fetchChannelMessages(token, id, 1).then((page) => {
+        const newest = page.at(-1);
+        const chat = this.host.chats.raw(id);
+        if (newest && chat && chat.last?.id !== newest.id) {
+          const wire = this.wire(newest);
+          this.upsertChat({ ...chat, last: { id: wire.id, ts: wire.ts, author: wire.author.name, text: lastLine(wire), mine: wire.mine } });
+        }
+      }).catch(() => {}).finally(() => {
+        if (queue.length > 0 && !this.stopped) this.dmLineTimer = setTimeout(step, DM_LINE_SPACING_MS);
+      });
+    };
+    if (queue.length > 0) this.dmLineTimer = setTimeout(step, DM_LINE_SPACING_MS);
   }
 
   private lost(fatal: boolean, code: number | null): void {

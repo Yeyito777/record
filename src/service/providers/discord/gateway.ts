@@ -99,6 +99,8 @@ export class DiscordGateway {
   private readonly memberQueue = new Map<string, Set<string>>();
   private memberTimer: ReturnType<typeof setTimeout> | null = null;
   private lastMemberRequestAt = 0;
+  /** READY's size in characters (the log; the bridge's largest parse). */
+  readyChars = 0;
   /** The presence this session has: the identify's, or the last op 3. */
   private presence: string | null = null;
   private readonly fetchImpl: typeof fetch;
@@ -214,11 +216,13 @@ export class DiscordGateway {
 
   private readonly onMessage = (event: MessageEvent<unknown>): void => {
     let payload: { op: number; t?: string | null; s?: number | null; d?: any };
+    const text = messageText(event.data);
     try {
-      payload = JSON.parse(messageText(event.data));
+      payload = JSON.parse(text);
     } catch {
       return;
     }
+    if (payload.t === "READY") this.readyChars = text.length;
     if (typeof payload.s === "number") this.seq = payload.s;
     switch (payload.op) {
       case 10:

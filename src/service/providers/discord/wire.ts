@@ -151,7 +151,7 @@ export function wireMessage(message: DiscordMessage, cx: WireContext, raw?: any)
   const roleNames: Record<string, { name: string; color: number | null }> = {};
   const channels: Record<string, string> = {};
   const emoji: Record<string, WireMedia> = {};
-  for (const mentioned of [...(message.mentionUsers ?? []), ...(forwarded?.mentionUsers ?? [])]) {
+  for (const mentioned of [...(message.mentionUsers ?? []), ...(forwarded?.mentionUsers ?? []), ...(message.reply?.mentionUsers ?? [])]) {
     const nick = guildId ? account.guilds.get(guildId)?.members.get(mentioned.id)?.nick : null;
     users[mentioned.id] = nick ?? mentioned.displayName;
   }
@@ -262,7 +262,8 @@ export function plainText(message: Pick<WireMessage, "text" | "ext">): string {
     .replace(/<a?:([A-Za-z0-9_~]+):\d+>/g, ":$1:")
     .replace(/<t:(-?\d+)(?::[tTdDfFR])?>/g, (_, seconds: string) => new Date(Number(seconds) * 1000).toISOString().slice(0, 16).replace("T", " "))
     .replace(/<\/([^:>]+):\d+>/g, "/$1")
-    .replace(/(\*\*|__|~~|```)/g, "")
+    .replace(/(\*\*|__|~~|```|`)/g, "")
+    .replace(/(^|[^\w*])[*_]([^*_\n]+)[*_](?![\w*])/g, "$1$2")
     .replace(/^(?:#{1,3}|-#|>{1,3}) /gm, "");
 }
 
