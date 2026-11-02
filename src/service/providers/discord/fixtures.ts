@@ -15,7 +15,7 @@
  */
 
 import type { DiscordMessageResponse } from "../../../discord";
-import { buildMessageAuthor, DEMO_TOKEN, snowflake } from "../../../demo/data";
+import { buildMessageAuthor, DEMO_TOKEN, hashString, snowflake } from "../../../demo/data";
 import { DemoDiscordServer } from "../../../demo/server";
 
 export interface Fixtures {
@@ -26,6 +26,17 @@ export interface Fixtures {
 }
 
 let installed: Fixtures | null = null;
+let originals: { fetch: typeof fetch; WebSocket: typeof WebSocket } | null = null;
+
+/** Puts the real fetch and WebSocket back (the provider stopped; tests). */
+export function uninstallFixtures(): void {
+  if (!installed || !originals) return;
+  installed.server.shutdown();
+  globalThis.fetch = originals.fetch;
+  globalThis.WebSocket = originals.WebSocket;
+  installed = null;
+  originals = null;
+}
 
 export function installFixtures(): Fixtures {
   if (installed) return installed;
@@ -36,17 +47,43 @@ export function installFixtures(): Fixtures {
     olderPageDelayMs: 120,
     logPath: null,
   });
+  // A world worth drawing: about a third of the servers' channels unread,
+  // DMs with unread counts, the first server set to notify for every message.
+  const demo = server as unknown as { readyPayload: () => any };
+  const original = demo.readyPayload.bind(server);
+  demo.readyPayload = () => {
+    const ready = original();
+    for (const entry of ready.read_state?.entries ?? []) {
+      const found = server.findChannel(entry.id);
+      if (!found || !entry.last_message_id) continue;
+      const roll = hashString(`unread:${entry.id}`) % 6;
+      if (found.guild && entry.mention_count === 0 && roll < 2) {
+        entry.last_message_id = (BigInt(entry.last_message_id) - 1n).toString();
+      } else if (!found.guild && entry.mention_count > 0) {
+        entry.mention_count = 1 + (hashString(`count:${entry.id}`) % 4);
+      }
+    }
+    for (const [index, guild] of (ready.guilds ?? []).entries()) {
+      guild.properties.default_message_notifications = index === 0 ? 0 : 1;
+    }
+    return ready;
+  };
   // record's heartbeat is op 40; the demo answers op 1 only. Ack it here, as Discord does.
   const Base = server.WebSocket;
+  const heartbeat = Number(process.env.DISCORD_FIXTURES_HEARTBEAT_MS);
   class FixtureSocket extends Base {
+    override deliver(payload: { op: number; t?: string; s?: number; d?: unknown }): void {
+      // Tests ask for a quicker heartbeat.
+      if (payload.op === 10 && Number.isFinite(heartbeat) && heartbeat > 0) payload = { ...payload, d: { heartbeat_interval: heartbeat } };
+      super.deliver(payload);
+    }
+
     override send(data: string | ArrayBufferLike | ArrayBufferView): void {
-      if (typeof data === "string" && data.startsWith("{\"op\":40")) {
-        setTimeout(() => this.deliver({ op: 11 }), 0);
-        return;
-      }
+      if (typeof data === "string" && data.startsWith("{\"op\":40")) setTimeout(() => this.deliver({ op: 11 }), 0);
       super.send(data);
     }
   }
+  originals = { fetch: globalThis.fetch, WebSocket: globalThis.WebSocket };
   globalThis.fetch = server.fetch;
   globalThis.WebSocket = FixtureSocket as unknown as typeof WebSocket;
   const seconds = Number(process.env.DISCORD_FIXTURES_INCOMING_SECONDS);

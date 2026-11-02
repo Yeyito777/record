@@ -247,9 +247,28 @@ export function wireMessage(message: DiscordMessage, cx: WireContext, raw?: any)
   };
 }
 
+/**
+ * Discord's markdown as plain words (a notification, the DM list's line):
+ * mentions, channels and roles by name, custom emoji as `:name:`,
+ * timestamps as dates, spoilers hidden, emphasis markers dropped.
+ */
+export function plainText(message: Pick<WireMessage, "text" | "ext">): string {
+  const ext = (message.ext ?? {}) as { users?: Record<string, string>; roles?: Record<string, { name: string }>; channels?: Record<string, string> };
+  return message.text
+    .replace(/\|\|[\s\S]+?\|\|/g, "[spoiler]")
+    .replace(/<@!?(\d+)>/g, (_, id: string) => `@${ext.users?.[id] ?? "someone"}`)
+    .replace(/<@&(\d+)>/g, (_, id: string) => `@${ext.roles?.[id]?.name ?? "role"}`)
+    .replace(/<#(\d+)>/g, (_, id: string) => `#${ext.channels?.[id] ?? "channel"}`)
+    .replace(/<a?:([A-Za-z0-9_~]+):\d+>/g, ":$1:")
+    .replace(/<t:(-?\d+)(?::[tTdDfFR])?>/g, (_, seconds: string) => new Date(Number(seconds) * 1000).toISOString().slice(0, 16).replace("T", " "))
+    .replace(/<\/([^:>]+):\d+>/g, "/$1")
+    .replace(/(\*\*|__|~~|```)/g, "")
+    .replace(/^(?:#{1,3}|-#|>{1,3}) /gm, "");
+}
+
 /** A message in a few words: the DM list's line under the name. */
 export function lastLine(message: WireMessage): string {
-  const text = message.text.replace(/\s+/g, " ").trim();
+  const text = plainText(message).replace(/\s+/g, " ").trim();
   if (text) return text.length > 200 ? `${text.slice(0, 199)}…` : text;
   const first = message.media[0];
   if (!first) return message.ext && Array.isArray((message.ext as any).embeds) ? "Embed" : "Message";

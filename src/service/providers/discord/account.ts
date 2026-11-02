@@ -463,8 +463,11 @@ export class Account {
   }
 
   isUnread(channel: Channel): boolean {
+    const read = this.read(channel.id);
+    // A mention is unread whatever the read marker says.
+    if (read.mentions > 0) return true;
     if (!channel.lastMessageId) return false;
-    return newer(channel.lastMessageId, this.read(channel.id).lastMessageId);
+    return newer(channel.lastMessageId, read.lastMessageId);
   }
 
   // ---------------------------------------------------------------------

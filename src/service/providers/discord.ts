@@ -35,7 +35,7 @@ import { Account, DM_TYPES, THREAD_TYPES, type Channel, userAvatar, userInfo } f
 import { DiscordGateway, type Presence, type PresenceStatus } from "./discord/gateway";
 import { mediaRequest } from "./discord/refs";
 import { decodeUserProto } from "./discord/userproto";
-import { lastLine, wireMessage } from "./discord/wire";
+import { lastLine, plainText, wireMessage } from "./discord/wire";
 
 /** Channels whose newest messages are kept (what the app opened lately). */
 const CACHED_CHANNELS = 40;
@@ -201,6 +201,12 @@ class DiscordProvider implements Provider {
     this.stopped = true;
     this.gateway?.stop();
     if (this.guildTimer) clearTimeout(this.guildTimer);
+    if (this.statsTimer) clearInterval(this.statsTimer);
+    if (this.fixtures) {
+      const { uninstallFixtures } = await import("./discord/fixtures");
+      uninstallFixtures();
+      this.fixtures = null;
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -556,7 +562,9 @@ class DiscordProvider implements Provider {
     if (!wire) return;
     if (viewed) this.host.emit({ event: "message", message: wire, live: true });
     if (arrival.notify) {
-      void this.host.notifier.incoming(wire, this.notificationChat(channel, chat, arrival.mentioned)).then((outcome) => {
+      // The notification says it in words: names for mentions, no markdown.
+      const words = { ...wire, text: plainText(wire) };
+      void this.host.notifier.incoming(words, this.notificationChat(channel, chat, arrival.mentioned)).then((outcome) => {
         if (outcome === "shown") this.host.chats.markReadLocally(channel.id);
       });
     } else if (viewing && !wire.mine) {
