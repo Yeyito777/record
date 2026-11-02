@@ -1725,6 +1725,30 @@ export async function fetchGuildChannels(
   );
 }
 
+/**
+ * One parent channel's threads (a forum's posts), most recently active
+ * first, through the per-channel search route the client uses (the
+ * guild-wide /threads/active route is bot-only).
+ */
+export async function fetchChannelThreads(
+  token: string,
+  parentId: string,
+  options: { archived?: boolean; limit?: number; offset?: number } = {},
+): Promise<{ threads: DiscordChannelResponse[]; members: DiscordThreadMemberResponse[]; hasMore: boolean }> {
+  const query = new URLSearchParams({
+    archived: String(options.archived ?? false),
+    sort_by: "last_message_time",
+    sort_order: "desc",
+    limit: String(options.limit ?? 25),
+  });
+  if (options.offset) query.set("offset", String(options.offset));
+  const result = await apiGetJson<DiscordThreadSearchResponse & { has_more?: boolean }>(
+    token,
+    `/channels/${parentId}/threads/search?${query.toString()}`,
+  );
+  return { threads: result.threads ?? [], members: result.members ?? [], hasMore: result.has_more === true };
+}
+
 export async function createGuildInvite(
   token: string,
   guildId: string,
