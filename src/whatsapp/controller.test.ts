@@ -803,12 +803,17 @@ describe("WhatsApp recent-history reconciliation", () => {
           ));
           if (early) {
             expect(state.timeline.loadingOlder).toBe(true);
+            backend.fetchHistory = originalFetch;
             request.resolve(requestId);
             await settle();
-            backend.fetchHistory = originalFetch;
           }
           expectSilentRecheck(state);
           expect(state.timeline.hasOlder).toBe(false);
+          // Finished backfill rechecks the newest end at once, silently.
+          expect(backend.historyRequests.at(-1)?.oldestId).toBe("latest");
+          await settle();
+          backend.emit("history", historyPage([], `history-${backend.historyRequests.length}`));
+          expectSilentRecheck(state);
           const beforeExplicitPage = backend.historyRequests.length;
           controller.loadOlderHistory();
           expect(backend.historyRequests).toHaveLength(beforeExplicitPage);
@@ -884,19 +889,105 @@ describe("WhatsApp recent-history reconciliation", () => {
       await settle();
       backend.emit("history", historyPage([], "history-1"));
       expectSilentRecheck(state);
+      // The finished backfill's recheck of the newest end is still in flight.
+      expect(backend.historyRequests.at(-1)?.oldestId).toBe("old");
       backend.emit("messages", {
         kind: "upsert", upsertType: "notify", skippedMessages: 0,
         messages: [raceMessage("new-gap", jid, 10 * 24 * 60 * 60 * 1_000)],
       });
       controller.openChannel(whatsappChannelId(jid));
+      // Older paging waits for that recheck instead of being dropped.
+      expect(state.timeline.loadingOlder).toBe(true);
+      await settle();
+      backend.emit("history", historyPage([], "history-2"));
       expect(state.timeline.loadingOlder).toBe(true);
       expect(backend.historyRequests.at(-1)?.oldestId).toBe("new-gap");
       await settle();
       backend.emit("history", historyPage([
         raceMessage("gap-fill", jid, 9 * 24 * 60 * 60 * 1_000),
-      ], "history-2"));
+      ], "history-3"));
       expect(state.timeline.messages.some(message => message.id === "gap-fill")).toBe(true);
       expect(state.timeline.loadingOlder).toBe(true); // next page remains queued
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("a short gap above the newest messages is repaired as soon as backfill finishes", async () => {
+    // Messages missed while unlinked: too recent a gap to page backward into.
+    const { state, backend, controller } = behindFixture();
+    const day = 24 * 60 * 60 * 1_000;
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage([
+        raceMessage("first", jid, day),
+        raceMessage("before-gap", jid, 2 * day),
+        raceMessage("after-gap", jid, 8 * day),
+      ]));
+      controller.openChannel(whatsappChannelId(jid));
+      expect(backend.historyRequests.at(-1)?.oldestId).toBe("first");
+      await settle();
+      backend.emit("history", historyPage([], "history-1"));
+      expect(backend.historyRequests.at(-1)).toEqual({ count: 50, oldestId: "after-gap", oldestTimestampMs: 8 * day });
+      await settle();
+      backend.emit("history", historyPage([
+        raceMessage("before-gap", jid, 2 * day),
+        raceMessage("missed", jid, 5 * day),
+      ], "history-2"));
+      expect(state.timeline.messages.map(message => message.id)).toEqual(["first", "before-gap", "missed", "after-gap"]);
+      expect(backend.historyRequests).toHaveLength(2);
+      expectSilentRecheck(state);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("a hole longer than one page is repaired page by page, even after moving to another chat", async () => {
+    const { state, backend, controller } = behindFixture();
+    const otherJid = "elsewhere@s.whatsapp.net";
+    const known = Array.from({ length: 40 }, (_, index) => raceMessage(`known-${index}`, jid, 100 + index));
+    const missed = Array.from({ length: 120 }, (_, index) => raceMessage(`missed-${index}`, jid, 1_000 + index));
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage([...known, raceMessage("newest", jid, 10_000), raceMessage("elsewhere", otherJid, 50)]));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      backend.emit("history", historyPage([], "history-1"));
+      expect(backend.historyRequests.at(-1)?.oldestId).toBe("newest");
+      controller.openChannel(whatsappChannelId(otherJid));
+      expect(backend.historyRequests.at(-1)?.oldestId).toBe("elsewhere");
+      await settle();
+      backend.emit("history", historyPage(missed.slice(70), "history-2"));
+      expect(backend.historyRequests.at(-1)).toEqual({ count: 50, oldestId: "missed-70", oldestTimestampMs: 1_070 });
+      await settle();
+      backend.emit("history", historyPage(missed.slice(20, 70), "history-4"));
+      expect(backend.historyRequests.at(-1)?.oldestId).toBe("missed-20");
+      await settle();
+      // A full page that reaches known messages closes the hole.
+      backend.emit("history", historyPage([...known.slice(10), ...missed.slice(0, 20)], "history-5"));
+      expect(backend.historyRequests).toHaveLength(5);
+      expect(state.whatsapp.messagesByChatId[jid]).toHaveLength(known.length + missed.length + 1);
+      controller.openChannel(whatsappChannelId(jid));
+      expect(state.timeline.messages.map(message => message.id))
+        .toEqual([...known, ...missed, raceMessage("newest", jid, 10_000)].map(message => message.id));
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
+  test("hole repair stops after one cache's worth of pages", async () => {
+    const { backend, controller } = behindFixture();
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage(fullHistory()));
+      controller.openChannel(whatsappChannelId(jid));
+      for (let page = 1; page <= 10; page++) {
+        await settle();
+        if (backend.historyRequests.length < page) break;
+        backend.emit("history", historyPage(Array.from({ length: 50 }, (_, index) =>
+          raceMessage(`hole-${page}-${index}`, jid, 100 - page + index / 100)), `history-${page}`));
+      }
+      expect(backend.historyRequests).toHaveLength(Math.ceil(MAX_WHATSAPP_MESSAGES_PER_CHAT / 50));
     } finally {
       await controller.shutdown();
     }
