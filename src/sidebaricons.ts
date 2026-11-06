@@ -5,7 +5,8 @@
  * Pictures are 64 px PNGs, cached in memory for the session and on disk across
  * restarts, including "has no picture" answers. Only rows on screen (plus a
  * little lookahead) are fetched, visible rows first, with a small per-platform
- * limit on requests in flight and a back-off after errors. The terminal keeps
+ * limit on requests in flight and a back-off after errors. Disk reads are not
+ * network requests: they skip both, so saved pictures show at once. The terminal keeps
  * the image data (see terminalimage.ts), so scrolling back only re-places it.
  */
 
@@ -31,6 +32,8 @@ const MAX_TERMINAL_REJECTIONS = 3;
 const BACKOFF_FIRST_MS = 60_000;
 const BACKOFF_MAX_MS = 30 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
+/** A source that cannot be asked yet (WhatsApp still connecting) is retried this soon. */
+const UNAVAILABLE_RETRY_MS = 2_000;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /** "bundled": provider logos shipped in assets/sidebar/, read from disk, never fetched. */
@@ -174,7 +177,19 @@ type IconEntry =
   | { status: "none"; source: SidebarIconSource }
   | { status: "failed"; source: SidebarIconSource; retryAt: number };
 
-type LoadResult = { kind: "ready"; png: Buffer } | { kind: "none" } | { kind: "error" };
+type LoadResult = { kind: "ready"; png: Buffer } | { kind: "none" } | { kind: "error" } | { kind: "unavailable" };
+type DiskResult = { kind: "ready"; png: Buffer } | { kind: "none" } | { kind: "miss"; stale: Buffer | null };
+
+/**
+ * Thrown by a resolver that cannot ask yet, such as WhatsApp before it has
+ * connected. Not an error: the platform is not paused, the row asks again soon.
+ */
+export class SidebarIconUnavailableError extends Error {
+  constructor(message = "Not connected.") {
+    super(message);
+    this.name = "SidebarIconUnavailableError";
+  }
+}
 
 export type SidebarIconResolver = (source: SidebarIconSource) => Promise<string | null>;
 
@@ -227,10 +242,20 @@ export class SidebarIconStore {
     bundled: { active: 0, backoffMs: 0, pausedUntil: 0 },
   };
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
+  private resumeAt = Infinity;
   /** This frame's wanted sources, nearest first; replaced every frame. */
   private queue: SidebarIconSource[] = [];
   /** Keys drawn in the last frame; only their arrival needs a repaint. */
   private visible = new Set<string>();
+  /** Keys the last frame drew or looked ahead to, nearest first. */
+  private wanted = new Map<string, number>();
+  /** Disk reads in flight. */
+  private diskActive = 0;
+  /**
+   * Keys whose disk cache was read this session without a usable answer,
+   * with the expired picture to fall back on if asking fails.
+   */
+  private readonly diskMisses = new Map<string, Buffer | null>();
 
   constructor(options: SidebarIconStoreOptions = {}) {
     this.fetchImpl = options.fetch;
@@ -272,9 +297,13 @@ export class SidebarIconStore {
   want(visible: readonly SidebarIconSource[], nearby: readonly SidebarIconSource[] = []): void {
     if (!this.enabled) return;
     this.visible = new Set(visible.map((source) => source.key));
+    this.wanted = new Map();
+    for (const source of [...visible, ...nearby]) {
+      if (!this.wanted.has(source.key)) this.wanted.set(source.key, this.wanted.size);
+    }
     const seen = new Set<string>();
     this.queue = [...visible, ...nearby].filter((source) => {
-      if (seen.has(source.key) || !this.needsLoad(source)) return false;
+      if (seen.has(source.key) || !this.mayLoad(source)) return false;
       seen.add(source.key);
       return true;
     });
@@ -305,49 +334,94 @@ export class SidebarIconStore {
   }
 
   private platformsActive(): number {
-    return Object.values(this.platforms).reduce((sum, platform) => sum + platform.active, 0);
+    return this.diskActive + Object.values(this.platforms).reduce((sum, platform) => sum + platform.active, 0);
+  }
+
+  /** Not settled yet: never tried, or failed (now or later it is tried again). */
+  private mayLoad(source: SidebarIconSource): boolean {
+    if (!source.url && !source.file && !this.resolvers[source.platform]) return false;
+    const entry = this.entries.get(source.key);
+    return !entry || entry.status === "failed";
   }
 
   private needsLoad(source: SidebarIconSource): boolean {
-    if (!source.url && !source.file && !this.resolvers[source.platform]) return false;
     const entry = this.entries.get(source.key);
-    return !entry || (entry.status === "failed" && this.now() >= entry.retryAt);
+    return this.mayLoad(source) && (entry?.status !== "failed" || this.now() >= entry.retryAt);
+  }
+
+  /** The disk cache (or the bundled file) has not been read for this source yet. */
+  private needsDiskRead(source: SidebarIconSource): boolean {
+    return !this.entries.has(source.key) && (Boolean(source.file) || (this.dir() !== null && !this.diskMisses.has(source.key)));
   }
 
   private canStart(source: SidebarIconSource): boolean {
+    if (!this.needsLoad(source)) return false;
+    if (this.needsDiskRead(source)) return true;
     const platform = this.platforms[source.platform];
-    return this.needsLoad(source)
-      && platform.active < (this.concurrency[source.platform] ?? POLICIES[source.platform].concurrency)
+    return platform.active < (this.concurrency[source.platform] ?? POLICIES[source.platform].concurrency)
       && this.now() >= platform.pausedUntil;
   }
 
   private pump(): void {
     const waiting: SidebarIconSource[] = [];
     for (const source of this.queue) {
-      if (!this.needsLoad(source)) continue;
+      if (!this.mayLoad(source)) continue;
       if (!this.canStart(source)) {
         waiting.push(source);
         continue;
       }
-      this.start(source);
+      if (this.needsDiskRead(source)) this.readDisk(source);
+      else this.start(source);
     }
     this.queue = waiting;
     this.scheduleResume();
   }
 
-  /** Wake when a paused platform with queued work may ask again. */
+  /** Wake when a paused platform, or a row waiting to retry, may ask again. */
   private scheduleResume(): void {
-    if (this.resumeTimer) return;
     const now = this.now();
     const resumeAt = Math.min(...this.queue
-      .map((source) => this.platforms[source.platform].pausedUntil)
+      .map((source) => {
+        const entry = this.entries.get(source.key);
+        const retryAt = entry?.status === "failed" ? entry.retryAt : 0;
+        return Math.max(retryAt, this.platforms[source.platform].pausedUntil);
+      })
       .filter((until) => until > now));
     if (!Number.isFinite(resumeAt)) return;
+    if (this.resumeTimer) {
+      if (this.resumeAt <= resumeAt) return;
+      clearTimeout(this.resumeTimer);
+    }
+    this.resumeAt = resumeAt;
     this.resumeTimer = setTimeout(() => {
       this.resumeTimer = null;
+      this.resumeAt = Infinity;
       this.pump();
     }, resumeAt - now);
     this.resumeTimer.unref?.();
+  }
+
+  /** Reads a saved picture without waiting on the platform's network limits. */
+  private readDisk(source: SidebarIconSource): void {
+    this.entries.set(source.key, { status: "loading", source });
+    this.diskActive += 1;
+    void this.loadFromDisk(source).then((result) => {
+      if (result.kind !== "miss") {
+        this.settle(source, result);
+        return;
+      }
+      this.diskMisses.set(source.key, result.stale);
+      this.entries.delete(source.key);
+      // Ask the platform next, in the frame's order, if the row is still wanted.
+      const rank = this.wanted.get(source.key);
+      if (rank !== undefined && !this.queue.some((queued) => queued.key === source.key)) {
+        const before = this.queue.findIndex((queued) => (this.wanted.get(queued.key) ?? Infinity) > rank);
+        this.queue.splice(before < 0 ? this.queue.length : before, 0, source);
+      }
+    }).finally(() => {
+      this.diskActive -= 1;
+      this.pump();
+    });
   }
 
   private start(source: SidebarIconSource): void {
@@ -355,41 +429,53 @@ export class SidebarIconStore {
     this.entries.set(source.key, { status: "loading", source });
     platform.active += 1;
     void this.load(source).then((result) => {
+      if (result.kind === "unavailable") {
+        this.entries.set(source.key, { status: "failed", source, retryAt: this.now() + UNAVAILABLE_RETRY_MS });
+        return;
+      }
       if (result.kind === "error") {
         platform.backoffMs = Math.min(BACKOFF_MAX_MS, platform.backoffMs ? platform.backoffMs * 2 : BACKOFF_FIRST_MS);
         platform.pausedUntil = this.now() + platform.backoffMs;
-        this.entries.set(source.key, { status: "failed", source, retryAt: platform.pausedUntil });
+        // Keep showing an expired picture rather than nothing.
+        const stale = this.diskMisses.get(source.key);
+        if (stale) this.settle(source, { kind: "ready", png: stale });
+        else this.entries.set(source.key, { status: "failed", source, retryAt: platform.pausedUntil });
         return;
       }
       platform.backoffMs = 0;
-      const imageId = result.kind === "ready" && this.nextImageId <= IMAGE_ID_LAST ? this.nextImageId++ : 0;
-      if (result.kind === "none" || imageId === 0) {
-        this.entries.set(source.key, { status: "none", source });
-        return;
-      }
-      const { width, height } = pngSize(result.png);
-      this.byImageId.set(imageId, source.key);
-      this.entries.set(source.key, {
-        status: "ready",
-        source,
-        rejections: 0,
-        image: {
-          phase: "ready",
-          attachmentId: source.key,
-          filename: `${source.key}.png`,
-          sourceUrl: source.url ?? source.key,
-          requestId: 0,
-          imageId,
-          pngBase64: result.png.toString("base64"),
-          pixelWidth: width,
-          pixelHeight: height,
-        },
-      });
-      if (this.enabled && this.visible.has(source.key)) this.onUpdate();
+      this.settle(source, result);
     }).finally(() => {
       platform.active -= 1;
       this.pump();
     });
+  }
+
+  private settle(source: SidebarIconSource, result: { kind: "ready"; png: Buffer } | { kind: "none" }): void {
+    this.diskMisses.delete(source.key);
+    const imageId = result.kind === "ready" && this.nextImageId <= IMAGE_ID_LAST ? this.nextImageId++ : 0;
+    if (result.kind === "none" || imageId === 0) {
+      this.entries.set(source.key, { status: "none", source });
+      return;
+    }
+    const { width, height } = pngSize(result.png);
+    this.byImageId.set(imageId, source.key);
+    this.entries.set(source.key, {
+      status: "ready",
+      source,
+      rejections: 0,
+      image: {
+        phase: "ready",
+        attachmentId: source.key,
+        filename: `${source.key}.png`,
+        sourceUrl: source.url ?? source.key,
+        requestId: 0,
+        imageId,
+        pngBase64: result.png.toString("base64"),
+        pixelWidth: width,
+        pixelHeight: height,
+      },
+    });
+    if (this.enabled && this.visible.has(source.key)) this.onUpdate();
   }
 
   private dir(): string | null {
@@ -403,32 +489,31 @@ export class SidebarIconStore {
     return this.cacheDir;
   }
 
-  private async load(source: SidebarIconSource): Promise<LoadResult> {
+  private async loadFromDisk(source: SidebarIconSource): Promise<DiskResult> {
     if (source.file) {
       const bytes = await readFile(source.file).catch(() => null);
       return bytes && isPng(bytes) ? { kind: "ready", png: bytes } : { kind: "none" };
     }
-    const policy = POLICIES[source.platform];
     const dir = this.dir();
-    const pngPath = dir ? join(dir, `${source.key}.png`) : null;
-    const nonePath = dir ? join(dir, `${source.key}.none`) : null;
-    let stale: Buffer | null = null;
-    if (pngPath && nonePath) {
-      const cached = await readCached(pngPath);
-      if (cached && isPng(cached.bytes) && cached.bytes.length <= MAX_DOWNLOAD_BYTES) {
-        if (this.now() - cached.mtimeMs < policy.maxAgeMs) return { kind: "ready", png: cached.bytes };
-        stale = cached.bytes;
-      }
-      const none = await stat(nonePath).catch(() => null);
-      if (!stale && none && this.now() - none.mtimeMs < policy.noneMaxAgeMs) return { kind: "none" };
+    if (!dir) return { kind: "miss", stale: null };
+    const policy = POLICIES[source.platform];
+    const cached = await readCached(join(dir, `${source.key}.png`));
+    if (cached && isPng(cached.bytes) && cached.bytes.length <= MAX_DOWNLOAD_BYTES) {
+      if (this.now() - cached.mtimeMs < policy.maxAgeMs) return { kind: "ready", png: cached.bytes };
+      return { kind: "miss", stale: cached.bytes };
     }
+    const none = await stat(join(dir, `${source.key}.none`)).catch(() => null);
+    if (none && this.now() - none.mtimeMs < policy.noneMaxAgeMs) return { kind: "none" };
+    return { kind: "miss", stale: null };
+  }
 
+  /** Asks the platform; the disk cache has been read already. */
+  private async load(source: SidebarIconSource): Promise<LoadResult> {
     const result = await this.download(source);
-    if (result.kind === "error") {
-      // Keep showing an expired picture rather than nothing.
-      return stale ? { kind: "ready", png: stale } : result;
+    const dir = this.dir();
+    if (dir && (result.kind === "ready" || result.kind === "none")) {
+      void this.store(dir, source, join(dir, `${source.key}.png`), join(dir, `${source.key}.none`), result);
     }
-    if (dir && pngPath && nonePath) void this.store(dir, source, pngPath, nonePath, result);
     return result;
   }
 
@@ -437,8 +522,8 @@ export class SidebarIconStore {
     if (!url) {
       try {
         url = await this.resolvers[source.platform]!(source);
-      } catch {
-        return { kind: "error" };
+      } catch (error) {
+        return { kind: error instanceof SidebarIconUnavailableError ? "unavailable" : "error" };
       }
       if (!url) return { kind: "none" };
     }

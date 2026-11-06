@@ -25,6 +25,7 @@ import {
   bundledSidebarIconSource,
   instagramUserPictureSource,
   SidebarIconStore,
+  SidebarIconUnavailableError,
   whatsappChatPictureSource,
   sidebarIconInitials,
   sidebarIconTerminalOwner,
@@ -310,6 +311,53 @@ describe("SidebarIconStore", () => {
     store.want(people);
     await store.idle();
     expect(calls).toBe(2);
+  });
+
+  test("saved pictures show at once while the platform is paused after an error", async () => {
+    const dir = tempDir();
+    const people = ["15550001@s.whatsapp.net", "15550002@s.whatsapp.net", "15550003@s.whatsapp.net"].map(whatsappChatPictureSource);
+    writeFileSync(join(dir, `${people[1]!.key}.png`), PNG);
+    writeFileSync(join(dir, `${people[2]!.key}.png`), PNG);
+    let calls = 0;
+    const store = new SidebarIconStore({
+      fetch: recordingFetch().fetch, cacheDir: dir,
+      resolvers: { whatsapp: async () => { calls++; throw new Error("rate-overlimit"); } },
+    });
+    store.setEnabled(true);
+    store.want(people);
+    await store.idle();
+    expect(calls).toBe(1);
+    expect(store.get(people[0]!)).toBeNull();
+    expect(store.get(people[1]!)).not.toBeNull();
+    expect(store.get(people[2]!)).not.toBeNull();
+  });
+
+  test("WhatsApp still connecting is asked again in seconds, without pausing other chats", async () => {
+    let now = 1_000_000;
+    let connected = false;
+    const asked: string[] = [];
+    const { fetch } = recordingFetch();
+    const store = new SidebarIconStore({
+      fetch, cacheDir: null, now: () => now, convert: async () => PNG,
+      resolvers: {
+        whatsapp: async (iconSource) => {
+          if (!connected) throw new SidebarIconUnavailableError();
+          asked.push(iconSource.ref!);
+          return `https://pps.whatsapp.net/${iconSource.ref}.jpg`;
+        },
+      },
+    });
+    store.setEnabled(true);
+    const people = ["15550001@s.whatsapp.net", "15550002@s.whatsapp.net"].map(whatsappChatPictureSource);
+    store.want(people);
+    await store.idle();
+    expect(asked).toEqual([]);
+    connected = true;
+    now += 2_000;
+    store.want(people);
+    await store.idle();
+    expect(asked).toEqual(people.map((person) => person.ref!));
+    expect(store.get(people[1]!)).not.toBeNull();
   });
 
   test("errors back the platform off, doubling, and keep other platforms going", async () => {

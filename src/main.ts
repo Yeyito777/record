@@ -181,7 +181,7 @@ import {
   showCursor,
 } from "./terminal";
 import { disposeInlineTerminalImages, handleInlineTerminalImageResponse, parseTerminalCellSize, queryTerminalCellSize, terminalImageNotFoundId } from "./terminalimage";
-import { sidebarIconTerminalOwner, sidebarIcons } from "./sidebaricons";
+import { SidebarIconUnavailableError, sidebarIconTerminalOwner, sidebarIcons } from "./sidebaricons";
 import { dmAuthorColor, theme } from "./theme";
 import { clearTimeline, clearTimelineInlineImageStates, removeTimelineInlineImageStates, setTimelineGifsPlay, hasActiveTimelineCall, invalidateTimelineLayout, hasLoadingInlineTimelineImage, moveTimelineScroll, removeTimelineInlineImageState, renderTimelineLines, setTimelineInlineImageState, setTimelineImageAutoShow, setTimelineImageDetails, setTimelineRenderContext, setTimelineTerminalCellSize, shouldLoadNewerMessages, shouldLoadOlderMessages, startLoadingNewerMessages, startLoadingOlderMessages } from "./timeline";
 import { acceptDiscordInvite, banGuildMember, createGuildInvite, deleteChannel, DiscordCaptchaRequiredError, disconnectGuildMemberFromVoice, discordInviteCodeFromUrl, DIRECT_MESSAGES_GUILD_ID, DIRECT_MESSAGES_GUILD_NAME, isForumChannel, isGuildVoiceChannel, isThreadChannel, kickGuildMember, leaveGuild, setGuildMemberServerDeafen, setGuildMemberServerMute, summarizeDiscordMessageReplyPreview, type DiscordInviteJoinResult, type DiscordMessage, type DiscordMessageAttachment } from "./discord";
@@ -3539,7 +3539,13 @@ async function main(): Promise<void> {
       scheduleRender();
     },
     // WhatsApp chat pictures need one profile-picture query per shown chat.
-    resolvers: { whatsapp: (source) => whatsAppController.profilePictureUrl(source.ref ?? "") },
+    resolvers: {
+      whatsapp: (source) => {
+        // Still connecting: ask again shortly, without pausing every chat's picture.
+        if (!whatsAppController.isConnected) throw new SidebarIconUnavailableError();
+        return whatsAppController.profilePictureUrl(source.ref ?? "");
+      },
+    },
   });
   // Bytes written to the terminal and how long writes block (debug log, tty.stats).
   installTtyStats((event, fields) => debugLog(event, fields), terminalOutputBacklog);
