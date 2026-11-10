@@ -1243,6 +1243,51 @@ describe("session", () => {
     expect(state.timeline.messages.map((entry) => entry.content)).toEqual(["latest"]);
   });
 
+  test("replies into a channel the account cannot read ask Discord once, not once per message", async () => {
+    // The owner's log: 40 crossposted messages, each pointing at a different
+    // message in an unreadable channel, sent 39 requests in 60 ms (30 x 403, 9 x 429).
+    const requests: string[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const crosspost = (id: number) => ({
+      id: String(id), channel_id: "channel-x", guild_id: "guild-1", type: 0, content: `news ${id}`,
+      timestamp: `2026-01-01T12:${String(id % 60).padStart(2, "0")}:00.000Z`, edited_timestamp: null,
+      author: { id: "user-1", username: "tester", global_name: "Tester" },
+      message_reference: { message_id: String(9000 + id), channel_id: "channel-hidden" }, referenced_message: null, attachments: [], embeds: [],
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url.replace("https://discord.com/api/v9", ""));
+      if (url.includes("/channels/channel-hidden/")) {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Bun.sleep(5);
+        inFlight--;
+        return new Response(JSON.stringify({ message: "Missing Access", code: 50001 }), { status: 403 });
+      }
+      if (url.includes("/channels/channel-x/messages?")) {
+        return new Response(JSON.stringify(Array.from({ length: 40 }, (_, index) => crosspost(40 - index))), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/ack")) return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+      throw new Error(`unexpected fetch ${url}`);
+    }) as unknown as typeof fetch;
+
+    const state = createInitialState("token-1", "/tmp/record-config.json");
+    state.channelList.guildId = "guild-1";
+    state.channelList.channels = [{ id: "channel-x", guildId: "guild-1", parentId: null, name: "news", topic: null, position: 0, type: 0, nsfw: false }];
+    state.guildRolesByGuildId["guild-1"] = [{ id: "guild-1", name: "@everyone", color: 0, position: 0, permissions: "0" }];
+
+    await loadChannelMessages(state, "token-1", "channel-x", { scheduleRender: () => {} });
+    await waitForCondition(() => requests.some((url) => url.includes("channel-hidden")));
+    await Bun.sleep(60);
+    await flushTimers();
+
+    const hidden = requests.filter((url) => url.includes("/channels/channel-hidden/"));
+    expect(hidden.length).toBeLessThanOrEqual(2);
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect(state.timeline.messages).toHaveLength(40);
+  });
+
   test("missing reply previews are fetched the web client's way, once per target, never via the bot-only route", async () => {
     const requests: string[] = [];
     const reply = (id: string, target: string) => ({
