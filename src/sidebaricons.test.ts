@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -39,6 +39,9 @@ import { setTimelineMessages } from "./timeline";
 import { termWidth } from "./textwidth";
 import { theme } from "./theme";
 import { VtScreen } from "./vtscreen.testutil";
+
+/** A file time (seconds) past every platform's picture age. */
+const LONG_AGO = Date.now() / 1000 - 30 * 24 * 60 * 60;
 
 // A valid transparent 1x1 PNG.
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg==", "base64");
@@ -227,7 +230,7 @@ describe("SidebarIconStore", () => {
     }
   });
 
-  test("WhatsApp asks through the session one chat at a time and remembers chats without a picture", async () => {
+  test("WhatsApp asks through the session two chats at a time and remembers chats without a picture", async () => {
     const dir = tempDir();
     const asked: string[] = [];
     const resolvers = {
@@ -250,24 +253,25 @@ describe("SidebarIconStore", () => {
     }) as typeof globalThis.fetch;
     const store = new SidebarIconStore({ fetch: slowFetch, cacheDir: dir, resolvers, convert });
     store.setEnabled(true);
-    const people = ["15550001@s.whatsapp.net", "15550002@s.whatsapp.net", "25550003@s.whatsapp.net"].map(whatsappChatPictureSource);
+    const people = ["15550001@s.whatsapp.net", "15550002@s.whatsapp.net", "15550004@s.whatsapp.net", "25550003@s.whatsapp.net"].map(whatsappChatPictureSource);
     store.want(people);
     await store.idle();
     expect(asked).toEqual(people.map((person) => person.ref!));
-    expect(urls).toHaveLength(2);
-    expect(maxInFlight).toBe(1);
-    expect(converted).toBe(2);
+    expect(urls).toHaveLength(3);
+    expect(maxInFlight).toBe(2);
+    expect(converted).toBe(3);
     expect(store.get(people[0]!)).not.toBeNull();
-    expect(store.get(people[2]!)).toBeNull();
-    for (let i = 0; i < 50 && readdirSync(dir).length < 3; i++) await Bun.sleep(2);
+    expect(store.get(people[3]!)).toBeNull();
+    const saved = () => readdirSync(dir).filter((name) => !name.endsWith(".tmp")).length;
+    for (let i = 0; i < 200 && saved() < 4; i++) await Bun.sleep(2);
 
     // A restart within the cache's lifetime asks nothing at all.
     const restarted = new SidebarIconStore({ fetch, cacheDir: dir, resolvers, convert });
     restarted.setEnabled(true);
     restarted.want(people);
     await restarted.idle();
-    expect(asked).toHaveLength(3);
-    expect(urls).toHaveLength(2);
+    expect(asked).toHaveLength(4);
+    expect(urls).toHaveLength(3);
     expect(restarted.get(people[1]!)).not.toBeNull();
   });
 
@@ -293,11 +297,126 @@ describe("SidebarIconStore", () => {
     expect(later.get(ig)).not.toBeNull();
   });
 
+  test("saved pictures past their age show at once, before WhatsApp has connected, and are asked about again behind rows with nothing to show", async () => {
+    const dir = tempDir();
+    const people = ["15550001@s.whatsapp.net", "15550002@s.whatsapp.net", "15550003@s.whatsapp.net", "15550004@s.whatsapp.net"]
+      .map(whatsappChatPictureSource);
+    // Saved long ago: a picture, a picture that has since changed, and a chat without one. The last was never asked.
+    for (const name of [`${people[0]!.key}.png`, `${people[1]!.key}.png`, `${people[2]!.key}.none`]) {
+      writeFileSync(join(dir, name), name.endsWith(".png") ? PNG : "");
+      utimesSync(join(dir, name), LONG_AGO, LONG_AGO);
+    }
+    let now = Date.now();
+    let connected = false;
+    const asked: string[] = [];
+    let updates = 0;
+    const OTHER_PNG = Buffer.concat([PNG, Buffer.from([0])]);
+    const store = new SidebarIconStore({
+      cacheDir: dir, now: () => now, concurrency: { whatsapp: 1 }, onUpdate: () => { updates++; },
+      fetch: (async (input: string | URL | Request) => new Response(String(input).includes("15550002") ? OTHER_PNG : PNG, { status: 200 })) as typeof globalThis.fetch,
+      resolvers: {
+        whatsapp: async (iconSource) => {
+          if (!connected) throw new SidebarIconUnavailableError();
+          asked.push(iconSource.ref!);
+          return `https://pps.whatsapp.net/${iconSource.ref}.png`;
+        },
+      },
+    });
+    store.setEnabled(true);
+    store.want(people);
+    await store.idle();
+    // Not connected, nothing asked, yet both saved pictures are on screen.
+    expect(asked).toEqual([]);
+    const first = store.get(people[0]!);
+    const second = store.get(people[1]!);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(store.get(people[2]!)).toBeNull();
+    expect(updates).toBe(2);
+
+    connected = true;
+    now += 2_000;
+    store.want(people);
+    await store.idle();
+    // The row with nothing to show is asked first, then the old answers in row order.
+    expect(asked).toEqual([people[3]!.ref!, people[0]!.ref!, people[1]!.ref!, people[2]!.ref!]);
+    // An unchanged picture is left exactly as it was; a changed one is replaced.
+    expect(store.get(people[0]!)).toBe(first!);
+    expect(store.get(people[1]!)!.imageId).not.toBe(second!.imageId);
+    expect(store.get(people[2]!)).not.toBeNull();
+    expect(updates).toBe(5);
+
+    // Each was asked once; current answers are not asked about again.
+    store.want(people);
+    await store.idle();
+    expect(asked).toHaveLength(4);
+    // Every answer is saved again: four pictures, no ".none", nothing half-written.
+    const settled = () => { const names = readdirSync(dir); return names.length === 4 && names.every((name) => name.endsWith(".png")); };
+    for (let i = 0; i < 200 && !settled(); i++) await Bun.sleep(2);
+
+    // After a restart they are current: nothing is asked.
+    const restarted = new SidebarIconStore({
+      cacheDir: dir, now: () => now, fetch: recordingFetch().fetch,
+      resolvers: { whatsapp: async (iconSource) => { asked.push(iconSource.ref!); return null; } },
+    });
+    restarted.setEnabled(true);
+    restarted.want(people);
+    await restarted.idle();
+    expect(asked).toHaveLength(4);
+    expect(people.every((person) => restarted.get(person) !== null)).toBe(true);
+  });
+
+  test("a saved picture whose chat no longer has one goes back to its tile", async () => {
+    const dir = tempDir();
+    const person = whatsappChatPictureSource("15550001@s.whatsapp.net");
+    writeFileSync(join(dir, `${person.key}.png`), PNG);
+    utimesSync(join(dir, `${person.key}.png`), LONG_AGO, LONG_AGO);
+    const now = Date.now();
+    let updates = 0;
+    const store = new SidebarIconStore({
+      cacheDir: dir, now: () => now, fetch: recordingFetch().fetch, onUpdate: () => { updates++; },
+      resolvers: { whatsapp: async () => null },
+    });
+    store.setEnabled(true);
+    store.want([person]);
+    await store.idle();
+    expect(store.get(person)).toBeNull();
+    expect(updates).toBe(2);
+  });
+
+  test("an old saved picture stays on screen while asking again fails, and the platform backs off", async () => {
+    const dir = tempDir();
+    const people = ["15550001@s.whatsapp.net", "15550002@s.whatsapp.net"].map(whatsappChatPictureSource);
+    for (const person of people) {
+      writeFileSync(join(dir, `${person.key}.png`), PNG);
+      utimesSync(join(dir, `${person.key}.png`), LONG_AGO, LONG_AGO);
+    }
+    let now = Date.now();
+    let calls = 0;
+    const store = new SidebarIconStore({
+      cacheDir: dir, now: () => now, fetch: recordingFetch().fetch,
+      resolvers: { whatsapp: async () => { calls++; throw new Error("rate-overlimit"); } },
+      concurrency: { whatsapp: 1 },
+    });
+    store.setEnabled(true);
+    for (let i = 0; i < 4; i++) {
+      store.want(people);
+      await store.idle();
+    }
+    expect(calls).toBe(1);
+    expect(people.every((person) => store.get(person) !== null)).toBe(true);
+    now += 60_000;
+    store.want(people);
+    await store.idle();
+    expect(calls).toBe(2);
+    expect(people.every((person) => store.get(person) !== null)).toBe(true);
+  });
+
   test("a WhatsApp resolver error backs off instead of retrying", async () => {
     let now = 1_000_000;
     let calls = 0;
     const store = new SidebarIconStore({
-      fetch: recordingFetch().fetch, cacheDir: null, now: () => now,
+      fetch: recordingFetch().fetch, cacheDir: null, now: () => now, concurrency: { whatsapp: 1 },
       resolvers: { whatsapp: async () => { calls++; throw new Error("rate-overlimit"); } },
     });
     store.setEnabled(true);
