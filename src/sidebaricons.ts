@@ -346,7 +346,7 @@ export class SidebarIconStore {
     return this.diskActive + Object.values(this.platforms).reduce((sum, platform) => sum + platform.active, 0);
   }
 
-  /** Showing a saved answer (a picture or its tile) that is due to be asked about again. */
+  /** Has an answer on screen: a picture, or the tile of a chat known to have none. */
   private isShown(source: SidebarIconSource): boolean {
     const entry = this.entries.get(source.key);
     return entry?.status === "ready" || entry?.status === "none";
