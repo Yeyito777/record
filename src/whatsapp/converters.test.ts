@@ -210,6 +210,76 @@ describe("WhatsApp provider-neutral converters", () => {
     expect(toWhatsAppMessage(message({ key: { id: "empty", remoteJid: "chat@g.us" } }))).toBeNull();
   });
 
+  test("a call shows as WhatsApp words it, not as an unsupported message", () => {
+    const call = (callLogMesssage: object, fromMe = false) => toWhatsAppMessage(message({
+      key: { id: "call", remoteJid: "15550001@s.whatsapp.net", fromMe },
+      // The context envelope comes first on the wire, as in the owner's cache.
+      message: { messageContextInfo: {}, callLogMesssage },
+    }))?.content;
+    expect(call({ callOutcome: 0, durationSecs: 192 })).toEqual({ kind: "text", text: "[Voice call] 3:12" });
+    expect(call({ callOutcome: 0, durationSecs: 3725, isVideo: true })).toEqual({ kind: "text", text: "[Video call] 1:02:05" });
+    expect(call({ callOutcome: 1 })).toEqual({ kind: "text", text: "[Missed voice call]" });
+    expect(call({ callOutcome: 1, isVideo: true })).toEqual({ kind: "text", text: "[Missed video call]" });
+    expect(call({ callOutcome: 1 }, true)).toEqual({ kind: "text", text: "[Voice call] No answer" });
+    expect(call({ callOutcome: 3 })).toEqual({ kind: "text", text: "[Voice call] Declined" });
+    expect(call({})).toEqual({ kind: "text", text: "[Voice call]" });
+  });
+
+  test("a business template shows its text and buttons, with its picture when it has one", () => {
+    const template = (hydratedTemplate: object) => toWhatsAppMessage(message({
+      key: { id: "template", remoteJid: "15550001@s.whatsapp.net" },
+      message: { templateMessage: { hydratedTemplate } },
+    }))?.content;
+    expect(template({
+      hydratedTitleText: "Your order",
+      hydratedContentText: "It ships today.",
+      hydratedFooterText: "Reply STOP to opt out",
+      hydratedButtons: [
+        { urlButton: { displayText: "Track", url: "https://example.com/t/1" } },
+        { quickReplyButton: { displayText: "Thanks" } },
+      ],
+    })).toEqual({
+      kind: "text",
+      text: "Your order\nIt ships today.\nReply STOP to opt out\n[Track: https://example.com/t/1]\n[Thanks]",
+    });
+    expect(template({
+      hydratedContentText: "Receipt attached",
+      imageMessage: { mimetype: "image/jpeg", width: 10, height: 20 },
+    })).toMatchObject({ kind: "media", mediaKind: "image", caption: "Receipt attached", width: 10 });
+    expect(template({})).toEqual({ kind: "text", text: "[Business message]" });
+  });
+
+  test("lists, invites and events show their text", () => {
+    const content = (body: object) => toWhatsAppMessage(message({
+      key: { id: "m", remoteJid: "15550001@s.whatsapp.net" },
+      message: body,
+    }))?.content;
+    expect(content({ listMessage: { title: "Menu", description: "Pick one", buttonText: "Options" } }))
+      .toEqual({ kind: "text", text: "Menu\nPick one\n[Options]" });
+    expect(content({ groupInviteMessage: { groupName: "Chess", caption: "Join us" } }))
+      .toEqual({ kind: "text", text: "[Group invite] Chess\nJoin us" });
+    expect(content({ eventMessage: { name: "Dinner", description: "At 8" } }))
+      .toEqual({ kind: "text", text: "[Event] Dinner\nAt 8" });
+  });
+
+  test("control messages and bare envelopes are not chat messages", () => {
+    const converted = (body: object) => toWhatsAppMessage(message({
+      key: { id: "m", remoteJid: "group@g.us", participant: "15550001@s.whatsapp.net" },
+      message: body,
+    }));
+    // All seen as "[Unsupported WhatsApp message: ...]" rows in the owner's chats.
+    expect(converted({ senderKeyDistributionMessage: {}, messageContextInfo: {} })).toBeNull();
+    expect(converted({ messageContextInfo: {}, pinInChatMessage: {} })).toBeNull();
+    expect(converted({ messageContextInfo: {}, messageHistoryNotice: {} })).toBeNull();
+    expect(converted({ senderKeyDistributionMessage: {}, messageContextInfo: {}, messageHistoryNotice: {} })).toBeNull();
+    // A group key travelling with a real message does not hide it.
+    expect(converted({ senderKeyDistributionMessage: {}, conversation: "hi" })?.content).toEqual({ kind: "text", text: "hi" });
+    // Something unknown is named by its own field, not by the envelope before it.
+    expect(converted({ messageContextInfo: {}, requestPaymentMessage: {} })?.content).toMatchObject({
+      kind: "unsupported", sourceType: "requestPaymentMessage",
+    });
+  });
+
   test("uses an injected account ID for the sender of outgoing direct messages", () => {
     const converted = toWhatsAppMessage(message({
       key: { id: "mine", remoteJid: "15550002@s.whatsapp.net", fromMe: true },

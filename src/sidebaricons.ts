@@ -6,8 +6,11 @@
  * restarts, including "has no picture" answers. Only rows on screen (plus a
  * little lookahead) are fetched, visible rows first, with a small per-platform
  * limit on requests in flight and a back-off after errors. Disk reads are not
- * network requests: they skip both, so saved pictures show at once. The terminal keeps
- * the image data (see terminalimage.ts), so scrolling back only re-places it.
+ * network requests: they skip both, so saved pictures show at once. A saved
+ * answer past its age is still shown; the platform is asked again behind the
+ * rows that have nothing to show yet, and the row changes only if the answer
+ * did. The terminal keeps the image data (see terminalimage.ts), so scrolling
+ * back only re-places it.
  */
 
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "fs/promises";
@@ -60,9 +63,9 @@ export interface SidebarIconSource {
 interface PlatformPolicy {
   /** Requests in flight at once. */
   concurrency: number;
-  /** How long a downloaded picture is trusted before asking again. */
+  /** How long a downloaded picture is shown without asking again. */
   maxAgeMs: number;
-  /** How long "no picture" is trusted before asking again. */
+  /** How long "no picture" is shown without asking again. */
   noneMaxAgeMs: number;
   /** Rows beyond the screen, each way, worth fetching ahead (null: a screen). */
   lookaheadRows: number | null;
@@ -72,8 +75,8 @@ const POLICIES: Record<SidebarIconPlatform, PlatformPolicy> = {
   bundled: { concurrency: 3, maxAgeMs: Infinity, noneMaxAgeMs: Infinity, lookaheadRows: null },
   // Public, content-addressed CDN files: a hash never changes its picture.
   discord: { concurrency: 4, maxAgeMs: Infinity, noneMaxAgeMs: 7 * DAY_MS, lookaheadRows: null },
-  // Queries through the logged-in session: one at a time, few rows ahead.
-  whatsapp: { concurrency: 1, maxAgeMs: 7 * DAY_MS, noneMaxAgeMs: 3 * DAY_MS, lookaheadRows: 3 },
+  // Queries through the logged-in session: two at a time, few rows ahead.
+  whatsapp: { concurrency: 2, maxAgeMs: 7 * DAY_MS, noneMaxAgeMs: 3 * DAY_MS, lookaheadRows: 3 },
   instagram: { concurrency: 2, maxAgeMs: 7 * DAY_MS, noneMaxAgeMs: 7 * DAY_MS, lookaheadRows: 3 },
 };
 
@@ -170,15 +173,20 @@ function pngSize(bytes: Buffer): { width: number; height: number } {
   return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
 }
 
+/**
+ * `refreshAt` marks a saved answer past its age: it is shown as it is, and
+ * the platform may be asked again from that time. Absent on a current answer.
+ */
 type IconEntry =
   | { status: "loading"; source: SidebarIconSource }
-  | { status: "ready"; source: SidebarIconSource; image: InlineChatImageReady; rejections: number }
-  /** Known to have no picture; never asked again this session. */
-  | { status: "none"; source: SidebarIconSource }
+  | { status: "ready"; source: SidebarIconSource; image: InlineChatImageReady; png: Buffer; rejections: number; refreshAt?: number }
+  /** Known to have no picture. */
+  | { status: "none"; source: SidebarIconSource; refreshAt?: number }
   | { status: "failed"; source: SidebarIconSource; retryAt: number };
 
-type LoadResult = { kind: "ready"; png: Buffer } | { kind: "none" } | { kind: "error" } | { kind: "unavailable" };
-type DiskResult = { kind: "ready"; png: Buffer } | { kind: "none" } | { kind: "miss"; stale: Buffer | null };
+type Answer = { kind: "ready"; png: Buffer } | { kind: "none" };
+type LoadResult = Answer | { kind: "error" } | { kind: "unavailable" };
+type DiskResult = (Answer & { expired: boolean }) | { kind: "miss" };
 
 /**
  * Thrown by a resolver that cannot ask yet, such as WhatsApp before it has
@@ -251,11 +259,10 @@ export class SidebarIconStore {
   private wanted = new Map<string, number>();
   /** Disk reads in flight. */
   private diskActive = 0;
-  /**
-   * Keys whose disk cache was read this session without a usable answer,
-   * with the expired picture to fall back on if asking fails.
-   */
-  private readonly diskMisses = new Map<string, Buffer | null>();
+  /** Keys whose disk cache was read this session without an answer. */
+  private readonly diskMisses = new Set<string>();
+  /** Shown answers being asked about again. */
+  private readonly refreshing = new Set<string>();
 
   constructor(options: SidebarIconStoreOptions = {}) {
     this.fetchImpl = options.fetch;
@@ -302,11 +309,13 @@ export class SidebarIconStore {
       if (!this.wanted.has(source.key)) this.wanted.set(source.key, this.wanted.size);
     }
     const seen = new Set<string>();
-    this.queue = [...visible, ...nearby].filter((source) => {
+    const wanted = [...visible, ...nearby].filter((source) => {
       if (seen.has(source.key) || !this.mayLoad(source)) return false;
       seen.add(source.key);
       return true;
     });
+    // Rows with nothing to show go first; rows showing an old answer wait.
+    this.queue = [...wanted.filter((source) => !this.isShown(source)), ...wanted.filter((source) => this.isShown(source))];
     this.pump();
   }
 
@@ -337,16 +346,29 @@ export class SidebarIconStore {
     return this.diskActive + Object.values(this.platforms).reduce((sum, platform) => sum + platform.active, 0);
   }
 
-  /** Not settled yet: never tried, or failed (now or later it is tried again). */
+  /** Showing a saved answer (a picture or its tile) that is due to be asked about again. */
+  private isShown(source: SidebarIconSource): boolean {
+    const entry = this.entries.get(source.key);
+    return entry?.status === "ready" || entry?.status === "none";
+  }
+
+  /** Not settled yet: never tried, failed, or shown from an old answer (now or later it is tried again). */
   private mayLoad(source: SidebarIconSource): boolean {
     if (!source.url && !source.file && !this.resolvers[source.platform]) return false;
     const entry = this.entries.get(source.key);
-    return !entry || entry.status === "failed";
+    if (!entry || entry.status === "failed") return true;
+    return entry.status !== "loading" && entry.refreshAt !== undefined && !this.refreshing.has(source.key);
+  }
+
+  /** When a settled-for-now source may be asked again; 0 for one never tried. */
+  private retryAt(source: SidebarIconSource): number {
+    const entry = this.entries.get(source.key);
+    if (entry?.status === "failed") return entry.retryAt;
+    return entry && entry.status !== "loading" ? entry.refreshAt ?? 0 : 0;
   }
 
   private needsLoad(source: SidebarIconSource): boolean {
-    const entry = this.entries.get(source.key);
-    return this.mayLoad(source) && (entry?.status !== "failed" || this.now() >= entry.retryAt);
+    return this.mayLoad(source) && this.now() >= this.retryAt(source);
   }
 
   /** The disk cache (or the bundled file) has not been read for this source yet. */
@@ -371,6 +393,8 @@ export class SidebarIconStore {
         continue;
       }
       if (this.needsDiskRead(source)) this.readDisk(source);
+      // The platform is asked in row order: wait for the disk's answers (milliseconds) first.
+      else if (this.diskActive > 0) waiting.push(source);
       else this.start(source);
     }
     this.queue = waiting;
@@ -381,11 +405,7 @@ export class SidebarIconStore {
   private scheduleResume(): void {
     const now = this.now();
     const resumeAt = Math.min(...this.queue
-      .map((source) => {
-        const entry = this.entries.get(source.key);
-        const retryAt = entry?.status === "failed" ? entry.retryAt : 0;
-        return Math.max(retryAt, this.platforms[source.platform].pausedUntil);
-      })
+      .map((source) => Math.max(this.retryAt(source), this.platforms[source.platform].pausedUntil))
       .filter((until) => until > now));
     if (!Number.isFinite(resumeAt)) return;
     if (this.resumeTimer) {
@@ -406,18 +426,23 @@ export class SidebarIconStore {
     this.entries.set(source.key, { status: "loading", source });
     this.diskActive += 1;
     void this.loadFromDisk(source).then((result) => {
-      if (result.kind !== "miss") {
-        this.settle(source, result);
-        return;
+      if (result.kind === "miss") {
+        this.diskMisses.add(source.key);
+        this.entries.delete(source.key);
+      } else {
+        // An answer past its age shows now and is asked about again.
+        this.settle(source, result, result.expired ? this.now() : undefined);
+        if (!result.expired) return;
       }
-      this.diskMisses.set(source.key, result.stale);
-      this.entries.delete(source.key);
-      // Ask the platform next, in the frame's order, if the row is still wanted.
+      // Ask the platform next, in the frame's order, if the row is still wanted:
+      // rows with nothing to show first, then rows showing an old answer.
       const rank = this.wanted.get(source.key);
-      if (rank !== undefined && !this.queue.some((queued) => queued.key === source.key)) {
-        const before = this.queue.findIndex((queued) => (this.wanted.get(queued.key) ?? Infinity) > rank);
-        this.queue.splice(before < 0 ? this.queue.length : before, 0, source);
-      }
+      if (rank === undefined || this.queue.some((queued) => queued.key === source.key)) return;
+      const order = (queued: SidebarIconSource): number =>
+        (this.isShown(queued) ? 1e9 : 0) + (this.wanted.get(queued.key) ?? 1e8);
+      const mine = order(source);
+      const before = this.queue.findIndex((queued) => order(queued) > mine);
+      this.queue.splice(before < 0 ? this.queue.length : before, 0, source);
     }).finally(() => {
       this.diskActive -= 1;
       this.pump();
@@ -426,35 +451,51 @@ export class SidebarIconStore {
 
   private start(source: SidebarIconSource): void {
     const platform = this.platforms[source.platform];
-    this.entries.set(source.key, { status: "loading", source });
+    // A row showing an old answer keeps showing it while the platform is asked.
+    const shown = this.isShown(source);
+    if (shown) this.refreshing.add(source.key);
+    else this.entries.set(source.key, { status: "loading", source });
     platform.active += 1;
     void this.load(source).then((result) => {
+      const retryLater = (retryAt: number): void => {
+        const entry = this.entries.get(source.key);
+        if (shown && (entry?.status === "ready" || entry?.status === "none")) entry.refreshAt = retryAt;
+        else this.entries.set(source.key, { status: "failed", source, retryAt });
+      };
       if (result.kind === "unavailable") {
-        this.entries.set(source.key, { status: "failed", source, retryAt: this.now() + UNAVAILABLE_RETRY_MS });
+        retryLater(this.now() + UNAVAILABLE_RETRY_MS);
         return;
       }
       if (result.kind === "error") {
         platform.backoffMs = Math.min(BACKOFF_MAX_MS, platform.backoffMs ? platform.backoffMs * 2 : BACKOFF_FIRST_MS);
         platform.pausedUntil = this.now() + platform.backoffMs;
-        // Keep showing an expired picture rather than nothing.
-        const stale = this.diskMisses.get(source.key);
-        if (stale) this.settle(source, { kind: "ready", png: stale });
-        else this.entries.set(source.key, { status: "failed", source, retryAt: platform.pausedUntil });
+        retryLater(platform.pausedUntil);
         return;
       }
       platform.backoffMs = 0;
-      this.settle(source, result);
+      const entry = this.entries.get(source.key);
+      const unchanged = shown && (result.kind === "ready"
+        ? entry?.status === "ready" && entry.png.equals(result.png)
+        : entry?.status === "none");
+      // The same answer again: the row stays exactly as it is, nothing is redrawn.
+      if (unchanged) delete (entry as { refreshAt?: number }).refreshAt;
+      else this.settle(source, result);
     }).finally(() => {
+      this.refreshing.delete(source.key);
       platform.active -= 1;
       this.pump();
     });
   }
 
-  private settle(source: SidebarIconSource, result: { kind: "ready"; png: Buffer } | { kind: "none" }): void {
+  private settle(source: SidebarIconSource, result: Answer, refreshAt?: number): void {
     this.diskMisses.delete(source.key);
+    const stale = refreshAt === undefined ? {} : { refreshAt };
+    const previous = this.entries.get(source.key);
     const imageId = result.kind === "ready" && this.nextImageId <= IMAGE_ID_LAST ? this.nextImageId++ : 0;
     if (result.kind === "none" || imageId === 0) {
-      this.entries.set(source.key, { status: "none", source });
+      this.entries.set(source.key, { status: "none", source, ...stale });
+      // A picture that went away: its row goes back to the tile.
+      if (previous?.status === "ready" && this.enabled && this.visible.has(source.key)) this.onUpdate();
       return;
     }
     const { width, height } = pngSize(result.png);
@@ -462,7 +503,9 @@ export class SidebarIconStore {
     this.entries.set(source.key, {
       status: "ready",
       source,
+      png: result.png,
       rejections: 0,
+      ...stale,
       image: {
         phase: "ready",
         attachmentId: source.key,
@@ -492,19 +535,18 @@ export class SidebarIconStore {
   private async loadFromDisk(source: SidebarIconSource): Promise<DiskResult> {
     if (source.file) {
       const bytes = await readFile(source.file).catch(() => null);
-      return bytes && isPng(bytes) ? { kind: "ready", png: bytes } : { kind: "none" };
+      return bytes && isPng(bytes) ? { kind: "ready", png: bytes, expired: false } : { kind: "none", expired: false };
     }
     const dir = this.dir();
-    if (!dir) return { kind: "miss", stale: null };
+    if (!dir) return { kind: "miss" };
     const policy = POLICIES[source.platform];
     const cached = await readCached(join(dir, `${source.key}.png`));
     if (cached && isPng(cached.bytes) && cached.bytes.length <= MAX_DOWNLOAD_BYTES) {
-      if (this.now() - cached.mtimeMs < policy.maxAgeMs) return { kind: "ready", png: cached.bytes };
-      return { kind: "miss", stale: cached.bytes };
+      return { kind: "ready", png: cached.bytes, expired: this.now() - cached.mtimeMs >= policy.maxAgeMs };
     }
     const none = await stat(join(dir, `${source.key}.none`)).catch(() => null);
-    if (none && this.now() - none.mtimeMs < policy.noneMaxAgeMs) return { kind: "none" };
-    return { kind: "miss", stale: null };
+    if (none) return { kind: "none", expired: this.now() - none.mtimeMs >= policy.noneMaxAgeMs };
+    return { kind: "miss" };
   }
 
   /** Asks the platform; the disk cache has been read already. */

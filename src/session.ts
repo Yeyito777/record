@@ -245,16 +245,57 @@ const replyPreviewRestFetchKeys = new Set<string>();
 const replyTargetFetches = new Map<string, Promise<DiscordMessage | null>>();
 const REPLY_TARGET_CACHE_LIMIT = 1_000;
 const REPLY_TARGET_RETRY_MS = 60_000;
+/** Reply-target requests in flight: a screen of replies asks a few at a time, never all at once. */
+const REPLY_TARGET_CONCURRENCY = 2;
+let replyTargetActive = 0;
+const replyTargetWaiting: Array<() => void> = [];
+/**
+ * Channels Discord refused to show this token (403), by channel id. Messages
+ * crossposted from a channel the account cannot read each "reply" to a
+ * different message there: one refusal answers for all of them.
+ */
+const replyTargetDeniedChannels = new Map<string, string>();
+
+async function withReplyTargetSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (replyTargetActive >= REPLY_TARGET_CONCURRENCY) {
+    // The finishing request hands its slot over, so the count stays as it is.
+    await new Promise<void>((resolve) => replyTargetWaiting.push(resolve));
+  } else {
+    replyTargetActive += 1;
+  }
+  try {
+    return await run();
+  } finally {
+    const next = replyTargetWaiting.shift();
+    if (next) next();
+    else replyTargetActive -= 1;
+  }
+}
 
 function fetchReplyTarget(token: string, channelId: string, messageId: string): Promise<DiscordMessage | null> {
   const key = `${channelId}:${messageId}`;
   const cached = replyTargetFetches.get(key);
   if (cached) return cached;
-  const fetched = fetchChannelMessage(token, channelId, messageId).catch((error: unknown) => {
+  const denied = (): boolean => replyTargetDeniedChannels.get(channelId) === token;
+  if (denied()) return Promise.resolve(null);
+  const fetched = withReplyTargetSlot(async () => {
+    // Refused while this one waited its turn.
+    if (denied()) return null;
+    try {
+      return await fetchChannelMessage(token, channelId, messageId);
+    } catch (error) {
+      // Noted before the slot passes on, so the next in line does not ask.
+      if (/Discord denied access/.test(error instanceof Error ? error.message : String(error))) {
+        replyTargetDeniedChannels.set(channelId, token);
+        return null;
+      }
+      throw error;
+    }
+  }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    // Gone or not visible to this account: remember that. Anything else
-    // (offline, timeout, rate limit) may be retried a minute later.
-    if (/Discord resource not found|Discord denied access/.test(message)) return null;
+    // Gone: remember that. Anything else (offline, timeout, rate limit) may
+    // be retried a minute later.
+    if (/Discord resource not found/.test(message)) return null;
     setTimeout(() => {
       if (replyTargetFetches.get(key) === fetched) replyTargetFetches.delete(key);
     }, REPLY_TARGET_RETRY_MS).unref?.();

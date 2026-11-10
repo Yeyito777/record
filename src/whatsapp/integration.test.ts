@@ -240,6 +240,53 @@ describe("WhatsApp UI integration", () => {
     expect(state.messagesByChatId[chatId]).toBeUndefined();
   });
 
+  test("messages saved as unsupported by older builds read as what they were, or stay hidden", () => {
+    const state = createWhatsAppUiState();
+    const chatId = "15551234567@s.whatsapp.net";
+    const saved = (id: string, at: number, sourceType: string, sourceFields: string[]) => ({
+      ...message(id, chatId, at, ""),
+      content: { kind: "unsupported" as const, sourceType, sourceFields },
+    });
+    upsertWhatsAppMessages(state, [
+      saved("call", 10, "callLogMesssage", ["callLogMesssage"]),
+      // Older builds named these by the envelope that came first.
+      saved("call-2", 20, "messageContextInfo", ["messageContextInfo", "callLogMesssage"]),
+      saved("template", 30, "templateMessage", ["templateMessage"]),
+      saved("masked", 40, "placeholderMessage", ["messageContextInfo", "placeholderMessage"]),
+      saved("payment", 50, "requestPaymentMessage", ["requestPaymentMessage"]),
+      saved("key", 60, "senderKeyDistributionMessage", ["senderKeyDistributionMessage", "messageContextInfo"]),
+      saved("pin", 70, "pinInChatMessage", ["messageContextInfo", "pinInChatMessage"]),
+      saved("notice", 80, "messageContextInfo", ["messageContextInfo", "messageHistoryNotice"]),
+    ]);
+    expect(whatsAppTimelineMessages(state, whatsappChannelId(chatId)).map((entry) => entry.content)).toEqual([
+      "[Call]",
+      "[Call]",
+      "[Business message]",
+      "[Message shown only on your phone]",
+      "[Unsupported WhatsApp message: requestPaymentMessage]",
+    ]);
+  });
+
+  test("a call re-read from history replaces the saved placeholder with its details", () => {
+    const state = createWhatsAppUiState();
+    const chatId = "15551234567@s.whatsapp.net";
+    upsertWhatsAppMessages(state, [{
+      ...message("call", chatId, 10, ""),
+      content: { kind: "unsupported", sourceType: "callLogMesssage", sourceFields: ["callLogMesssage"] },
+    }]);
+    upsertWhatsAppMessages(state, [message("call", chatId, 10, "[Voice call] 3:12")], { preferExisting: true });
+    expect(whatsAppTimelineMessages(state, whatsappChannelId(chatId)).map((entry) => entry.content)).toEqual(["[Voice call] 3:12"]);
+  });
+
+  test("only a phone-number address is shown as a phone number", () => {
+    const state = createWhatsAppUiState();
+    upsertWhatsAppChats(state, [
+      { id: "15551234567@s.whatsapp.net", kind: "direct", lastMessageAtMs: 2 },
+      { id: "170347160727790@lid", kind: "direct", lastMessageAtMs: 1 },
+    ]);
+    expect(whatsAppChannels(state).map((channel) => channel.name)).toEqual(["+15551234567", "170347160727790"]);
+  });
+
   test("applies, replaces, and removes WhatsApp reactions on their target message", () => {
     const state = createWhatsAppUiState();
     const chatId = "group@g.us";
