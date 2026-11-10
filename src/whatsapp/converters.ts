@@ -22,6 +22,7 @@ import type {
   WhatsAppReactionEvent,
   WhatsAppTextContent,
 } from "./types";
+import { whatsAppUnsupportedType } from "./messagekinds";
 import { WHATSAPP_MUTE_FOREVER_END_MS } from "./mute";
 
 function finiteNumber(value: unknown): number | undefined {
@@ -94,6 +95,12 @@ function contextInfoFor(message: proto.IMessage): proto.IContextInfo | undefined
     message.buttonsMessage?.contextInfo ??
     message.buttonsResponseMessage?.contextInfo ??
     message.interactiveMessage?.contextInfo ??
+    message.templateMessage?.contextInfo ??
+    message.listMessage?.contextInfo ??
+    message.listResponseMessage?.contextInfo ??
+    message.templateButtonReplyMessage?.contextInfo ??
+    message.groupInviteMessage?.contextInfo ??
+    message.eventMessage?.contextInfo ??
     undefined;
 }
 
@@ -211,7 +218,66 @@ function locationText(location: proto.Message.ILocationMessage): WhatsAppTextCon
   return usefulText(["[Location]", location.name, location.address, location.url, mapUrl], "[Location]");
 }
 
-function contentFor(message: proto.IMessage): WhatsAppMessageContent {
+function callDuration(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const rest = String(whole % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
+}
+
+/** A call's entry in the chat, as WhatsApp words it: who missed it, or how long it ran. */
+function callLogText(call: proto.Message.ICallLogMessage, fromMe: boolean): WhatsAppTextContent {
+  const Outcome = proto.Message.CallLogMessage.CallOutcome;
+  const kind = call.callType === proto.Message.CallLogMessage.CallType.VOICE_CHAT ? "voice chat"
+    : call.isVideo ? "video call" : "voice call";
+  const titled = `${kind[0]!.toUpperCase()}${kind.slice(1)}`;
+  const seconds = finiteNumber(call.durationSecs) ?? 0;
+  switch (call.callOutcome) {
+    case Outcome.MISSED:
+    case Outcome.SILENCED_BY_DND:
+    case Outcome.SILENCED_UNKNOWN_CALLER:
+      return { kind: "text", text: fromMe ? `[${titled}] No answer` : `[Missed ${kind}]` };
+    case Outcome.REJECTED:
+      return { kind: "text", text: `[${titled}] Declined` };
+    case Outcome.FAILED:
+      return { kind: "text", text: `[${titled}] Failed` };
+    case Outcome.ACCEPTED_ELSEWHERE:
+      return { kind: "text", text: `[${titled}] Answered on another device` };
+    case Outcome.ONGOING:
+      return { kind: "text", text: `[${titled}] Ongoing` };
+    default:
+      return { kind: "text", text: seconds > 0 ? `[${titled}] ${callDuration(seconds)}` : `[${titled}]` };
+  }
+}
+
+/** A business template (order update, sign-in code, notice): its text, then what its buttons say. */
+function templateContent(template: proto.Message.ITemplateMessage, fromMe: boolean): WhatsAppMessageContent {
+  const hydrated = template.hydratedTemplate ?? template.hydratedFourRowTemplate;
+  if (!hydrated) {
+    return template.interactiveMessageTemplate
+      ? contentFor({ interactiveMessage: template.interactiveMessageTemplate }, fromMe)
+      : { kind: "text", text: "[Business message]" };
+  }
+  const buttons = (hydrated.hydratedButtons ?? []).map((button) => {
+    const url = button.urlButton;
+    if (url?.displayText || url?.url) return `[${[url.displayText, url.url].filter(Boolean).join(": ")}]`;
+    const call = button.callButton;
+    if (call?.displayText || call?.phoneNumber) return `[${[call.displayText, call.phoneNumber].filter(Boolean).join(": ")}]`;
+    return button.quickReplyButton?.displayText ? `[${button.quickReplyButton.displayText}]` : undefined;
+  });
+  const text = [hydrated.hydratedTitleText, hydrated.hydratedContentText, hydrated.hydratedFooterText, ...buttons]
+    .map((part) => part?.trim()).filter(Boolean).join("\n");
+  // A template can carry its picture, video or file where a title would be.
+  const media = hydrated.imageMessage ? mediaContent("image", hydrated.imageMessage)
+    : hydrated.videoMessage ? mediaContent("video", hydrated.videoMessage)
+    : hydrated.documentMessage ? mediaContent("document", hydrated.documentMessage)
+    : null;
+  if (media) return text ? { ...media, caption: text } : media;
+  return { kind: "text", text: text || "[Business message]" };
+}
+
+function contentFor(message: proto.IMessage, fromMe = false): WhatsAppMessageContent {
   if (message.conversation != null) {
     return { kind: "text", text: message.conversation };
   }
@@ -252,6 +318,36 @@ function contentFor(message: proto.IMessage): WhatsAppMessageContent {
       message.interactiveMessage.footer?.text,
     ], "[Interactive message]");
   }
+  if (message.callLogMesssage) return callLogText(message.callLogMesssage, fromMe);
+  if (message.templateMessage) return templateContent(message.templateMessage, fromMe);
+  if (message.templateButtonReplyMessage) {
+    return usefulText([message.templateButtonReplyMessage.selectedDisplayText], "[Button response]");
+  }
+  if (message.listMessage) {
+    return usefulText([
+      message.listMessage.title,
+      message.listMessage.description,
+      message.listMessage.footerText,
+      message.listMessage.buttonText ? `[${message.listMessage.buttonText}]` : undefined,
+    ], "[Interactive message]");
+  }
+  if (message.listResponseMessage) {
+    return usefulText([message.listResponseMessage.title, message.listResponseMessage.description], "[List response]");
+  }
+  if (message.groupInviteMessage) {
+    return usefulText([
+      `[Group invite] ${message.groupInviteMessage.groupName ?? ""}`,
+      message.groupInviteMessage.caption,
+    ], "[Group invite]");
+  }
+  if (message.eventMessage) {
+    return usefulText([
+      `[Event${message.eventMessage.isCanceled ? ", cancelled" : ""}] ${message.eventMessage.name ?? ""}`,
+      message.eventMessage.description,
+      message.eventMessage.location?.name,
+      message.eventMessage.joinLink,
+    ], "[Event]");
+  }
   const poll = message.pollCreationMessage ?? message.pollCreationMessageV2 ?? message.pollCreationMessageV3;
   if (poll) {
     return usefulText([
@@ -262,7 +358,8 @@ function contentFor(message: proto.IMessage): WhatsAppMessageContent {
   const sourceFields = Object.entries(message).filter(([, value]) => value != null).map(([key]) => key);
   return {
     kind: "unsupported",
-    sourceType: getContentType(message) ?? sourceFields[0] ?? "unknown",
+    // The content's own field, not an envelope that happens to come first.
+    sourceType: whatsAppUnsupportedType({ sourceFields }) ?? getContentType(message) ?? sourceFields[0] ?? "unknown",
     sourceFields,
   };
 }
@@ -282,13 +379,16 @@ export function toWhatsAppMessage(
   const fromMe = Boolean(message.key?.fromMe);
   const senderId = participant || (fromMe ? options.selfId : key.chatId);
   const timestampSeconds = finiteNumber(message.messageTimestamp);
+  const content = contentFor(normalized, fromMe);
+  // Nothing a reader would see: a pin, a kept-message marker, a group key on its own.
+  if (content.kind === "unsupported" && whatsAppUnsupportedType(content) === null) return null;
   const result: WhatsAppMessage = {
     key,
     id: key.id,
     chatId: key.chatId,
     fromMe,
     timestampMs: options.edited || timestampSeconds === undefined ? null : timestampSeconds * 1_000,
-    content: contentFor(normalized),
+    content,
   };
 
   if (options.edited && timestampSeconds !== undefined) result.editedTimestampMs = timestampSeconds * 1_000;

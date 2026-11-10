@@ -1,6 +1,7 @@
 import type { DiscordChannel, DiscordGuildMember, DiscordMessage, DiscordMessageAttachment, DiscordMessageReply } from "../discord";
 import { WHATSAPP_GUILD_ID, whatsappChannelId, whatsappJidFromChannelId } from "../chatproviders";
 import { createLoginModalState, type LoginModalState } from "./loginmodal";
+import { whatsAppUnsupportedType } from "./messagekinds";
 import { isWhatsAppChatMuted } from "./mute";
 import { sanitizeTerminalLabel, sanitizeTerminalText } from "./sanitize";
 import type {
@@ -265,9 +266,9 @@ export function mergeWhatsAppMessage(
 }
 
 export function isVisibleWhatsAppMessage(message: WhatsAppMessage): boolean {
-  return message.chatId !== "status@broadcast" && !(message.content.kind === "unsupported" && [
-    "protocolMessage", "reactionMessage", "albumMessage", "secretEncryptedMessage", "associatedChildMessage",
-  ].includes(message.content.sourceType ?? ""));
+  // Control messages saved by older builds stay hidden; new ones are never stored.
+  return message.chatId !== "status@broadcast"
+    && !(message.content.kind === "unsupported" && whatsAppUnsupportedType(message.content) === null);
 }
 
 export function upsertWhatsAppMessages(
@@ -351,7 +352,8 @@ function bareJid(jid: string): string {
 
 function formattedPhone(jid: string): string {
   const value = bareJid(jid);
-  return /^\d{7,15}$/.test(value) ? `+${value}` : value;
+  // Only a phone-number address is a phone number: a LID's digits are an opaque id.
+  return jid.endsWith("@s.whatsapp.net") && /^\d{7,15}$/.test(value) ? `+${value}` : value;
 }
 
 export function whatsAppDisplayName(state: WhatsAppUiState, jid: string, fallback?: string): string {
@@ -454,9 +456,19 @@ function messageText(message: WhatsAppMessage): string {
     buttonsResponseMessage: "[Button response]",
     ptvMessage: "[Video message]",
     lottieStickerMessage: "[Animated sticker]",
+    // Saved before Record could read them: what they were, without their details.
+    callLogMesssage: "[Call]",
+    templateMessage: "[Business message]",
+    listMessage: "[Interactive message]",
+    listResponseMessage: "[List response]",
+    templateButtonReplyMessage: "[Button response]",
+    groupInviteMessage: "[Group invite]",
+    eventMessage: "[Event]",
+    // WhatsApp keeps some business messages (sign-in codes) off linked devices.
+    placeholderMessage: "[Message shown only on your phone]",
   };
-  return knownFallbacks[message.content.sourceType ?? ""]
-    ?? `[Unsupported WhatsApp message: ${sanitizeTerminalLabel(message.content.sourceType ?? "unknown")}]`;
+  const type = whatsAppUnsupportedType(message.content) ?? message.content.sourceType ?? "unknown";
+  return knownFallbacks[type] ?? `[Unsupported WhatsApp message: ${sanitizeTerminalLabel(type)}]`;
 }
 
 /** Keep quoted authors identical to their original timeline message, including self messages. */
