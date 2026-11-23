@@ -2,6 +2,7 @@ import { chmod, lstat, mkdir, unlink } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { dirname } from "node:path";
 
+import type { WhatsAppProtocolDiagnostics } from "./backend";
 import type {
   WhatsAppBackendEventMap,
   WhatsAppBackendEventName,
@@ -28,6 +29,7 @@ export interface WhatsAppDiagnosticSnapshot {
   eventCounts: Partial<Record<WhatsAppBackendEventName, number>>;
   skippedMessages: number;
   recentUnsupported: WhatsAppUnsupportedDiagnostic[];
+  protocol?: WhatsAppProtocolDiagnostics;
 }
 
 export class WhatsAppDiagnostics {
@@ -44,7 +46,7 @@ export class WhatsAppDiagnostics {
     for (const message of payload.messages) this.recordUnsupported(event, message);
   }
 
-  snapshot(state: WhatsAppConnectionState): WhatsAppDiagnosticSnapshot {
+  snapshot(state: WhatsAppConnectionState, protocol?: WhatsAppProtocolDiagnostics): WhatsAppDiagnosticSnapshot {
     return {
       pid: process.pid,
       startedAtMs: this.startedAtMs,
@@ -52,6 +54,7 @@ export class WhatsAppDiagnostics {
       eventCounts: { ...this.eventCounts },
       skippedMessages: this.skippedMessages,
       recentUnsupported: this.recentUnsupported.slice(),
+      ...(protocol ? { protocol } : {}),
     };
   }
 

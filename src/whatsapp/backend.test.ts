@@ -51,9 +51,43 @@ class MockBaileysEmitter {
   }
 }
 
+interface MockWireEmitter {
+  isOpen: boolean;
+  on(event: string, listener: EventCallback): void;
+  off(event: string, listener: EventCallback): void;
+  emit(event: string, payload: unknown): void;
+  listenerCount(event: string): number;
+}
+
+function createMockWire(): MockWireEmitter {
+  const listeners = new Map<string, Set<EventCallback>>();
+  return {
+    isOpen: true,
+    on(event: string, listener: EventCallback): void {
+      let set = listeners.get(event);
+      if (!set) {
+        set = new Set();
+        listeners.set(event, set);
+      }
+      set.add(listener);
+    },
+    off(event: string, listener: EventCallback): void {
+      listeners.get(event)?.delete(listener);
+    },
+    emit(event: string, payload: unknown): void {
+      for (const listener of [...(listeners.get(event) ?? [])]) listener(payload);
+    },
+    listenerCount(event: string): number {
+      return listeners.get(event)?.size ?? 0;
+    },
+  };
+}
+
 interface MockSocket {
   socket: WASocket;
   emitter: MockBaileysEmitter;
+  ws: MockWireEmitter;
+  sentNodes: unknown[];
   endCalls: number;
   placeholderRequests: Array<{ key: unknown; metadata: unknown }>;
   historyRequests: Array<{ count: number; key: unknown; timestampMs: number }>;
@@ -61,16 +95,21 @@ interface MockSocket {
 
 function mockSocket(user?: { id: string; lid?: string; name?: string }): MockSocket {
   const emitter = new MockBaileysEmitter();
+  const ws = createMockWire();
   const mock: MockSocket = {
     socket: undefined as unknown as WASocket,
     emitter,
+    ws,
+    sentNodes: [],
     endCalls: 0,
     placeholderRequests: [],
     historyRequests: [],
   };
   mock.socket = {
     ev: emitter,
+    ws,
     user,
+    sendNode: async (node: unknown) => { mock.sentNodes.push(node); },
     end: () => { mock.endCalls += 1; },
     requestPlaceholderResend: async (key: unknown, metadata: unknown) => {
       mock.placeholderRequests.push({ key, metadata });
@@ -676,6 +715,199 @@ describe("RecordWhatsAppBackend", () => {
     expect(backend.state).toMatchObject({ status: "failed", error: persistenceError });
     expect(errors.some((event) => !event.recoverable && event.error === persistenceError)).toBe(true);
     expect(sockets[0].endCalls).toBe(1);
+  });
+
+  test("drains offline queues past 100 items until <ib><offline> arrives", async () => {
+    const { backend, sockets, timers } = setup(true);
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+
+    sockets[0].ws.emit("CB:ib,,offline_preview", {
+      tag: "ib",
+      attrs: {},
+      content: [{ tag: "offline_preview", attrs: { count: "512", message: "500" } }],
+    });
+    expect(backend.getProtocolDiagnostics().offlinePreviewCount).toBe(512);
+
+    // Offline stanzas reset the idle timer without sending premature batch requests.
+    sockets[0].ws.emit("CB:message", { tag: "message", attrs: { id: "m1", offline: "0", t: "100" } });
+    expect(sockets[0].sentNodes).toEqual([]);
+
+    // Once the first batch goes idle without <ib><offline>, request the next batch of 100.
+    timers.runNext();
+    expect(sockets[0].sentNodes).toEqual([{
+      tag: "ib",
+      attrs: {},
+      content: [{ tag: "offline_batch", attrs: { count: "100" } }],
+    }]);
+    expect(backend.getProtocolDiagnostics().offlineBatchesRequested).toBe(1);
+
+    // Receiving another batch resets the empty-batch counter and requests another when idle.
+    sockets[0].ws.emit("CB:message", { tag: "message", attrs: { id: "m2", offline: "1", t: "101" } });
+    timers.runNext();
+    expect(sockets[0].sentNodes).toHaveLength(2);
+    expect(backend.getProtocolDiagnostics().offlineBatchesRequested).toBe(2);
+
+    // <ib><offline> ends the drain loop and cancels any pending timer.
+    sockets[0].ws.emit("CB:ib,,offline", {
+      tag: "ib",
+      attrs: {},
+      content: [{ tag: "offline", attrs: { count: "512" } }],
+    });
+    expect(backend.getProtocolDiagnostics()).toMatchObject({
+      offlineCompleted: true,
+      offlineCompletedCount: 512,
+    });
+    expect(timers.scheduled.filter((timer) => !timer.cancelled)).toHaveLength(0);
+
+    await backend.shutdown();
+    expect(sockets[0].ws.listenerCount("CB:ib,,offline_preview")).toBe(0);
+    expect(sockets[0].ws.listenerCount("CB:status")).toBe(0);
+  });
+
+  test("stops offline batch polling after consecutive empty responses", async () => {
+    const { backend, sockets, timers } = setup(true);
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+
+    sockets[0].ws.emit("CB:ib,,offline_preview", {
+      tag: "ib",
+      attrs: {},
+      content: [{ tag: "offline_preview", attrs: { count: "200" } }],
+    });
+    // Batch 1 (extra #1) sent after initial idle.
+    timers.runNext();
+    expect(sockets[0].sentNodes).toHaveLength(1);
+    // No offline stanzas arrived -> empty #1, sends extra #2.
+    timers.runNext();
+    expect(sockets[0].sentNodes).toHaveLength(2);
+    // Still no offline stanzas -> empty #2 hits cap and stops.
+    timers.runNext();
+    expect(sockets[0].sentNodes).toHaveLength(2);
+    expect(timers.scheduled.filter((timer) => !timer.cancelled)).toHaveLength(0);
+    await backend.shutdown();
+  });
+
+  test("acknowledges top-level <status> stanzas so WhatsApp does not drop the stream", async () => {
+    const { backend, sockets } = setup(true);
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+
+    sockets[0].ws.emit("CB:status", {
+      tag: "status",
+      attrs: {
+        id: "3A20STATUS",
+        from: "status@broadcast",
+        participant: "50766165590@s.whatsapp.net",
+        type: "media",
+        offline: "true",
+      },
+    });
+    expect(sockets[0].sentNodes).toEqual([{
+      tag: "ack",
+      attrs: {
+        id: "3A20STATUS",
+        to: "status@broadcast",
+        class: "status",
+        participant: "50766165590@s.whatsapp.net",
+        type: "media",
+      },
+    }]);
+    expect(backend.getProtocolDiagnostics().statusAcks).toBe(1);
+    await backend.shutdown();
+  });
+
+  test("preserves original wire message timestamps when offline receipts overwrite them in Baileys buffer", async () => {
+    const { backend, sockets } = setup(true);
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+
+    const received: WhatsAppBackendEventMap["messages"][] = [];
+    backend.on("messages", (event) => { received.push(event); });
+
+    // Wire <message> carried original send time 1000, but Baileys' buffered
+    // receipt overwrote messageTimestamp to 1500 before flushing messages.upsert.
+    sockets[0].ws.emit("CB:message", {
+      tag: "message",
+      attrs: { id: "msg-1", t: "1000", offline: "1" },
+    });
+    sockets[0].emitter.emit("messages.upsert", {
+      type: "append",
+      messages: [{
+        key: { id: "msg-1", remoteJid: "50766165590@s.whatsapp.net", fromMe: false },
+        message: { conversation: "hola" },
+        messageTimestamp: 1500,
+      }],
+    });
+    expect(received[0]?.messages[0]?.timestampMs).toBe(1_000_000);
+    await backend.shutdown();
+  });
+
+  test("keeps reconnecting across prolonged transient outages by default and resets stale state on 405", async () => {
+    let versionCalls = 0;
+    let savedCreds = 0;
+    const sockets: MockSocket[] = [];
+    const configs: UserFacingSocketConfig[] = [];
+    const timers = new FakeTimers();
+    const auth = authBundle(true, async () => { savedCreds += 1; });
+    auth.state.creds.routingInfo = Buffer.from([1, 2, 3]);
+    const backend = new RecordWhatsAppBackend({
+      authDirectory: "/test/record/whatsapp/auth",
+      authLoader: async () => auth,
+      versionFetcher: async () => [2, 3000, ++versionCalls],
+      socketFactory: (config) => {
+        configs.push(config);
+        const socket = mockSocket({ id: "15550001:1@s.whatsapp.net", lid: "opaque:1@lid", name: "Ada" });
+        sockets.push(socket);
+        return socket.socket;
+      },
+      timers,
+    });
+
+    const login = backend.startLogin();
+    await flushPromises();
+    sockets[0].emitter.emit("connection.update", { connection: "open" });
+    await login;
+
+    // 10 consecutive transient disconnects do not permanently fail the default policy.
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      sockets.at(-1)!.emitter.emit("connection.update", closeUpdate(DisconnectReason.connectionLost));
+      expect(backend.state).toMatchObject({ status: "reconnecting", attempt });
+      timers.runNext();
+    }
+    expect(sockets).toHaveLength(11);
+    expect(versionCalls).toBe(1);
+
+    // Consecutive 515s without reaching open back off instead of spinning at 0 ms.
+    sockets.at(-1)!.emitter.emit("connection.update", { connection: "open" });
+    await flushPromises();
+    sockets.at(-1)!.emitter.emit("connection.update", closeUpdate(515));
+    expect(backend.state).toMatchObject({ status: "reconnecting", attempt: 1, delayMs: 0 });
+    timers.runNext();
+    sockets.at(-1)!.emitter.emit("connection.update", closeUpdate(515));
+    expect(backend.state.status).toBe("reconnecting");
+    if (backend.state.status === "reconnecting") expect(backend.state.delayMs).toBeGreaterThan(0);
+    timers.runNext();
+
+    // 405 clears routingInfo, saves creds, and fetches a fresh WA Web version before reopening.
+    const savesBefore405 = savedCreds;
+    sockets.at(-1)!.emitter.emit("connection.update", closeUpdate(405));
+    await flushPromises();
+    expect(auth.state.creds.routingInfo).toBeUndefined();
+    expect(savedCreds).toBeGreaterThan(savesBefore405);
+    timers.runNext();
+    await flushPromises();
+    expect(versionCalls).toBe(2);
+    expect(configs.at(-1)?.version).toEqual([2, 3000, 2]);
+    await backend.shutdown();
   });
 });
 

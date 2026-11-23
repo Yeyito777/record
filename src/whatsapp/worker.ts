@@ -45,7 +45,7 @@ const diagnosticsSocket = process.env.RECORD_WHATSAPP_DIAGNOSTICS_SOCKET;
 if (diagnosticsSocket) {
   void startWhatsAppDiagnosticsServer(
     diagnosticsSocket,
-    () => diagnostics.snapshot(backend.state),
+    () => diagnostics.snapshot(backend.state, backend.getProtocolDiagnostics()),
   ).then((server) => { diagnosticsServer = server; }).catch(() => {});
 }
 let inputBuffer = "";

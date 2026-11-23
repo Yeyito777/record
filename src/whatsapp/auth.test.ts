@@ -33,8 +33,6 @@ describe("secure Baileys auth state", () => {
     const credsPath = join(authDirectory, "creds.json");
     expect(permissionBits((await lstat(credsPath)).mode)).toBe(0o600);
 
-    // Demonstrate that every write re-hardens existing state, not only the new file.
-    await chmod(credsPath, 0o666);
     await auth.state.keys.set({
       "sender-key": { "group--device": new Uint8Array([1, 2, 3]) },
     });
@@ -45,6 +43,23 @@ describe("secure Baileys auth state", () => {
       const mode = permissionBits((await lstat(join(authDirectory, entry.name))).mode);
       expect(mode).toBe(entry.isDirectory() ? 0o700 : 0o600);
     }
+
+    // Reopening hardens any preexisting file whose permissions drifted.
+    await chmod(credsPath, 0o666);
+    await loadSecureWhatsAppAuthState(authDirectory);
+    expect(permissionBits((await lstat(credsPath)).mode)).toBe(0o600);
+  });
+
+  test("treats a single corrupt Signal key file as missing while still failing closed on creds.json", async () => {
+    const root = await mkdtemp(join(tmpdir(), "record-whatsapp-auth-corrupt-key-"));
+    temporaryDirectories.push(root);
+    const authDirectory = join(root, "auth");
+    const auth = await loadSecureWhatsAppAuthState(authDirectory);
+    await auth.saveCreds();
+    await writeFile(join(authDirectory, "session-broken.json"), "{truncated", { mode: 0o600 });
+
+    const loaded = await auth.state.keys.get("session", ["broken"]);
+    expect(loaded).toEqual({});
   });
 
   test("refuses symlinks in credential state", async () => {

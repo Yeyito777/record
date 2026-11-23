@@ -92,10 +92,53 @@ export interface StartWhatsAppLoginOptions {
 const DEFAULT_RECONNECT_POLICY: WhatsAppReconnectPolicy = {
   initialDelayMs: 1_000,
   maxDelayMs: 30_000,
-  maxAttempts: 8,
+  maxAttempts: Number.POSITIVE_INFINITY,
   jitterRatio: 0.2,
 };
 const MEDIA_RECOVERY_TIMEOUT_MS = 30_000;
+const WEB_VERSION_TTL_MS = 6 * 60 * 60 * 1_000;
+const OFFLINE_BATCH_SIZE = "100";
+const OFFLINE_BATCH_IDLE_MS = 2_500;
+const OFFLINE_BATCH_RETRY_MS = 5_000;
+const MAX_EXTRA_OFFLINE_BATCHES = 100;
+const MAX_EMPTY_OFFLINE_BATCHES = 2;
+const MAX_WIRE_MESSAGE_TIMESTAMPS = 2_000;
+
+interface WhatsAppBinaryNode {
+  tag?: string;
+  attrs?: Record<string, string | undefined>;
+  content?: unknown;
+}
+
+interface WhatsAppWireSocket {
+  isOpen?: boolean;
+  on(event: string, listener: (node: WhatsAppBinaryNode) => void): unknown;
+  off?(event: string, listener: (node: WhatsAppBinaryNode) => void): unknown;
+  removeListener?(event: string, listener: (node: WhatsAppBinaryNode) => void): unknown;
+}
+
+export interface WhatsAppProtocolDiagnostics {
+  offlinePreviewCount: number | null;
+  offlineBatchesRequested: number;
+  offlineCompleted: boolean;
+  offlineCompletedCount: number | null;
+  statusAcks: number;
+  lastDisconnect: WhatsAppDisconnect | null;
+  lastDisconnectAtMs: number | null;
+}
+
+function childNodeByTag(node: WhatsAppBinaryNode | undefined, tag: string): WhatsAppBinaryNode | undefined {
+  if (!Array.isArray(node?.content)) return undefined;
+  return node.content.find((entry): entry is WhatsAppBinaryNode => (
+    typeof entry === "object" && entry !== null && (entry as WhatsAppBinaryNode).tag === tag
+  ));
+}
+
+function numericAttr(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
 
 /** WhatsApp ignores old direct-chat history requests keyed to the migrated LID thread. */
 function mediaRecoveryChatId(key: WhatsAppMessageKey, canonicalChatId?: string): string {
@@ -132,6 +175,7 @@ interface ActiveSocket {
   source: "login" | "saved-session" | "reconnect";
   socket: WASocket;
   removeListeners: Array<() => void>;
+  wireMessageTimestamps: Map<string, number>;
 }
 
 interface PendingLogin {
@@ -185,8 +229,8 @@ function validateReconnectPolicy(policy: WhatsAppReconnectPolicy): void {
   if (!Number.isFinite(policy.maxDelayMs) || policy.maxDelayMs < policy.initialDelayMs) {
     throw new Error("maxDelayMs must be finite and at least initialDelayMs.");
   }
-  if (!Number.isInteger(policy.maxAttempts) || policy.maxAttempts < 0) {
-    throw new Error("maxAttempts must be a non-negative integer.");
+  if (policy.maxAttempts !== Number.POSITIVE_INFINITY && (!Number.isInteger(policy.maxAttempts) || policy.maxAttempts < 0)) {
+    throw new Error("maxAttempts must be a non-negative integer or Infinity.");
   }
   if (!Number.isFinite(policy.jitterRatio) || policy.jitterRatio < 0 || policy.jitterRatio > 1) {
     throw new Error("jitterRatio must be between 0 and 1.");
@@ -239,7 +283,17 @@ export class RecordWhatsAppBackend {
   private credentialWrites: Promise<void> = Promise.resolve();
   private credentialWriteFailure: unknown | null = null;
   private webVersion: WhatsAppWebVersion | undefined;
+  private webVersionFetchedAtMs = 0;
   private finalizingSocketId: number | null = null;
+  private protocolDiagnostics: WhatsAppProtocolDiagnostics = {
+    offlinePreviewCount: null,
+    offlineBatchesRequested: 0,
+    offlineCompleted: false,
+    offlineCompletedCount: null,
+    statusAcks: 0,
+    lastDisconnect: null,
+    lastDisconnectAtMs: null,
+  };
 
   constructor(options: RecordWhatsAppBackendOptions = {}) {
     this.authDirectory = options.authDirectory ?? getRecordWhatsAppPaths().authDirectory;
@@ -262,6 +316,15 @@ export class RecordWhatsAppBackend {
 
   get isConnected(): boolean {
     return this.currentState.status === "connected";
+  }
+
+  getProtocolDiagnostics(): WhatsAppProtocolDiagnostics {
+    return {
+      ...this.protocolDiagnostics,
+      lastDisconnect: this.protocolDiagnostics.lastDisconnect
+        ? { ...this.protocolDiagnostics.lastDisconnect }
+        : null,
+    };
   }
 
   /** The live Baileys socket for later send/read/media operations. */
@@ -471,6 +534,7 @@ export class RecordWhatsAppBackend {
       if (!this.isCurrentGeneration(generation)) return;
       this.auth = auth;
       this.webVersion = webVersion;
+      this.webVersionFetchedAtMs = webVersion ? this.timers.now() : 0;
       this.initialSavedSession = hasSavedSession(auth);
       this.openSocket(generation, this.initialSavedSession ? "saved-session" : "login", 0);
     } catch (error) {
@@ -521,9 +585,24 @@ export class RecordWhatsAppBackend {
       source,
       socket,
       removeListeners: [],
+      wireMessageTimestamps: new Map(),
     };
+    this.protocolDiagnostics.offlinePreviewCount = null;
+    this.protocolDiagnostics.offlineBatchesRequested = 0;
+    this.protocolDiagnostics.offlineCompleted = false;
+    this.protocolDiagnostics.offlineCompletedCount = null;
     this.activeSocket = active;
     this.bindSocketEvents(active);
+  }
+
+  private async reopenSocketWithFreshVersion(generation: number, attempt: number): Promise<void> {
+    const latest = await this.versionFetcher().catch(() => undefined);
+    if (!this.isCurrentGeneration(generation)) return;
+    if (latest) {
+      this.webVersion = latest;
+      this.webVersionFetchedAtMs = this.timers.now();
+    }
+    this.openSocket(generation, "reconnect", attempt);
   }
 
   private bindSocketEvents(active: ActiveSocket): void {
@@ -573,9 +652,21 @@ export class RecordWhatsAppBackend {
         if (chatSettings.length > 0) {
           this.emit("chats", { kind: "update", chats: chatSettings });
         }
-        const messages = event.messages.map((message) => toWhatsAppMessage(message, {
-          selfId: active.socket.user?.id,
-        }));
+        const messages = event.messages.map((rawMessage) => {
+          const id = rawMessage.key?.id;
+          const wireSec = id ? active.wireMessageTimestamps.get(id) : undefined;
+          if (id) active.wireMessageTimestamps.delete(id);
+          const rawSec = rawMessage.messageTimestamp != null ? Number(rawMessage.messageTimestamp) : Number.NaN;
+          // Baileys merges buffered offline receipts onto buffered messages,
+          // overwriting messageTimestamp with the later receipt time (#2726).
+          const message = wireSec !== undefined
+            && !rawMessage.message?.editedMessage
+            && Number.isFinite(rawSec)
+            && wireSec < rawSec
+            ? { ...rawMessage, messageTimestamp: wireSec }
+            : rawMessage;
+          return toWhatsAppMessage(message, { selfId: active.socket.user?.id });
+        });
         this.emit("messages", {
           kind: "upsert",
           upsertType: event.type,
@@ -653,6 +744,166 @@ export class RecordWhatsAppBackend {
     this.bind(active, "lid-mapping.update", ({ lid, pn }) => {
       this.forwardSocketEvent(active, () => this.emit("lid-mapping", { lid, phoneId: pn }));
     });
+
+    this.bindWireWorkarounds(active);
+  }
+
+  /**
+   * Protocol workarounds for Baileys 7.0.0-rc14 wire bugs:
+   * 1. Offline queue drain (#2810 / WAHA #2349): Baileys requests only a single
+   *    offline_batch of 100 items on offline_preview; queues >100 stall and hold
+   *    back all live messages and history sync replies until reconnected.
+   * 2. Top-level <status> stanzas (#2858): unacked status stanzas trigger
+   *    Stream Errored (ack) disconnects every ~50 minutes.
+   * 3. Offline receipt timestamp overwrite (#2726): capture raw <message t=...>
+   *    before Baileys' event buffer merges a later read/delivery receipt onto it.
+   */
+  private bindWireWorkarounds(active: ActiveSocket): void {
+    const rawSocket = active.socket as unknown as {
+      ws?: WhatsAppWireSocket;
+      sendNode?: (node: WhatsAppBinaryNode) => Promise<void>;
+    };
+    const ws = rawSocket.ws;
+    const sendNode = rawSocket.sendNode;
+    if (!ws) return;
+
+    const onWire = (event: string, listener: (node: WhatsAppBinaryNode) => void): void => {
+      ws.on(event, listener);
+      active.removeListeners.push(() => {
+        if (ws.off) ws.off(event, listener);
+        else ws.removeListener?.(event, listener);
+      });
+    };
+
+    let offlineDraining = false;
+    let offlineCompleted = false;
+    let extraBatches = 0;
+    let receivedInBatch = 0;
+    let emptyBatches = 0;
+    let offlineTimer: unknown | null = null;
+
+    const clearOfflineTimer = (): void => {
+      if (offlineTimer === null) return;
+      this.timers.clearTimeout(offlineTimer);
+      offlineTimer = null;
+    };
+
+    const stopOfflineDraining = (): void => {
+      offlineDraining = false;
+      clearOfflineTimer();
+    };
+
+    const scheduleOfflineBatch = (delayMs: number): void => {
+      clearOfflineTimer();
+      if (!offlineDraining || offlineCompleted || !sendNode || !this.isCurrentSocket(active)) return;
+      const handle = this.timers.setTimeout(() => {
+        if (offlineTimer !== handle) return;
+        offlineTimer = null;
+        if (!offlineDraining || offlineCompleted || !this.isCurrentSocket(active)) return;
+        if (ws.isOpen === false) {
+          stopOfflineDraining();
+          return;
+        }
+        if (extraBatches > 0 && receivedInBatch === 0) {
+          emptyBatches += 1;
+          if (emptyBatches >= MAX_EMPTY_OFFLINE_BATCHES) {
+            stopOfflineDraining();
+            return;
+          }
+        }
+        if (extraBatches >= MAX_EXTRA_OFFLINE_BATCHES) {
+          stopOfflineDraining();
+          return;
+        }
+        extraBatches += 1;
+        receivedInBatch = 0;
+        this.protocolDiagnostics.offlineBatchesRequested = extraBatches;
+        void Promise.resolve(sendNode({
+          tag: "ib",
+          attrs: {},
+          content: [{ tag: "offline_batch", attrs: { count: OFFLINE_BATCH_SIZE } }],
+        })).catch(() => {
+          stopOfflineDraining();
+        });
+        scheduleOfflineBatch(OFFLINE_BATCH_RETRY_MS);
+      }, delayMs);
+      offlineTimer = handle;
+      if (typeof handle === "object" && handle !== null && "unref" in handle) {
+        (handle as { unref?: () => void }).unref?.();
+      }
+    };
+
+    const noteOfflineActivity = (node: WhatsAppBinaryNode | undefined): void => {
+      if (!offlineDraining || offlineCompleted || !this.isCurrentSocket(active)) return;
+      if (node?.attrs?.offline === undefined) return;
+      receivedInBatch += 1;
+      emptyBatches = 0;
+      scheduleOfflineBatch(OFFLINE_BATCH_IDLE_MS);
+    };
+
+    active.removeListeners.push(stopOfflineDraining);
+
+    onWire("CB:ib,,offline_preview", (node) => {
+      if (!this.isCurrentSocket(active)) return;
+      const preview = childNodeByTag(node, "offline_preview");
+      const total = numericAttr(preview?.attrs?.count);
+      const sumParts = [
+        numericAttr(preview?.attrs?.message),
+        numericAttr(preview?.attrs?.receipt),
+        numericAttr(preview?.attrs?.notification),
+        numericAttr(preview?.attrs?.appdata),
+      ].filter((value): value is number => value !== null);
+      this.protocolDiagnostics.offlinePreviewCount = total ?? (sumParts.length > 0 ? sumParts.reduce((a, b) => a + b, 0) : null);
+      offlineDraining = true;
+      offlineCompleted = false;
+      extraBatches = 0;
+      receivedInBatch = 0;
+      emptyBatches = 0;
+      scheduleOfflineBatch(OFFLINE_BATCH_IDLE_MS);
+    });
+
+    onWire("CB:ib,,offline", (node) => {
+      if (!this.isCurrentSocket(active)) return;
+      const child = childNodeByTag(node, "offline");
+      this.protocolDiagnostics.offlineCompleted = true;
+      this.protocolDiagnostics.offlineCompletedCount = numericAttr(child?.attrs?.count);
+      offlineCompleted = true;
+      stopOfflineDraining();
+    });
+
+    onWire("CB:message", (node) => {
+      if (!this.isCurrentSocket(active)) return;
+      noteOfflineActivity(node);
+      const id = node?.attrs?.id;
+      const t = numericAttr(node?.attrs?.t);
+      if (id && t !== null && t > 0) {
+        if (active.wireMessageTimestamps.size >= MAX_WIRE_MESSAGE_TIMESTAMPS) {
+          const oldest = active.wireMessageTimestamps.keys().next().value;
+          if (oldest !== undefined) active.wireMessageTimestamps.delete(oldest);
+        }
+        active.wireMessageTimestamps.set(id, t);
+      }
+    });
+
+    onWire("CB:receipt", (node) => noteOfflineActivity(node));
+    onWire("CB:notification", (node) => noteOfflineActivity(node));
+    onWire("CB:call", (node) => noteOfflineActivity(node));
+
+    onWire("CB:status", (node) => {
+      if (!this.isCurrentSocket(active)) return;
+      noteOfflineActivity(node);
+      if (!sendNode || !node?.attrs?.id || !node.attrs.from) return;
+      const attrs: Record<string, string> = {
+        id: node.attrs.id,
+        to: node.attrs.from,
+        class: "status",
+      };
+      if (node.attrs.participant) attrs.participant = node.attrs.participant;
+      if (node.attrs.recipient) attrs.recipient = node.attrs.recipient;
+      if (node.attrs.type) attrs.type = node.attrs.type;
+      this.protocolDiagnostics.statusAcks += 1;
+      void Promise.resolve(sendNode({ tag: "ack", attrs })).catch(() => {});
+    });
   }
 
   private bind<K extends keyof BaileysEventMap>(
@@ -692,6 +943,8 @@ export class RecordWhatsAppBackend {
 
   private onSocketClosed(active: ActiveSocket, disconnect: WhatsAppDisconnect): void {
     if (!this.isCurrentSocket(active)) return;
+    this.protocolDiagnostics.lastDisconnect = disconnect;
+    this.protocolDiagnostics.lastDisconnectAtMs = this.timers.now();
     this.disposeActiveSocket(false);
     if (!this.isCurrentGeneration(active.generation)) return;
 
@@ -709,10 +962,22 @@ export class RecordWhatsAppBackend {
       return;
     }
 
+    // 405 rejects a stale edge routing hint (e.g. after a network change) or an
+    // outdated WA Web version. Clear both so the reconnect routes afresh.
+    if (disconnect.code === 405) {
+      this.webVersion = undefined;
+      this.webVersionFetchedAtMs = 0;
+      if (this.auth?.state.creds.routingInfo) {
+        delete this.auth.state.creds.routingInfo;
+        this.queueCredentialSaveForGeneration(active.generation);
+      }
+    }
+
     // 515 is Baileys' expected post-pairing stream restart. Recreate the socket
-    // immediately using the just-updated in-memory auth state, but still count
-    // it against the bounded retry budget to prevent a pathological hot loop.
-    const restartRequired = disconnect.code === DisconnectReason.restartRequired || disconnect.code === 515;
+    // immediately on the first restart; if 515 repeats without reaching open,
+    // fall back to exponential backoff so we never spin in a 0 ms hot loop.
+    const restartRequired = (disconnect.code === DisconnectReason.restartRequired || disconnect.code === 515)
+      && this.reconnectAttempts === 0;
     this.scheduleReconnect(active.generation, disconnect, restartRequired);
   }
 
@@ -740,7 +1005,13 @@ export class RecordWhatsAppBackend {
     const handle = this.timers.setTimeout(() => {
       if (this.reconnectTimer !== handle) return;
       this.reconnectTimer = null;
-      this.openSocket(generation, "reconnect", attempt);
+      const versionStale = this.webVersion === undefined
+        || this.timers.now() - this.webVersionFetchedAtMs >= WEB_VERSION_TTL_MS;
+      if (versionStale) {
+        void this.reopenSocketWithFreshVersion(generation, attempt);
+      } else {
+        this.openSocket(generation, "reconnect", attempt);
+      }
     }, delayMs);
     this.reconnectTimer = handle;
     if (typeof handle === "object" && handle !== null && "unref" in handle) {
@@ -750,7 +1021,11 @@ export class RecordWhatsAppBackend {
 
   private queueCredentialSave(active: ActiveSocket): void {
     if (!this.isCurrentSocket(active) || !this.auth) return;
-    const generation = active.generation;
+    this.queueCredentialSaveForGeneration(active.generation);
+  }
+
+  private queueCredentialSaveForGeneration(generation: number): void {
+    if (!this.isCurrentGeneration(generation) || !this.auth) return;
     const saveCreds = this.auth.saveCreds;
     this.credentialWrites = this.credentialWrites
       .then(async () => {

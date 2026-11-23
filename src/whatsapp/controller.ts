@@ -931,6 +931,8 @@ export class WhatsAppController {
         const event = { ...incomingEvent, messages: this.withOutgoingOrder(incomingEvent.messages) };
         const activeBefore = this.activeWhatsAppJid();
         const hadMessages = activeBefore && Boolean(this.state.whatsapp.messagesByChatId[activeBefore]?.length);
+        const wasAtBottom = this.state.timeline.scrollOffset === Number.MAX_SAFE_INTEGER
+          || this.state.timeline.scrollOffset === this.state.timeline.maxScroll;
         const wasNearBottom = isTimelineNearBottom(this.state.timeline.scrollOffset, this.state.timeline.maxScroll);
         const previouslyKnownIds = new Set(event.messages
           .filter((message) => {
@@ -963,7 +965,7 @@ export class WhatsAppController {
             if (previous && !stored.senderId && !stored.senderName) mapped.author = previous.author;
             replaceTimelineMessage(this.state.timeline, mapped.id, mapped);
             const isNewUpsert = event.kind === "upsert" && !previous && !previouslyKnownIds.has(message.id);
-            if (isNewUpsert && event.upsertType === "notify" && wasNearBottom) {
+            if (isNewUpsert && ((event.upsertType === "notify" && wasNearBottom) || (event.upsertType === "append" && wasAtBottom))) {
               this.state.timeline.scrollOffset = Number.MAX_SAFE_INTEGER;
             }
             if (!message.fromMe && isNewUpsert && event.upsertType === "notify" && wasNearBottom) {
@@ -990,6 +992,11 @@ export class WhatsAppController {
         this.refreshActiveTimeline();
       }),
       this.backend.on("error", (event) => {
+        debugLog("whatsapp.error", {
+          phase: event.phase,
+          recoverable: event.recoverable,
+          error: safeErrorMessage(event.error),
+        });
         if (!event.recoverable && this.state.whatsapp.loginModal) {
           this.state.whatsapp.loginModal = setLoginModalPhase(this.state.whatsapp.loginModal, "error", {
             qr: null,
@@ -1006,6 +1013,25 @@ export class WhatsAppController {
   }
 
   private handleConnectionState(connection: WhatsAppConnectionState): void {
+    debugLog("whatsapp.state", {
+      status: connection.status,
+      ...(connection.status === "connecting" ? { source: connection.source, attempt: connection.attempt } : {}),
+      ...(connection.status === "reconnecting" ? {
+        attempt: connection.attempt,
+        delayMs: connection.delayMs,
+        disconnectCode: connection.disconnect.code,
+        disconnectName: connection.disconnect.name,
+      } : {}),
+      ...(connection.status === "logged-out" || connection.status === "connection-replaced" ? {
+        disconnectCode: connection.disconnect.code,
+        disconnectName: connection.disconnect.name,
+      } : {}),
+      ...(connection.status === "failed" ? {
+        disconnectCode: connection.disconnect?.code ?? null,
+        disconnectName: connection.disconnect?.name ?? null,
+        error: safeErrorMessage(connection.error),
+      } : {}),
+    });
     const wasConnected = this.state.whatsapp.connection.status === "connected";
     if (wasConnected && connection.status !== "connected") this.disconnectedAtMs = Date.now();
     if (connection.status === "connected" && this.disconnectedAtMs !== null) {

@@ -62,7 +62,7 @@ async function hardenEntry(entryPath: string, rootDirectory = false): Promise<vo
 
   if (info.isDirectory()) {
     if (!rootDirectory) throw new Error(`Unexpected directory in WhatsApp auth state: ${entryPath}`);
-    await chmod(entryPath, DIRECTORY_MODE);
+    if ((info.mode & 0o777) !== DIRECTORY_MODE) await chmod(entryPath, DIRECTORY_MODE);
     const children = await readdir(entryPath);
     await Promise.all(children.map((child) => hardenEntry(join(entryPath, child))));
     return;
@@ -71,7 +71,7 @@ async function hardenEntry(entryPath: string, rootDirectory = false): Promise<vo
   if (rootDirectory || !info.isFile()) {
     throw new Error(`Unexpected entry in WhatsApp auth state: ${entryPath}`);
   }
-  await chmod(entryPath, FILE_MODE);
+  if ((info.mode & 0o777) !== FILE_MODE) await chmod(entryPath, FILE_MODE);
 }
 
 function fixedFileName(file: string): string {
@@ -150,18 +150,28 @@ async function atomicWriteJson(authDirectory: string, file: string, data: unknow
   });
 }
 
-async function readJson(authDirectory: string, file: string): Promise<unknown | null> {
+async function readJson(
+  authDirectory: string,
+  file: string,
+  onCorrupt?: (error: unknown) => null,
+): Promise<unknown | null> {
   const path = join(authDirectory, fixedFileName(file));
   return await withFileLock(path, async () => {
+    let serialized: string;
     try {
       const info = await lstat(path);
       if (info.isSymbolicLink() || !info.isFile()) {
         throw new Error(`Refusing unsafe WhatsApp auth state entry: ${path}`);
       }
-      const serialized = await readFile(path, "utf8");
-      return JSON.parse(serialized, BufferJSON.reviver);
+      serialized = await readFile(path, "utf8");
     } catch (error) {
       if (isMissing(error)) return null;
+      throw error;
+    }
+    try {
+      return JSON.parse(serialized, BufferJSON.reviver);
+    } catch (error) {
+      if (onCorrupt) return onCorrupt(error);
       throw error;
     }
   });
@@ -205,8 +215,15 @@ async function removeStaleTemporaryFiles(authDirectory: string): Promise<void> {
 export async function loadSecureWhatsAppAuthState(
   authDirectory = getRecordWhatsAppPaths().authDirectory,
 ): Promise<WhatsAppAuthStateBundle> {
-  await hardenWhatsAppAuthDirectory(authDirectory);
+  await mkdir(authDirectory, { recursive: true, mode: DIRECTORY_MODE });
+  const rootInfo = await lstat(authDirectory);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw new Error(`Refusing to use an unsafe WhatsApp auth directory: ${authDirectory}`);
+  }
+  // Remove leftover temp files before hardening so interrupted writes never
+  // fail startup or get needlessly chmodded.
   await removeStaleTemporaryFiles(authDirectory);
+  await hardenWhatsAppAuthDirectory(authDirectory);
 
   const storedCreds = await readJson(authDirectory, "creds.json");
   const creds = (storedCreds ?? initAuthCreds()) as AuthenticationState["creds"];
@@ -215,7 +232,10 @@ export async function loadSecureWhatsAppAuthState(
     get: async <T extends keyof SignalDataTypeMap>(type: T, ids: string[]) => {
       const result: { [id: string]: SignalDataTypeMap[T] } = {};
       await Promise.all(ids.map(async (id) => {
-        let value = await readJson(authDirectory, `${type}-${id}.json`) as SignalDataTypeMap[T] | null;
+        // A single corrupted Signal key file (e.g. session or tctoken) should
+        // be treated as missing so Baileys can renegotiate it instead of failing
+        // decryption permanently; creds.json above still fails closed.
+        let value = await readJson(authDirectory, `${type}-${id}.json`, () => null) as SignalDataTypeMap[T] | null;
         if (type === "app-state-sync-key" && value) {
           value = proto.Message.AppStateSyncKeyData.fromObject(
             value as unknown as Record<string, unknown>,
@@ -237,8 +257,9 @@ export async function loadSecureWhatsAppAuthState(
             : atomicWriteJson(authDirectory, file, value));
         }
       }
+      // Each atomicWriteJson creates the file as 0600, chmods it, and refuses
+      // symlinks. Avoid re-scanning thousands of unrelated files on every write.
       await Promise.all(writes);
-      await hardenWhatsAppAuthDirectory(authDirectory);
     },
   };
 
@@ -246,7 +267,6 @@ export async function loadSecureWhatsAppAuthState(
     state: { creds, keys },
     saveCreds: async () => {
       await atomicWriteJson(authDirectory, "creds.json", creds);
-      await hardenWhatsAppAuthDirectory(authDirectory);
     },
   };
 }
