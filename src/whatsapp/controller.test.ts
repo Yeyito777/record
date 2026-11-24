@@ -2911,10 +2911,9 @@ describe("WhatsApp newer-messages footer", () => {
       expect(backend.historyRequests).toHaveLength(1);
       expect(backend.historyRequests[0]?.oldestId).toBe("corrupted-sent");
       await sleep(15);
-
-      // Next recent check skips the timed-out fromMe anchor and falls back to the newest incoming message.
-      controller.openChannel(whatsappChannelId(jid));
       await settle();
+
+      // Timeout on a fromMe anchor automatically falls back once to the newest incoming message.
       expect(backend.historyRequests).toHaveLength(2);
       expect(backend.historyRequests[1]?.oldestId).toBe(latestIncoming.key.id);
 

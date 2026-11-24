@@ -1516,6 +1516,7 @@ export class WhatsAppController {
       const currentJid = canonicalWhatsAppJid(this.state.whatsapp, jid);
       if (this.pendingHistoryByChatId.get(currentJid) !== pending) return;
       this.pendingHistoryByChatId.delete(currentJid);
+      let retryWithIncomingAnchor = false;
       if (recent && !from && repairPage === 0) {
         let timedOut = this.timedOutRecentAnchorsByChatId.get(currentJid);
         if (!timedOut) {
@@ -1523,6 +1524,10 @@ export class WhatsAppController {
           this.timedOutRecentAnchorsByChatId.set(currentJid, timedOut);
         }
         timedOut.add(pending.anchorId);
+        if (oldest.fromMe && timedOut.size === 1 && this.activeWhatsAppJid() === currentJid) {
+          const fallback = this.recentHistoryAnchor(currentJid, this.state.whatsapp.messagesByChatId[currentJid] ?? []);
+          retryWithIncomingAnchor = Boolean(fallback && !fallback.fromMe && fallback.key.id !== pending.anchorId);
+        }
       }
       debugLog("whatsapp.history.timeout", { kind: historyRequestKind(pending), ms: Date.now() - pending.startedAtMs });
       if (!recent && this.state.timeline.channelId === whatsappChannelId(currentJid)) {
@@ -1531,6 +1536,9 @@ export class WhatsAppController {
       }
       this.updateLoadingState();
       this.scheduleRender();
+      if (retryWithIncomingAnchor) {
+        this.requestOlderHistory(currentJid, { recent: true, silent });
+      }
     }, this.historyRequestTimeoutMs);
     const count = recent ? 50 : Math.min(50, MAX_WHATSAPP_MESSAGES_PER_CHAT - messages.length);
     const pending: PendingHistoryRequest = {
