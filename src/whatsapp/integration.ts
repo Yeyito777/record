@@ -233,8 +233,12 @@ export function mergeWhatsAppMessage(
   previous: WhatsAppMessage | undefined,
   incoming: WhatsAppMessage,
   preferExisting = false,
+  authoritativeTimestamp = false,
 ): WhatsAppMessage {
   let message = incoming;
+  const authoritativeTimestampMs = authoritativeTimestamp && incoming.timestampMs !== null
+    ? incoming.timestampMs
+    : undefined;
   const receivedAtMs = previous?.receivedAtMs ?? message.receivedAtMs ?? Date.now();
   if (!previous) return { ...message, receivedAtMs };
   if (preferExisting) {
@@ -258,7 +262,7 @@ export function mergeWhatsAppMessage(
   return {
     ...previous, ...message, content, receivedAtMs,
     key: { ...previous.key, ...message.key },
-    timestampMs: message.timestampMs ?? previous.timestampMs,
+    timestampMs: authoritativeTimestampMs ?? message.timestampMs ?? previous.timestampMs,
     senderId: message.senderId ?? previous.senderId,
     senderName: message.senderName ?? previous.senderName,
     replyTo: message.replyTo ?? previous.replyTo,
@@ -274,9 +278,10 @@ export function isVisibleWhatsAppMessage(message: WhatsAppMessage): boolean {
 export function upsertWhatsAppMessages(
   state: WhatsAppUiState,
   messages: readonly WhatsAppMessage[],
-  options: { preferExisting?: boolean } = {},
+  options: { preferExisting?: boolean; authoritativeTimestamp?: boolean } = {},
 ): void {
   const touched = new Set<string>();
+  const previousNewestByChatId = new Map<string, number>();
   for (const incoming of messages) {
     // Protocol control envelopes from caches produced by older Record builds are
     // not user-visible messages (edits now arrive through messages.update).
@@ -290,8 +295,15 @@ export function upsertWhatsAppMessages(
     let message = canonicalizeWhatsAppMessage(state, incoming);
     if (!message.chatId || message.chatId === "status@broadcast") continue;
     const existing = state.messagesByChatId[message.chatId] ?? [];
+    if (!previousNewestByChatId.has(message.chatId)) {
+      let maxTs = 0;
+      for (const candidate of existing) {
+        if ((candidate.timestampMs ?? 0) > maxTs) maxTs = candidate.timestampMs ?? 0;
+      }
+      previousNewestByChatId.set(message.chatId, maxTs);
+    }
     const index = existing.findIndex((candidate) => candidate.id === message.id);
-    message = mergeWhatsAppMessage(existing[index], message, options.preferExisting);
+    message = mergeWhatsAppMessage(existing[index], message, options.preferExisting, options.authoritativeTimestamp);
     if (index >= 0) existing[index] = message;
     else existing.push(message);
     state.messagesByChatId[message.chatId] = existing;
@@ -314,8 +326,19 @@ export function upsertWhatsAppMessages(
     state.messagesByChatId[chatId] = retained;
     const newestMessageTimestamp = retained.at(-1)?.timestampMs ?? 0;
     const chat = state.chatsById[chatId];
-    if (chat && newestMessageTimestamp > (chat.lastMessageAtMs ?? 0)) {
-      chat.lastMessageAtMs = newestMessageTimestamp;
+    if (chat) {
+      if (newestMessageTimestamp > (chat.lastMessageAtMs ?? 0)) {
+        chat.lastMessageAtMs = newestMessageTimestamp;
+      } else if (
+        options.authoritativeTimestamp
+        && newestMessageTimestamp > 0
+        && (chat.lastMessageAtMs ?? 0) === (previousNewestByChatId.get(chatId) ?? 0)
+        && newestMessageTimestamp < (chat.lastMessageAtMs ?? 0)
+      ) {
+        // Authoritative phone history repaired a future-corrupted newest message
+        // timestamp; pull chat recency back down so sidebar ordering heals too.
+        chat.lastMessageAtMs = newestMessageTimestamp;
+      }
     }
   }
 }

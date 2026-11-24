@@ -658,11 +658,10 @@ export class RecordWhatsAppBackend {
           if (id) active.wireMessageTimestamps.delete(id);
           const rawSec = rawMessage.messageTimestamp != null ? Number(rawMessage.messageTimestamp) : Number.NaN;
           // Baileys merges buffered offline receipts onto buffered messages,
-          // overwriting messageTimestamp with the later receipt time (#2726).
+          // overwriting messageTimestamp with the later (or zero) receipt time (#2726).
           const message = wireSec !== undefined
             && !rawMessage.message?.editedMessage
-            && Number.isFinite(rawSec)
-            && wireSec < rawSec
+            && (!Number.isFinite(rawSec) || wireSec !== rawSec)
             ? { ...rawMessage, messageTimestamp: wireSec }
             : rawMessage;
           return toWhatsAppMessage(message, { selfId: active.socket.user?.id });

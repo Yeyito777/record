@@ -2887,4 +2887,43 @@ describe("WhatsApp newer-messages footer", () => {
       await controller.shutdown();
     }
   });
+
+  test("falls back from a timed-out fromMe recent anchor and repairs corrupted timestamps on history sync", async () => {
+    const { state, backend, controller } = fixture({ historyRequestTimeoutMs: 5 });
+    const base = fullHistory();
+    const corrupted: WhatsAppMessage = {
+      key: { id: "corrupted-sent", chatId: jid, fromMe: true },
+      id: "corrupted-sent",
+      chatId: jid,
+      senderId: "me@s.whatsapp.net",
+      fromMe: true,
+      timestampMs: 900_000,
+      content: { kind: "text", text: "sent earlier, receipt drifted" },
+    };
+    const latestIncoming = base[base.length - 1]!;
+    try {
+      backend.emit("state", connected);
+      backend.emit("history", historyPage([...base.slice(1), corrupted]));
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+
+      // First recent check anchors on the newest message (the corrupted fromMe one) and times out.
+      expect(backend.historyRequests).toHaveLength(1);
+      expect(backend.historyRequests[0]?.oldestId).toBe("corrupted-sent");
+      await sleep(15);
+
+      // Next recent check skips the timed-out fromMe anchor and falls back to the newest incoming message.
+      controller.openChannel(whatsappChannelId(jid));
+      await settle();
+      expect(backend.historyRequests).toHaveLength(2);
+      expect(backend.historyRequests[1]?.oldestId).toBe(latestIncoming.key.id);
+
+      // Phone responds with the authoritative earlier timestamp for the corrupted message.
+      backend.emit("history", historyPage([{ ...corrupted, timestampMs: 100_500 }], "history-2"));
+      expect(state.timeline.messages[state.timeline.messages.length - 1]?.id).toBe(latestIncoming.id);
+      expect(state.whatsapp.chatsById[jid]?.lastMessageAtMs).toBe(latestIncoming.timestampMs ?? undefined);
+    } finally {
+      await controller.shutdown();
+    }
+  });
 });

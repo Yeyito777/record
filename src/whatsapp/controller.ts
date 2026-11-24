@@ -249,6 +249,8 @@ export class WhatsAppController {
   // Remember successful terminal pages across navigation and reconnects. A
   // changed gap/oldest anchor still allows genuinely new backfill work.
   private readonly exhaustedHistoryAnchorByChatId = new Map<string, string>();
+  /** Recent-window anchors that timed out (e.g. corrupted timestamp); try an earlier anchor next. */
+  private readonly timedOutRecentAnchorsByChatId = new Map<string, Set<string>>();
   private visibleChatId: string | null = null;
   private readonly visibleMessages = new Map<string, WhatsAppMessage>();
   private cacheLoading = true;
@@ -370,6 +372,7 @@ export class WhatsAppController {
     this.clearLocalMessages();
     this.clearPendingHistoryRequests();
     this.exhaustedHistoryAnchorByChatId.clear();
+    this.timedOutRecentAnchorsByChatId.clear();
     this.state.whatsapp.loginRequestId += 1;
     this.state.whatsapp.loginModal = null;
     this.cacheEnabled = false;
@@ -886,8 +889,10 @@ export class WhatsAppController {
           ? event.chats.map(({ unreadCount: _unreadCount, lastMessageAtMs: _lastMessageAtMs, ...chat }) => chat)
           : event.chats;
         upsertWhatsAppChats(this.state.whatsapp, chats);
-        upsertWhatsAppMessages(this.state.whatsapp, event.messages, { preferExisting: true });
-        this.mergeVisibleMessages(event.messages, true);
+        // Phone history sync carries authoritative original send timestamps;
+        // let it repair any cached timestamps corrupted by Baileys receipts (#2726).
+        upsertWhatsAppMessages(this.state.whatsapp, event.messages, { preferExisting: true, authoritativeTimestamp: true });
+        this.mergeVisibleMessages(event.messages, true, this.activeWhatsAppJid(), true);
         applyWhatsAppReactions(this.state.whatsapp, event.reactions ?? []);
         this.applyVisibleReactions(event.reactions ?? []);
         this.reapplyLiveReactions([...event.messages, ...(event.reactions ?? []).map(({ target }) => target)]);
@@ -1309,7 +1314,12 @@ export class WhatsAppController {
     }
   }
 
-  private mergeVisibleMessages(messages: readonly WhatsAppMessage[], preferExisting: boolean, jid = this.activeWhatsAppJid()): void {
+  private mergeVisibleMessages(
+    messages: readonly WhatsAppMessage[],
+    preferExisting: boolean,
+    jid = this.activeWhatsAppJid(),
+    authoritativeTimestamp = false,
+  ): void {
     if (!jid) return;
     if (!this.visibleChatId || canonicalWhatsAppJid(this.state.whatsapp, this.visibleChatId) !== jid) {
       this.visibleMessages.clear();
@@ -1328,7 +1338,10 @@ export class WhatsAppController {
       if (!isVisibleWhatsAppMessage(incoming)) continue;
       if (canonicalWhatsAppJid(this.state.whatsapp, incoming.chatId) !== jid) continue;
       const message = { ...incoming, chatId: jid };
-      this.visibleMessages.set(message.id, mergeWhatsAppMessage(this.visibleMessages.get(message.id), message, preferExisting));
+      this.visibleMessages.set(
+        message.id,
+        mergeWhatsAppMessage(this.visibleMessages.get(message.id), message, preferExisting, authoritativeTimestamp),
+      );
     }
   }
 
@@ -1492,8 +1505,10 @@ export class WhatsAppController {
     if (messages.length === 0 || (!recent && !this.canPageOlder(jid))) return;
     // Re-fetch the recent window from its newest known message. Using the
     // oldest cached message can only backfill older history, never repair gaps.
+    // If the newest anchor already timed out (e.g. a receipt-corrupted fromMe
+    // timestamp rejected by the phone), fall back to an earlier untried anchor.
     const oldest = recent
-      ? from ?? messages.findLast((message) => message.timestampMs !== null)
+      ? from ?? this.recentHistoryAnchor(jid, messages)
       : this.historyAnchor(messages);
     if (!oldest?.key.id || !oldest.key.chatId || !oldest.timestampMs) return;
     if (this.queuedHistoryByChatId.has(jid)) return;
@@ -1501,6 +1516,14 @@ export class WhatsAppController {
       const currentJid = canonicalWhatsAppJid(this.state.whatsapp, jid);
       if (this.pendingHistoryByChatId.get(currentJid) !== pending) return;
       this.pendingHistoryByChatId.delete(currentJid);
+      if (recent && !from && repairPage === 0) {
+        let timedOut = this.timedOutRecentAnchorsByChatId.get(currentJid);
+        if (!timedOut) {
+          timedOut = new Set();
+          this.timedOutRecentAnchorsByChatId.set(currentJid, timedOut);
+        }
+        timedOut.add(pending.anchorId);
+      }
       debugLog("whatsapp.history.timeout", { kind: historyRequestKind(pending), ms: Date.now() - pending.startedAtMs });
       if (!recent && this.state.timeline.channelId === whatsappChannelId(currentJid)) {
         this.state.timeline.loadingOlder = false;
@@ -1589,6 +1612,7 @@ export class WhatsAppController {
     clearTimeout(pending.timeout);
     this.pendingHistoryByChatId.delete(chatId);
     if (pending.recent) {
+      this.timedOutRecentAnchorsByChatId.delete(chatId);
       this.recentRecheckByChatId.set(chatId, {
         atMs: Date.now(),
         lastMessageAtMs: this.state.whatsapp.chatsById[chatId]?.lastMessageAtMs ?? 0,
@@ -1614,6 +1638,26 @@ export class WhatsAppController {
     if (!anchorAdvanced) this.exhaustedHistoryAnchorByChatId.set(chatId, pending.anchorId);
     debugLog("whatsapp.history.page", { kind, ms, messages: messages.length, anchorAdvanced });
     return { kind: "older", chatId, anchorAdvanced };
+  }
+
+  /**
+   * Picks the newest timestamped message for a recent-window check. If that
+   * anchor timed out (e.g. a cached fromMe message whose timestamp drifted),
+   * skips to the newest incoming message (or earlier untried anchor) so a
+   * single corrupted cluster cannot wedge history sync permanently.
+   */
+  private recentHistoryAnchor(jid: string, messages: readonly WhatsAppMessage[]): WhatsAppMessage | undefined {
+    const timedOut = this.timedOutRecentAnchorsByChatId.get(jid);
+    const newest = messages.findLast((message) => message.timestampMs !== null);
+    if (!newest || !timedOut?.size || !timedOut.has(newest.key.id)) return newest;
+    if (newest.fromMe) {
+      const incoming = messages.findLast((message) => message.timestampMs !== null && !message.fromMe && !timedOut.has(message.key.id));
+      if (incoming) return incoming;
+    }
+    const earlier = messages.findLast((message) => message.timestampMs !== null && !timedOut.has(message.key.id));
+    if (earlier) return earlier;
+    timedOut.clear();
+    return newest;
   }
 
   /**
@@ -1657,6 +1701,14 @@ export class WhatsAppController {
       if (canonical === jid) continue;
       this.exhaustedHistoryAnchorByChatId.delete(jid);
       if (!this.exhaustedHistoryAnchorByChatId.has(canonical)) this.exhaustedHistoryAnchorByChatId.set(canonical, anchorId);
+    }
+    for (const [jid, anchors] of this.timedOutRecentAnchorsByChatId) {
+      const canonical = canonicalWhatsAppJid(this.state.whatsapp, jid);
+      if (canonical === jid) continue;
+      this.timedOutRecentAnchorsByChatId.delete(jid);
+      const merged = this.timedOutRecentAnchorsByChatId.get(canonical) ?? new Set<string>();
+      for (const anchorId of anchors) merged.add(anchorId);
+      this.timedOutRecentAnchorsByChatId.set(canonical, merged);
     }
     for (const [jid, timer] of this.queuedHistoryByChatId) {
       const canonical = canonicalWhatsAppJid(this.state.whatsapp, jid);
@@ -1788,6 +1840,7 @@ export class WhatsAppController {
     this.clearLocalMessages();
     this.clearPendingHistoryRequests();
     this.exhaustedHistoryAnchorByChatId.clear();
+    this.timedOutRecentAnchorsByChatId.clear();
     const generation = ++this.backendResetGeneration;
     const previous = this.backend;
     this.unbindBackend();

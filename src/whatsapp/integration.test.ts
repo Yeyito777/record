@@ -484,4 +484,37 @@ describe("WhatsApp UI integration", () => {
     expect(state.chatsById[jid]?.name).toBe("Chat name");
     expect(whatsAppDisplayName(state, jid)).toBe("Address book name");
   });
+
+  test("repairs receipt-corrupted timestamps when authoritative history arrives while keeping edits and reactions", () => {
+    const state = createWhatsAppUiState();
+    const jid = "15551234567@s.whatsapp.net";
+    upsertWhatsAppChats(state, [{ id: jid, kind: "direct", name: "Friend" }]);
+    upsertWhatsAppMessages(state, [
+      message("reply", jid, 2_000, "friend reply", jid),
+      {
+        ...message("sent-corrupt", jid, 9_000, "edited version"),
+        fromMe: true,
+        editedTimestampMs: 2_500,
+        reactions: [{ senderId: jid, fromMe: false, emoji: "👍" }],
+      },
+    ]);
+    expect(state.messagesByChatId[jid]?.map((entry) => entry.id)).toEqual(["reply", "sent-corrupt"]);
+    expect(state.chatsById[jid]?.lastMessageAtMs).toBe(9_000);
+
+    upsertWhatsAppMessages(
+      state,
+      [{ ...message("sent-corrupt", jid, 1_000, "original version"), fromMe: true }],
+      { preferExisting: true, authoritativeTimestamp: true },
+    );
+
+    expect(state.messagesByChatId[jid]?.map((entry) => entry.id)).toEqual(["sent-corrupt", "reply"]);
+    expect(state.messagesByChatId[jid]?.[0]).toMatchObject({
+      id: "sent-corrupt",
+      timestampMs: 1_000,
+      content: { kind: "text", text: "edited version" },
+      editedTimestampMs: 2_500,
+      reactions: [{ senderId: jid, fromMe: false, emoji: "👍" }],
+    });
+    expect(state.chatsById[jid]?.lastMessageAtMs).toBe(2_000);
+  });
 });
