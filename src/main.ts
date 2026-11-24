@@ -64,7 +64,9 @@ import {
   jumpMemberListSelectionToVisibleEdge,
   jumpMemberListSelectionToVisibleMiddle,
   MEMBER_LIST_WIDTH,
+  memberListViewportRows,
   moveMemberListSelection,
+  moveMemberListSelectionShiftJk,
   scrollMemberListSelection,
   scrollMemberListSelectionLine,
 } from "./memberlist";
@@ -150,7 +152,9 @@ import {
   moveSidebarSelectionToPrevCategory,
   moveSidebarSelectionToPrevDirectMessage,
   moveSidebarSelectionToPrevGuild,
+  moveSidebarSelectionShiftJk,
   SIDEBAR_WIDTH,
+  sidebarViewportRows,
   type SidebarPreferences,
 } from "./sidebar";
 import { createChannelActionModal, createServerActionModal, createVoiceMemberActionModal, handleServerActionModalKey, type ServerAction } from "./serveractions";
@@ -1467,6 +1471,13 @@ function restorePendingStartingState(
   return startingStateRestorer.restore(token, options);
 }
 
+/** Rows Ctrl+U/D/B/F page by: the focused list's own height, else the timeline's. */
+function focusedPanelPageSize(): number {
+  if (state.panelFocus === "sidebar" && state.sidebar.open) return Math.max(1, sidebarViewportRows(state.rows, state.sidebar));
+  if (state.panelFocus === "memberlist" && state.memberList.open) return Math.max(1, memberListViewportRows(state.rows));
+  return timelinePageSize();
+}
+
 function scrollFocusedPanel(delta: number, visibleRows: number, mode: "cursor" | "page" = "cursor"): void {
   if (state.panelFocus === "sidebar" && state.sidebar.open) {
     scrollSidebarSelection(state.sidebar, state.channelList.channels, delta < 0 ? 1 : -1, Math.abs(delta), state.rows, mode, sidebarVisibilityOptions());
@@ -1545,7 +1556,7 @@ function editorHasPendingInput(): boolean {
   );
 }
 
-function switchToNextNotification(): void {
+function switchToNextNotification(direction: 1 | -1 = 1): void {
   const focusedGuildId = state.panelFocus === "sidebar" && state.sidebar.open
     ? getSelectedSidebarEntry(state.sidebar, state.channelList.channels, sidebarVisibilityOptions()).guildId
     : state.sidebar.activeGuildId;
@@ -1553,6 +1564,7 @@ function switchToNextNotification(): void {
     state.notifications,
     state.channelList.activeChannelId,
     focusedGuildId || state.sidebar.activeGuildId,
+    direction,
   );
   if (!target) {
     scheduleRender();
@@ -2077,7 +2089,8 @@ function handleGlobalAction(key: KeyEvent): boolean {
     ? "navigation"
     : "prompt";
   const action = resolveAction(key, context);
-  const normalNotificationShortcut = action === "notification_next" && key.type === "char" && key.char === "t";
+  const normalNotificationShortcut = (action === "notification_next" || action === "notification_prev")
+    && key.type === "char" && (key.char === "t" || key.char === "T");
   if (normalNotificationShortcut && (
     state.editor.mode !== "normal"
     || editorHasPendingInput()
@@ -2120,26 +2133,27 @@ function handleGlobalAction(key: KeyEvent): boolean {
       scrollFocusedPanelLine(1);
       return true;
     case "scroll_half_up": {
-      const amount = Math.floor(timelinePageSize() / 2);
+      const amount = Math.floor(focusedPanelPageSize() / 2);
       scrollFocusedPanel(-amount, timelinePageSize());
       return true;
     }
     case "scroll_half_down": {
-      const amount = Math.floor(timelinePageSize() / 2);
+      const amount = Math.floor(focusedPanelPageSize() / 2);
       scrollFocusedPanel(amount, timelinePageSize());
       return true;
     }
     case "scroll_page_up":
-      scrollFocusedPanel(-timelinePageSize(), timelinePageSize(), "page");
+      scrollFocusedPanel(-focusedPanelPageSize(), timelinePageSize(), "page");
       return true;
     case "scroll_page_down":
-      scrollFocusedPanel(timelinePageSize(), timelinePageSize(), "page");
+      scrollFocusedPanel(focusedPanelPageSize(), timelinePageSize(), "page");
       return true;
     case "notification_prev":
-      jumpToNotification(-1);
+      if (normalNotificationShortcut) switchToNextNotification(-1);
+      else jumpToNotification(-1);
       return true;
     case "notification_next":
-      if (normalNotificationShortcut) switchToNextNotification();
+      if (normalNotificationShortcut) switchToNextNotification(1);
       else jumpToNotification(1);
       return true;
     case "paste_image":
@@ -2165,9 +2179,15 @@ function handleGlobalAction(key: KeyEvent): boolean {
         enterHistoryFromPromptShiftK();
         return true;
       }
+      const dir = action === "sidebar_next" ? 1 : -1;
+      if (route === "memberlist") {
+        moveMemberListSelectionShiftJk(state.memberList, dir, state.rows);
+        scheduleRender();
+        return true;
+      }
       if (!state.sidebar.open) state.sidebar.open = true;
       focusSidebar(state);
-      moveSidebarSelection(state.sidebar, state.channelList.channels, action === "sidebar_next" ? 1 : -1, sidebarVisibilityOptions());
+      moveSidebarSelectionShiftJk(state.sidebar, state.channelList.channels, dir, state.rows, sidebarVisibilityOptions());
       syncPromptAutocomplete();
       scheduleRender();
       return true;

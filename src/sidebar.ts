@@ -31,6 +31,7 @@ import {
   scrollByAmountWithCursorInViewport,
   scrollLineWithStickyCursorInViewport,
   scrollPageWithCursorInViewport,
+  shiftJkRows,
 } from "./vimscroll";
 
 export const SIDEBAR_WIDTH = 28;
@@ -2340,13 +2341,24 @@ export function moveSidebarSelection(sidebar: SidebarState, channels: DiscordCha
   sidebar.selectedItem = entries[sidebar.selectedIndex]?.item ?? null;
 }
 
+/** Shift+J/K: an eighth of the visible list's rows per press, like the history cursor. */
+export function moveSidebarSelectionShiftJk(
+  sidebar: SidebarState,
+  channels: DiscordChannel[],
+  dir: 1 | -1,
+  totalRows: number,
+  options: SidebarVisibilityOptions = {},
+): void {
+  moveSidebarSelection(sidebar, channels, dir * shiftJkRows(sidebarViewportRows(totalRows, sidebar)), options);
+}
+
 function sidebarPromptAutocompleteVisibleRows(sidebar: SidebarState | undefined, totalRows: number): number {
   const autocomplete = sidebar?.prompt?.autocomplete;
   if (!sidebar?.prompt || sidebar.search?.barOpen || !autocomplete?.matches.length) return 0;
   return Math.min(autocomplete.matches.length, Math.max(0, Math.min(5, totalRows - 5)));
 }
 
-function sidebarViewportRows(totalRows: number, sidebar?: SidebarState): number {
+export function sidebarViewportRows(totalRows: number, sidebar?: SidebarState): number {
   const bottomBarRows = sidebar?.search?.barOpen ? 1 : sidebar?.prompt ? 1 + sidebarPromptAutocompleteVisibleRows(sidebar, totalRows) : 0;
   return Math.max(0, totalRows - 2 - bottomBarRows);
 }

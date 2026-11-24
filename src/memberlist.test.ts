@@ -8,6 +8,7 @@ import {
   jumpMemberListSelectionToVisibleEdge,
   jumpMemberListSelectionToVisibleMiddle,
   moveMemberListSelection,
+  moveMemberListSelectionShiftJk,
   scrollMemberListSelection,
   scrollMemberListSelectionLine,
   renderMemberList,
@@ -148,6 +149,34 @@ describe("member list", () => {
     scrollMemberListSelection(memberList, 1, 5, 7, "page");
     expect(memberList.scrollOffset).toBe(5);
     expect(memberList.selectedIndex).toBe(9);
+  });
+
+  test("Shift+J/K move an eighth of the visible members, clamped at the ends", () => {
+    const memberList = createMemberListState();
+    memberList.open = true;
+    setMemberListMembers(memberList, "guild-1", "channel-1", Array.from({ length: 30 }, (_, index) => ({
+      id: String(index),
+      username: `user-${index}`,
+      displayName: `User ${index}`,
+      bot: false,
+    })));
+    // 42 terminal rows leave 40 list rows: floor(floor(40 / 2) / 4) = 5 per press.
+    moveMemberListSelectionShiftJk(memberList, 1, 42);
+    expect(memberList.selectedIndex).toBe(5);
+    moveMemberListSelectionShiftJk(memberList, 1, 42);
+    expect(memberList.selectedIndex).toBe(10);
+    moveMemberListSelectionShiftJk(memberList, -1, 42);
+    expect(memberList.selectedIndex).toBe(5);
+    moveMemberListSelectionShiftJk(memberList, -1, 42);
+    moveMemberListSelectionShiftJk(memberList, -1, 42);
+    expect(memberList.selectedIndex).toBe(0);
+    memberList.selectedIndex = 28;
+    moveMemberListSelectionShiftJk(memberList, 1, 42);
+    expect(memberList.selectedIndex).toBe(29);
+    // A short list still moves one row.
+    memberList.selectedIndex = 3;
+    moveMemberListSelectionShiftJk(memberList, 1, 6);
+    expect(memberList.selectedIndex).toBe(4);
   });
 
   test("Shift+H/M/L jump within the visible members menu", () => {

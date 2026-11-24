@@ -12,6 +12,7 @@ import {
   jumpSidebarSelectionToVisibleEdge,
   jumpSidebarSelectionToVisibleMiddle,
   moveSidebarSelection,
+  moveSidebarSelectionShiftJk,
   scrollSidebarSelection,
   scrollSidebarSelectionLine,
   moveSidebarSelectionToNextCategory,
@@ -1313,5 +1314,47 @@ describe("sidebar state", () => {
       expect(termWidth(row)).toBe(SIDEBAR_WIDTH);
       expect(row.endsWith("│")).toBe(true);
     }
+  });
+});
+
+describe("Shift+J/K in the sidebar", () => {
+  function dmSidebar(count: number) {
+    const sidebar = createSidebarState();
+    setSidebarGuilds(sidebar, [{ id: DIRECT_MESSAGES_GUILD_ID, name: DIRECT_MESSAGES_GUILD_NAME, icon: null }]);
+    sidebar.expandedGuildId = DIRECT_MESSAGES_GUILD_ID;
+    setSidebarCachedChannels(sidebar, DIRECT_MESSAGES_GUILD_ID, Array.from({ length: count }, (_, index) => ({
+      id: `dm-${index}`,
+      guildId: DIRECT_MESSAGES_GUILD_ID,
+      parentId: null,
+      name: `Person ${String(index).padStart(2, "0")}`,
+      topic: null,
+      position: index,
+      type: 1,
+      nsfw: false,
+    })));
+    return sidebar;
+  }
+  const selectedId = (sidebar: ReturnType<typeof createSidebarState>) => buildSidebarEntries(sidebar, [])[sidebar.selectedIndex]?.id;
+
+  test("move an eighth of the visible list per press, like Exocortex", () => {
+    const sidebar = dmSidebar(40);
+    moveSidebarSelection(sidebar, [], 1);
+    expect(selectedId(sidebar)).toBe("dm-0");
+    // 42 terminal rows leave 40 list rows: floor(floor(40 / 2) / 4) = 5 per press.
+    moveSidebarSelectionShiftJk(sidebar, [], 1, 42);
+    expect(selectedId(sidebar)).toBe("dm-5");
+    moveSidebarSelectionShiftJk(sidebar, [], 1, 42);
+    expect(selectedId(sidebar)).toBe("dm-10");
+    moveSidebarSelectionShiftJk(sidebar, [], -1, 42);
+    expect(selectedId(sidebar)).toBe("dm-5");
+  });
+
+  test("stop at the ends and move at least one row on a short sidebar", () => {
+    const sidebar = dmSidebar(6);
+    moveSidebarSelection(sidebar, [], 1);
+    moveSidebarSelectionShiftJk(sidebar, [], 1, 8);
+    expect(selectedId(sidebar)).toBe("dm-1");
+    for (let press = 0; press < 10; press++) moveSidebarSelectionShiftJk(sidebar, [], 1, 42);
+    expect(selectedId(sidebar)).toBe("dm-5");
   });
 });

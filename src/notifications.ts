@@ -118,10 +118,12 @@ export function nextChannelNotification(
   focusedGuildId: string | null | undefined = currentChannelId
     ? notifications.channelGuildIds[currentChannelId]
     : null,
+  direction: 1 | -1 = 1,
 ): ChannelNotificationTarget | null {
   const channelIds = Object.entries(notifications.byChannelId)
     .filter(([, count]) => count > 0)
     .map(([channelId]) => channelId);
+  if (direction < 0) channelIds.reverse();
   if (channelIds.length === 0) return null;
 
   const currentIndex = currentChannelId ? channelIds.indexOf(currentChannelId) : -1;

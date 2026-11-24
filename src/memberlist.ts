@@ -11,6 +11,7 @@ import {
   scrollByAmountWithCursorInViewport,
   scrollLineWithStickyCursorInViewport,
   scrollPageWithCursorInViewport,
+  shiftJkRows,
 } from "./vimscroll";
 
 export const MEMBER_LIST_WIDTH = 28;
@@ -126,6 +127,11 @@ export function moveMemberListSelection(memberList: MemberListState, delta: numb
   memberList.selectedIndex = Math.max(0, Math.min(memberList.selectedIndex + delta, memberList.members.length - 1));
 }
 
+/** Shift+J/K: an eighth of the visible list's rows per press, like the history cursor. */
+export function moveMemberListSelectionShiftJk(memberList: MemberListState, dir: 1 | -1, totalRows: number): void {
+  moveMemberListSelection(memberList, dir * shiftJkRows(memberListViewportRows(totalRows)));
+}
+
 export function scrollMemberListSelection(
   memberList: MemberListState,
   dir: number,
@@ -223,7 +229,7 @@ function memberListCacheKey(guildId: string, channelId: string): string {
   return `${guildId}:${channelId}`;
 }
 
-function memberListViewportRows(totalRows: number): number {
+export function memberListViewportRows(totalRows: number): number {
   return Math.max(0, totalRows - 2);
 }
 

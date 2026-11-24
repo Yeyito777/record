@@ -115,6 +115,17 @@ describe("notifications", () => {
     expect(nextChannelNotification(notifications, "current")?.channelId).toBe("current");
   });
 
+  test("backward (Shift+T) walks the same order in reverse", () => {
+    const notifications = createNotificationState();
+    recordChannelNotification(notifications, "a", "guild");
+    recordChannelNotification(notifications, "b", "guild");
+    recordChannelNotification(notifications, "c", "guild");
+
+    expect(nextChannelNotification(notifications, "b", "guild", -1)?.channelId).toBe("a");
+    expect(nextChannelNotification(notifications, "a", "guild", -1)?.channelId).toBe("c");
+    expect(nextChannelNotification(notifications, null, "guild", -1)?.channelId).toBe("c");
+  });
+
   test("explicit sidebar focus takes precedence over the open chat's block", () => {
     const notifications = createNotificationState();
     recordChannelNotification(notifications, "open-chat", "open-block");

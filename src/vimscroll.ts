@@ -100,3 +100,8 @@ export function scrollPageWithCursorInViewport(view: CursorViewport, dir: number
 
   return { ...view, totalLines, viewportHeight, viewStart, cursorRow };
 }
+
+/** Shift+J/K's rows: a quarter of Ctrl+U/Ctrl+D's floor(height / 2) (an eighth of a page), at least 1. */
+export function shiftJkRows(visibleRows: number): number {
+  return Math.max(1, Math.floor(Math.floor(visibleRows / 2) / 4));
+}

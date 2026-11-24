@@ -49,6 +49,11 @@ describe("keybinds", () => {
     expect(resolveAction({ type: "char", char: "K" })).toBe("sidebar_prev");
   });
 
+  test("t and Shift+T go to the next and previous notification", () => {
+    expect(resolveAction({ type: "char", char: "t" })).toBe("notification_next");
+    expect(resolveAction({ type: "char", char: "T" })).toBe("notification_prev");
+  });
+
   test("navigation j moves down", () => {
     expect(resolveAction({ type: "char", char: "j" }, "navigation")).toBe("nav_down");
   });

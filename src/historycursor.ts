@@ -22,6 +22,7 @@ import {
   scrollByAmountWithCursorInViewport,
   scrollLineWithStickyCursorInViewport,
   scrollPageWithCursorInViewport,
+  shiftJkRows,
 } from "./vimscroll";
 
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\]8;[^;]*;[^\x1b]*\x1b\\/g;
@@ -538,10 +539,7 @@ function moveHistoryLine(state: AppState, direction: -1 | 1): void {
   state.historyCurswant = desiredCol;
 }
 
-/** Shift+J/K's rows: a quarter of Ctrl+U/Ctrl+D's floor(height / 2) (an eighth of a page), at least 1. */
-export function shiftJkRows(visibleRows: number): number {
-  return Math.max(1, Math.floor(Math.floor(visibleRows / 2) / 4));
-}
+export { shiftJkRows } from "./vimscroll";
 
 /**
  * Shift+K / Shift+J: the cursor moves shiftJkRows, keeping its column like

@@ -75,6 +75,7 @@ const GLOBAL_CHAR_BINDS: Record<string, Action> = {
   "char:J": "sidebar_next",
   "char:K": "sidebar_prev",
   "char:t": "notification_next",
+  "char:T": "notification_prev",
 };
 
 const NAV_BINDS: Partial<Record<KeyEvent["type"], Action>> = {
@@ -174,14 +175,16 @@ export interface ShiftJkFocus {
  * What Shift+J/K (sidebar_next/sidebar_prev) do from where focus is: typed
  * characters in insert mode or after a pending prompt find ("pass" to the
  * focused pane); the history's own cursor motion ("pass" as well); from the
- * prompt Shift+K enters the history and Shift+J does nothing; elsewhere they
- * move the sidebar selection.
+ * prompt Shift+K enters the history and Shift+J does nothing; the member list
+ * moves its own selection; elsewhere they move the sidebar selection. Like
+ * Exocortex, a list moves an eighth of its visible rows per press.
  */
-export function shiftJkRoute(action: "sidebar_next" | "sidebar_prev", focus: ShiftJkFocus): "pass" | "enter_history" | "ignore" | "sidebar" {
+export function shiftJkRoute(action: "sidebar_next" | "sidebar_prev", focus: ShiftJkFocus): "pass" | "enter_history" | "ignore" | "sidebar" | "memberlist" {
   if (focus.panelFocus === "chat") {
     if (focus.chatFocus === "history") return "pass";
     if (focus.insertMode || focus.promptPending) return "pass";
     return action === "sidebar_prev" ? "enter_history" : "ignore";
   }
+  if (focus.panelFocus === "memberlist") return "memberlist";
   return "sidebar";
 }

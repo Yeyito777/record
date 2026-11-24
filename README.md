@@ -41,7 +41,9 @@ Controls:
 - Reactions appear immediately, roll back on failure, and keep the last message's reaction row visible if you were already at the bottom
 - `Shift+J` / `Shift+K` in history (normal and visual modes): move the cursor down/up an eighth of the view (a quarter of `Ctrl+D`/`Ctrl+U`'s half page, at least one row), keeping its column; like that many `j`/`k`, the view stays put until the cursor reaches its edge and then scrolls just enough to follow
 - `Shift+K` in the prompt (normal mode): focus history with the cursor already one `Shift+K` up from the bottom row; `Shift+J` does nothing there
-- `Shift+J` / `Shift+K` in the sidebar or member list: move the sidebar selection down/up
+- `Shift+J` / `Shift+K` in the sidebar or member list: move that list's selection down/up an eighth of its visible rows (at least one), as in Exocortex
+- `Ctrl+D`/`Ctrl+U` and `Ctrl+F`/`Ctrl+B` in the sidebar or member list scroll by that list's own height
+- `t` / `Shift+T` in normal mode: open the next / previous chat with a notification
 - `h` / `l` in history continue across a wrapped line: at the edge of a screen row they go on to the row it wraps onto, while real line starts and ends still stop
 - `j` / `k` or arrow keys: move in the focused pane
 - `Enter` in the sidebar: expand/collapse servers, categories and server folders, or open text channels (see [Server folders](#server-folders))
@@ -78,7 +80,7 @@ Controls:
 - Slash autocomplete matches anywhere in Record's command and macro names, and later words search their arguments: `/supp` finds `/noise-suppression`, `/stat idl` finds `/status idle`; the matched letters are accented. `Enter` on such a shorthand sends the popup's first row (`/stat idl` sets `/status idle`). Text that matches nothing (a thread name, an emoji, a status quote) is sent as typed, a lone one-letter `/s` stays a message, and `/quit`, `/hangup`, `/login` and `/logout` only run when typed out. App commands (`/@app …`) complete as before
 - `Tab` / `Shift+Tab`: cycle autocomplete, including custom emoji choices; with nothing to complete, `Tab` in insert mode inserts a four-space soft tab, which `Backspace`/`Delete` remove in one press
 - `>>` / `<<` in prompt normal or visual mode: shift the line (a count shifts that many lines) or the selected lines right/left by four spaces
-- Prompt vim keys follow Vim: `j`/`k` (and `Up`/`Down`) move by displayed rows of wrapped lines, counts work before operators (`3dd`, `2d3w`), `f`/`F`/`t`/`T` with `;`/`,`, `^`, `o` in visual mode, and `yy`/`Vy` put back as whole lines with `p`/`P`. A bare `t` in normal mode stays the next-notification shortcut; after a count or operator it is the till motion
+- Prompt vim keys follow Vim: `j`/`k` (and `Up`/`Down`) move by displayed rows of wrapped lines, counts work before operators (`3dd`, `2d3w`), `f`/`F`/`t`/`T` with `;`/`,`, `^`, `o` in visual mode, and `yy`/`Vy` put back as whole lines with `p`/`P`. A bare `t` / `T` in normal mode stays the next/previous-notification shortcut; after a count or operator it is the till motion
 - Word motions (`w`/`b`/`e`, `iw`) treat letters and accents in any script as word characters; `V c` leaves an empty line like `cc`
 - Yank and put use the system clipboard (pbcopy, wl-copy, xclip or xsel); without a working one (for example over SSH with no `DISPLAY`) they fall back to an in-memory register. A put never reads an image on the clipboard as text, and put or pasted text is cleaned of terminal control sequences, carriage returns and hard tabs (which become four spaces)
 - A bracketed paste is its own undo step between the typing around it; `e` on a sent message replaces the draft, which `u` brings back

@@ -139,11 +139,11 @@ describe("Shift+J/K routing", () => {
     expect(shiftJkRoute("sidebar_next", { ...prompt, promptPending: true })).toBe("pass");
   });
 
-  test("the history keeps them for its cursor; the sidebar and member list move the sidebar selection", () => {
+  test("the history keeps them for its cursor; the sidebar and member list move their own selection", () => {
     expect(shiftJkRoute("sidebar_prev", { ...prompt, chatFocus: "history" })).toBe("pass");
     expect(shiftJkRoute("sidebar_next", { ...prompt, chatFocus: "history" })).toBe("pass");
     expect(shiftJkRoute("sidebar_next", { ...prompt, panelFocus: "sidebar" })).toBe("sidebar");
-    expect(shiftJkRoute("sidebar_prev", { ...prompt, panelFocus: "memberlist" })).toBe("sidebar");
+    expect(shiftJkRoute("sidebar_prev", { ...prompt, panelFocus: "memberlist" })).toBe("memberlist");
   });
 });
 
